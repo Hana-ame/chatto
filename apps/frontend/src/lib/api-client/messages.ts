@@ -1,7 +1,7 @@
 import { authHeaders, createChattoClient, handleAuthError } from './connect.js';
-import type { LinkPreviewInput, RoomEventView } from './renderTypes.js';
+import type { TimelineEventView } from '$lib/render/timelineEvents';
 import { MessageService } from '@chatto/api-types/api/v1/messages_connect';
-import { messageToRawEvent, timelineUsersForMessages } from './roomTimeline.js';
+import { messageToTimelineEvent, timelineUsersForMessages } from './roomTimeline.js';
 import { createAssetUploadAPI } from './assetUploads.js';
 
 export type MessageAPIConfig = {
@@ -19,7 +19,7 @@ export type CreateMessageInput = {
   threadRootEventId?: string | null;
   inReplyTo?: string | null;
   alsoSendToChannel?: boolean;
-  linkPreview?: LinkPreviewInput | null;
+  linkPreviewToken?: string | null;
   onAttachmentUploadUpdate?: (update: AttachmentUploadUpdate) => void;
 };
 
@@ -41,12 +41,12 @@ export type UpdateMessageInput = {
 };
 
 export type CreateMessageResult = {
-  event: RoomEventView | null;
+  event: TimelineEventView | null;
 };
 
 export type UpdateMessageResult = {
   updated: boolean;
-  event: RoomEventView | null;
+  event: TimelineEventView | null;
 };
 
 export function createMessageAPI(config: MessageAPIConfig) {
@@ -67,7 +67,7 @@ export function createMessageAPI(config: MessageAPIConfig) {
             threadRootEventId: input.threadRootEventId ?? '',
             inReplyTo: input.inReplyTo ?? '',
             alsoSendToChannel: input.alsoSendToChannel ?? false,
-            linkPreviewToken: input.linkPreview?.previewToken ?? ''
+            linkPreviewToken: input.linkPreviewToken ?? ''
           },
           { headers: headers() }
         );
@@ -75,7 +75,7 @@ export function createMessageAPI(config: MessageAPIConfig) {
         const users = await timelineUsersForMessages(config, response.message ? [response.message] : []);
         return {
           event: response.message
-            ? (messageToRawEvent(response.message, users) as RoomEventView | null)
+            ? messageToTimelineEvent(response.message, users)
             : null
         };
       } catch (err) {
@@ -107,7 +107,7 @@ export function createMessageAPI(config: MessageAPIConfig) {
         return {
           updated: true,
           event: response.message
-            ? (messageToRawEvent(response.message, users) as RoomEventView | null)
+            ? messageToTimelineEvent(response.message, users)
             : null
         };
       } catch (err) {

@@ -1,13 +1,5 @@
-<script lang="ts" module>
-  import { MessageAttachmentViewDocument } from '$lib/render/types';
-
-  export const MessageAttachmentViewData = MessageAttachmentViewDocument;
-</script>
-
 <script lang="ts">
-  import type { RenderType } from '$lib/render/data';
-  import { useRenderData } from '$lib/render/data';
-  import type { MessageAttachmentView } from '$lib/render/types';
+  import type { MessageAttachmentView } from '$lib/render/messageAttachments';
   import type { ImageItem } from '$lib/ui/ImageModal.svelte';
 
   type RawAttachment = MessageAttachmentView;
@@ -39,7 +31,7 @@
     eventId,
     canDeleteAttachment = false
   }: {
-    attachments: readonly RenderType<typeof MessageAttachmentViewData>[];
+    attachments: readonly MessageAttachmentView[];
     serverId: string;
     roomId: string;
     eventId: string;
@@ -142,7 +134,7 @@
   type Attachment = ReturnType<typeof normalizeAttachment>;
 
   const attachments = $derived.by(() =>
-    rawAttachments.map((a) => normalizeAttachment(useRenderData(MessageAttachmentViewData, a)))
+    rawAttachments.map((attachment) => normalizeAttachment(attachment))
   );
 
   const MIN_THUMB_SIZE = 24;

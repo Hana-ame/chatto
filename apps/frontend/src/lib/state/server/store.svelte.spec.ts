@@ -54,7 +54,7 @@ const { soundMocks, apiMocks } = vi.hoisted(() => ({
     joinCall: vi.fn(() => Promise.resolve(true)),
     getCallToken: vi.fn(() => Promise.resolve(null)),
     leaveCall: vi.fn(() => Promise.resolve(true)),
-    listNotificationCounts: vi.fn(() => Promise.resolve({})),
+    listRoomNotificationCounts: vi.fn(() => Promise.resolve({})),
     listNotifications: vi.fn(() =>
       Promise.resolve({
         items: [],
@@ -162,7 +162,14 @@ const { soundMocks, apiMocks } = vi.hoisted(() => ({
     listRoomAttachments: vi.fn<
       () => Promise<{ items: RoomFileItem[]; totalCount: number; hasMore: boolean }>
     >(() => Promise.resolve({ items: [], totalCount: 0, hasMore: false })),
-    refreshAssetUrls: vi.fn(() => Promise.resolve(new Map()))
+    refreshAssetUrls: vi.fn(() => Promise.resolve(new Map())),
+    listRoles: vi.fn(() =>
+      Promise.resolve({
+        roles: [],
+        viewerCanManageRoles: false,
+        viewerCanAssignRoles: false
+      })
+    )
   }
 }));
 
@@ -216,10 +223,15 @@ vi.mock('$lib/api-client/notifications', () => ({
   createNotificationAPI: vi.fn(() => ({
     listNotifications: apiMocks.listNotifications,
     listRoomNotifications: vi.fn(),
-    hasNotifications: vi.fn(),
-    listNotificationCounts: apiMocks.listNotificationCounts,
+    listRoomNotificationCounts: apiMocks.listRoomNotificationCounts,
     dismissNotification: vi.fn(),
     dismissAllNotifications: vi.fn()
+  }))
+}));
+
+vi.mock('$lib/api-client/roles', () => ({
+  createRoleAPI: vi.fn(() => ({
+    listRoles: apiMocks.listRoles
   }))
 }));
 
@@ -403,7 +415,7 @@ beforeEach(() => {
   apiMocks.joinCall.mockResolvedValue(true);
   apiMocks.getCallToken.mockResolvedValue(null);
   apiMocks.leaveCall.mockResolvedValue(true);
-  apiMocks.listNotificationCounts.mockResolvedValue({});
+  apiMocks.listRoomNotificationCounts.mockResolvedValue({});
   apiMocks.listNotifications.mockResolvedValue({
     items: [],
     unreadCount: 0

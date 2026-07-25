@@ -1,6 +1,8 @@
+import { PresenceStatus } from '@chatto/api-types/api/v1/presence_pb';
+import { NotificationLevel } from '@chatto/api-types/api/v1/notification_preferences_pb';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render } from 'vitest-browser-svelte';
-import { NotificationLevel, PresenceStatus } from '$lib/render/types';
+
 import { NotificationItemKind } from '$lib/api-client/notifications';
 import { q } from '$lib/test-utils';
 
@@ -38,7 +40,7 @@ const { mocks } = vi.hoisted(() => {
           fetch: vi.fn().mockResolvedValue(undefined),
           setUnreadNotificationCount: vi.fn(),
           unreadNotificationCount: 0,
-          getSpaceNotification: vi.fn().mockReturnValue(null),
+          getNonDMNotification: vi.fn().mockReturnValue(null),
           getDMNotification: vi.fn().mockReturnValue(null),
           dismiss: vi.fn(),
           getCleanPath: vi.fn().mockReturnValue('/chat/remote.example.com/room-1')
@@ -169,7 +171,7 @@ function viewerState(overrides: Record<string, unknown> = {}) {
       id: 'user-1',
       login: 'alice',
       displayName: 'Alice',
-      presenceStatus: PresenceStatus.Online,
+      presenceStatus: PresenceStatus.ONLINE,
       hasVerifiedEmail: true
     },
     canViewAdmin: false,
@@ -182,8 +184,8 @@ function viewerState(overrides: Record<string, unknown> = {}) {
     canAdminViewSystem: false,
     canAdminViewAudit: false,
     serverNotificationPreference: {
-      level: NotificationLevel.Default,
-      effectiveLevel: NotificationLevel.Normal
+      level: NotificationLevel.DEFAULT,
+      effectiveLevel: NotificationLevel.NORMAL
     },
     roomNotificationPreferences: [],
     ...overrides
@@ -218,7 +220,7 @@ describe('ServerSidebarEntry', () => {
     mocks.store.notifications.fetch.mockResolvedValue(undefined);
     mocks.store.notifications.setUnreadNotificationCount.mockClear();
     mocks.store.notifications.unreadNotificationCount = 0;
-    mocks.store.notifications.getSpaceNotification.mockReturnValue(null);
+    mocks.store.notifications.getNonDMNotification.mockReturnValue(null);
     mocks.store.notifications.getDMNotification.mockReturnValue(null);
     mocks.store.notifications.dismiss.mockClear();
     mocks.store.notifications.getCleanPath.mockReturnValue('/chat/remote.example.com/room-1');
@@ -331,10 +333,12 @@ describe('ServerSidebarEntry', () => {
       .toBeInTheDocument();
 
     const icon = q(container, '[data-testid="server-icon"]') as HTMLAnchorElement;
-    await expect.element(icon).toHaveAttribute(
-      'title',
-      'Loaded Remote — This server must be upgraded to Chatto 0.5 or newer before this app can connect.'
-    );
+    await expect
+      .element(icon)
+      .toHaveAttribute(
+        'title',
+        'Loaded Remote — This server must be upgraded to Chatto 0.5 or newer before this app can connect.'
+      );
     icon.dispatchEvent(
       new MouseEvent('contextmenu', {
         bubbles: true,
@@ -351,10 +355,7 @@ describe('ServerSidebarEntry', () => {
     );
     expect(document.body.textContent).toContain('Version 0.4.12');
 
-    const compatibilitySection = q(
-      document.body,
-      '[data-testid="server-compatibility-section"]'
-    );
+    const compatibilitySection = q(document.body, '[data-testid="server-compatibility-section"]');
     expect(compatibilitySection!.classList).toContain('text-sm');
     expect(compatibilitySection!.querySelector('.text-xs')).toBeNull();
     expect(compatibilitySection!.closest('.w-80')).not.toBeNull();
@@ -450,7 +451,7 @@ describe('ServerSidebarEntry', () => {
     };
     mocks.store.serverIndicator.mockReturnValue('notification');
     mocks.store.notifications.unreadNotificationCount = 1;
-    mocks.store.notifications.getSpaceNotification.mockReturnValue(notification);
+    mocks.store.notifications.getNonDMNotification.mockReturnValue(notification);
     mocks.store.notifications.getCleanPath.mockReturnValue(
       '/chat/remote.example.com/room-1/thread-1'
     );
@@ -480,5 +481,4 @@ describe('ServerSidebarEntry', () => {
       expect(mocks.goto).toHaveBeenCalledWith('/chat/remote.example.com/room-1/thread-1');
     });
   });
-
 });

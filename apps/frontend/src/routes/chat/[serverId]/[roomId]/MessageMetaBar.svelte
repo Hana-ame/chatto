@@ -23,19 +23,17 @@ Contains the thread reply button, reaction pills, and an add-reaction button.
 <script lang="ts">
   import { resolve } from '$app/paths';
   import { on } from 'svelte/events';
-  import type { RoomEventView } from '$lib/render/types';
-  import UserAvatar, { UserAvatarViewData } from '$lib/components/UserAvatar.svelte';
+  import type { MessagePostedPayload } from '$lib/render/timelineEvents';
+  import UserAvatar from '$lib/components/UserAvatar.svelte';
   import UnreadDot from '$lib/ui/UnreadDot.svelte';
   import { useReactionActions, type MessageActionParams } from '$lib/hooks';
-  import { useRenderData } from '$lib/render/data';
   import type { MessagesStore } from '$lib/state/room';
   import FloatingPopover from '$lib/ui/FloatingPopover.svelte';
   import { getEmojiByName, getEmojiDisplayName } from '$lib/emoji';
   import * as m from '$lib/i18n/messages';
 
   // Extract the MessagePostedEvent type from the union
-  type MessagePostedEvent = Extract<RoomEventView['event'], { kind: 'messagePosted' }>;
-  type ReactionSummary = MessagePostedEvent['reactions'][number];
+  type ReactionSummary = MessagePostedPayload['reactions'][number];
 
   // Shared base style for all meta bar buttons. Uses the `meta-badge` utility
   // for shape and background states. Border color is set per-button to avoid
@@ -66,7 +64,7 @@ Contains the thread reply button, reaction pills, and an add-reaction button.
     threadRootEventId?: string | null;
     reactions: ReactionSummary[];
     replyCount?: number;
-    threadParticipants?: MessagePostedEvent['threadParticipants'];
+    threadParticipants?: MessagePostedPayload['threadParticipants'];
     hasThreadNotification?: boolean;
     canReact?: boolean;
     messageStore?: MessagesStore | null;
@@ -194,7 +192,7 @@ Contains the thread reply button, reaction pills, and an add-reaction button.
       {#if threadParticipants && threadParticipants.length > 0}
         <div class="flex -space-x-1.5">
           {#each threadParticipants.slice(0, 3) as participant, i (i)}
-            {@const p = useRenderData(UserAvatarViewData, participant)}
+            {@const p = participant}
             {#if p}
               <UserAvatar user={p} size="xs" />
             {/if}

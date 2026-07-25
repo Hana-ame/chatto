@@ -1,15 +1,12 @@
 <script lang="ts">
+  import { PresenceStatus } from '@chatto/api-types/api/v1/presence_pb';
   import MessageMetaBar from './MessageMetaBar.svelte';
   import { ServerConnection } from '$lib/state/server/serverConnection.svelte';
   import { provideConnection } from '$lib/state/server/connection.svelte';
   import { createPresenceCache } from '$lib/state/presenceCache.svelte';
   import { createUserProfileCache } from '$lib/state/userProfiles.svelte';
-  import {
-    PresenceStatus,
-    type ReactionSummaryView,
-    type UserAvatarUserView
-  } from '$lib/render/types';
-
+  import type { ReactionSummaryView } from '$lib/render/reactions';
+  import type { UserAvatarUserView } from '$lib/render/users';
   type Variant =
     | 'reactions'
     | 'replies-and-reactions'
@@ -42,7 +39,7 @@
     displayName: 'Alice',
     deleted: false,
     avatarUrl: null,
-    presenceStatus: PresenceStatus.Online
+    presenceStatus: PresenceStatus.ONLINE
   };
   const jordan: UserAvatarUserView = {
     id: 'user-jordan',
@@ -50,7 +47,7 @@
     displayName: 'Jordan',
     deleted: false,
     avatarUrl: null,
-    presenceStatus: PresenceStatus.Away
+    presenceStatus: PresenceStatus.AWAY
   };
   const mika: UserAvatarUserView = {
     id: 'user-mika',
@@ -58,7 +55,7 @@
     displayName: 'Mika',
     deleted: false,
     avatarUrl: null,
-    presenceStatus: PresenceStatus.Offline
+    presenceStatus: PresenceStatus.OFFLINE
   };
 
   const reactions: ReactionSummaryView[] = [

@@ -2,11 +2,16 @@ package core
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protodesc"
+	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/types/descriptorpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"hmans.de/chatto/internal/encryption"
 
@@ -17,6 +22,102 @@ type snapshotProjection interface {
 	SnapshotContractID() string
 	Snapshot() ([]byte, error)
 	Restore([]byte) error
+}
+
+func TestCurrentProjectionSnapshotCodecsContainOnlyCurrentState(t *testing.T) {
+	assets := NewAssetProjection()
+	assets.messageOwners["A1"] = assetMessageRef{roomID: "R1", messageEventID: "M1", authorID: "U1"}
+	assetPayload, err := assets.Snapshot()
+	require.NoError(t, err)
+	assetSnapshot := &corev1.AssetProjectionSnapshot{}
+	require.NoError(t, proto.Unmarshal(assetPayload, assetSnapshot))
+	require.Len(t, assetSnapshot.GetMessageOwners(), 1)
+	require.Equal(t, "A1", assetSnapshot.GetMessageOwners()[0].GetAssetId())
+	ownerFields := (&corev1.AssetMessageOwnerSnapshot{}).ProtoReflect().Descriptor().Fields()
+	require.Equal(t, "author_id", string(ownerFields.ByNumber(protoreflect.FieldNumber(4)).Name()))
+
+	timeline := NewRoomTimelineProjection()
+	timeline.replayGuard.highestSeq = 41
+	timeline.replayGuard.completeReplay()
+	timelinePayload, err := timeline.Snapshot()
+	require.NoError(t, err)
+	timelineSnapshot := &corev1.RoomTimelineProjectionSnapshot{}
+	require.NoError(t, proto.Unmarshal(timelinePayload, timelineSnapshot))
+	require.Equal(t, uint64(41), timelineSnapshot.GetReplayGuard().GetHighestSequence())
+	timelineFields := timelineSnapshot.ProtoReflect().Descriptor().Fields()
+	require.Equal(t, "replay_guard", string(timelineFields.ByNumber(protoreflect.FieldNumber(8)).Name()))
+	require.Nil(t, timelineFields.ByNumber(protoreflect.FieldNumber(9)))
+}
+
+func TestProjectionSnapshotContractsIncludeCurrentSchema(t *testing.T) {
+	tests := []struct {
+		contract  string
+		semantics string
+		message   proto.Message
+	}{
+		{assetSnapshotContractID, "v2", &corev1.AssetProjectionSnapshot{}},
+		{callStateSnapshotContractID, "v1", &corev1.CallStateProjectionSnapshot{}},
+		{configSnapshotContractID, "v1", &corev1.ConfigProjectionSnapshot{}},
+		{contentKeySnapshotContractID, "v1", &corev1.ContentKeyProjectionSnapshot{}},
+		{mentionablesSnapshotContractID, "v1", &corev1.MentionablesProjectionSnapshot{}},
+		{rbacSnapshotContractID, "v1", &corev1.RBACProjectionSnapshot{}},
+		{reactionSnapshotContractID, "v1", &corev1.ReactionProjectionSnapshot{}},
+		{roomDirectorySnapshotContractID, "v1", &corev1.RoomDirectoryProjectionSnapshot{}},
+		{roomGroupLayoutSnapshotContractID, "v1", &corev1.RoomGroupLayoutProjectionSnapshot{}},
+		{roomTimelineSnapshotContractID, "v2", &corev1.RoomTimelineProjectionSnapshot{}},
+		{threadSnapshotContractID, "v1", &corev1.ThreadProjectionSnapshot{}},
+		{userSnapshotContractID, "v2", &corev1.UserProfileProjectionSnapshot{}},
+	}
+	for _, tt := range tests {
+		require.Equal(t, snapshotContractID(tt.semantics, tt.message), tt.contract)
+		require.LessOrEqual(t, len(tt.contract), 64)
+	}
+}
+
+func TestProjectionSnapshotSchemaFingerprintIncludesReferencedType(t *testing.T) {
+	fingerprint := func(thirdFieldType string) string {
+		t.Helper()
+		optional := descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL
+		messageType := descriptorpb.FieldDescriptorProto_TYPE_MESSAGE
+		field := func(name string, number int32, typeName string) *descriptorpb.FieldDescriptorProto {
+			return &descriptorpb.FieldDescriptorProto{
+				Name:     proto.String(name),
+				Number:   proto.Int32(number),
+				Label:    &optional,
+				Type:     &messageType,
+				TypeName: proto.String(typeName),
+			}
+		}
+		file, err := protodesc.NewFile(&descriptorpb.FileDescriptorProto{
+			Name:    proto.String("snapshot_fingerprint_test.proto"),
+			Package: proto.String("snapshot_fingerprint_test"),
+			Syntax:  proto.String("proto3"),
+			MessageType: []*descriptorpb.DescriptorProto{
+				{Name: proto.String("A"), Field: []*descriptorpb.FieldDescriptorProto{{
+					Name: proto.String("value"), Number: proto.Int32(1), Label: &optional,
+					Type: descriptorpb.FieldDescriptorProto_TYPE_STRING.Enum(),
+				}}},
+				{Name: proto.String("B"), Field: []*descriptorpb.FieldDescriptorProto{{
+					Name: proto.String("value"), Number: proto.Int32(1), Label: &optional,
+					Type: descriptorpb.FieldDescriptorProto_TYPE_INT64.Enum(),
+				}}},
+				{
+					Name: proto.String("Root"),
+					Field: []*descriptorpb.FieldDescriptorProto{
+						field("a", 1, ".snapshot_fingerprint_test.A"),
+						field("b", 2, ".snapshot_fingerprint_test.B"),
+						field("choice", 3, thirdFieldType),
+					},
+				},
+			},
+		}, nil)
+		require.NoError(t, err)
+		return snapshotSchemaFingerprint(file.Messages().ByName("Root"))
+	}
+
+	withA := fingerprint(".snapshot_fingerprint_test.A")
+	withB := fingerprint(".snapshot_fingerprint_test.B")
+	require.NotEqual(t, withA, withB)
 }
 
 func TestMentionablesSnapshotRetainsEncryptedSourceWithoutPlaintextHandle(t *testing.T) {
@@ -45,7 +146,7 @@ func TestMentionablesSnapshotRetainsEncryptedSourceWithoutPlaintextHandle(t *tes
 	require.Equal(t, "U1", availability.OwnerID)
 }
 
-func TestV2ProjectionSnapshotsRoundTripTransactionally(t *testing.T) {
+func TestProjectionSnapshotsRoundTripTransactionally(t *testing.T) {
 	now := time.Unix(1_700_000_000, 123).UTC()
 	tests := []struct {
 		name string
@@ -101,6 +202,9 @@ func TestV2ProjectionSnapshotsRoundTripTransactionally(t *testing.T) {
 			p.videoManifests["A1"] = &VideoAttachmentManifest{Started: &corev1.AssetProcessingStartedEvent{AssetId: "A1"}}
 			p.deletedAssets["A3"] = struct{}{}
 			p.deletedAssetRoom["A3"] = "R1"
+			p.messageOwners["A1"] = assetMessageRef{roomID: "R1", messageEventID: "M1", authorID: "U1"}
+			p.messageOwners["A3"] = assetMessageRef{roomID: "R1", messageEventID: "M1", authorID: "U1"}
+			p.publicLinkPreviewAssets["A4"] = struct{}{}
 			p.replayGuard.highestSeq = 41
 			p.replayGuard.completeReplay()
 		}},
@@ -140,10 +244,10 @@ func TestV2ProjectionSnapshotsRoundTripTransactionally(t *testing.T) {
 		}},
 	}
 
-	expectedContract := map[string]string{
-		"room_directory": "v1", "server_config": "v1", "room_group_layout": "v1",
-		"room_timeline": "v1", "call_state": "v1", "assets": "v1", "reactions": "v1",
-		"content_keys": "v1", "rbac": "v1", "mentionables": "v1", "users": "v5",
+	expectedContractPrefix := map[string]string{
+		"room_directory": "v1-", "server_config": "v1-", "room_group_layout": "v1-",
+		"room_timeline": "v2-", "call_state": "v1-", "assets": "v2-", "reactions": "v1-",
+		"content_keys": "v1-", "rbac": "v1-", "mentionables": "v1-", "users": "v2-",
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -192,8 +296,8 @@ func TestV2ProjectionSnapshotsRoundTripTransactionally(t *testing.T) {
 				t.Fatal("cold restore did not reset projection")
 			}
 			id := original.SnapshotContractID()
-			if id != expectedContract[tt.name] {
-				t.Fatalf("contract ID = %q, want %q", id, expectedContract[tt.name])
+			if !strings.HasPrefix(id, expectedContractPrefix[tt.name]) {
+				t.Fatalf("contract ID = %q, want prefix %q", id, expectedContractPrefix[tt.name])
 			}
 		})
 	}

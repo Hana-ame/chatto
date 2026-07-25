@@ -58,6 +58,14 @@ func TestProjectionSubjectPolicy(t *testing.T) {
 			want: []string{events.RoomSubjectFilter()},
 		},
 		{
+			name: "room timeline uses room aggregate namespace plus key shredding",
+			got:  NewRoomTimelineProjection().Subjects(),
+			want: []string{
+				events.RoomSubjectFilter(),
+				events.UserEventTypeFilter(events.EventUserKeyShredded),
+			},
+		},
+		{
 			name: "threads use focused room event families plus key shredding",
 			got:  NewThreadProjection().Subjects(),
 			want: []string{
@@ -71,7 +79,7 @@ func TestProjectionSubjectPolicy(t *testing.T) {
 			},
 		},
 		{
-			name: "assets use canonical asset namespace plus legacy beta room asset lanes",
+			name: "assets use lifecycle lanes plus message bodies that claim assets",
 			got:  NewAssetProjection().Subjects(),
 			want: []string{
 				events.AssetSubjectFilter(),
@@ -80,6 +88,7 @@ func TestProjectionSubjectPolicy(t *testing.T) {
 				events.RoomEventTypeFilter(events.EventAssetProcessingSucceeded),
 				events.RoomEventTypeFilter(events.EventAssetProcessingFailed),
 				events.RoomEventTypeFilter(events.EventAssetDeleted),
+				events.RoomEventTypeFilter(events.EventMessageBody),
 			},
 		},
 		{
@@ -138,10 +147,18 @@ func TestFocusedProjectionsDoNotUseAggregateNamespaceFilters(t *testing.T) {
 	}
 }
 
-func TestThreadProjectionReplaySubjectsUseSharedRoomReplay(t *testing.T) {
-	got := NewThreadProjection().ReplaySubjects()
-	want := []string{events.RoomSubjectFilter(), events.UserEventTypeFilter(events.EventUserKeyShredded)}
-	if !slices.Equal(got, want) {
-		t.Fatalf("ReplaySubjects() = %v, want %v", got, want)
+func TestMultiLaneProjectionsUseSinglePhysicalReplayFilter(t *testing.T) {
+	for name, projection := range map[string]events.ReplaySubjectProjection{
+		"room timeline": NewRoomTimelineProjection(),
+		"threads":       NewThreadProjection(),
+		"assets":        NewAssetProjection(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := projection.ReplaySubjects()
+			want := []string{events.EventSubjectFilter()}
+			if !slices.Equal(got, want) {
+				t.Fatalf("ReplaySubjects() = %v, want %v", got, want)
+			}
+		})
 	}
 }

@@ -353,24 +353,19 @@ func (p *RoomTimelineProjection) adminProjectionEstimate() (int64, int64, []Proj
 	}
 	retainedEventIDs := p.replayGuard.retainedEventIDs()
 	appliedEventIDsBytes := estimateStringSetBytes(retainedEventIDs)
-	var latestBodyBytes int64
-	for eventID, body := range p.latestBody {
-		latestBodyBytes += projectionMapEntryOverhead + int64(len(eventID))
-		if body != nil {
-			latestBodyBytes += int64(proto.Size(body))
+	var bodyStateBytes, latestBodyBytes, latestBodies, supersededSeqBytes, supersededSeqs int64
+	for eventID, state := range p.bodyStates {
+		// The body pointer, current sequence, and slice header live inline in
+		// the map value. Only edited messages allocate the slice backing array.
+		bodyStateBytes += projectionMapEntryOverhead + int64(len(eventID)) + 8 + 8 + 24
+		if state.body != nil {
+			latestBodies++
+			latestBodyBytes += int64(proto.Size(state.body))
+			bodyStateBytes += int64(proto.Size(state.body))
 		}
-	}
-	var bodyEventSeqsBytes, bodyEventSeqs int64
-	for eventID, seqs := range p.bodyEventSeqs {
-		bodyEventSeqsBytes += projectionMapEntryOverhead + int64(len(eventID))
-		for range seqs {
-			bodyEventSeqs++
-			bodyEventSeqsBytes += projectionSliceEntryOverhead + 8
-		}
-	}
-	var currentBodySeqBytes int64
-	for eventID := range p.currentBodySeq {
-		currentBodySeqBytes += projectionMapEntryOverhead + int64(len(eventID)) + 8
+		supersededSeqs += int64(len(state.supersededSequences))
+		supersededSeqBytes += int64(cap(state.supersededSequences)) * 8
+		bodyStateBytes += int64(cap(state.supersededSequences)) * 8
 	}
 	var retractedBytes int64
 	for eventID := range p.retractedFlags {
@@ -393,47 +388,11 @@ func (p *RoomTimelineProjection) adminProjectionEstimate() (int64, int64, []Proj
 			echoBytes += projectionSliceEntryOverhead + int64(len(echoID))
 		}
 	}
-	var assetCreationBytes int64
-	for assetID, event := range p.assets.assetCreations {
-		assetCreationBytes += projectionMapEntryOverhead + int64(len(assetID))
-		if event != nil {
-			assetCreationBytes += int64(proto.Size(event))
-		}
-	}
-	var assetChildrenBytes, assetChildLinks int64
-	for assetID, children := range p.assets.assetChildren {
-		assetChildrenBytes += projectionMapEntryOverhead + int64(len(assetID))
-		for _, childID := range children {
-			assetChildLinks++
-			assetChildrenBytes += projectionSliceEntryOverhead + int64(len(childID))
-		}
-	}
-	var videoManifestBytes int64
-	for assetID, manifest := range p.assets.videoManifests {
-		videoManifestBytes += projectionMapEntryOverhead + int64(len(assetID))
-		if manifest == nil {
-			continue
-		}
-		if manifest.Started != nil {
-			videoManifestBytes += int64(proto.Size(manifest.Started))
-		}
-		if manifest.Succeeded != nil {
-			videoManifestBytes += int64(proto.Size(manifest.Succeeded))
-		}
-		if manifest.Failed != nil {
-			videoManifestBytes += int64(proto.Size(manifest.Failed))
-		}
-	}
-	var assetOwnerBytes int64
-	for assetID, owner := range p.assets.messageOwners {
-		assetOwnerBytes += projectionMapEntryOverhead + int64(len(assetID)+len(owner.roomID)+len(owner.messageEventID))
-	}
 	shreddedUserBytes := estimateStringSetBytes(p.shreddedUsers)
 
 	totalBytes := rawBytes + messagePostIndexBytes + eventIndexBytes + eventIndexRetainedEntryBytes +
-		appliedEventIDsBytes + latestBodyBytes + bodyEventSeqsBytes + currentBodySeqBytes + retractedBytes +
-		tombstonedAtBytes + shreddedAtBytes + hiddenEchoBytes + echoBytes + assetCreationBytes + assetChildrenBytes +
-		videoManifestBytes + assetOwnerBytes + shreddedUserBytes
+		appliedEventIDsBytes + bodyStateBytes + retractedBytes +
+		tombstonedAtBytes + shreddedAtBytes + hiddenEchoBytes + echoBytes + shreddedUserBytes
 	return entries, totalBytes, []ProjectionAdminMetric{
 		{Name: "rooms", Value: int64(len(p.byRoom)), Bytes: 0},
 		{Name: "timeline_entries", Value: entries, Bytes: rawBytes},
@@ -443,18 +402,14 @@ func (p *RoomTimelineProjection) adminProjectionEstimate() (int64, int64, []Proj
 		{Name: "event_id_retained_entries", Value: eventIndexRetainedEntries, Bytes: eventIndexRetainedEntryBytes},
 		{Name: "applied_event_ids", Value: int64(len(retainedEventIDs)), Bytes: appliedEventIDsBytes},
 		{Name: "event_id_compatibility_mode", Value: p.replayGuard.compatibilityValue(), Bytes: 0},
-		{Name: "latest_body_index", Value: int64(len(p.latestBody)), Bytes: latestBodyBytes},
-		{Name: "body_event_seqs", Value: bodyEventSeqs, Bytes: bodyEventSeqsBytes},
-		{Name: "current_body_seq_index", Value: int64(len(p.currentBodySeq)), Bytes: currentBodySeqBytes},
+		{Name: "body_state_index", Value: int64(len(p.bodyStates)), Bytes: bodyStateBytes},
+		{Name: "latest_bodies", Value: latestBodies, Bytes: latestBodyBytes},
+		{Name: "superseded_body_event_seqs", Value: supersededSeqs, Bytes: supersededSeqBytes},
 		{Name: "retracted_flags", Value: int64(len(p.retractedFlags)), Bytes: retractedBytes},
 		{Name: "tombstoned_at_index", Value: int64(len(p.tombstonedAt)), Bytes: tombstonedAtBytes},
 		{Name: "shredded_at_index", Value: int64(len(p.shreddedAt)), Bytes: shreddedAtBytes},
 		{Name: "hidden_echoes", Value: int64(len(p.hiddenEchoes)), Bytes: hiddenEchoBytes},
 		{Name: "echo_links", Value: echoLinks, Bytes: echoBytes},
-		{Name: "asset_creations", Value: int64(len(p.assets.assetCreations)), Bytes: assetCreationBytes},
-		{Name: "asset_child_links", Value: assetChildLinks, Bytes: assetChildrenBytes},
-		{Name: "video_manifests", Value: int64(len(p.assets.videoManifests)), Bytes: videoManifestBytes},
-		{Name: "asset_message_owner_index", Value: int64(len(p.assets.messageOwners)), Bytes: assetOwnerBytes},
 		{Name: "shredded_users", Value: int64(len(p.shreddedUsers)), Bytes: shreddedUserBytes},
 	}
 }

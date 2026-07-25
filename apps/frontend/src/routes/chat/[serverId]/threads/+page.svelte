@@ -7,8 +7,7 @@
   import { useConnection } from '$lib/state/server/connection.svelte';
   import * as m from '$lib/i18n/messages';
 
-  import { useRenderData } from '$lib/render/data';
-  import { RoomEventViewDocument, type RoomEventView } from '$lib/render/types';
+  import type { TimelineEventView } from '$lib/render/timelineEvents';
   import {
     createThreadAPI,
     type FollowedThread as APIFollowedThread
@@ -30,38 +29,41 @@
     createMentionRoles
   } from '$lib/state/room';
 
-  // Provide stub room contexts so MessageEvent can render in read-only mode.
+  const connection = useConnection();
+  const serverStore = serverRegistry.getStore(getActiveServer());
+
+  // Provide room contexts so MessageEvent can render in read-only mode.
   // All permissions are false (no editing, deleting, reacting from this view),
-  // members list is empty (no mention highlighting), composer context is a no-op.
+  // and the members list is empty; role highlighting uses server reference data.
   createRoomPermissions(() => DEFAULT_ROOM_PERMISSIONS);
   createRoomMembers();
   createComposerContext();
-  createMentionRoles();
+  createMentionRoles(() => serverStore.mentionRoles.roles);
 
-  const connection = useConnection();
-  const serverStore = serverRegistry.getStore(getActiveServer());
   const userSettings = getUserSettings();
   const activeLocale = $derived(getLocale());
   const PAGE_SIZE = 20;
+
+  $effect(() => {
+    void serverStore.mentionRoles.refresh();
+  });
 
   type FollowedThreadItem = {
     roomId: string;
     roomName: string;
     threadRootEventId: string;
-    rootMessage: RoomEventView | null;
+    rootMessage: TimelineEventView | null;
     replyCount: number;
     lastReplyAt: string | null;
     hasUnread: boolean;
   };
 
   function mapThread(t: APIFollowedThread): FollowedThreadItem {
-    const rootMessage = t.rootMessage ? useRenderData(RoomEventViewDocument, t.rootMessage) : null;
-
     return {
       roomId: t.roomId,
       roomName: t.roomName,
       threadRootEventId: t.threadRootEventId,
-      rootMessage,
+      rootMessage: t.rootMessage ?? null,
       replyCount: t.replyCount,
       lastReplyAt: t.lastReplyAt,
       hasUnread: t.hasUnread
@@ -178,7 +180,9 @@
   function reconcileThreadViewerStates(
     states: ReadonlyMap<string, { hasUnread?: boolean }>
   ): boolean {
-    const knownKeys = new Set(threads.map((thread) => `${thread.roomId}\u0000${thread.threadRootEventId}`));
+    const knownKeys = new Set(
+      threads.map((thread) => `${thread.roomId}\u0000${thread.threadRootEventId}`)
+    );
     let changed = false;
     const next = threads.flatMap((thread) => {
       const key = `${thread.roomId}\u0000${thread.threadRootEventId}`;

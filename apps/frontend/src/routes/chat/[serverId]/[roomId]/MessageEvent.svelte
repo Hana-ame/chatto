@@ -3,14 +3,13 @@
   import { startDMWith } from '$lib/dm/startDM';
   import { resolve } from '$app/paths';
   import MessageView from '$lib/components/messages/MessageView.svelte';
-  import UserAvatar, { UserAvatarViewData } from '$lib/components/UserAvatar.svelte';
+  import UserAvatar from '$lib/components/UserAvatar.svelte';
   import LinkPreviewCard from '$lib/components/LinkPreviewCard.svelte';
   import UserContextMenu from '$lib/components/menus/UserContextMenu.svelte';
   import BanRoomMemberModal from '$lib/components/moderation/BanRoomMemberModal.svelte';
   import BottomSheet from '$lib/ui/BottomSheet.svelte';
   import ContextMenu from '$lib/ui/ContextMenu.svelte';
-  import { useRenderData } from '$lib/render/data';
-  import type { RoomEventView } from '$lib/render/types';
+  import type { TimelineEventView } from '$lib/render/timelineEvents';
   import {
     getRoomPermissions,
     getRoomMembers,
@@ -59,7 +58,7 @@
   import type { OpenThreadHandler } from './threadOpenOptions';
   import { createThreadAPI } from '$lib/api-client/threads';
   import { createRoomCommandAPI } from '$lib/api-client/rooms';
-  import { isMessagePostedEvent } from '$lib/render/eventKinds';
+  import { isMessagePostedEvent } from '$lib/render/timelineEvents';
   import * as m from '$lib/i18n/messages';
 
   // Long-press thresholds in milliseconds
@@ -74,7 +73,7 @@
     messageStore = null,
     onOpenThread
   }: {
-    event: RoomEventView;
+    event: TimelineEventView;
     compact?: boolean;
     roomId: string;
     permalinkThreadRootEventId?: string | null;
@@ -101,7 +100,7 @@
   );
   // Deleted actors may be absent or retained as a deleted reference.
   // Guard with event?. for Svelte 5 reactivity glitch during virtualizer data transitions.
-  const actor = $derived(event?.actor ? useRenderData(UserAvatarViewData, event.actor) : null);
+  const actor = $derived(event?.actor ?? null);
   const deletedActor = $derived(!actor || actor.deleted);
   const actorIsBot = $derived(
     !!actor && (actor.isBot === true || actor.login.toLowerCase().endsWith('_bot'))
@@ -419,9 +418,7 @@
       return { name: 'a message', body: null as string | null, actor: null, deleted: false };
     }
 
-    const repliedActor = replyTarget.actor
-      ? useRenderData(UserAvatarViewData, replyTarget.actor)
-      : null;
+    const repliedActor = replyTarget.actor ?? null;
     const activeRepliedActor = repliedActor && !repliedActor.deleted ? repliedActor : null;
     const name = activeRepliedActor
       ? getLiveDisplayName(

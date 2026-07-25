@@ -4,7 +4,8 @@ import { render } from 'vitest-browser-svelte';
 import '../../app.css';
 import { q } from '$lib/test-utils';
 import type { RoomMember } from '$lib/mentions';
-import { PresenceStatus } from '$lib/render/types';
+import { PresenceStatus } from '@chatto/api-types/api/v1/presence_pb';
+
 import type { TimeFormatSettings } from '$lib/utils/formatTime';
 
 const mocks = vi.hoisted(() => ({
@@ -49,7 +50,7 @@ vi.mock('$lib/state/server/registry.svelte', () => ({
   }
 }));
 
-import MessageContent, { renderMarkdown, rendererReady } from './MessageContent.svelte';
+import MessageContent, { renderMarkdown } from './MessageContent.svelte';
 
 const channelRoomId = 'R123456789abcde';
 const dmRoomId = 'abcdef12345678';
@@ -77,7 +78,7 @@ function member(login: string): RoomMember {
     login,
     displayName: login,
     avatarUrl: null,
-    presenceStatus: PresenceStatus.Offline
+    presenceStatus: PresenceStatus.OFFLINE
   };
 }
 
@@ -131,11 +132,6 @@ afterAll(() => {
 });
 
 describe('renderMarkdown', () => {
-  // Wait for the markdown renderer to initialize before running tests
-  beforeAll(async () => {
-    await rendererReady;
-  });
-
   describe('allowed syntax', () => {
     it('renders bold text with **', async () => {
       const html = await renderMarkdown('**bold**');
@@ -393,11 +389,6 @@ describe('MessageContent component', () => {
     const content = q(container, '.prose')!;
     expect(content.textContent).not.toContain('&nbsp;');
     expect(content.clientHeight).toBeLessThan(500);
-  });
-
-  // Wait for the markdown renderer to initialize before running tests
-  beforeAll(async () => {
-    await rendererReady;
   });
 
   it('renders markdown content', async () => {

@@ -22,14 +22,10 @@ type RoomTimelineProjection struct {
 	byEventID          map[string]int
 	messagePostsByRoom map[string][]int
 	replayGuard        projectionReplayGuard
-	// latestBody is the derived current-body index. Updated as
-	// MessageEdited / MessageRetracted entries are applied so that
-	// LatestBody resolves in O(1) instead of an O(room size) walk
-	// of byRoom. A nil entry means "retracted"; absent means "no
-	// body payload / not yet projected".
-	latestBody     map[string]*corev1.MessageBody
-	bodyEventSeqs  map[string][]uint64
-	currentBodySeq map[string]uint64
+	// bodyStates keeps the current encrypted body and its EVT lifecycle in one
+	// entry per message. supersededSequences stays nil until the first edit,
+	// avoiding a slice allocation for the common single-body case.
+	bodyStates     map[string]timelineBodyState
 	retractedFlags map[string]struct{}
 	// tombstonedAt records when message content first became unavailable
 	// through a durable retraction or user key-shred fact. It deliberately does
@@ -52,13 +48,7 @@ type RoomTimelineProjection struct {
 	// hiddenEchoes tracks echo MessagePostedEvents that were directly
 	// retracted. A direct echo retract removes the room-timeline copy
 	// without deleting the original thread reply's content.
-	hiddenEchoes map[string]struct{}
-	// These asset indexes are a compatibility bridge for 0.1.0 beta histories
-	// that wrote asset lifecycle events under evt.room.* before assets moved to
-	// evt.asset.*. New runtime reads should use AssetProjection; RoomTimeline
-	// keeps just enough legacy asset state to route old room-scoped asset events
-	// during replay.
-	assets        *roomTimelineAssetIndex
+	hiddenEchoes  map[string]struct{}
 	shreddedUsers map[string]struct{}
 }
 
@@ -74,6 +64,12 @@ type TimelineEntry struct {
 type projectedRoomAttachmentMessage struct {
 	Entry *TimelineEntry
 	Body  *corev1.MessageBody
+}
+
+type timelineBodyState struct {
+	body                *corev1.MessageBody
+	currentSequence     uint64
+	supersededSequences []uint64
 }
 
 func (p *RoomTimelineProjection) appendEntryLocked(seq uint64, event *corev1.Event) int {
@@ -108,9 +104,7 @@ func NewRoomTimelineProjection() *RoomTimelineProjection {
 		byEventID:                  make(map[string]int),
 		messagePostsByRoom:         make(map[string][]int),
 		replayGuard:                newProjectionReplayGuard(),
-		latestBody:                 make(map[string]*corev1.MessageBody),
-		bodyEventSeqs:              make(map[string][]uint64),
-		currentBodySeq:             make(map[string]uint64),
+		bodyStates:                 make(map[string]timelineBodyState),
 		retractedFlags:             make(map[string]struct{}),
 		tombstonedAt:               make(map[string]time.Time),
 		shreddedAt:                 make(map[string]time.Time),
@@ -118,7 +112,6 @@ func NewRoomTimelineProjection() *RoomTimelineProjection {
 		attachmentMessageRoom:      make(map[string]string),
 		echoLinks:                  make(map[string][]string),
 		hiddenEchoes:               make(map[string]struct{}),
-		assets:                     newRoomTimelineAssetIndex(),
 		shreddedUsers:              make(map[string]struct{}),
 	}
 }
@@ -128,6 +121,14 @@ func NewRoomTimelineProjection() *RoomTimelineProjection {
 // room aggregate namespace plus the extra user key-shred events it needs.
 func (p *RoomTimelineProjection) Subjects() []string {
 	return []string{events.RoomSubjectFilter(), events.UserEventTypeFilter(events.EventUserKeyShredded)}
+}
+
+// ReplaySubjects uses one stream-wide physical filter because JetStream's
+// multi-filter scan is expensive when it combines the broad room wildcard with
+// the sparse user-key-shredded family. The Projector rejects unrelated subjects
+// before decoding or applying them.
+func (p *RoomTimelineProjection) ReplaySubjects() []string {
+	return []string{events.EventSubjectFilter()}
 }
 
 // Apply implements events.Projection. Extracts the room_id from whichever
@@ -146,7 +147,7 @@ func (p *RoomTimelineProjection) Apply(event *corev1.Event, seq uint64) error {
 		return nil
 	}
 
-	roomID := p.roomIDOfEventLocked(event)
+	roomID := roomIDOfEvent(event)
 	if roomID == "" {
 		return nil
 	}
@@ -169,7 +170,7 @@ func (p *RoomTimelineProjection) Apply(event *corev1.Event, seq uint64) error {
 			}
 			if authorID := body.GetAuthorId(); authorID != "" {
 				if _, shredded := p.shreddedUsers[authorID]; shredded {
-					delete(p.latestBody, targetID)
+					p.clearBodyLocked(targetID)
 					p.retractedFlags[targetID] = struct{}{}
 					p.setTombstonedAtLocked(targetID, p.shreddedAt[authorID])
 					p.removeAttachmentMessageLocked(targetID)
@@ -178,14 +179,11 @@ func (p *RoomTimelineProjection) Apply(event *corev1.Event, seq uint64) error {
 					if body.GetBodyEventId() == "" {
 						body.BodyEventId = event.GetId()
 					}
-					p.latestBody[targetID] = body
-					p.bodyEventSeqs[targetID] = append(p.bodyEventSeqs[targetID], seq)
-					p.currentBodySeq[targetID] = seq
+					p.setCurrentBodyLocked(targetID, body, seq)
 					delete(p.retractedFlags, targetID)
 					p.refreshAttachmentMessageLocked(roomID, targetID, body)
 				}
 			}
-			p.assets.rememberMessageBodyAssets(roomID, targetID, body)
 		}
 		return nil
 	}
@@ -218,14 +216,14 @@ func (p *RoomTimelineProjection) Apply(event *corev1.Event, seq uint64) error {
 		if targetID != "" {
 			authorID := messageAuthorID(event)
 			if _, shredded := p.shreddedUsers[authorID]; shredded {
-				delete(p.latestBody, targetID)
+				p.clearBodyLocked(targetID)
 				p.retractedFlags[targetID] = struct{}{}
 				p.setTombstonedAtLocked(targetID, p.shreddedAt[authorID])
 				p.removeAttachmentMessageLocked(targetID)
 			}
 		}
-		if body := p.latestBody[targetID]; body != nil {
-			p.refreshAttachmentMessageLocked(roomID, targetID, body)
+		if state, ok := p.bodyStates[targetID]; ok && state.body != nil {
+			p.refreshAttachmentMessageLocked(roomID, targetID, state.body)
 		}
 		// Track echo links so edits on either side can fan out to the
 		// other, and so original retractions can be reflected when
@@ -239,18 +237,17 @@ func (p *RoomTimelineProjection) Apply(event *corev1.Event, seq uint64) error {
 			p.setTombstonedAtLocked(targetID, eventCreatedAt(event))
 			if origID := p.echoOriginalIDLocked(targetID); origID != "" {
 				if _, originalRetracted := p.retractedFlags[origID]; !originalRetracted {
-					delete(p.latestBody, targetID)
+					p.clearBodyLocked(targetID)
 					p.hiddenEchoes[targetID] = struct{}{}
 					p.removeAttachmentMessageLocked(targetID)
 					return nil
 				}
 			}
-			delete(p.latestBody, targetID)
+			p.clearBodyLocked(targetID)
 			p.retractedFlags[targetID] = struct{}{}
 			p.removeAttachmentMessageLocked(targetID)
 		}
 	}
-	p.assets.applyLifecycleEvent(event)
 	return nil
 }
 
@@ -265,9 +262,6 @@ func eventMutatesRoomTimelineProjection(event *corev1.Event) bool {
 		return false
 	}
 	if event.GetMessageBody() != nil || event.GetMessageRetracted() != nil {
-		return true
-	}
-	if isAssetLifecycleEvent(event) {
 		return true
 	}
 	return shouldIndexRoomTimelineEvent(event) || isVisibleRoomTimelineEntry(event)
@@ -296,11 +290,30 @@ func (p *RoomTimelineProjection) applyUserKeyShreddedLocked(userID string, at ti
 		if messageAuthorID(entry.Event) != userID {
 			continue
 		}
-		delete(p.latestBody, eventID)
+		p.clearBodyLocked(eventID)
 		p.retractedFlags[eventID] = struct{}{}
 		p.setTombstonedAtLocked(eventID, at)
 		p.removeAttachmentMessageLocked(eventID)
 	}
+}
+
+func (p *RoomTimelineProjection) setCurrentBodyLocked(eventID string, body *corev1.MessageBody, sequence uint64) {
+	state, exists := p.bodyStates[eventID]
+	if exists {
+		state.supersededSequences = append(state.supersededSequences, state.currentSequence)
+	}
+	state.body = body
+	state.currentSequence = sequence
+	p.bodyStates[eventID] = state
+}
+
+func (p *RoomTimelineProjection) clearBodyLocked(eventID string) {
+	state, exists := p.bodyStates[eventID]
+	if !exists {
+		return
+	}
+	state.body = nil
+	p.bodyStates[eventID] = state
 }
 
 func (p *RoomTimelineProjection) setTombstonedAtLocked(eventID string, at time.Time) {
@@ -310,13 +323,6 @@ func (p *RoomTimelineProjection) setTombstonedAtLocked(eventID string, at time.T
 	if existing, ok := p.tombstonedAt[eventID]; !ok || at.Before(existing) {
 		p.tombstonedAt[eventID] = at
 	}
-}
-
-func (p *RoomTimelineProjection) roomIDOfEventLocked(event *corev1.Event) string {
-	if isAssetLifecycleEvent(event) {
-		return p.assets.roomIDOfLifecycleEvent(event)
-	}
-	return roomIDOfEvent(event)
 }
 
 // RoomEvents returns up to `limit` entries from a room's timeline in
@@ -433,7 +439,7 @@ func (p *RoomTimelineProjection) LastRoomMessageEntry(roomID string) (*TimelineE
 // Returns (nil, false, false) if the event_id isn't known to the
 // projection (caller can treat as "not found yet").
 //
-// O(1): consults the derived latestBody / retractedFlags indexes
+// O(1): consults the derived bodyStates / retractedFlags indexes
 // that Apply keeps in lockstep with byRoom.
 func (p *RoomTimelineProjection) LatestBody(eventID string) (body *corev1.MessageBody, retracted bool, ok bool) {
 	p.RLock()
@@ -455,8 +461,8 @@ func (p *RoomTimelineProjection) LatestBody(eventID string) (body *corev1.Messag
 			return nil, true, true
 		}
 	}
-	if b, has := p.latestBody[eventID]; has {
-		return cloneMessageBody(b), false, true
+	if state, has := p.bodyStates[eventID]; has && state.body != nil {
+		return cloneMessageBody(state.body), false, true
 	}
 	return nil, false, true
 }
@@ -487,7 +493,7 @@ func (p *RoomTimelineProjection) CurrentRoomAttachmentMessages(roomID string) []
 				continue
 			}
 		}
-		body := p.latestBody[eventID]
+		body := p.bodyStates[eventID].body
 		if !messageBodyReferencesAttachments(body) {
 			continue
 		}
@@ -497,15 +503,6 @@ func (p *RoomTimelineProjection) CurrentRoomAttachmentMessages(roomID string) []
 		})
 	}
 	return out
-}
-
-// IsPublicLinkPreviewAsset reports whether durable message history references
-// assetID as a server-fetched link-preview image. Preview images are public
-// server assets; ordinary message attachments are deliberately excluded.
-func (p *RoomTimelineProjection) IsPublicLinkPreviewAsset(assetID string) bool {
-	p.RLock()
-	defer p.RUnlock()
-	return p.assets.isPublicLinkPreviewAsset(assetID)
 }
 
 func (p *RoomTimelineProjection) refreshAttachmentMessageLocked(roomID, eventID string, body *corev1.MessageBody) {
@@ -595,8 +592,14 @@ func (p *RoomTimelineProjection) BodyEventSeqs(eventID string) (seqs []uint64, c
 	if _, exists := p.byEventID[eventID]; !exists {
 		return nil, 0, false
 	}
-	seqs = append([]uint64(nil), p.bodyEventSeqs[eventID]...)
-	return seqs, p.currentBodySeq[eventID], true
+	state, hasBodyState := p.bodyStates[eventID]
+	if !hasBodyState {
+		return nil, 0, true
+	}
+	seqs = make([]uint64, 0, len(state.supersededSequences)+1)
+	seqs = append(seqs, state.supersededSequences...)
+	seqs = append(seqs, state.currentSequence)
+	return seqs, state.currentSequence, true
 }
 
 // ObsoleteBodyEventSeqs returns body event sequences that can be securely
@@ -609,24 +612,17 @@ func (p *RoomTimelineProjection) ObsoleteBodyEventSeqs(eventID string) []uint64 
 	if eventID == "" {
 		return nil
 	}
-	all := p.bodyEventSeqs[eventID]
-	if len(all) == 0 {
+	state, ok := p.bodyStates[eventID]
+	if !ok {
 		return nil
 	}
 	if _, retracted := p.retractedFlags[eventID]; retracted {
-		return append([]uint64(nil), all...)
+		return appendBodySequences(nil, state)
 	}
 	if _, hidden := p.hiddenEchoes[eventID]; hidden {
-		return append([]uint64(nil), all...)
+		return appendBodySequences(nil, state)
 	}
-	current := p.currentBodySeq[eventID]
-	out := make([]uint64, 0, len(all))
-	for _, seq := range all {
-		if seq != current {
-			out = append(out, seq)
-		}
-	}
-	return out
+	return append([]uint64(nil), state.supersededSequences...)
 }
 
 // AllObsoleteBodyEventSeqs returns every projected MessageBodyEvent seq
@@ -635,26 +631,23 @@ func (p *RoomTimelineProjection) AllObsoleteBodyEventSeqs() []uint64 {
 	p.RLock()
 	defer p.RUnlock()
 	var out []uint64
-	for eventID, all := range p.bodyEventSeqs {
-		if len(all) == 0 {
-			continue
-		}
+	for eventID, state := range p.bodyStates {
 		if _, retracted := p.retractedFlags[eventID]; retracted {
-			out = append(out, all...)
+			out = appendBodySequences(out, state)
 			continue
 		}
 		if _, hidden := p.hiddenEchoes[eventID]; hidden {
-			out = append(out, all...)
+			out = appendBodySequences(out, state)
 			continue
 		}
-		current := p.currentBodySeq[eventID]
-		for _, seq := range all {
-			if seq != current {
-				out = append(out, seq)
-			}
-		}
+		out = append(out, state.supersededSequences...)
 	}
 	return out
+}
+
+func appendBodySequences(dst []uint64, state timelineBodyState) []uint64 {
+	dst = append(dst, state.supersededSequences...)
+	return append(dst, state.currentSequence)
 }
 
 func (p *RoomTimelineProjection) echoOriginalIDLocked(eventID string) string {
@@ -739,61 +732,6 @@ func (p *RoomTimelineProjection) LinkedChannelEchoEventID(originalEventID string
 	return "", false
 }
 
-// VideoAttachmentManifest returns the latest durable processing outcome for
-// the original video attachment ID, if one has been projected. The returned
-// protos are clones so callers can inspect or adapt them freely.
-func (p *RoomTimelineProjection) VideoAttachmentManifest(attachmentID string) (*VideoAttachmentManifest, bool) {
-	p.RLock()
-	defer p.RUnlock()
-	return p.assets.videoAttachmentManifest(attachmentID)
-}
-
-// AssetCreation returns the durable creation event for an asset.
-func (p *RoomTimelineProjection) AssetCreation(attachmentID string) (*corev1.AssetCreatedEvent, bool) {
-	p.RLock()
-	defer p.RUnlock()
-	return p.assets.assetCreation(attachmentID)
-}
-
-// AssetRoomID returns the room that owns an asset. For derivatives, it walks up
-// the parent chain when needed so callers can authorize thumbnail and variant
-// assets using the original room scope.
-func (p *RoomTimelineProjection) AssetRoomID(assetID string) (string, bool) {
-	p.RLock()
-	defer p.RUnlock()
-	return p.assets.assetRoomID(assetID)
-}
-
-// AssetMessageOwner returns the room and message that own an asset, derived
-// from the MessagePostedEvent that referenced it. Reports ok=false when no
-// projected message has claimed the asset yet (e.g. an upload that was never
-// posted, or whose message hasn't been projected). The deprecated
-// AssetCreatedEvent.message_event_id is not consulted — new uploads never
-// set it.
-func (p *RoomTimelineProjection) AssetMessageOwner(assetID string) (roomID, messageEventID string, ok bool) {
-	p.RLock()
-	defer p.RUnlock()
-	return p.assets.assetMessageOwner(assetID)
-}
-
-func (p *RoomTimelineProjection) MessageAssetsByAuthor(userID string) []MessageAssetRef {
-	p.RLock()
-	defer p.RUnlock()
-	return p.assets.messageAssetsByAuthor(userID, p.entryByEventIDLocked)
-}
-
-func (p *RoomTimelineProjection) MessageAssetOwners() []MessageAssetRef {
-	p.RLock()
-	defer p.RUnlock()
-	return p.assets.messageAssetOwners()
-}
-
-func (p *RoomTimelineProjection) AssetSubtreeIDs(assetID string) []string {
-	p.RLock()
-	defer p.RUnlock()
-	return p.assets.assetSubtreeIDs(assetID)
-}
-
 func (p *RoomTimelineProjection) MessageTombstoned(eventID string) bool {
 	p.RLock()
 	defer p.RUnlock()
@@ -819,16 +757,6 @@ func (p *RoomTimelineProjection) messageTombstonedAtLocked(eventID string) (time
 		return at, ok
 	}
 	return time.Time{}, false
-}
-
-// UnmanifestedVideoAttachments returns message-owned video/GIF assets that
-// do not yet have a durable processed/failed manifest. Ownership comes from
-// the posting message (assetMessageOwner), not the deprecated
-// AssetCreatedEvent.message_event_id, which new uploads never set.
-func (p *RoomTimelineProjection) UnmanifestedVideoAttachments() []VideoProcessingRequest {
-	p.RLock()
-	defer p.RUnlock()
-	return p.assets.unmanifestedVideoAttachments(p.retractedFlags)
 }
 
 func cloneMessageBody(body *corev1.MessageBody) *corev1.MessageBody {

@@ -4,7 +4,7 @@ import { tick } from 'svelte';
 import { q } from '$lib/test-utils';
 import { RoomKind } from '@chatto/api-types/api/v1/rooms_pb';
 import { RealtimeProjectionEvent } from '@chatto/api-types/realtime/v1/realtime_pb';
-import { RoomEventKind } from '$lib/render/eventKinds';
+import { TimelineEventKind } from '$lib/render/timelineEvents';
 import { MessagesStore } from '$lib/state/room';
 import {
   consumePendingRoomSidebarPanel,
@@ -75,7 +75,11 @@ const { mocks } = vi.hoisted(() => {
       messagesForRoom: vi.fn(),
       restoreProjectedRoomWindow: vi.fn(),
       projectedMembersForRoom: vi.fn(() => []),
-      hasCompleteProjectedRoomMembership: vi.fn(() => true)
+      hasCompleteProjectedRoomMembership: vi.fn(() => true),
+      mentionRoles: {
+        roles: [],
+        refresh: vi.fn().mockResolvedValue(true)
+      }
     }
   };
 });
@@ -194,6 +198,7 @@ vi.mock('$lib/state/server/registry.svelte', () => ({
         isInCall: vi.fn((roomId: string) => mocks.joinedCallRoomIds.has(roomId))
       },
       rooms: mocks.rooms,
+      mentionRoles: mocks.mentionRoles,
       messagesForRoom: mocks.messagesForRoom,
       filesForRoom: () => ({ retain: mocks.roomFilesRetain }),
       restoreProjectedRoomWindow: mocks.restoreProjectedRoomWindow,
@@ -301,7 +306,7 @@ function roomMessageEvent(id: string) {
     actorId: 'test-user',
     actor: null,
     event: {
-      kind: RoomEventKind.MessagePosted,
+      kind: TimelineEventKind.MessagePosted,
       roomId: 'room-1',
       body: id,
       attachments: [],

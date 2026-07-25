@@ -8,8 +8,10 @@ import {
 import { UserService } from "@chatto/api-types/api/v1/member_directory_connect";
 import { RoomService } from "@chatto/api-types/api/v1/rooms_connect";
 import type { DirectoryMember as APIDirectoryMember } from "@chatto/api-types/api/v1/member_directory_pb";
-import { PresenceStatus as APIPresenceStatus } from "@chatto/api-types/api/v1/presence_pb";
-import { PresenceStatus } from "./renderTypes.js";
+import { PresenceStatus } from "@chatto/api-types/api/v1/presence_pb";
+import { presenceStatusOrOffline } from "./enumDefaults.js";
+
+export { presenceStatusOrOffline as apiPresenceStatus } from "./enumDefaults.js";
 
 export type MemberDirectoryAPIConfig = ConnectAPIConfig;
 
@@ -157,8 +159,8 @@ export function mapDirectoryMember(
     deleted: user?.deleted ?? false,
     avatarUrl: user?.avatarUrl ?? null,
     ...(user?.accountProfile?.case === "bot" ? { isBot: true } : {}),
-    presenceStatus: apiPresenceStatus(
-      user?.presenceStatus ?? APIPresenceStatus.UNSPECIFIED,
+    presenceStatus: presenceStatusOrOffline(
+      user?.presenceStatus ?? PresenceStatus.UNSPECIFIED,
     ),
     customStatus: user?.customStatus
       ? {
@@ -171,19 +173,4 @@ export function mapDirectoryMember(
     roles: [...member.roles],
     createdAt: member.createdAt?.toDate().toISOString() ?? null,
   };
-}
-
-export function apiPresenceStatus(status: APIPresenceStatus): PresenceStatus {
-  switch (status) {
-    case APIPresenceStatus.AWAY:
-      return PresenceStatus.Away;
-    case APIPresenceStatus.DO_NOT_DISTURB:
-      return PresenceStatus.DoNotDisturb;
-    case APIPresenceStatus.ONLINE:
-      return PresenceStatus.Online;
-    case APIPresenceStatus.OFFLINE:
-    case APIPresenceStatus.UNSPECIFIED:
-    default:
-      return PresenceStatus.Offline;
-  }
 }

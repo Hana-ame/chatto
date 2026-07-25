@@ -13,9 +13,7 @@ import {
 type MockNotificationAPI = NotificationAPI & {
   listNotifications: ReturnType<typeof vi.fn>;
   listRoomNotifications: ReturnType<typeof vi.fn>;
-  hasNotifications: ReturnType<typeof vi.fn>;
   listRoomNotificationCounts: ReturnType<typeof vi.fn>;
-  listNotificationCounts: ReturnType<typeof vi.fn>;
   dismissNotification: ReturnType<typeof vi.fn>;
   dismissAllNotifications: ReturnType<typeof vi.fn>;
 };
@@ -55,9 +53,7 @@ function makeAPI(
       if (options.roomNotificationsError) throw options.roomNotificationsError;
       return options.roomNotifications ?? page([]);
     }),
-    hasNotifications: vi.fn().mockResolvedValue(false),
     listRoomNotificationCounts: vi.fn().mockResolvedValue({}),
-    listNotificationCounts: vi.fn().mockResolvedValue({}),
     dismissNotification: vi
       .fn()
       .mockImplementation(async (notificationId: string) =>
@@ -218,8 +214,7 @@ describe('NotificationStore', () => {
     expect(api.listRoomNotifications).not.toHaveBeenCalled();
   });
 
-  it('routes notification targets to the same room/thread/event used by push payloads', () => {
-    const store = new NotificationStore(makeAPI());
+  it('normalizes the room, thread, and event used by push payloads', () => {
     const threadMention = {
       kind: NotificationItemKind.Mention,
       id: 'thread-mention',
@@ -274,27 +269,17 @@ describe('NotificationStore', () => {
       eventId: 'mention-event',
       threadRootId: 'thread-root'
     });
-    expect(store.getNavigationPath('origin', threadMention)).toBe(
-      '/chat/-/room-2/thread-root?highlight=mention-event'
-    );
-
     expect(notificationTarget(threadReply)).toMatchObject({
       roomId: 'room-2',
       eventId: 'reply-event',
       threadRootId: 'thread-root'
     });
-    expect(store.getNavigationPath('origin', threadReply)).toBe(
-      '/chat/-/room-2/thread-root?highlight=reply-event'
-    );
 
     expect(notificationTarget(roomMessage)).toMatchObject({
       roomId: 'room-news',
       eventId: 'room-event',
       threadRootId: null
     });
-    expect(store.getNavigationPath('origin', roomMessage)).toBe(
-      '/chat/-/room-news?highlight=room-event'
-    );
   });
 
   it('routes notifications using notification item kind', () => {

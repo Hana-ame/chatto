@@ -6,10 +6,12 @@ import MessageComposer, { type MessageComposerApi } from './MessageComposer.svel
 import { q } from '$lib/test-utils';
 import { getToasts, toast } from '$lib/ui/toast';
 import type { QuoteInsertionContent, RoomMember } from '$lib/state/room';
-import { PresenceStatus } from '$lib/render/types';
-import { RoomEventKind } from '$lib/render/eventKinds';
+import { PresenceStatus } from '@chatto/api-types/api/v1/presence_pb';
+
+import { TimelineEventKind } from '$lib/render/timelineEvents';
 import { renderMarkdown } from '$lib/markdown';
 import type { CreateMessageInput } from '$lib/api-client/messages';
+import { MentionRolesStore } from '$lib/state/server/mentionRoles.svelte';
 
 function postedMessageEvent(
   id = 'msg_123',
@@ -22,7 +24,7 @@ function postedMessageEvent(
     actorId: 'test-user',
     actor: null,
     event: {
-      kind: RoomEventKind.MessagePosted,
+      kind: TimelineEventKind.MessagePosted,
       roomId,
       body: 'hello world',
       attachments: [],
@@ -79,6 +81,7 @@ const roomStateMock = vi.hoisted(() => ({
 }));
 
 // Mock instance state
+let mentionRolesStore = new MentionRolesStore({ listRoles: listRolesConnectMock });
 const mockInstanceStores = {
   currentUser: { user: { id: 'test-user', login: 'testuser' }, loading: false },
   serverInfo: {
@@ -88,6 +91,9 @@ const mockInstanceStores = {
   },
   roomUnread: {
     setRoomUnread: vi.fn()
+  },
+  get mentionRoles() {
+    return mentionRolesStore;
   }
 };
 
@@ -214,7 +220,7 @@ function roomMember(login: string, displayName = login): RoomMember {
     login,
     displayName,
     avatarUrl: null,
-    presenceStatus: PresenceStatus.Offline
+    presenceStatus: PresenceStatus.OFFLINE
   };
 }
 
@@ -404,6 +410,7 @@ describe('MessageComposer', () => {
     fetchLinkPreviewConnectMock.mockResolvedValue(null);
     listRolesConnectMock.mockReset();
     listRolesConnectMock.mockResolvedValue({ roles: [] });
+    mentionRolesStore = new MentionRolesStore({ listRoles: listRolesConnectMock });
     queryMock.mockReset();
     queryMock.mockResolvedValue({ data: null, error: null });
     sessionStorage.clear();
@@ -2537,7 +2544,7 @@ describe('MessageComposer', () => {
       expect(onMessageSent).toHaveBeenCalledWith(
         expect.objectContaining({
           id: 'msg_123',
-          event: expect.objectContaining({ kind: RoomEventKind.MessagePosted })
+          event: expect.objectContaining({ kind: TimelineEventKind.MessagePosted })
         })
       );
       expect(mockInstanceStores.roomUnread.setRoomUnread).toHaveBeenCalledWith(roomId, false);
@@ -2731,9 +2738,7 @@ describe('MessageComposer', () => {
       (q(container, 'button[aria-label="Send message"]') as HTMLButtonElement).click();
 
       await vi.waitFor(() => expect(mutationMock).toHaveBeenCalledOnce());
-      expect(mutationMock.mock.calls[0][1].input.linkPreview).toMatchObject({
-        previewToken: 'cht_LPpreviewtoken'
-      });
+      expect(mutationMock.mock.calls[0][1].input.linkPreviewToken).toBe('cht_LPpreviewtoken');
     });
 
     it('dismisses a fetched preview so it is not attached to the outgoing message', async () => {
@@ -2751,7 +2756,7 @@ describe('MessageComposer', () => {
       (q(container, 'button[aria-label="Send message"]') as HTMLButtonElement).click();
 
       await vi.waitFor(() => expect(mutationMock).toHaveBeenCalledOnce());
-      expect(mutationMock.mock.calls[0][1].input.linkPreview).toBeNull();
+      expect(mutationMock.mock.calls[0][1].input.linkPreviewToken).toBeNull();
     });
   });
 

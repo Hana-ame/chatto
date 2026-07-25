@@ -127,6 +127,13 @@ cutoff handling.
 - Bump the projection's contract ID when that equivalence can change. Contract
   IDs are bounded path-safe, projection-local equality tokens, not Chatto
   versions or ordered schema versions.
+- Build every contract ID from its manual restore-semantics token and the
+  shared reachable-schema fingerprint. Keep only the current snapshot message:
+  changing its schema automatically selects a new namespace. Old binaries
+  retain their own schema and namespace; prior generations remain isolated
+  until normal retention removes them, after which that version cold-replays
+  EVT. Bump the manual token when restore equivalence changes without a
+  protobuf schema change.
 - Scope pointers and generation objects by projection plus contract. Different
   contracts must never read, rotate, delete, or apply no-regression checks to
   each other's generations.

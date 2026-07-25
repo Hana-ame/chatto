@@ -19,7 +19,6 @@ import {
 const mocks = vi.hoisted(() => ({
   getRoom: vi.fn(),
   projectionHandlers: [] as Array<(event: RealtimeProjectionEvent) => void>,
-  refreshRooms: vi.fn(),
   updateRoom: vi.fn(),
   protocolCapabilities: ['chatto.api.room-manager-member-reads.v1'] as string[]
 }));
@@ -58,7 +57,7 @@ vi.mock('$lib/state/server/registry.svelte', () => ({
         }
       }
     }),
-    getStore: () => ({ rooms: { refresh: mocks.refreshRooms } })
+    getStore: () => ({})
   }
 }));
 
@@ -216,6 +215,28 @@ describe('room management page identity and realtime authority', () => {
 
     expect(container.textContent).not.toContain('Members');
     expect(container.querySelector('#room-member-picker')).toBeNull();
+  });
+
+  it('accepts and normalizes Unicode room names', async () => {
+    mocks.getRoom.mockResolvedValue(managedRoom('general'));
+    const { container } = render(RoomManagementPage);
+    await settle();
+
+    const nameInput = container.querySelector('#room-settings-name') as HTMLInputElement;
+    nameInput.value = 'Ku\u0308che_繁體';
+    nameInput.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+
+    const submit = container.querySelector('form button[type="submit"]') as HTMLButtonElement;
+    expect(submit.disabled).toBe(false);
+    submit.click();
+
+    await vi.waitFor(() => {
+      expect(mocks.updateRoom).toHaveBeenCalledWith({
+        roomId: 'shared-room',
+        name: 'Küche_繁體'
+      });
+    });
   });
 
   it('purges room metadata synchronously when realtime removes access', async () => {

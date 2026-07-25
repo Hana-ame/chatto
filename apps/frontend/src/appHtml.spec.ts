@@ -266,6 +266,43 @@ describe('app.html locale bootstrap', () => {
     expect(root.lang).toBe('de-AT');
   });
 
+  it('uses Traditional Chinese for explicit Hant preferences and traditional regions', () => {
+    for (const browserLanguage of [
+      'zh-TW',
+      'zh-Hant',
+      'zh-Hant-TW',
+      'zh-Hant-CN',
+      'zh-Hant-SG',
+      'zh-HK',
+      'zh-MO'
+    ]) {
+      const { root } = runThemeScript({
+        systemDark: false,
+        browserLanguages: [browserLanguage]
+      });
+
+      expect(root.lang).toBe('zh-TW');
+    }
+  });
+
+  it('uses Simplified Chinese for simplified and language-only Chinese preferences', () => {
+    for (const browserLanguage of [
+      'zh',
+      'zh-CN',
+      'zh-Hans',
+      'zh-Hans-CN',
+      'zh-Hans-TW',
+      'zh-Hans-HK'
+    ]) {
+      const { root } = runThemeScript({
+        systemDark: false,
+        browserLanguages: [browserLanguage]
+      });
+
+      expect(root.lang).toBe('zh-CN');
+    }
+  });
+
   it('maps a language-only browser preference to its default region', () => {
     const result = runThemeScript({
       systemDark: false,

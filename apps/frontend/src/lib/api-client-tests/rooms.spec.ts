@@ -6,6 +6,11 @@ import { configureApiClientHooks } from '$lib/api-client/hooks';
 
 import { PresenceStatus as APIPresenceStatus } from '@chatto/api-types/api/v1/presence_pb';
 import { createRoomCommandAPI } from '$lib/api-client/rooms';
+import {
+  hasValidRoomNameCharacters,
+  normalizeRoomName,
+  roomNameCharacterCount
+} from '$lib/utils/roomName';
 
 const mocks = vi.hoisted(() => ({
   createClient: vi.fn(),
@@ -24,6 +29,54 @@ const mocks = vi.hoisted(() => ({
   banMember: vi.fn(),
   unbanMember: vi.fn()
 }));
+
+describe('room name helpers', () => {
+  it('normalizes Unicode names and counts code points', () => {
+    expect(normalizeRoomName('  Ku\u0308che  ')).toBe('Küche');
+    expect(normalizeRoomName('は\u3099')).toBe('ば');
+    expect(normalizeRoomName('Pho\u0300ng')).toBe('Phòng');
+    expect(roomNameCharacterCount('繁體中文')).toBe(4);
+    expect(roomNameCharacterCount('𐐀'.repeat(30))).toBe(30);
+    expect(roomNameCharacterCount('𐐀'.repeat(31))).toBe(31);
+  });
+
+  it.each([
+    ['Arabic with Arabic-Indic digits', 'غرفة_١٢٣'],
+    ['Armenian', 'սենյակ'],
+    ['Traditional Chinese (zh-TW)', '繁體中文聊天室'],
+    ['Cyrillic', 'Комната'],
+    ['Deseret supplementary-plane letters', '𐐀𐐨'],
+    ['Ethiopic', 'ክፍል'],
+    ['Georgian', 'ოთახი'],
+    ['Greek', 'Δωμάτιο'],
+    ['Hebrew', 'חדר'],
+    ['Japanese hiragana', 'ひらがな'],
+    ['Japanese kanji', '会議室'],
+    ['Japanese katakana', 'カタカナ'],
+    ['Korean Hangul', '회의실'],
+    ['Latin with Vietnamese diacritics', 'Phòng'],
+    ['Turkish dotted capital I', 'İstanbul'],
+    ['Devanagari decimal digits', 'room_१२३'],
+    ['fullwidth decimal digits', '部屋１２３'],
+    ['mixed scripts with allowed separators', 'Küche_聊天室-١٢٣']
+  ])('accepts %s', (_description, name) => {
+    expect(hasValidRoomNameCharacters(name)).toBe(true);
+  });
+
+  // NFC runs before validation, but surviving marks and formatting characters
+  // are intentionally outside the current letters-and-decimal-digits rule.
+  it.each([
+    ['combining mark that remains after NFC', 'room\u0338'],
+    ['Devanagari vowel mark', 'कमरा'],
+    ['emoji sequence', 'room👩‍💻'],
+    ['left-to-right formatting mark', 'room\u200ename'],
+    ['non-decimal superscript number', 'room²'],
+    ['Thai combining mark', 'ห้อง'],
+    ['zero-width joiner', 'room\u200dname']
+  ])('rejects %s', (_description, name) => {
+    expect(hasValidRoomNameCharacters(normalizeRoomName(name))).toBe(false);
+  });
+});
 
 vi.mock('@connectrpc/connect', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@connectrpc/connect')>();
@@ -413,7 +466,7 @@ describe('createRoomCommandAPI', () => {
 
     await expect(
       api.createRoom({
-        name: 'a'.repeat(31),
+        name: '𐐀'.repeat(31),
         description: null,
         groupId: 'group-1'
       })

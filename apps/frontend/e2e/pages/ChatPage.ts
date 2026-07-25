@@ -29,8 +29,12 @@ export class ChatPage {
    */
   async goto(): Promise<void> {
     await this.page.goto('/chat');
-    // Wait for any /chat path - redirects happen based on user state
-    await this.page.waitForURL((url) => url.pathname.startsWith('/chat'));
+    // Exclude the transient /chat and /chat/- shells so callers cannot race
+    // either client-side redirect before reaching the last position or overview.
+    await this.page.waitForURL((url) => {
+      const pathname = url.pathname;
+      return pathname === routes.notifications || pathname.startsWith(`${routes.chat}/`);
+    });
   }
 
   /**

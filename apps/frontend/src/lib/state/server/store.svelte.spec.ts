@@ -96,6 +96,7 @@ const { soundMocks, apiMocks } = vi.hoisted(() => ({
           customStatus: null,
           presenceStatus: 'ONLINE',
           hasVerifiedEmail: true,
+          hasPassword: false,
           viewerCanDeleteAccount: true,
           lastLoginChange: null,
           settings: null
@@ -353,29 +354,7 @@ beforeEach(() => {
     videoProcessingEnabled: false,
     maxUploadSize: 25,
     maxVideoUploadSize: 25,
-    messageEditWindowSeconds: 3600,
-    viewerPermissions: {},
-    viewerCanManageServer: false,
-    viewerCanCreateRooms: false,
-    viewerCanJoinRooms: false,
-    viewerCanListRooms: false,
-    viewerCanManageRooms: false,
-    viewerCanBanRoomMembers: false,
-    viewerCanPostMessages: false,
-    viewerCanPostInThreads: false,
-    viewerCanAttachFiles: false,
-    viewerCanManageMessages: false,
-    viewerCanReactToMessages: false,
-    viewerCanEchoMessages: false,
-    viewerCanManageRoles: false,
-    viewerCanAssignRoles: false,
-    viewerCanViewAdminUsers: false,
-    viewerCanViewAdminSystem: false,
-    viewerCanViewAdminAudit: false,
-    viewerCanDeleteAnyUser: false,
-    viewerCanDeleteSelf: false,
-    viewerCanManageUserPermissions: false,
-    viewerHasUnreadRooms: false
+    messageEditWindowSeconds: 3600
   });
   apiMocks.getViewerStateViaConnect.mockResolvedValue({
     user: {
@@ -386,6 +365,7 @@ beforeEach(() => {
       customStatus: null,
       presenceStatus: 'ONLINE',
       hasVerifiedEmail: true,
+      hasPassword: false,
       viewerCanDeleteAccount: true,
       lastLoginChange: null,
       settings: null
@@ -441,6 +421,26 @@ afterEach(() => {
 });
 
 describe('ServerStateStore authentication state', () => {
+  it('refreshes the owned viewer when current-user state is explicitly reloaded', async () => {
+    const fake = new FakeServerConnection([]);
+    const store = makeStore(fake, cookieRegistered);
+    const initialViewer = await apiMocks.getViewerStateViaConnect();
+    apiMocks.getViewerStateViaConnect.mockClear();
+    store.seedViewer({
+      ...initialViewer,
+      user: { ...initialViewer.user, hasPassword: false }
+    } as never);
+    apiMocks.getViewerStateViaConnect.mockResolvedValueOnce({
+      ...initialViewer,
+      user: { ...initialViewer.user, hasPassword: true }
+    });
+
+    await store.currentUser.load();
+
+    expect(apiMocks.getViewerStateViaConnect).toHaveBeenCalledOnce();
+    expect(store.currentUser.user?.hasPassword).toBe(true);
+  });
+
   it('treats reauth-required servers as unauthenticated without clearing user data', () => {
     const fake = new FakeServerConnection([]);
     const store = makeStore(fake, {

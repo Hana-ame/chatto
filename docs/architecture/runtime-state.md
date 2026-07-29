@@ -1,6 +1,7 @@
 # Runtime State Inventory
 
 Key files: [`cli/internal/core/core.go`](../../cli/internal/core/core.go),
+[`cli/internal/core/read_state_index.go`](../../cli/internal/core/read_state_index.go),
 [`cli/internal/core/runtime_token_keys.go`](../../cli/internal/core/runtime_token_keys.go),
 [`cli/internal/core/external_identities.go`](../../cli/internal/core/external_identities.go),
 [`cli/internal/core/asset_uploads.go`](../../cli/internal/core/asset_uploads.go), and
@@ -55,7 +56,7 @@ survives restart but is not content/domain history. See
 
 | Key                                    | Description                                                       |
 | -------------------------------------- | ----------------------------------------------------------------- |
-| `read.room.{userId}.{roomId}`          | Last-read root message event ID (UTF-8 string, ~14 bytes). Empty value = "joined but no specific event read yet" (e.g. joined an empty room). Missing key triggers a one-time lazy init to the room's current last event. |
+| `read.room.{userId}.{roomId}`          | Last-read root message event ID (UTF-8 string, ~14 bytes). Empty value = "joined but no specific event read yet" (e.g. joined an empty room). Missing key triggers a one-time lazy init to the room's current last event. Membership and DM initialization create the key only when absent. |
 | `read.thread.{userId}.{roomId}.{threadRootEventId}` | Latest thread message event ID the user has seen. |
 | `notification.{userId}.{notificationId}` | Pending notification record (protobuf `Notification`) for DM messages, @mentions, replies, and all-message subscriptions. Uses per-key 90-day TTL. Internal `NotificationCreatedEvent` / `NotificationDismissedEvent` signals on `live.sync.user.{userId}.*` trigger authoritative notification projection replacements; DND keeps the record but marks the live creation transition silent and skips push delivery. |
 | `push_subscription.{userId}.{endpointHash}` | Web Push subscription record (protobuf `PushSubscription`) for a user's browser/device. The endpoint hash keeps multiple devices per user while deduplicating the same browser subscription. A record is deliverable only while its revision matches the endpoint's active owner claim. |
@@ -77,6 +78,16 @@ survives restart but is not content/domain history. See
 | `link_preview.{urlHash}` | Versioned cached link preview metadata (protobuf `CachedLinkPreview`) keyed by SHA-256 of the normalized URL. Successful previews use per-key 24-hour TTL; failed fetches use per-key 1-hour TTL. Pre-v1 negative entries refresh once after validated multi-address dialing was added; pre-v1 Mastodon-shaped generic entries also refresh for federated proxy discovery. Current failures and generic fallbacks retain their normal TTL. |
 | `link_preview_token.{hmac}` | Short-lived composer link-preview token JSON referencing a cached preview URL. Uses per-key 30-minute TTL; raw tokens are only returned to the client. |
 | `dek.{id}` | Wrapped purpose-scoped app DEK record (protobuf `UserDataEncryptionKey`). The complete object key is the content-key ref; it has no TTL and is shredded on account deletion. |
+
+`ReadStateModel` mirrors both `read.*` key families through one filtered KV
+watcher per Chatto process. The initial latest-value watch delivery is a startup
+readiness barrier; subsequent local and remote revisions update the same
+in-memory index. Request and realtime reconciliation reads use that index
+instead of issuing one KV `Get` per room/thread. `RUNTIME_STATE` remains the
+authority: writes use KV OCC and wait for their returned revision to reach the
+local index when read-your-writes is required. Create-only membership
+initialization cannot replace a marker concurrently advanced by the user or
+another replica.
 
 Token HMAC keys are derived with `[core].secret_key` and the token family as a domain separator. Backups include `RUNTIME_STATE`, so sessions and pending links survive restore only when the same `core.secret_key` is kept; backup archives do not contain raw bearer tokens, cookie credential handles, or raw link/code values. Backups also include wrapped app DEK records, but those records cannot decrypt content without the KEKs in `ENCRYPTION_KEYS` or an external KMS.
 

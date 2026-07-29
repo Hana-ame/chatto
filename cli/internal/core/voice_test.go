@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -80,6 +81,40 @@ func (f failingShredCallKeyStore) ShredCallKey(context.Context, string) error {
 	return f.err
 }
 
+type hookedCallKeyStore struct {
+	keys      map[string]string
+	beforeGet func(string) error
+}
+
+func (s *hookedCallKeyStore) CreateCallKey(context.Context, string) (string, string, error) {
+	return "", "", errors.New("CreateCallKey is not supported")
+}
+
+func (s *hookedCallKeyStore) GetCallKey(_ context.Context, keyRef string) (string, error) {
+	if s.beforeGet != nil {
+		beforeGet := s.beforeGet
+		s.beforeGet = nil
+		if err := beforeGet(keyRef); err != nil {
+			return "", err
+		}
+	}
+	key, ok := s.keys[keyRef]
+	if !ok {
+		return "", errors.New("call key not found")
+	}
+	return key, nil
+}
+
+func (s *hookedCallKeyStore) CallKeyExists(_ context.Context, keyRef string) (bool, error) {
+	_, ok := s.keys[keyRef]
+	return ok, nil
+}
+
+func (s *hookedCallKeyStore) ShredCallKey(_ context.Context, keyRef string) error {
+	delete(s.keys, keyRef)
+	return nil
+}
+
 type recordingCallLogger struct {
 	warnMessage string
 	warnKeyvals []interface{}
@@ -141,7 +176,7 @@ func loggedValue(keyvals []interface{}, key string) interface{} {
 
 func activeCallIDForTest(t *testing.T, c *ChattoCore, roomID string) string {
 	t.Helper()
-	active, ok := c.CallState.ActiveCall(roomID)
+	active, ok := c.callModel.activeCall(roomID)
 	if !ok || active.CallID == "" {
 		t.Fatalf("Expected active call for room %s", roomID)
 	}
@@ -483,6 +518,263 @@ func TestGenerateVoiceCallToken_NoAvatar(t *testing.T) {
 // Call State Projection Tests (require embedded NATS)
 // ============================================================================
 
+func TestCallModel_ReadBoundaryReturnsDetachedState(t *testing.T) {
+	projection := NewCallStateProjection()
+	roomID := "room-call-model"
+	callID := "call-call-model"
+
+	if err := projection.Apply(newEvent("user1", &corev1.Event{
+		Event: &corev1.Event_VoiceCallStarted{
+			VoiceCallStarted: &corev1.CallStartedEvent{
+				RoomId:     roomID,
+				CallId:     callID,
+				E2EeKeyRef: "key-ref-call-model",
+			},
+		},
+	}), 10); err != nil {
+		t.Fatalf("Apply VoiceCallStarted: %v", err)
+	}
+	if err := projection.Apply(newEvent("user1", &corev1.Event{
+		Event: &corev1.Event_VoiceCallParticipantJoined{
+			VoiceCallParticipantJoined: &corev1.CallParticipantJoinedEvent{
+				RoomId: roomID,
+				CallId: callID,
+			},
+		},
+	}), 11); err != nil {
+		t.Fatalf("Apply VoiceCallParticipantJoined: %v", err)
+	}
+
+	model := &CallModel{
+		projection: projection,
+		callKeys: &hookedCallKeyStore{keys: map[string]string{
+			"key-ref-call-model": "key-call-model",
+		}},
+	}
+	active, ok := model.activeCall(roomID)
+	if !ok || active.CallID != callID {
+		t.Fatalf("activeCall() = %#v, %v; want call %q", active, ok, callID)
+	}
+	active.CallID = "mutated"
+	if got, ok := model.activeCall(roomID); !ok || got.CallID != callID {
+		t.Fatalf("activeCall() after caller mutation = %#v, %v; want call %q", got, ok, callID)
+	}
+
+	participants := model.participants(roomID)
+	if len(participants) != 1 || participants[0].UserID != "user1" {
+		t.Fatalf("participants() = %#v, want user1", participants)
+	}
+	participants[0].UserID = "mutated"
+	if got := model.participants(roomID); len(got) != 1 || got[0].UserID != "user1" {
+		t.Fatalf("participants() after caller mutation = %#v, want user1", got)
+	}
+
+	snapshot := model.roomSnapshot(roomID)
+	if snapshot.Seq != 11 || snapshot.Call.CallID != callID || len(snapshot.Participants) != 1 {
+		t.Fatalf("roomSnapshot() = %#v, want seq 11 with active call and participant", snapshot)
+	}
+	snapshot.Participants[0].UserID = "mutated"
+	if got := model.roomSnapshot(roomID); len(got.Participants) != 1 || got.Participants[0].UserID != "user1" {
+		t.Fatalf("roomSnapshot() after caller mutation = %#v, want user1", got)
+	}
+
+	roomIDs := model.activeRoomIDs()
+	if !slices.Equal(roomIDs, []string{roomID}) {
+		t.Fatalf("activeRoomIDs() = %v, want %v", roomIDs, []string{roomID})
+	}
+	roomIDs[0] = "mutated"
+	if got := model.activeRoomIDs(); !slices.Equal(got, []string{roomID}) {
+		t.Fatalf("activeRoomIDs() after caller mutation = %v, want %v", got, []string{roomID})
+	}
+
+	core := &ChattoCore{callModel: model}
+	active, ok, err := core.GetActiveCall(roomID)
+	if err != nil || !ok || active.CallID != callID {
+		t.Fatalf("GetActiveCall() = %#v, %v, %v; want call %q", active, ok, err, callID)
+	}
+	if _, ok, err := core.GetActiveCall("missing-room"); err != nil || ok {
+		t.Fatalf("GetActiveCall(missing-room) ok, err = %v, %v; want false, nil", ok, err)
+	}
+	coreSnapshot, err := core.GetCallSnapshot(roomID)
+	if err != nil ||
+		coreSnapshot.Call.CallID != callID ||
+		len(coreSnapshot.Participants) != 1 ||
+		coreSnapshot.Participants[0].CallID != callID {
+		t.Fatalf("GetCallSnapshot() = %#v, %v; want one consistent call generation", coreSnapshot, err)
+	}
+	access, err := core.GetVoiceCallAccessMaterial(context.Background(), roomID)
+	if err != nil || access.CallID != callID || access.E2EEKey != "key-call-model" {
+		t.Fatalf("GetVoiceCallAccessMaterial() = %#v, %v; want matching call access", access, err)
+	}
+}
+
+func TestCallModel_GetAccessMaterialRejectsCallGenerationTransition(t *testing.T) {
+	projection := NewCallStateProjection()
+	roomID := "room-access-generation"
+	oldCallID := "call-old"
+	newCallID := "call-new"
+	oldKeyRef := "key-ref-old"
+	newKeyRef := "key-ref-new"
+
+	if err := projection.Apply(newEvent("user1", &corev1.Event{
+		Event: &corev1.Event_VoiceCallStarted{
+			VoiceCallStarted: &corev1.CallStartedEvent{
+				RoomId:     roomID,
+				CallId:     oldCallID,
+				E2EeKeyRef: oldKeyRef,
+			},
+		},
+	}), 1); err != nil {
+		t.Fatalf("Apply old VoiceCallStarted: %v", err)
+	}
+
+	keyStore := &hookedCallKeyStore{
+		keys: map[string]string{
+			oldKeyRef: "key-old",
+			newKeyRef: "key-new",
+		},
+	}
+	keyStore.beforeGet = func(keyRef string) error {
+		if keyRef != oldKeyRef {
+			return fmt.Errorf("GetCallKey key ref = %q, want captured old ref %q", keyRef, oldKeyRef)
+		}
+		if err := projection.Apply(newEvent("user1", &corev1.Event{
+			Event: &corev1.Event_VoiceCallEnded{
+				VoiceCallEnded: &corev1.CallEndedEvent{
+					RoomId: roomID,
+					CallId: oldCallID,
+				},
+			},
+		}), 2); err != nil {
+			return err
+		}
+		if err := projection.Apply(newEvent("user2", &corev1.Event{
+			Event: &corev1.Event_VoiceCallStarted{
+				VoiceCallStarted: &corev1.CallStartedEvent{
+					RoomId:     roomID,
+					CallId:     newCallID,
+					E2EeKeyRef: newKeyRef,
+				},
+			},
+		}), 3); err != nil {
+			return err
+		}
+		return projection.Apply(newEvent("user2", &corev1.Event{
+			Event: &corev1.Event_VoiceCallParticipantJoined{
+				VoiceCallParticipantJoined: &corev1.CallParticipantJoinedEvent{
+					RoomId: roomID,
+					CallId: newCallID,
+				},
+			},
+		}), 4)
+	}
+
+	model := &CallModel{
+		projection: projection,
+		callKeys:   keyStore,
+	}
+	core := &ChattoCore{callModel: model}
+	access, err := core.GetVoiceCallAccessMaterial(context.Background(), roomID)
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("GetVoiceCallAccessMaterial() = %#v, %v; want call transition error", access, err)
+	}
+
+	snapshot := model.roomSnapshot(roomID)
+	if snapshot.Call.CallID != newCallID ||
+		len(snapshot.Participants) != 1 ||
+		snapshot.Participants[0].CallID != newCallID {
+		t.Fatalf("roomSnapshot() after injected transition = %#v, want only new call generation", snapshot)
+	}
+
+	model.callKeys = nil
+	if _, err := model.GetAccessMaterial(context.Background(), roomID); err == nil {
+		t.Fatal("GetAccessMaterial() without key store error = nil, want initialization error")
+	}
+	model.callKeys = &hookedCallKeyStore{keys: map[string]string{}}
+	if _, err := model.GetAccessMaterial(context.Background(), roomID); err == nil {
+		t.Fatal("GetAccessMaterial() without projected key error = nil, want key read error")
+	}
+}
+
+func TestCallModel_WaitForRejectsMissingProjector(t *testing.T) {
+	ctx := testContext(t)
+	pos := events.SubjectPosition(events.RoomSubjectFilter(), 1)
+
+	var nilModel *CallModel
+	if err := nilModel.waitFor(ctx, pos); err == nil {
+		t.Fatal("nil CallModel waitFor() error = nil, want initialization error")
+	}
+
+	model := &CallModel{}
+	if err := model.waitFor(ctx, pos); err == nil {
+		t.Fatal("CallModel without projector waitFor() error = nil, want initialization error")
+	}
+}
+
+func TestWaitForRoomLeaveTail_PropagatesCallProjectionReadinessFailure(t *testing.T) {
+	harness := newTestEventHarness(t)
+	ctx := testContext(t)
+	roomID := "room-call-readiness-failure"
+	event := newEvent("user1", &corev1.Event{
+		Event: &corev1.Event_RoomUpdated{
+			RoomUpdated: &corev1.RoomUpdatedEvent{
+				RoomId: roomID,
+				Name:   "Call readiness failure",
+			},
+		},
+	})
+	subject := events.RoomAggregate(roomID).SubjectFor(event)
+	seq, err := harness.publisher.Append(ctx, subject, event)
+	if err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	directoryProjection := NewRoomDirectoryProjection()
+	directoryProjector := harness.projector(directoryProjection)
+	startTestProjector(t, directoryProjector)
+	core := &ChattoCore{
+		roomModel: newRoomModel(
+			directoryProjection,
+			directoryProjector,
+			nil,
+			nil,
+			nil,
+			nil,
+			nil,
+			nil,
+			nil,
+			nil,
+		),
+		callModel: &CallModel{
+			projector: harness.projector(NewAssetProjection()),
+		},
+	}
+
+	if err := core.waitForRoomLeaveTail(ctx, subject, seq); err == nil {
+		t.Fatal("waitForRoomLeaveTail() error = nil, want call projection readiness error")
+	}
+}
+
+func TestChattoCore_CallReadsRejectMissingModel(t *testing.T) {
+	core := &ChattoCore{}
+
+	if _, err := core.GetCallParticipants("room1"); err == nil {
+		t.Fatal("GetCallParticipants() error = nil, want initialization error")
+	}
+	if _, err := core.GetVoiceCallAccessMaterial(context.Background(), "room1"); err == nil {
+		t.Fatal("GetVoiceCallAccessMaterial() error = nil, want initialization error")
+	}
+	if _, _, err := core.GetActiveCall("room1"); err == nil {
+		t.Fatal("GetActiveCall() error = nil, want initialization error")
+	}
+	if _, err := core.GetCallSnapshot("room1"); err == nil {
+		t.Fatal("GetCallSnapshot() error = nil, want initialization error")
+	}
+	if _, err := core.GetActiveCallRoomIDs(context.Background()); err == nil {
+		t.Fatal("GetActiveCallRoomIDs() error = nil, want initialization error")
+	}
+}
+
 func TestCallState_JoinAndLeave(t *testing.T) {
 	core, _ := setupTestCore(t)
 	ctx := testContext(t)
@@ -603,12 +895,12 @@ func TestCallState_SnapshotTracksRoomAggregateSeq(t *testing.T) {
 			RoomUpdated: &corev1.RoomUpdatedEvent{RoomId: roomID, Name: "Room One"},
 		},
 	})
-	seq, err := core.CallStateProjector.AppendEventuallyAndWait(ctx, core.EventPublisher, events.RoomAggregate(roomID), roomEvent)
+	seq, err := core.callModel.projector.AppendEventuallyAndWait(ctx, core.EventPublisher, events.RoomAggregate(roomID), roomEvent)
 	if err != nil {
 		t.Fatalf("append room event() error = %v", err)
 	}
 
-	snapshot := core.CallState.RoomSnapshot(roomID)
+	snapshot := core.callModel.roomSnapshot(roomID)
 	if snapshot.Seq != seq {
 		t.Fatalf("RoomSnapshot().Seq = %d, want %d", snapshot.Seq, seq)
 	}
@@ -628,7 +920,7 @@ func TestCallState_SnapshotIgnoresAssetAggregateLifecycleSeq(t *testing.T) {
 			RoomUpdated: &corev1.RoomUpdatedEvent{RoomId: roomID, Name: "Room One"},
 		},
 	})
-	roomSeq, err := core.CallStateProjector.AppendEventuallyAndWait(ctx, core.EventPublisher, events.RoomAggregate(roomID), roomEvent)
+	roomSeq, err := core.callModel.projector.AppendEventuallyAndWait(ctx, core.EventPublisher, events.RoomAggregate(roomID), roomEvent)
 	if err != nil {
 		t.Fatalf("append room event() error = %v", err)
 	}
@@ -648,7 +940,7 @@ func TestCallState_SnapshotIgnoresAssetAggregateLifecycleSeq(t *testing.T) {
 		t.Fatalf("wait for asset event error = %v", err)
 	}
 
-	snapshot := core.CallState.RoomSnapshot(roomID)
+	snapshot := core.callModel.roomSnapshot(roomID)
 	if snapshot.Seq != roomSeq {
 		t.Fatalf("RoomSnapshot().Seq = %d, want room seq %d", snapshot.Seq, roomSeq)
 	}
@@ -825,7 +1117,7 @@ func TestCallState_StaleLiveKitEventsForOldCallAreIgnored(t *testing.T) {
 	if len(participants) != 1 || participants[0].UserID != "user1" || participants[0].CallID != secondCallID {
 		t.Fatalf("Expected only user1 in second call, got %#v", participants)
 	}
-	active, ok := core.CallState.ActiveCall(roomID)
+	active, ok := core.callModel.activeCall(roomID)
 	if !ok || active.CallID != secondCallID {
 		t.Fatalf("Expected active second call %q, got %#v ok=%v", secondCallID, active, ok)
 	}
@@ -952,7 +1244,7 @@ func TestCallState_RoomLeaveRemovesFinalCallParticipant(t *testing.T) {
 		t.Fatalf("RecordCallParticipantJoined: %v", err)
 	}
 	active := activeCallIDForTest(t, core, room.Id)
-	session, _ := core.CallState.ActiveCall(room.Id)
+	session, _ := core.callModel.activeCall(room.Id)
 	keyRef := session.E2EEKeyRef
 	recorder := &recordingLiveKitParticipantClient{}
 	core.callModel.livekit = recorder
@@ -968,7 +1260,7 @@ func TestCallState_RoomLeaveRemovesFinalCallParticipant(t *testing.T) {
 	if len(participants) != 0 {
 		t.Fatalf("participants after room leave = %#v, want none", participants)
 	}
-	if _, ok := core.CallState.ActiveCall(room.Id); ok {
+	if _, ok := core.callModel.activeCall(room.Id); ok {
 		t.Fatal("active call still exists after final room-leaving participant")
 	}
 	exists, err := core.encryption.callKeys.CallKeyExists(ctx, keyRef)
@@ -1044,7 +1336,7 @@ func TestCallState_RemoveMemberRemovesOnlyTargetFromCall(t *testing.T) {
 	if len(participants) != 1 || participants[0].UserID != other.Id {
 		t.Fatalf("participants after RemoveMember = %#v, want only other", participants)
 	}
-	active, ok := core.CallState.ActiveCall(room.Id)
+	active, ok := core.callModel.activeCall(room.Id)
 	if !ok || active.CallID != callID {
 		t.Fatalf("active call after RemoveMember = %#v ok=%v, want same call %s", active, ok, callID)
 	}
@@ -1086,7 +1378,7 @@ func TestCallState_BanMemberRemovesTargetFromCall(t *testing.T) {
 	if len(participants) != 0 {
 		t.Fatalf("participants after BanMember = %#v, want none", participants)
 	}
-	if _, ok := core.CallState.ActiveCall(room.Id); ok {
+	if _, ok := core.callModel.activeCall(room.Id); ok {
 		t.Fatal("active call still exists after banned final participant")
 	}
 	if len(recorder.removed) != 1 || recorder.removed[0].userID != target.Id {
@@ -1174,7 +1466,7 @@ func TestCallState_RoomLeaveRetriesCommittedKeyCleanupDuringReconciliation(t *te
 	if err := core.RecordCallParticipantJoined(ctx, room.Id, user.Id, corev1.CallParticipantEventSource_CALL_PARTICIPANT_EVENT_SOURCE_USER); err != nil {
 		t.Fatalf("RecordCallParticipantJoined: %v", err)
 	}
-	session, _ := core.CallState.ActiveCall(room.Id)
+	session, _ := core.callModel.activeCall(room.Id)
 	recorder := &recordingLiveKitParticipantClient{}
 	core.callModel.livekit = recorder
 	workingKeys := core.encryption.callKeys
@@ -1207,8 +1499,8 @@ func TestCallState_LeaseHolderDiscoversLaterReplicaKeyCleanup(t *testing.T) {
 	workingKeys := core.encryption.callKeys
 	holder := NewCallModel(
 		core.EventPublisher,
-		core.CallState,
-		core.CallStateProjector,
+		core.callModel.projection,
+		core.callModel.projector,
 		workingKeys,
 		nil,
 		nil,
@@ -1233,7 +1525,7 @@ func TestCallState_LeaseHolderDiscoversLaterReplicaKeyCleanup(t *testing.T) {
 	if err := core.RecordCallParticipantJoined(ctx, room.Id, user.Id, corev1.CallParticipantEventSource_CALL_PARTICIPANT_EVENT_SOURCE_USER); err != nil {
 		t.Fatalf("RecordCallParticipantJoined: %v", err)
 	}
-	session, _ := core.CallState.ActiveCall(room.Id)
+	session, _ := core.callModel.activeCall(room.Id)
 	shredErr := errors.New("replica kms shred unavailable")
 	core.callModel.callKeys = failingShredCallKeyStore{delegate: workingKeys, err: shredErr}
 	if err := core.LeaveRoom(ctx, user.Id, KindChannel, user.Id, room.Id); !errors.Is(err, shredErr) {
@@ -1269,7 +1561,7 @@ func TestCallState_ReconciliationCleansHistoricalMembershipOnlyLeave(t *testing.
 	if err := core.RecordCallParticipantJoined(ctx, room.Id, user.Id, corev1.CallParticipantEventSource_CALL_PARTICIPANT_EVENT_SOURCE_USER); err != nil {
 		t.Fatalf("RecordCallParticipantJoined: %v", err)
 	}
-	session, _ := core.CallState.ActiveCall(room.Id)
+	session, _ := core.callModel.activeCall(room.Id)
 
 	legacyLeave := newEvent(user.Id, &corev1.Event{Event: &corev1.Event_UserLeftRoom{
 		UserLeftRoom: &corev1.UserLeftRoomEvent{RoomId: room.Id},
@@ -1278,10 +1570,10 @@ func TestCallState_ReconciliationCleansHistoricalMembershipOnlyLeave(t *testing.
 	if err != nil {
 		t.Fatalf("AppendEventually legacy leave: %v", err)
 	}
-	if err := core.CallStateProjector.WaitFor(ctx, events.SubjectPosition(events.RoomAggregate(room.Id).AllEventsFilter(), seq)); err != nil {
+	if err := core.callModel.waitFor(ctx, events.SubjectPosition(events.RoomAggregate(room.Id).AllEventsFilter(), seq)); err != nil {
 		t.Fatalf("WaitFor CallState: %v", err)
 	}
-	if _, ok := core.CallState.ActiveCall(room.Id); ok {
+	if _, ok := core.callModel.activeCall(room.Id); ok {
 		t.Fatal("historical membership leave did not clear projected call")
 	}
 
@@ -1316,8 +1608,8 @@ func TestCallState_ReconciliationCleansHistoricalMembershipOnlyLeave(t *testing.
 
 	restarted := NewCallModel(
 		core.EventPublisher,
-		core.CallState,
-		core.CallStateProjector,
+		core.callModel.projection,
+		core.callModel.projector,
 		workingKeys,
 		&recordingLiveKitParticipantClient{},
 		nil,
@@ -1383,7 +1675,7 @@ func TestCallState_ReconcileWithLiveKitClosesRoomMissingFromLiveKit(t *testing.T
 	if len(participants) != 0 {
 		t.Fatalf("Expected missing LiveKit room to clear participants, got %d", len(participants))
 	}
-	if _, ok := core.CallState.ActiveCall(roomID); ok {
+	if _, ok := core.callModel.activeCall(roomID); ok {
 		t.Fatal("Expected missing LiveKit room to end active call")
 	}
 	callEvents, _, err = core.EventPublisher.SubjectEvents(ctx, events.RoomAggregate(roomID).AllEventsFilter())
@@ -1427,7 +1719,7 @@ func TestCallState_ReconcileWithLiveKitClosesObservedEmptyRoom(t *testing.T) {
 	if len(participants) != 0 {
 		t.Fatalf("Expected observed empty LiveKit room to clear participants, got %d", len(participants))
 	}
-	if _, ok := core.CallState.ActiveCall(roomID); ok {
+	if _, ok := core.callModel.activeCall(roomID); ok {
 		t.Fatal("Expected observed empty LiveKit room to end active call")
 	}
 	callEvents, _, err := core.EventPublisher.SubjectEvents(ctx, events.RoomAggregate(roomID).AllEventsFilter())
@@ -1455,7 +1747,7 @@ func TestCallState_ReconcileWithLiveKitIgnoresRoomWithoutProjectedActiveCall(t *
 	if len(participants) != 0 {
 		t.Fatalf("Expected LiveKit room without projected active call to be ignored, got %#v", participants)
 	}
-	if _, ok := core.CallState.ActiveCall(roomID); ok {
+	if _, ok := core.callModel.activeCall(roomID); ok {
 		t.Fatal("Expected no active call to be created from LiveKit snapshot")
 	}
 }
@@ -1520,7 +1812,7 @@ func TestCallState_ReconcileWithLiveKitErrorDefersActiveCallCleanupBeforeThresho
 	if len(participants) != 1 {
 		t.Fatalf("Expected failed LiveKit reconciliation below threshold to keep participants, got %d", len(participants))
 	}
-	if _, ok := core.CallState.ActiveCall(roomID); !ok {
+	if _, ok := core.callModel.activeCall(roomID); !ok {
 		t.Fatal("Expected failed LiveKit reconciliation below threshold to keep active call")
 	}
 	callEvents, _, err = core.EventPublisher.SubjectEvents(ctx, events.RoomAggregate(roomID).AllEventsFilter())
@@ -1562,7 +1854,7 @@ func TestCallState_ReconcileWithLiveKitErrorEndsActiveCallsAtThreshold(t *testin
 	if len(participants) != 0 {
 		t.Fatalf("Expected failed LiveKit reconciliation at threshold to clear participants, got %d", len(participants))
 	}
-	if _, ok := core.CallState.ActiveCall(roomID); ok {
+	if _, ok := core.callModel.activeCall(roomID); ok {
 		t.Fatal("Expected failed LiveKit reconciliation at threshold to end active call")
 	}
 	callEvents, _, err = core.EventPublisher.SubjectEvents(ctx, events.RoomAggregate(roomID).AllEventsFilter())
@@ -1618,7 +1910,7 @@ func TestCallState_ReconcileWithLiveKitErrorEndsAllActiveRoomsAtThreshold(t *tes
 		if len(participants) != 0 {
 			t.Fatalf("Expected room %s participants to clear, got %d", room.roomID, len(participants))
 		}
-		if _, ok := core.CallState.ActiveCall(room.roomID); ok {
+		if _, ok := core.callModel.activeCall(room.roomID); ok {
 			t.Fatalf("Expected room %s active call to end", room.roomID)
 		}
 		callEvents, _, err := core.EventPublisher.SubjectEvents(ctx, events.RoomAggregate(room.roomID).AllEventsFilter())
@@ -1663,7 +1955,7 @@ func TestCallState_ReconcileWithLiveKitTimeoutUsesFreshCleanupContext(t *testing
 	if len(participants) != 0 {
 		t.Fatalf("Expected cleanup with fresh context to clear participants, got %d", len(participants))
 	}
-	if _, ok := core.CallState.ActiveCall(roomID); ok {
+	if _, ok := core.callModel.activeCall(roomID); ok {
 		t.Fatal("Expected cleanup with fresh context to end active call")
 	}
 	callEvents, _, err := core.EventPublisher.SubjectEvents(ctx, events.RoomAggregate(roomID).AllEventsFilter())
@@ -1730,7 +2022,7 @@ func TestCallState_ReconcileBestEffortKeepsLeaseOnDeferredLiveKitFailure(t *test
 	if len(participants) != 1 {
 		t.Fatalf("Expected deferred reconciliation below threshold to keep participants, got %d", len(participants))
 	}
-	if _, ok := core.CallState.ActiveCall(roomID); !ok {
+	if _, ok := core.callModel.activeCall(roomID); !ok {
 		t.Fatal("Expected deferred reconciliation below threshold to keep active call")
 	}
 }
@@ -1817,10 +2109,10 @@ func TestCallState_ReconcileWithLiveKitErrorReportsCleanupFailure(t *testing.T) 
 	if len(callEvents) != 4 || callEvents[3].GetVoiceCallEnded() == nil {
 		t.Fatalf("Expected cleanup failure to still append CallEndedEvent, got %d events", len(callEvents))
 	}
-	if err := core.CallStateProjector.WaitFor(ctx, events.SubjectPosition(events.RoomAggregate(roomID).AllEventsFilter(), seq)); err != nil {
+	if err := core.callModel.waitFor(ctx, events.SubjectPosition(events.RoomAggregate(roomID).AllEventsFilter(), seq)); err != nil {
 		t.Fatalf("CallStateProjector.WaitFor() error = %v", err)
 	}
-	if _, ok := core.CallState.ActiveCall(roomID); ok {
+	if _, ok := core.callModel.activeCall(roomID); ok {
 		t.Fatal("Expected active call to clear even when key shredding fails")
 	}
 }
@@ -1861,7 +2153,7 @@ func TestCallState_ReconcileWithLiveKitSuccessResetsListFailureCounter(t *testin
 	if len(participants) != 1 {
 		t.Fatalf("Expected failures after reset below threshold to keep participants, got %d", len(participants))
 	}
-	if _, ok := core.CallState.ActiveCall(roomID); !ok {
+	if _, ok := core.callModel.activeCall(roomID); !ok {
 		t.Fatal("Expected failures after reset below threshold to keep active call")
 	}
 }
@@ -1879,8 +2171,8 @@ func TestCallState_ReconcileWithLiveKitSuccessOnAnotherReplicaResetsListFailureC
 	liveKitErr := errors.New("livekit unavailable")
 	failingReplica := NewCallModel(
 		core.EventPublisher,
-		core.CallState,
-		core.CallStateProjector,
+		core.callModel.projection,
+		core.callModel.projector,
 		core.encryption.callKeys,
 		fakeLiveKitParticipantLister{err: liveKitErr},
 		nil,
@@ -1889,8 +2181,8 @@ func TestCallState_ReconcileWithLiveKitSuccessOnAnotherReplicaResetsListFailureC
 	)
 	successfulReplica := NewCallModel(
 		core.EventPublisher,
-		core.CallState,
-		core.CallStateProjector,
+		core.callModel.projection,
+		core.callModel.projector,
 		core.encryption.callKeys,
 		fakeLiveKitParticipantLister{snapshots: []liveKitParticipantSnapshot{{RoomID: roomID, CallID: callID, UserIDs: []string{"user1"}}}},
 		nil,
@@ -1914,7 +2206,7 @@ func TestCallState_ReconcileWithLiveKitSuccessOnAnotherReplicaResetsListFailureC
 	if len(participants) != 1 {
 		t.Fatalf("Expected one new failure after another replica's success to keep participants, got %d", len(participants))
 	}
-	if _, ok := core.CallState.ActiveCall(roomID); !ok {
+	if _, ok := core.callModel.activeCall(roomID); !ok {
 		t.Fatal("Expected one new failure after another replica's success to keep active call")
 	}
 }
@@ -1953,10 +2245,10 @@ func TestCallState_CallEndedCommitsWhenKeyShredFails(t *testing.T) {
 	if len(callEvents) != 4 || callEvents[3].GetVoiceCallEnded() == nil {
 		t.Fatalf("Expected committed CallEndedEvent despite shred failure, got %d events", len(callEvents))
 	}
-	if err := core.CallStateProjector.WaitFor(ctx, events.SubjectPosition(events.RoomAggregate(roomID).AllEventsFilter(), seq)); err != nil {
+	if err := core.callModel.waitFor(ctx, events.SubjectPosition(events.RoomAggregate(roomID).AllEventsFilter(), seq)); err != nil {
 		t.Fatalf("CallStateProjector.WaitFor() error = %v", err)
 	}
-	if _, ok := core.CallState.ActiveCall(roomID); ok {
+	if _, ok := core.callModel.activeCall(roomID); ok {
 		t.Fatal("Expected committed CallEndedEvent to clear active call")
 	}
 	exists, err := core.encryption.callKeys.CallKeyExists(ctx, started.GetE2EeKeyRef())

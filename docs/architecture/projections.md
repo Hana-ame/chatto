@@ -18,7 +18,10 @@ become current before completing boot. Writers wait for the relevant projector
 sequence before returning read-your-writes. Projection-aware domain models keep
 the projector references needed for those waits; the `ChattoCore` facade does
 not mirror every registered projector. It exposes a projector only where a
-production orchestration path still consumes it.
+production orchestration path still consumes it. `CallModel` owns call-state
+reads and readiness for room lifecycle, realtime delivery, and API adapters.
+Token access material binds the call ID and E2EE key to one revalidated
+projection generation; active-call API mapping uses one locked room snapshot.
 
 Any non-cancellation error from checkpoint or snapshot restore, consumer setup,
 or event application moves the projector into its failed state before its run

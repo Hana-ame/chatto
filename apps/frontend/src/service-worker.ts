@@ -4,9 +4,9 @@
 /**
  * Service Worker for Chatto's PWA shell and push notifications.
  *
- * Keeps the app shell available during offline launches while leaving live
- * Chatto data on the network. It also handles Web Push notifications and
- * notification-click navigation.
+ * Caches requested frontend assets while leaving live Chatto data on the
+ * network. It also handles Web Push notifications and notification-click
+ * navigation.
  */
 
 import { build, files, version } from '$service-worker';
@@ -29,19 +29,13 @@ const CACHE_PREFIX = 'chatto-shell';
 const CACHE_NAME = `${CACHE_PREFIX}-${version}`;
 const RETIRED_BADGE_CACHE_NAMES = new Set(['chatto-badge-state-v1', 'chatto-badge-state-v2']);
 const SHELL_ASSETS = new Set([...build, ...files, OFFLINE_SHELL_PATH]);
-const PRECACHE_ASSETS = Array.from(new Set([...build, OFFLINE_SHELL_PATH, '/']));
 
 /**
- * Immediately activate new service worker versions.
- * Without this, users must close all tabs before updates take effect.
+ * Immediately activate new service worker versions without downloading the
+ * complete build manifest. Static assets enter the cache only when requested.
  */
 self.addEventListener('install', (event) => {
-  self.skipWaiting();
-  event.waitUntil(
-    caches
-      .open(CACHE_NAME)
-      .then((cache) => Promise.all(PRECACHE_ASSETS.map((path) => cacheShellAsset(cache, path))))
-  );
+  event.waitUntil(self.skipWaiting());
 });
 
 self.addEventListener('activate', (event) => {
@@ -80,28 +74,30 @@ self.addEventListener('fetch', (event) => {
   if (policy.networkOnly) return;
 
   if (policy.cacheableShellAsset) {
-    event.respondWith(
-      (async () => {
-        const cache = await caches.open(CACHE_NAME);
-        const url = new URL(event.request.url);
-        const cached = await cache.match(url.pathname);
-        if (cached) return cached;
-
-        const response = await fetch(event.request);
-        if (response.ok) {
-          await cache.put(url.pathname, response.clone());
-        }
-        return response;
-      })()
+    const path = new URL(event.request.url).pathname;
+    const assetResult = loadShellAsset(event.request, path);
+    event.waitUntil(
+      assetResult
+        .then(({ cache, response }) =>
+          cache && response.ok ? cache.put(path, response.clone()) : undefined
+        )
+        .catch(() => {})
     );
+    event.respondWith(assetResult.then(({ response }) => response));
     return;
   }
 
   if (policy.navigationRequest) {
+    const networkResponse = fetch(event.request);
+    event.waitUntil(
+      networkResponse
+        .then((response) => (response.ok ? cacheNavigationShell(response.clone()) : undefined))
+        .catch(() => {})
+    );
     event.respondWith(
       (async () => {
         try {
-          return await fetch(event.request);
+          return await networkResponse;
         } catch (err) {
           const cache = await caches.open(CACHE_NAME);
           const shell = await getCachedOfflineShell(cache);
@@ -113,15 +109,24 @@ self.addEventListener('fetch', (event) => {
   }
 });
 
-async function cacheShellAsset(cache: Cache, path: string): Promise<void> {
+async function loadShellAsset(
+  request: Request,
+  path: string
+): Promise<{ cache?: Cache; response: Response }> {
+  let cache: Cache;
   try {
-    const response = await fetch(path, { cache: 'reload' });
-    if (!response.ok) return;
-    await cache.put(path, response);
+    cache = await caches.open(CACHE_NAME);
+    const cached = await cache.match(path);
+    if (cached) return { response: cached };
   } catch {
-    // A missing static fallback in local preview must not invalidate the whole
-    // service worker. Production nginx serves the same shell through /200.html.
+    return { response: await fetch(request) };
   }
+  return { cache, response: await fetch(request) };
+}
+
+async function cacheNavigationShell(response: Response): Promise<void> {
+  const cache = await caches.open(CACHE_NAME);
+  await cache.put(OFFLINE_SHELL_PATH, response);
 }
 
 async function getCachedOfflineShell(cache: Cache): Promise<Response | undefined> {

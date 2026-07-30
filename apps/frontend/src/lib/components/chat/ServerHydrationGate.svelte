@@ -12,20 +12,22 @@ then reveals the complete composition when its cold projection is usable.
 
   let {
     ready,
+    baseReady,
     serverName,
     iconUrl = null,
     children
   }: {
     ready: boolean;
+    baseReady: boolean;
     serverName: string;
     iconUrl?: string | null;
     children: Snippet;
   } = $props();
 
-  // This component is keyed by server. Capture warm initial state and latch
-  // after the first cold reveal so later room navigation never replays the
-  // full-server loading screen.
-  let revealed = $state(untrack(() => ready));
+  // This component is keyed by server. A newly mounted gate with a warm base
+  // projection must not replay the cold-server loader merely because its
+  // selected route still needs materializing.
+  let revealed = $state(untrack(() => baseReady));
   const showServerUi = $derived(ready || revealed);
 </script>
 

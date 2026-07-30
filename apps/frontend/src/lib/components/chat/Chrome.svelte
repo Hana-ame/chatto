@@ -223,7 +223,12 @@
 
 <ServerEventProvider>
   {#key activeServerId}
-    <ServerHydrationGate ready={serverUiReady} {serverName} iconUrl={serverIconUrl}>
+    <ServerHydrationGate
+      ready={serverUiReady}
+      baseReady={baseServerUiReady}
+      {serverName}
+      iconUrl={serverIconUrl}
+    >
       <ServerSidebar>
         {#if isSettingsMode}
           <SidebarNav

@@ -171,7 +171,6 @@ describe('room route layout access handling', () => {
 
     expect(q(container, '[data-testid="room-layout-room"]')).toBeNull();
     expect(q(container, '[data-testid="message-resolver"]')).toBeNull();
-    expect(q(container, '[data-testid="room-loading-shell"]')).not.toBeNull();
     expect(mocks.restoreProjectedRoomWindow).toHaveBeenCalledWith('room-1');
   });
 
@@ -182,7 +181,6 @@ describe('room route layout access handling', () => {
 
     expect(mocks.goto).not.toHaveBeenCalled();
     expect(q(container, '[data-testid="room-layout-room"]')?.dataset.roomId).toBe('room-1');
-    expect(q(container, '[data-testid="room-loading-shell"]')).toBeNull();
   });
 
   it('hydrates the same room ID again when the active server changes', async () => {

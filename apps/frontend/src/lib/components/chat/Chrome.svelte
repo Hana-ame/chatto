@@ -18,6 +18,7 @@
   import ServerEventProvider from './ServerEventProvider.svelte';
   import SidebarNav from '$lib/components/SidebarNav.svelte';
   import MyThreadsNavItem from './MyThreadsNavItem.svelte';
+  import ServerHydrationGate from './ServerHydrationGate.svelte';
   import { MessageSearchState } from '$lib/state/server/messageSearch.svelte';
   import { getAdminNavItems } from './adminNav';
   import * as m from '$lib/i18n/messages';
@@ -127,6 +128,21 @@
       : activeStore.serverInfo.name
   );
   let bannerUrl = $derived(activeStore.serverInfo.bannerUrl);
+  let serverIconUrl = $derived(
+    activeStore.serverInfo.loading
+      ? (registeredServer?.iconUrl ?? activeStore.serverInfo.iconUrl)
+      : activeStore.serverInfo.iconUrl
+  );
+
+  // Keep the complete server subtree mounted so the URL-selected room can
+  // hydrate in parallel, but reveal it only once the cold projection belongs
+  // to the authenticated viewer and its permission state is ready.
+  const serverUiReady = $derived(
+    !!serverData &&
+      !activeStore.navigation.isInitialLoading &&
+      !!activeStore.currentUser.user?.id &&
+      activeStore.navigation.currentUserId === activeStore.currentUser.user.id
+  );
 
   // Read server-wide permissions for admin-flavoured nav items (system, audit).
   const serverPerms = getServerPermissions();
@@ -185,82 +201,59 @@
 </script>
 
 <ServerEventProvider>
-  <!-- Sidebar -->
-  <ServerSidebar>
-    {#if isSettingsMode}
-      <SidebarNav
-        title={m['settings.nav.title']()}
-        items={settingsNavItems}
-        backHref={resolve('/chat/[serverId]', { serverId: serverSegment })}
-        backLabel={m['settings.nav.back_to_server']()}
-      />
-    {:else if !serverData}
-      <!-- Skeleton sidebar while server data is loading -->
-      <ServerHeader {serverName} />
+  <ServerHydrationGate ready={serverUiReady} {serverName} iconUrl={serverIconUrl}>
+    <ServerSidebar>
+      {#if isSettingsMode}
+        <SidebarNav
+          title={m['settings.nav.title']()}
+          items={settingsNavItems}
+          backHref={resolve('/chat/[serverId]', { serverId: serverSegment })}
+          backLabel={m['settings.nav.back_to_server']()}
+        />
+      {:else if serverData && isManageMode}
+        <SidebarNav
+          title={serverName ?? m['chat.server_nav.server_fallback']()}
+          items={managementNavItems}
+          backHref={resolve('/chat/[serverId]', { serverId: serverSegment })}
+          backLabel={m['chat.server_nav.back_to_server']()}
+          isActive={isAdminNavActive}
+        />
+      {:else if serverData}
+        <ServerHeader serverName={serverName ?? ''} {adminHref} />
 
-      <ScrollFader top bottom>
-        {#each Array(3) as _, i (i)}
-          <div class="flex items-center gap-2 rounded-md px-4 py-2">
-            <div class="skeleton h-5 w-5 shrink-0 rounded"></div>
-            <div class="skeleton h-5 flex-1 rounded"></div>
-          </div>
-        {/each}
-        <hr class="my-2 border-border" />
-        {#each Array(5) as _, i (i)}
-          <div class="flex items-center gap-2 rounded-md px-4 py-2">
-            <div class="skeleton h-5 w-5 shrink-0 rounded"></div>
-            <div class="skeleton h-5 flex-1 rounded"></div>
-          </div>
-        {/each}
-      </ScrollFader>
-    {:else if isManageMode}
-      <SidebarNav
-        title={serverName ?? m['chat.server_nav.server_fallback']()}
-        items={managementNavItems}
-        backHref={resolve('/chat/[serverId]', { serverId: serverSegment })}
-        backLabel={m['chat.server_nav.back_to_server']()}
-        isActive={isAdminNavActive}
-      />
-    {:else}
-      <!-- Server header - fixed at top -->
-      <ServerHeader serverName={serverName ?? ''} {adminHref} />
-
-      <!-- Scrollable area for room list sidebar -->
-      <ScrollFader top bottom>
-        {#if bannerUrl}
-          <ServerBanner url={bannerUrl} />
-        {/if}
-
-        <nav class="sidebar-nav p-2">
-          <a
-            href={resolve('/chat/[serverId]/overview', { serverId: serverSegment })}
-            class={['sidebar-item', isHomeActive ? 'bg-surface' : '']}
-          >
-            <span class="sidebar-icon iconify uil--estate"></span>
-            {m['chat.overview.title']()}
-          </a>
-          {#if messageSearchAvailable}
-            <a
-              href={resolve('/chat/[serverId]/search', { serverId: serverSegment })}
-              class={['sidebar-item', isSearchActive ? 'bg-surface' : '']}
-            >
-              <span class="sidebar-icon iconify uil--search" aria-hidden="true"></span>
-              {m['search.action']()}
-            </a>
+        <ScrollFader top bottom>
+          {#if bannerUrl}
+            <ServerBanner url={bannerUrl} />
           {/if}
-          <MyThreadsNavItem active={isMyThreadsActive} />
-        </nav>
 
-        <hr class="border-border" />
+          <nav class="sidebar-nav p-2">
+            <a
+              href={resolve('/chat/[serverId]/overview', { serverId: serverSegment })}
+              class={['sidebar-item', isHomeActive ? 'bg-surface' : '']}
+            >
+              <span class="sidebar-icon iconify uil--estate"></span>
+              {m['chat.overview.title']()}
+            </a>
+            {#if messageSearchAvailable}
+              <a
+                href={resolve('/chat/[serverId]/search', { serverId: serverSegment })}
+                class={['sidebar-item', isSearchActive ? 'bg-surface' : '']}
+              >
+                <span class="sidebar-icon iconify uil--search" aria-hidden="true"></span>
+                {m['search.action']()}
+              </a>
+            {/if}
+            <MyThreadsNavItem active={isMyThreadsActive} />
+          </nav>
 
-        <!-- Room List - always visible to server members (shows rooms user has joined) -->
-        <RoomList />
-      </ScrollFader>
-    {/if}
-  </ServerSidebar>
+          <hr class="border-border" />
+          <RoomList />
+        </ScrollFader>
+      {/if}
+    </ServerSidebar>
 
-  <!-- Main content - always renders so room can load in parallel -->
-  <div class="flex min-h-0 min-w-0 flex-1 flex-col">
-    {@render children?.()}
-  </div>
+    <div class="flex min-h-0 min-w-0 flex-1 flex-col">
+      {@render children?.()}
+    </div>
+  </ServerHydrationGate>
 </ServerEventProvider>

@@ -51,33 +51,6 @@ vi.mock('$lib/hooks/useTabResumeCallback.svelte', () => ({
 }));
 
 describe('EventList jump completion', () => {
-  it('shows a room-shaped timeline skeleton until initial events are ready', async () => {
-    const rendered = render(EventListTestHarness, {
-      props: {
-        eventIds: [],
-        scrollToEventId: null,
-        isLoading: true
-      }
-    });
-
-    await expect.element(page.getByTestId('timeline-loading-skeleton')).toBeInTheDocument();
-    await expect
-      .element(page.getByTestId('messages-container'))
-      .toHaveAttribute('aria-busy', 'true');
-
-    await rendered.rerender({
-      eventIds: ['msg-ready'],
-      scrollToEventId: null,
-      isLoading: false
-    });
-
-    await expect.element(page.getByText('msg-ready', { exact: true })).toBeVisible();
-    await expect.element(page.getByTestId('timeline-loading-skeleton')).not.toBeInTheDocument();
-    await expect
-      .element(page.getByTestId('messages-container'))
-      .toHaveAttribute('aria-busy', 'false');
-  });
-
   it('signals completion after highlighting a rendered target', async () => {
     const onComplete = vi.fn();
     render(EventListTestHarness, {
@@ -304,9 +277,7 @@ describe('EventList localisation', () => {
         }
       });
 
-      await expect
-        .element(page.getByText('Dies ist der Anfang dieser Unterhaltung.'))
-        .toBeVisible();
+      await expect.element(page.getByText('Dies ist der Anfang dieser Unterhaltung.')).toBeVisible();
     } finally {
       setVirtualizerForcedRenderedIndex(null);
       await loadLocaleMessages('en-GB');

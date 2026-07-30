@@ -4,7 +4,6 @@
   import { getActiveServer } from '$lib/state/activeServer.svelte';
   import { roomRouteAccess } from '$lib/navigation/roomLinkAccess';
   import { serverRegistry } from '$lib/state/server/registry.svelte';
-  import RoomLoadingShell from '$lib/components/chat/RoomLoadingShell.svelte';
   import Room from './Room.svelte';
   import RoomJoinScreen from './RoomJoinScreen.svelte';
 
@@ -74,6 +73,4 @@
       <Room {roomId} {threadId} routeMessageId={page.params.messageId} />
     {/key}
   {/if}
-{:else}
-  <RoomLoadingShell />
 {/if}

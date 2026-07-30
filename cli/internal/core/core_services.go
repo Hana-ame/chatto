@@ -65,7 +65,6 @@ func assembleCore(
 		RoomMembership: projections.roomDirectory.Membership,
 		RoomGroups:     projections.roomGroupLayout.Groups,
 		RoomLayout:     projections.roomGroupLayout.Layout,
-		RoomTimeline:   projections.roomTimeline,
 		Threads:        projections.threads,
 		Reactions:      projections.reactions,
 		Users:          projections.users,
@@ -131,8 +130,8 @@ func initializeCoreServices(
 	core.messageSearchReads = &MessageSearchReadModel{core: core}
 	core.notificationPrefs = &NotificationPreferencesModel{core: core}
 	core.roomTimelineReads = &RoomTimelineReadModel{
-		core:     core,
-		timeline: projections.roomTimeline,
+		core:  core,
+		rooms: core.roomModel,
 	}
 	core.readStateModel = &ReadStateModel{
 		core:  core,

@@ -22,6 +22,15 @@ export class MessageEventInteractionState {
     return this.showActionSheet || this.contextMenuPosition !== null;
   }
 
+  get hasActiveLongPressGesture(): boolean {
+    return (
+      this.#highlightTimer !== null ||
+      this.#longPressTimer !== null ||
+      this.longPressActive ||
+      this.showActionSheet
+    );
+  }
+
   get forceHoverActionsVisible(): boolean {
     return this.emojiPickerPosition !== null || this.contextMenuPosition !== null;
   }
@@ -31,6 +40,10 @@ export class MessageEventInteractionState {
     const toolbar = button.closest('[role="toolbar"]') as HTMLElement | null;
     const rect = toolbar?.getBoundingClientRect() ?? button.getBoundingClientRect();
     this.contextMenuPosition = { x: rect.right, y: rect.top, alignRight: true };
+  }
+
+  openContextMenuAtPointer(event: MouseEvent): void {
+    this.contextMenuPosition = { x: event.clientX, y: event.clientY };
   }
 
   closeContextMenu(): void {

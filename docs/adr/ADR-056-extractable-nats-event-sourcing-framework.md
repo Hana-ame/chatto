@@ -93,6 +93,9 @@ acts as the first such user: it owns a non-Chatto JSON envelope, subject
 policy, typed event-log adapter, and projection while exercising only exported
 framework APIs. Future generic surface should be justified by friction in this
 kind of consumer rather than by a desire to shorten Chatto-specific wiring.
+Authling is the first concrete second application, but it must not import
+either `internal` package. It can drive incremental extraction only when it
+needs a proven mechanic through that public seam.
 
 ## Consequences
 
@@ -129,3 +132,6 @@ JetStream fixture and no-op logger instead of borrowing Chatto test helpers.
 Tests add only `nats-server/v2` to the standard library and `nats.go`
 dependencies allowed in production, so copying the package does not leave its
 verification coupled to the Chatto source tree.
+
+ADR-057 temporarily places Authling in the same repository so it can drive
+this extraction without making either product part of the other.

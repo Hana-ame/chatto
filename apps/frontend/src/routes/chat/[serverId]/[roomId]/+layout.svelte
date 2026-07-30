@@ -30,12 +30,13 @@
   // selected timeline.
   $effect(() => {
     const selectedRoomId = roomId;
+    const selectedServerStore = serverStore;
     if (!selectedRoomId) return;
-    untrack(() => serverStore.restoreProjectedRoomWindow(selectedRoomId));
+    untrack(() => selectedServerStore.restoreProjectedRoomWindow(selectedRoomId));
     return () => {
       // Supersede any historical-window work before this route changes. The
       // retained projection remains session-local and can be reused later.
-      untrack(() => serverStore.restoreProjectedRoomWindow(selectedRoomId));
+      untrack(() => selectedServerStore.restoreProjectedRoomWindow(selectedRoomId));
     };
   });
 

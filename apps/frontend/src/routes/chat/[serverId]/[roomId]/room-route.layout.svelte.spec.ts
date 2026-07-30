@@ -23,7 +23,9 @@ const { mocks } = vi.hoisted(() => ({
       currentUserId: 'viewer-1'
     },
     currentUserId: 'viewer-1',
+    activeServer: vi.fn(),
     restoreProjectedRoomWindow: vi.fn(),
+    restoreRemoteProjectedRoomWindow: vi.fn(),
     joinRoom: vi.fn(),
     loadJoinPreview: vi.fn(),
     toastSuccess: vi.fn(),
@@ -49,7 +51,7 @@ vi.mock('$app/paths', () => ({
 }));
 
 vi.mock('$lib/state/activeServer.svelte', () => ({
-  getActiveServer: () => 'origin'
+  getActiveServer: mocks.activeServer
 }));
 
 vi.mock('$lib/state/presenceCache.svelte', () => ({
@@ -65,7 +67,7 @@ vi.mock('$lib/state/userProfiles.svelte', () => ({
 
 vi.mock('$lib/state/server/registry.svelte', () => ({
   serverRegistry: {
-    getStore: () => ({
+    getStore: (serverId: string) => ({
       navigation: {
         get rooms() {
           return mocks.roomsStore.rooms;
@@ -85,7 +87,10 @@ vi.mock('$lib/state/server/registry.svelte', () => ({
           return { id: mocks.currentUserId };
         }
       },
-      restoreProjectedRoomWindow: mocks.restoreProjectedRoomWindow,
+      restoreProjectedRoomWindow:
+        serverId === 'remote'
+          ? mocks.restoreRemoteProjectedRoomWindow
+          : mocks.restoreProjectedRoomWindow,
       roomDirectory: {
         joinRoom: mocks.joinRoom,
         loadJoinPreview: mocks.loadJoinPreview
@@ -107,6 +112,8 @@ vi.mock('./Room.svelte', async () => {
 });
 
 import Layout from './+layout.svelte';
+
+let activeServerId = $state('origin');
 
 function room(overrides: Partial<RoomsListItem> = {}): RoomsListItem {
   return {
@@ -140,6 +147,8 @@ function renderLayout() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  activeServerId = 'origin';
+  mocks.activeServer.mockImplementation(() => activeServerId);
   mocks.page.params = { serverId: '-', roomId: 'room-1' };
   mocks.page.route.id = '/chat/[serverId]/[roomId]';
   mocks.page.state = {};
@@ -174,6 +183,18 @@ describe('room route layout access handling', () => {
     expect(mocks.goto).not.toHaveBeenCalled();
     expect(q(container, '[data-testid="room-layout-room"]')?.dataset.roomId).toBe('room-1');
     expect(q(container, '[data-testid="room-loading-shell"]')).toBeNull();
+  });
+
+  it('hydrates the same room ID again when the active server changes', async () => {
+    renderLayout();
+    await tick();
+
+    expect(mocks.restoreProjectedRoomWindow).toHaveBeenCalledWith('room-1');
+
+    activeServerId = 'remote';
+    await tick();
+
+    expect(mocks.restoreRemoteProjectedRoomWindow).toHaveBeenCalledWith('room-1');
   });
 
   it('renders an inline join screen for a room deep link when the viewer is not a member', async () => {

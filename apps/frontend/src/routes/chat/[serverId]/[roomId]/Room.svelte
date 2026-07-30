@@ -101,17 +101,6 @@
   const currentUser = $derived(serverRegistry.getStore(getActiveServer()).currentUser);
   const roomMessageStore = $derived(stores.messagesForRoom(roomId));
 
-  $effect(() => {
-    const selectedRoomId = roomId;
-    untrack(() => stores.restoreProjectedRoomWindow(selectedRoomId));
-    return () => {
-      // Invalidate any historical-window request before this room becomes
-      // inactive. Its late response must not replace the retained latest
-      // projection while another room is being rendered.
-      untrack(() => stores.restoreProjectedRoomWindow(selectedRoomId));
-    };
-  });
-
   $effect(() =>
     onRoomMessageMutated((detail) => {
       if (detail.roomId !== roomId) return;

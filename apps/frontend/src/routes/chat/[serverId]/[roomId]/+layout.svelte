@@ -1,8 +1,10 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { page } from '$app/state';
   import { getActiveServer } from '$lib/state/activeServer.svelte';
   import { roomRouteAccess } from '$lib/navigation/roomLinkAccess';
   import { serverRegistry } from '$lib/state/server/registry.svelte';
+  import RoomLoadingShell from '$lib/components/chat/RoomLoadingShell.svelte';
   import Room from './Room.svelte';
   import RoomJoinScreen from './RoomJoinScreen.svelte';
 
@@ -21,6 +23,21 @@
       !!serverStore.currentUser.user?.id &&
       navigation.currentUserId === serverStore.currentUser.user.id
   );
+
+  // Declare the URL-selected room as soon as the route exists. During a cold
+  // server catch-up the transport queues this hydration until caught_up, which
+  // removes a round trip between revealing server chrome and materialising the
+  // selected timeline.
+  $effect(() => {
+    const selectedRoomId = roomId;
+    if (!selectedRoomId) return;
+    untrack(() => serverStore.restoreProjectedRoomWindow(selectedRoomId));
+    return () => {
+      // Supersede any historical-window work before this route changes. The
+      // retained projection remains session-local and can be reused later.
+      untrack(() => serverStore.restoreProjectedRoomWindow(selectedRoomId));
+    };
+  });
 
   let threadId = $derived(page.params.threadId);
 
@@ -56,4 +73,6 @@
       <Room {roomId} {threadId} routeMessageId={page.params.messageId} />
     {/key}
   {/if}
+{:else}
+  <RoomLoadingShell />
 {/if}

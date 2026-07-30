@@ -26,6 +26,7 @@
 
   const serverSegment = $derived(serverIdToSegment(getActiveServer()));
   const activeStore = $derived(serverRegistry.getStore(getActiveServer()));
+  const registeredServer = $derived(serverRegistry.getServer(getActiveServer()));
 
   // All server- and resource-scoped management screens share one shell.
   const serverManagementPrefix = $derived(
@@ -71,9 +72,7 @@
     page.url.pathname === resolve('/chat/[serverId]/overview', { serverId: serverSegment })
   );
 
-  const searchHref = $derived(
-    resolve('/chat/[serverId]/search', { serverId: serverSegment })
-  );
+  const searchHref = $derived(resolve('/chat/[serverId]/search', { serverId: serverSegment }));
   const isSearchActive = $derived(page.url.pathname === searchHref);
   const supportsMessageSearch = $derived(activeStore.serverInfo.supportsFeature('messageSearch'));
   const messageSearchAvailable = $derived(
@@ -93,10 +92,7 @@
     page.url.pathname === resolve('/chat/[serverId]/threads', { serverId: serverSegment })
   );
 
-  type ServerChromeData = ChromePermissions & {
-    name: string;
-    bannerUrl: string | null;
-  };
+  type ServerChromeData = ChromePermissions;
 
   // Server chrome is part of the canonical retained projection. Switching a
   // warm server selects this state synchronously; only a genuinely cold
@@ -107,8 +103,6 @@
     const viewer = viewerResponseToState(viewerResponse);
     const can = (permission: string) => viewer.viewerPermissions[permission] ?? false;
     return {
-      name: activeStore.serverInfo.name,
-      bannerUrl: activeStore.serverInfo.bannerUrl,
       canViewAdmin: viewer.canViewAdmin,
       canManage: can('server.manage'),
       canManageRooms: can('room.manage'),
@@ -123,10 +117,16 @@
   // permission object or post-render synchronization effect.
   createChromePermissions(() => serverData);
 
-  // Server updates mutate the retained projection, so these derived values
-  // update without a separate validation query.
-  let serverName = $derived(serverData?.name ?? null);
-  let bannerUrl = $derived(serverData?.bannerUrl ?? null);
+  // Branding is public discovery state, so it can render before the
+  // projection-backed viewer permissions that gate administrative controls.
+  // Prefer the persisted registration during a fresh discovery request rather
+  // than flashing the ServerInfoState fallback label.
+  let serverName = $derived(
+    activeStore.serverInfo.loading
+      ? (registeredServer?.name ?? activeStore.serverInfo.name)
+      : activeStore.serverInfo.name
+  );
+  let bannerUrl = $derived(activeStore.serverInfo.bannerUrl);
 
   // Read server-wide permissions for admin-flavoured nav items (system, audit).
   const serverPerms = getServerPermissions();
@@ -146,7 +146,8 @@
   );
   const managedGroup = $derived(
     page.params.groupId
-      ? (activeStore.navigation.roomGroups.find((group) => group.id === page.params.groupId) ?? null)
+      ? (activeStore.navigation.roomGroups.find((group) => group.id === page.params.groupId) ??
+          null)
       : null
   );
   const managementNavItems = $derived(
@@ -174,7 +175,7 @@
                 icon: 'iconify uil--setting'
               }
             ]
-        : []
+          : []
   );
   const adminHref = $derived(adminNavItems[0]?.href);
 
@@ -195,14 +196,10 @@
       />
     {:else if !serverData}
       <!-- Skeleton sidebar while server data is loading -->
-      <ServerHeader serverName="" loading />
+      <ServerHeader {serverName} />
 
       <ScrollFader top bottom>
-        <div class="p-2">
-          <div class="skeleton h-40 w-full rounded-md"></div>
-        </div>
-
-        {#each Array(2) as _, i (i)}
+        {#each Array(3) as _, i (i)}
           <div class="flex items-center gap-2 rounded-md px-4 py-2">
             <div class="skeleton h-5 w-5 shrink-0 rounded"></div>
             <div class="skeleton h-5 flex-1 rounded"></div>
@@ -243,7 +240,10 @@
             {m['chat.overview.title']()}
           </a>
           {#if messageSearchAvailable}
-            <a href={searchHref} class={['sidebar-item', isSearchActive ? 'bg-surface' : '']}>
+            <a
+              href={resolve('/chat/[serverId]/search', { serverId: serverSegment })}
+              class={['sidebar-item', isSearchActive ? 'bg-surface' : '']}
+            >
               <span class="sidebar-icon iconify uil--search" aria-hidden="true"></span>
               {m['search.action']()}
             </a>

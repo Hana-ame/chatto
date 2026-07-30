@@ -23,6 +23,7 @@ const { mocks } = vi.hoisted(() => ({
       currentUserId: 'viewer-1'
     },
     currentUserId: 'viewer-1',
+    restoreProjectedRoomWindow: vi.fn(),
     joinRoom: vi.fn(),
     loadJoinPreview: vi.fn(),
     toastSuccess: vi.fn(),
@@ -84,6 +85,7 @@ vi.mock('$lib/state/server/registry.svelte', () => ({
           return { id: mocks.currentUserId };
         }
       },
+      restoreProjectedRoomWindow: mocks.restoreProjectedRoomWindow,
       roomDirectory: {
         joinRoom: mocks.joinRoom,
         loadJoinPreview: mocks.loadJoinPreview
@@ -160,6 +162,8 @@ describe('room route layout access handling', () => {
 
     expect(q(container, '[data-testid="room-layout-room"]')).toBeNull();
     expect(q(container, '[data-testid="message-resolver"]')).toBeNull();
+    expect(q(container, '[data-testid="room-loading-shell"]')).not.toBeNull();
+    expect(mocks.restoreProjectedRoomWindow).toHaveBeenCalledWith('room-1');
   });
 
   it('renders the room without redirecting when the viewer is already a member', async () => {
@@ -169,6 +173,7 @@ describe('room route layout access handling', () => {
 
     expect(mocks.goto).not.toHaveBeenCalled();
     expect(q(container, '[data-testid="room-layout-room"]')?.dataset.roomId).toBe('room-1');
+    expect(q(container, '[data-testid="room-loading-shell"]')).toBeNull();
   });
 
   it('renders an inline join screen for a room deep link when the viewer is not a member', async () => {

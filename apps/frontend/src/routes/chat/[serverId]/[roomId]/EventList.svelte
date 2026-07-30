@@ -1,14 +1,12 @@
 <script lang="ts">
   import { tick, untrack } from 'svelte';
+  import { prefersReducedMotion } from 'svelte/motion';
   import { SvelteSet } from 'svelte/reactivity';
   import { fade } from 'svelte/transition';
   import { Virtualizer, type VirtualizerHandle } from 'virtua/svelte';
   import * as m from '$lib/i18n/messages';
   import { getLocale } from '$lib/i18n/runtime';
-  import {
-    isMessagePostedEvent,
-    type TimelineEventView
-  } from '$lib/render/timelineEvents';
+  import { isMessagePostedEvent, type TimelineEventView } from '$lib/render/timelineEvents';
   import type { MessagesStore, RoomMember } from '$lib/state/room';
   import { getComposerContext, getRoomPermissions } from '$lib/state/room';
   import RoomEvent from './RoomEvent.svelte';
@@ -35,6 +33,7 @@
     visibleUnreadMarkerEventId
   } from './tombstoneVisibility';
   import { TimelineViewportController } from './TimelineViewportController.svelte';
+  import TimelineLoadingSkeleton from '$lib/components/chat/TimelineLoadingSkeleton.svelte';
 
   let {
     roomId,
@@ -318,11 +317,9 @@
         if (!(target instanceof HTMLElement)) continue;
 
         target.classList.add('highlight-flash');
-        target.addEventListener(
-          'animationend',
-          () => target.classList.remove('highlight-flash'),
-          { once: true }
-        );
+        target.addEventListener('animationend', () => target.classList.remove('highlight-flash'), {
+          once: true
+        });
 
         await new Promise((resolve) => setTimeout(resolve, 200));
         if (cancelled) return;
@@ -422,9 +419,7 @@
     if (pendingHighlightId) return;
 
     if (virtualItems.length > 0 && virtualizerHandle) {
-      const shouldScroll = untrack(
-        () => alwaysScrollToBottom || viewport.shouldScrollToBottom
-      );
+      const shouldScroll = untrack(() => alwaysScrollToBottom || viewport.shouldScrollToBottom);
       if (shouldScroll) {
         void requestBottomScroll();
       }
@@ -733,7 +728,7 @@
 
 <svelte:window onkeydown={markKeyboardScrollIntent} />
 
-<div class="relative flex min-h-0 min-w-0 flex-1 flex-col pb-2">
+<div class="relative flex min-h-0 min-w-0 flex-1 flex-col pb-2" aria-busy={isLoading}>
   <ScrollFader
     top
     bottom
@@ -741,6 +736,7 @@
     bind:scrollEl={scrollContainer}
     scrollClass="overscroll-y-contain"
     data-testid="messages-container"
+    aria-busy={isLoading}
     onwheel={markUserScrollIntent}
     ontouchmove={markUserScrollIntent}
     onpointerdown={markUserScrollIntent}
@@ -809,6 +805,15 @@
       {/if}
     </div>
   </ScrollFader>
+
+  {#if isLoading}
+    <div
+      class="pointer-events-none absolute inset-0 flex items-end overflow-hidden bg-background"
+      out:fade={{ duration: prefersReducedMotion.current ? 0 : 150 }}
+    >
+      <TimelineLoadingSkeleton />
+    </div>
+  {/if}
 
   <TypingIndicator {typingUserIds} members={typingMembers} />
 

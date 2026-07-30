@@ -507,6 +507,10 @@
   );
   background-size: 200% 100%;
   animation: skeleton-shimmer 2s linear infinite;
+
+  @media (prefers-reduced-motion: reduce) {
+    animation: none;
+  }
 }
 
 @keyframes skeleton-shimmer {

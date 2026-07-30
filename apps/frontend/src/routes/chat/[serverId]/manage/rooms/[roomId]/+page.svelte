@@ -16,11 +16,6 @@
   import { getChromePermissions } from '$lib/state/server/chromePermissions.svelte';
   import { serverRegistry } from '$lib/state/server/registry.svelte';
   import { serverConnectionManager } from '$lib/state/server/serverConnection.svelte';
-  import {
-    ADMIN_API_CAPABILITY,
-    hasProtocolCapability,
-    supportsRoomManagerMemberReads
-  } from '$lib/state/server/compatibility';
   import { useProjectionEvent } from '$lib/hooks';
   import { Panel } from '$lib/components/admin';
   import { Button, Checkbox, TextArea, TextInput } from '$lib/ui/form';
@@ -72,7 +67,7 @@
   const supportsMemberManagement = $derived.by(() => {
     const info = serverRegistry.tryGetStore(activeServerId)?.serverInfo;
     if (!info) return false;
-    return supportsRoomManagerMemberReads(info.protocolCapabilities, info.version);
+    return info.supportsFeature('roomManagement');
   });
   const backHref = $derived(
     chromePermissions?.canManageRooms
@@ -139,9 +134,7 @@
     loadFailure = null;
     try {
       const info = serverRegistry.tryGetStore(targetServerId)?.serverInfo;
-      if (
-        hasProtocolCapability(info?.protocolCapabilities ?? null, ADMIN_API_CAPABILITY) !== true
-      ) {
+      if (!info?.supportsFeature('adminApi')) {
         accessDenied = true;
         return;
       }

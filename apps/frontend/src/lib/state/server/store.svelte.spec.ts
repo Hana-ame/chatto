@@ -979,15 +979,7 @@ describe('ServerStateStore live server updates', () => {
       iconUrl: 'https://cdn/icon.webp',
       bannerUrl: 'https://cdn/banner.webp',
       directRegistrationEnabled: false,
-      authProviders: [],
-      compatibility: {
-        protocolCapabilities: [
-          'chatto.api.v1',
-          'chatto.realtime.v1',
-          'chatto.realtime.projection.v1'
-        ],
-        minimumWebClientVersion: null
-      }
+      authProviders: []
     });
     const store = makeStore(fake, registered, publicServerInfoLoader);
     await flushPromises();

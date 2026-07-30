@@ -58,22 +58,16 @@
   const compatibility = $derived(stores.serverInfo.compatibility);
   const compatibilityMessage = $derived.by(() => {
     switch (compatibility.reason) {
-      case 'missing-recommended-capabilities':
-        return m['chat.server_gutter.compatibility_degraded']();
       case 'server-too-old':
         return m['chat.server_gutter.compatibility_server_too_old']();
-      case 'web-client-too-old':
-        return m['chat.server_gutter.compatibility_client_too_old']();
-      case 'missing-required-capabilities':
-        return m['chat.server_gutter.compatibility_unsupported']();
-      case 'legacy-server':
+      case 'server-version-unknown':
         return m['chat.server_gutter.compatibility_unknown']();
       default:
         return null;
     }
   });
   const compatibilityWarning = $derived(
-    compatibility.status === 'degraded' || compatibility.status === 'unsupported'
+    compatibility.status === 'unsupported' || compatibility.status === 'unknown'
   );
   const iconDimmed = $derived(!loaded || serverConnection.showConnectionLostIcon || needsReauth);
   const iconTitle = $derived(

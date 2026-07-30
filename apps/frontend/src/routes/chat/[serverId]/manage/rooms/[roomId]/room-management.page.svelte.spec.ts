@@ -20,7 +20,7 @@ const mocks = vi.hoisted(() => ({
   getRoom: vi.fn(),
   projectionHandlers: [] as Array<(event: RealtimeProjectionEvent) => void>,
   updateRoom: vi.fn(),
-  protocolCapabilities: ['chatto.admin.v1', 'chatto.api.room-manager-member-reads.v1'] as string[]
+  serverVersion: '0.5.0'
 }));
 
 vi.mock('$app/state', () => ({ page: roomManagementTestPage }));
@@ -57,10 +57,10 @@ vi.mock('$lib/state/server/registry.svelte', () => ({
     getServer: (serverId: string) => ({ id: serverId, url: `https://${serverId}.example.test` }),
     tryGetStore: () => ({
       serverInfo: {
-        version: '0.5.0',
-        get protocolCapabilities() {
-          return mocks.protocolCapabilities;
-        }
+        get version() {
+          return mocks.serverVersion;
+        },
+        supportsFeature: () => mocks.serverVersion === '0.5.0'
       }
     }),
     getStore: () => ({})
@@ -156,7 +156,7 @@ describe('room management page identity and realtime authority', () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     mocks.projectionHandlers = [];
-    mocks.protocolCapabilities = ['chatto.admin.v1', 'chatto.api.room-manager-member-reads.v1'];
+    mocks.serverVersion = '0.5.0';
     mocks.updateRoom.mockResolvedValue({
       id: 'shared-room',
       name: 'general',
@@ -210,8 +210,8 @@ describe('room management page identity and realtime authority', () => {
     expect(container.textContent).toContain('Membership is automatic in Universal rooms.');
   });
 
-  it('hides member management when the server does not advertise manager reads', async () => {
-    mocks.protocolCapabilities = ['chatto.admin.v1'];
+  it('hides member management on servers that predate the room-management API', async () => {
+    mocks.serverVersion = '0.4.19';
     mocks.getRoom.mockResolvedValue(managedRoom('general'));
 
     const { container } = render(RoomManagementPage);
@@ -221,8 +221,8 @@ describe('room management page identity and realtime authority', () => {
     expect(container.querySelector('#room-member-picker')).toBeNull();
   });
 
-  it('does not request management details without the admin API capability', async () => {
-    mocks.protocolCapabilities = ['chatto.api.v1'];
+  it('does not request management details from servers that predate the admin API', async () => {
+    mocks.serverVersion = '0.4.19';
 
     const { container } = render(RoomManagementPage);
     await settle();

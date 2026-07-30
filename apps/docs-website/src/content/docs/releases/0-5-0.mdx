@@ -57,10 +57,10 @@ import ReleaseHero from "../../../components/release-notes/ReleaseHero.astro";
     role assignment is bounded by the manager's own authority.
   </ReleaseFeatureCard>
 
-  <ReleaseFeatureCard title="Capability-based compatibility">
-    Public server discovery now advertises supported protocol capabilities and optional
-    bundled-client requirements. Clients can gate features directly and show useful
-    version-skew guidance instead of guessing from a software version alone.
+  <ReleaseFeatureCard title="Version-aware compatibility">
+    Public server discovery reports the running server version. The multi-server client owns
+    its minimum expected server release and uses explicit release boundaries to show useful
+    upgrade guidance.
   </ReleaseFeatureCard>
 
   <ReleaseFeatureCard title="Faster, leaner restarts">
@@ -96,6 +96,13 @@ import ReleaseHero from "../../../components/release-notes/ReleaseHero.astro";
   replica and the bundled frontend together; a 0.5 client treats 0.4 servers as incompatible,
   and a 0.5 server no longer accepts protocol 1. Integrations that use `/api/realtime` must
   migrate to the stable protocol 2 reference.
+- Server discovery no longer publishes `compatibility.protocol_capabilities`, which appeared
+  only in unreleased 0.5 development snapshots. The containing `compatibility` message is
+  also gone: clients own their minimum supported server release instead of the server
+  declaring client requirements. Integrations built against one of those snapshots must
+  regenerate from the final 0.5 protobufs and replace capability-list checks with an explicit
+  supported-release table. Do not mix clients and servers across this development-only
+  schema change.
 - Newly processed ordinary videos are HLS-only. Upgrade every replica behind an endpoint
   before allowing new video uploads because older replicas and older clients cannot serve or
   play those results. Existing MP4 renditions remain playable and are not backfilled.

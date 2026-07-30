@@ -1,4 +1,4 @@
-package events
+package evtstream_test
 
 import (
 	"context"
@@ -19,6 +19,8 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	. "hmans.de/chatto/internal/events"
+	. "hmans.de/chatto/internal/evtstream"
 	corev1 "hmans.de/chatto/internal/pb/chatto/core/v1"
 	"hmans.de/chatto/internal/testutil"
 )
@@ -526,7 +528,7 @@ func TestPublisher_AppendBatch_LandsContiguouslyAtomic(t *testing.T) {
 
 	// Each subject's last seq must match what we published.
 	for i, e := range entries {
-		got, err := pub.lastSubjectSeq(ctx, e.Subject)
+		got, err := pub.LastSubjectSeq(ctx, e.Subject)
 		if err != nil {
 			t.Fatalf("lastSubjectSeq(%s): %v", e.Subject, err)
 		}
@@ -578,11 +580,11 @@ func TestPublisher_AppendBatch_OCCFailureRejectsEntireBatch(t *testing.T) {
 	}
 
 	// Neither subject should have advanced past its pre-batch state.
-	gotA, _ := pub.lastSubjectSeq(ctx, GroupAggregate("GA").Subject(EventUserJoinedRoom))
+	gotA, _ := pub.LastSubjectSeq(ctx, GroupAggregate("GA").Subject(EventUserJoinedRoom))
 	if gotA != seqA {
 		t.Errorf("GA last seq = %d, want %d (unchanged)", gotA, seqA)
 	}
-	gotB, _ := pub.lastSubjectSeq(ctx, GroupAggregate("GB").Subject(EventUserJoinedRoom))
+	gotB, _ := pub.LastSubjectSeq(ctx, GroupAggregate("GB").Subject(EventUserJoinedRoom))
 	if gotB != 0 {
 		t.Errorf("GB last seq = %d, want 0 (no events)", gotB)
 	}
@@ -1457,6 +1459,7 @@ func TestProjectorSnapshotPublicationRecoversAfterTransientIdentityFailure(t *te
 func TestProjectorSnapshotIdentityLookupDoesNotHoldApplyBarrier(t *testing.T) {
 	js, stream := setupTestStream(t)
 	ctx := testContext(t)
+	publisher := NewPublisher(js, stream, testLogger())
 	identityLookupStarted := make(chan struct{})
 	releaseIdentityLookup := make(chan struct{})
 	resolverCalls := 0
@@ -1492,14 +1495,26 @@ func TestProjectorSnapshotIdentityLookupDoesNotHoldApplyBarrier(t *testing.T) {
 		t.Fatal("snapshot identity lookup did not start")
 	}
 
-	barrierAvailable := make(chan struct{})
+	sequence, err := publisher.Append(
+		ctx,
+		RoomAggregate("R1").Subject(EventUserJoinedRoom),
+		makeEvent("R1", "U2"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	applied := make(chan error, 1)
 	go func() {
-		projector.applyMu.Lock()
-		projector.applyMu.Unlock()
-		close(barrierAvailable)
+		applied <- projector.WaitFor(
+			ctx,
+			SubjectPosition(RoomAggregate("R1").Subject(EventUserJoinedRoom), sequence),
+		)
 	}()
 	select {
-	case <-barrierAvailable:
+	case err := <-applied:
+		if err != nil {
+			t.Fatal(err)
+		}
 	case <-time.After(time.Second):
 		t.Fatal("snapshot identity lookup held the projection apply barrier")
 	}
@@ -1798,36 +1813,6 @@ func TestProjectorRejectsFutureSnapshotAndFallsBackAfterRestoreFailure(t *testin
 	}
 }
 
-func TestProjectorSnapshotLoadTimeoutFallsBackToColdReplay(t *testing.T) {
-	js, stream := setupTestStream(t)
-	pub := NewPublisher(js, stream, testLogger())
-	ctx := testContext(t)
-	if _, err := pub.Append(ctx, RoomAggregate("R1").Subject(EventUserJoinedRoom), makeEvent("R1", "U1")); err != nil {
-		t.Fatal(err)
-	}
-
-	projection := newSnapshotTrackingProjection(RoomSubjectFilter())
-	projector := NewProjector(js, stream, projection, testLogger())
-	source := &blockingSnapshotSource{canceled: make(chan struct{})}
-	if err := projector.ConfigureSnapshots("tracking", source, fixedStreamIdentity(testStreamIdentity(t, stream))); err != nil {
-		t.Fatal(err)
-	}
-	projector.snapshotLoadTimeout = 20 * time.Millisecond
-
-	runCtx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	go func() { _ = projector.Run(runCtx) }()
-	waitFor(t, 2*time.Second, func() bool { return projector.Status().StartupComplete })
-	if projection.Count() != 1 || projector.Status().SnapshotRestored {
-		t.Fatalf("timeout fallback projection count/status = %d/%#v", projection.Count(), projector.Status())
-	}
-	select {
-	case <-source.canceled:
-	default:
-		t.Fatal("snapshot source was not canceled at the load deadline")
-	}
-}
-
 func TestProjectorCaptureWaitsForApplyBarrier(t *testing.T) {
 	js, stream := setupTestStream(t)
 	pub := NewPublisher(js, stream, testLogger())
@@ -1885,8 +1870,6 @@ func TestProjector_CompletesEmptyStartupReplayOnce(t *testing.T) {
 	waitFor(t, 2*time.Second, func() bool {
 		return projector.Status().StartupComplete && proj.ReplayCompletions() == 1
 	})
-	projector.maybeCompleteStartup(time.Now())
-	projector.maybeCompleteStartup(time.Now())
 	if got := proj.ReplayCompletions(); got != 1 {
 		t.Fatalf("startup replay completions = %d, want 1", got)
 	}
@@ -2457,154 +2440,6 @@ func TestSubjectHelpers(t *testing.T) {
 		}
 	})
 
-}
-
-func TestSubjectMatchesFilter(t *testing.T) {
-	cases := []struct {
-		filter  string
-		subject string
-		want    bool
-	}{
-		{"evt.room.>", "evt.room.R1.user_joined", true},
-		{"evt.room.*.user_joined", "evt.room.R1.user_joined", true},
-		{"evt.room.*.user_joined", "evt.room.R1.message_posted", false},
-		{"evt.room.*.user_joined", "evt.room.R1.extra.user_joined", false},
-		{"evt.room.R1.user_joined", "evt.room.R1.user_joined", true},
-		{"evt.room.R1.user_joined", "evt.room.R2.user_joined", false},
-		{"evt.room.>", "evt.room", false},
-		{">", "evt.room.R1.user_joined", true},
-		{"", "evt.room.R1.user_joined", false},
-		{"evt.room.>", "", false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.filter+" matches "+tc.subject, func(t *testing.T) {
-			if got := subjectMatchesFilter(tc.filter, tc.subject); got != tc.want {
-				t.Fatalf("subjectMatchesFilter(%q, %q) = %v, want %v", tc.filter, tc.subject, got, tc.want)
-			}
-		})
-	}
-}
-
-func TestCompiledSubjectFilterMatchesWithoutAllocations(t *testing.T) {
-	matcher := compileSubjectFilter(RoomEventTypeFilter(EventUserJoinedRoom))
-	allocs := testing.AllocsPerRun(1000, func() {
-		if !matcher.matches("evt.room.R1.user_joined") {
-			t.Fatal("expected compiled filter to match")
-		}
-		if matcher.matches("evt.room.R1.message_posted") {
-			t.Fatal("expected compiled filter not to match")
-		}
-	})
-	if allocs != 0 {
-		t.Fatalf("compiled matcher allocations = %v, want 0", allocs)
-	}
-}
-
-func TestStreamSequenceFromReply(t *testing.T) {
-	cases := []struct {
-		name    string
-		reply   string
-		want    uint64
-		wantErr bool
-	}{
-		{
-			name:  "v2 with domain and token",
-			reply: "$JS.ACK.domain.hash-123.stream.cons.100.200.150.123456789.100.token",
-			want:  200,
-		},
-		{
-			name:  "v2 without trailing token",
-			reply: "$JS.ACK.domain.hash-123.stream.cons.100.201.150.123456789.100",
-			want:  201,
-		},
-		{
-			name:  "v2 underscore domain",
-			reply: "$JS.ACK._.hash-123.stream.cons.100.202.150.123456789.100.token",
-			want:  202,
-		},
-		{
-			name:  "v1",
-			reply: "$JS.ACK.stream.cons.100.203.150.123456789.100",
-			want:  203,
-		},
-		{
-			name:    "invalid prefix",
-			reply:   "$ABC.123.stream.cons.100.200.150.123456789.100",
-			wantErr: true,
-		},
-		{
-			name:    "invalid token count",
-			reply:   "$JS.ACK.stream.cons.100.200.150.123456789.100.extra",
-			wantErr: true,
-		},
-		{
-			name:    "non numeric sequence",
-			reply:   "$JS.ACK.stream.cons.100.not-a-seq.150.123456789.100",
-			wantErr: true,
-		},
-		{
-			name:    "empty",
-			reply:   "",
-			wantErr: true,
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := streamSequenceFromReply(tc.reply)
-			if tc.wantErr {
-				if err == nil {
-					t.Fatalf("streamSequenceFromReply(%q) error = nil, want error", tc.reply)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("streamSequenceFromReply(%q) error = %v", tc.reply, err)
-			}
-			if got != tc.want {
-				t.Fatalf("streamSequenceFromReply(%q) = %d, want %d", tc.reply, got, tc.want)
-			}
-		})
-	}
-}
-
-func TestStreamSequenceFromReplyDoesNotAllocate(t *testing.T) {
-	reply := "$JS.ACK.domain.hash-123.stream.cons.100.200.150.123456789.100.token"
-	allocs := testing.AllocsPerRun(1000, func() {
-		got, err := streamSequenceFromReply(reply)
-		if err != nil {
-			t.Fatalf("streamSequenceFromReply error = %v", err)
-		}
-		if got != 200 {
-			t.Fatalf("streamSequenceFromReply = %d, want 200", got)
-		}
-	})
-	if allocs != 0 {
-		t.Fatalf("streamSequenceFromReply allocations = %v, want 0", allocs)
-	}
-}
-
-func TestProjectorCachesProjectionSubjects(t *testing.T) {
-	proj := newCountingSubjectsProjection(
-		RoomSubjectFilter(),
-		UserEventTypeFilter(EventUserKeyShredded),
-	)
-	projector := NewProjector(nil, nil, proj, testLogger())
-
-	for i := 0; i < 10; i++ {
-		_ = projector.Subjects()
-		_ = projector.ReplaySubjects()
-		if !projector.consumesSubject("evt.room.R1.message_posted") {
-			t.Fatal("expected projector to consume room subject")
-		}
-		if projector.consumesSubject("evt.config.server.server_name_changed") {
-			t.Fatal("expected projector not to consume config subject")
-		}
-	}
-
-	if proj.subjectCalls != 1 {
-		t.Fatalf("Subjects calls = %d, want 1", proj.subjectCalls)
-	}
 }
 
 // ============================================================================

@@ -29,5 +29,14 @@ describe('ServerHydrationGate', () => {
     await expect.element(page.getByTestId('server-ui')).toHaveAttribute('aria-hidden', 'false');
     await expect.element(page.getByTestId('server-ui')).not.toHaveAttribute('inert');
     await expect.element(page.getByTestId('hydrated-server-content')).toBeVisible();
+
+    await rendered.rerender({
+      ready: false,
+      serverName: 'Starlight Commons',
+      children: testSnippet('<div data-testid="hydrated-server-content">Next room</div>')
+    });
+
+    await expect.element(page.getByTestId('server-loading-screen')).not.toBeInTheDocument();
+    await expect.element(page.getByText('Next room', { exact: true })).toBeVisible();
   });
 });

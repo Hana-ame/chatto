@@ -5,6 +5,7 @@
   import { getActiveServer } from '$lib/state/activeServer.svelte';
   import { serverRegistry } from '$lib/state/server/registry.svelte';
   import { serverIdToSegment } from '$lib/navigation';
+  import { chatRoomIdFromRoute } from '$lib/navigation/chatRoomRoute';
   import ServerSidebar from '$lib/components/ServerSidebar.svelte';
   import { ScrollFader } from '$lib/ui';
   import {
@@ -19,15 +20,17 @@
   import SidebarNav from '$lib/components/SidebarNav.svelte';
   import MyThreadsNavItem from './MyThreadsNavItem.svelte';
   import ServerHydrationGate from './ServerHydrationGate.svelte';
+  import { isSelectedServerRouteReady } from './serverHydration';
   import { MessageSearchState } from '$lib/state/server/messageSearch.svelte';
   import { getAdminNavItems } from './adminNav';
   import * as m from '$lib/i18n/messages';
 
   let { children } = $props();
 
-  const serverSegment = $derived(serverIdToSegment(getActiveServer()));
-  const activeStore = $derived(serverRegistry.getStore(getActiveServer()));
-  const registeredServer = $derived(serverRegistry.getServer(getActiveServer()));
+  const activeServerId = $derived(getActiveServer());
+  const serverSegment = $derived(serverIdToSegment(activeServerId));
+  const activeStore = $derived(serverRegistry.getStore(activeServerId));
+  const registeredServer = $derived(serverRegistry.getServer(activeServerId));
 
   // All server- and resource-scoped management screens share one shell.
   const serverManagementPrefix = $derived(
@@ -134,15 +137,26 @@
       : activeStore.serverInfo.iconUrl
   );
 
-  // Keep the complete server subtree mounted so the URL-selected room can
-  // hydrate in parallel, but reveal it only once the cold projection belongs
-  // to the authenticated viewer and its permission state is ready.
-  const serverUiReady = $derived(
+  const baseServerUiReady = $derived(
     !!serverData &&
       !activeStore.navigation.isInitialLoading &&
       !!activeStore.currentUser.user?.id &&
       activeStore.navigation.currentUserId === activeStore.currentUser.user.id
   );
+  const selectedRoomId = $derived(chatRoomIdFromRoute(page.route.id, page.params.roomId));
+  const selectedRouteReady = $derived(
+    isSelectedServerRouteReady({
+      roomId: selectedRoomId,
+      rooms: activeStore.navigation.rooms,
+      hasTimeline: (roomId) => activeStore.projection.timelines.has(roomId)
+    })
+  );
+
+  // Keep the complete server subtree mounted so the URL-selected room can
+  // hydrate in parallel. A cold member-room route reveals only after its
+  // timeline is materialized; nonmember, invalid, and non-room routes are
+  // terminal as soon as the base projection belongs to the current viewer.
+  const serverUiReady = $derived(baseServerUiReady && selectedRouteReady);
 
   // Read server-wide permissions for admin-flavoured nav items (system, audit).
   const serverPerms = getServerPermissions();
@@ -201,59 +215,61 @@
 </script>
 
 <ServerEventProvider>
-  <ServerHydrationGate ready={serverUiReady} {serverName} iconUrl={serverIconUrl}>
-    <ServerSidebar>
-      {#if isSettingsMode}
-        <SidebarNav
-          title={m['settings.nav.title']()}
-          items={settingsNavItems}
-          backHref={resolve('/chat/[serverId]', { serverId: serverSegment })}
-          backLabel={m['settings.nav.back_to_server']()}
-        />
-      {:else if serverData && isManageMode}
-        <SidebarNav
-          title={serverName ?? m['chat.server_nav.server_fallback']()}
-          items={managementNavItems}
-          backHref={resolve('/chat/[serverId]', { serverId: serverSegment })}
-          backLabel={m['chat.server_nav.back_to_server']()}
-          isActive={isAdminNavActive}
-        />
-      {:else if serverData}
-        <ServerHeader serverName={serverName ?? ''} {adminHref} />
+  {#key activeServerId}
+    <ServerHydrationGate ready={serverUiReady} {serverName} iconUrl={serverIconUrl}>
+      <ServerSidebar>
+        {#if isSettingsMode}
+          <SidebarNav
+            title={m['settings.nav.title']()}
+            items={settingsNavItems}
+            backHref={resolve('/chat/[serverId]', { serverId: serverSegment })}
+            backLabel={m['settings.nav.back_to_server']()}
+          />
+        {:else if serverData && isManageMode}
+          <SidebarNav
+            title={serverName ?? m['chat.server_nav.server_fallback']()}
+            items={managementNavItems}
+            backHref={resolve('/chat/[serverId]', { serverId: serverSegment })}
+            backLabel={m['chat.server_nav.back_to_server']()}
+            isActive={isAdminNavActive}
+          />
+        {:else if serverData}
+          <ServerHeader serverName={serverName ?? ''} {adminHref} />
 
-        <ScrollFader top bottom>
-          {#if bannerUrl}
-            <ServerBanner url={bannerUrl} />
-          {/if}
-
-          <nav class="sidebar-nav p-2">
-            <a
-              href={resolve('/chat/[serverId]/overview', { serverId: serverSegment })}
-              class={['sidebar-item', isHomeActive ? 'bg-surface' : '']}
-            >
-              <span class="sidebar-icon iconify uil--estate"></span>
-              {m['chat.overview.title']()}
-            </a>
-            {#if messageSearchAvailable}
-              <a
-                href={resolve('/chat/[serverId]/search', { serverId: serverSegment })}
-                class={['sidebar-item', isSearchActive ? 'bg-surface' : '']}
-              >
-                <span class="sidebar-icon iconify uil--search" aria-hidden="true"></span>
-                {m['search.action']()}
-              </a>
+          <ScrollFader top bottom>
+            {#if bannerUrl}
+              <ServerBanner url={bannerUrl} />
             {/if}
-            <MyThreadsNavItem active={isMyThreadsActive} />
-          </nav>
 
-          <hr class="border-border" />
-          <RoomList />
-        </ScrollFader>
-      {/if}
-    </ServerSidebar>
+            <nav class="sidebar-nav p-2">
+              <a
+                href={resolve('/chat/[serverId]/overview', { serverId: serverSegment })}
+                class={['sidebar-item', isHomeActive ? 'bg-surface' : '']}
+              >
+                <span class="sidebar-icon iconify uil--estate"></span>
+                {m['chat.overview.title']()}
+              </a>
+              {#if messageSearchAvailable}
+                <a
+                  href={resolve('/chat/[serverId]/search', { serverId: serverSegment })}
+                  class={['sidebar-item', isSearchActive ? 'bg-surface' : '']}
+                >
+                  <span class="sidebar-icon iconify uil--search" aria-hidden="true"></span>
+                  {m['search.action']()}
+                </a>
+              {/if}
+              <MyThreadsNavItem active={isMyThreadsActive} />
+            </nav>
 
-    <div class="flex min-h-0 min-w-0 flex-1 flex-col">
-      {@render children?.()}
-    </div>
-  </ServerHydrationGate>
+            <hr class="border-border" />
+            <RoomList />
+          </ScrollFader>
+        {/if}
+      </ServerSidebar>
+
+      <div class="flex min-h-0 min-w-0 flex-1 flex-col">
+        {@render children?.()}
+      </div>
+    </ServerHydrationGate>
+  {/key}
 </ServerEventProvider>

@@ -23,6 +23,17 @@ describe('isSelectedServerRouteReady', () => {
     ).toBe(true);
   });
 
+  it('holds a cold member-room permalink until its resolver navigates away', () => {
+    expect(
+      isSelectedServerRouteReady({
+        roomId: memberRoom.id,
+        rooms: [memberRoom],
+        resolvingRoomMessageLink: true,
+        hasTimeline: () => true
+      })
+    ).toBe(false);
+  });
+
   it.each([
     ['non-room route', null, [memberRoom]],
     ['nonmember room', nonmemberRoom.id, [nonmemberRoom]],

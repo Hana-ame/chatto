@@ -143,11 +143,18 @@
       !!activeStore.currentUser.user?.id &&
       activeStore.navigation.currentUserId === activeStore.currentUser.user.id
   );
-  const selectedRoomId = $derived(chatRoomIdFromRoute(page.route.id, page.params.roomId));
+  const resolvingRoomMessageLink = $derived(
+    page.route.id === '/chat/[serverId]/[roomId]/m/[messageId]'
+  );
+  const selectedRoomId = $derived(
+    chatRoomIdFromRoute(page.route.id, page.params.roomId) ??
+      (resolvingRoomMessageLink ? (page.params.roomId ?? null) : null)
+  );
   const selectedRouteReady = $derived(
     isSelectedServerRouteReady({
       roomId: selectedRoomId,
       rooms: activeStore.navigation.rooms,
+      resolvingRoomMessageLink,
       hasTimeline: (roomId) => activeStore.projection.timelines.has(roomId)
     })
   );

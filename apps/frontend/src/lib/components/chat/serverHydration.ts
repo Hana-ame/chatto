@@ -13,14 +13,17 @@ type RoomRouteAccess = {
 export function isSelectedServerRouteReady({
   roomId,
   rooms,
+  resolvingRoomMessageLink = false,
   hasTimeline
 }: {
   roomId: string | null;
   rooms: readonly RoomRouteAccess[];
+  resolvingRoomMessageLink?: boolean;
   hasTimeline: (roomId: string) => boolean;
 }): boolean {
   if (!roomId) return true;
   const room = rooms.find((candidate) => candidate.id === roomId);
   if (!room?.viewerIsMember) return true;
+  if (resolvingRoomMessageLink) return false;
   return hasTimeline(roomId);
 }

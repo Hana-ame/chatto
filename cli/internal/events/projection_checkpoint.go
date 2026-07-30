@@ -14,7 +14,7 @@ import (
 var ErrProjectionCheckpointInvalid = errors.New("projection checkpoint is invalid")
 
 // ProjectionCheckpointRequest binds local derived state to one projection
-// contract and one EVT stream incarnation.
+// contract and one application-supplied stream incarnation.
 type ProjectionCheckpointRequest struct {
 	ProjectionKey  string
 	ContractID     string
@@ -46,11 +46,17 @@ type checkpointedProjectionState interface {
 	ResetCheckpoint(context.Context, ProjectionCheckpointRequest) error
 }
 
-// ConfigureCheckpoint enables projection-owned local checkpoint restore. It
-// must be called before Run and cannot be combined with ADR-050 snapshots.
-func (p *Projector) ConfigureCheckpoint(key string) error {
+// ConfigureCheckpoint enables projection-owned local checkpoint restore. The
+// identity resolver receives the same fresh stream information used for the
+// checkpoint bounds; its opaque result binds the local state to that stream
+// incarnation. It must be called before Run and cannot be combined with
+// ADR-050 snapshots.
+func (p *Projector) ConfigureCheckpoint(key string, resolveStreamIdentity StreamIdentityResolver) error {
 	if key == "" {
 		return fmt.Errorf("projection checkpoint key is required")
+	}
+	if resolveStreamIdentity == nil {
+		return fmt.Errorf("projection checkpoint stream identity resolver is required")
 	}
 	projection, ok := p.proj.(checkpointedProjectionState)
 	if !ok {
@@ -74,6 +80,7 @@ func (p *Projector) ConfigureCheckpoint(key string) error {
 	}
 	p.checkpointKey = key
 	p.checkpointContractID = contractID
+	p.checkpointIdentityResolver = resolveStreamIdentity
 	return nil
 }
 
@@ -81,6 +88,7 @@ func (p *Projector) restoreCheckpointForRun(ctx context.Context, targetSeq uint6
 	p.mu.Lock()
 	key := p.checkpointKey
 	contractID := p.checkpointContractID
+	resolveStreamIdentity := p.checkpointIdentityResolver
 	p.mu.Unlock()
 	if key == "" {
 		return fmt.Errorf("projection checkpoint is not configured")
@@ -94,15 +102,15 @@ func (p *Projector) restoreCheckpointForRun(ctx context.Context, targetSeq uint6
 	if err != nil {
 		return fmt.Errorf("read EVT stream info for projection checkpoint: %w", err)
 	}
-	identity := info.Config.Metadata[EVTStreamIdentityMetadataKey]
-	if !ValidStreamIdentity(identity) {
-		return fmt.Errorf("projection checkpoint EVT stream identity is missing or invalid")
+	streamIdentity, err := resolveProjectionStreamIdentity(info, resolveStreamIdentity)
+	if err != nil {
+		return fmt.Errorf("resolve projection checkpoint stream identity: %w", err)
 	}
 	request := ProjectionCheckpointRequest{
 		ProjectionKey:  key,
 		ContractID:     contractID,
 		StreamName:     info.Config.Name,
-		StreamIdentity: identity,
+		StreamIdentity: streamIdentity,
 		FirstSequence:  info.State.FirstSeq,
 		LastSequence:   info.State.LastSeq,
 	}

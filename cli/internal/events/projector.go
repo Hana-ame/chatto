@@ -2,13 +2,10 @@ package events
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"reflect"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -42,10 +39,6 @@ const (
 	// projection Apply is running. Keep their cleanup window comfortably above
 	// slow disk-backed commits so NATS cannot delete a live projector consumer.
 	projectionConsumerInactiveThreshold = 5 * time.Minute
-	// EVTStreamIdentityMetadataKey stores the durable stream incarnation used to
-	// reject projection snapshots after EVT is deleted and recreated.
-	EVTStreamIdentityMetadataKey = "chatto.evt.incarnation"
-	streamIdentityPrefix         = "evt-incarnation-v1:"
 )
 
 // MemoryProjection is an embeddable base for projections whose state lives
@@ -264,10 +257,13 @@ type snapshotContractProjectionState interface {
 	SnapshotContractID() string
 }
 
-// ProjectionSnapshot is a validated snapshot returned by a snapshot source.
+// ProjectionSnapshot is projection state restored from a source or captured
+// for publication. Captures include the stream identity bound to the projector
+// run; restored snapshots rely on the identity already validated by the source.
 type ProjectionSnapshot struct {
 	GenerationID   string
 	CutoffSequence uint64
+	StreamIdentity string
 	CreatedAt      time.Time
 	Payload        []byte
 }
@@ -285,6 +281,25 @@ type ProjectionSnapshotLoadRequest struct {
 
 type ProjectionSnapshotSource interface {
 	LoadProjectionSnapshot(context.Context, ProjectionSnapshotLoadRequest) (ProjectionSnapshot, error)
+}
+
+// StreamIdentityResolver resolves an application's opaque stream incarnation
+// from supplied stream information. Restore invokes it with the same fresh
+// StreamInfo used to validate persisted projection state.
+type StreamIdentityResolver func(*jetstream.StreamInfo) (string, error)
+
+func resolveProjectionStreamIdentity(info *jetstream.StreamInfo, resolve StreamIdentityResolver) (string, error) {
+	if resolve == nil {
+		return "", fmt.Errorf("stream identity resolver is not configured")
+	}
+	identity, err := resolve(info)
+	if err != nil {
+		return "", err
+	}
+	if identity == "" {
+		return "", fmt.Errorf("stream identity is empty")
+	}
+	return identity, nil
 }
 
 // ReplaySubjectProjection can be implemented when a projection's logical
@@ -359,21 +374,24 @@ type Projector struct {
 	startupBatchSize int
 	startupBatch     []sequencedDecodedEvent
 
-	snapshotKey          string
-	snapshotContractID   string
-	snapshotSource       ProjectionSnapshotSource
-	snapshotStreamID     string
-	snapshotLoadTimeout  time.Duration
-	restoredSeq          uint64
-	restoredGenerationID string
-	snapshotRestored     bool
-	latestSnapshotSeq    uint64
-	latestSnapshotAt     time.Time
+	snapshotKey               string
+	snapshotContractID        string
+	snapshotSource            ProjectionSnapshotSource
+	snapshotIdentityResolver  StreamIdentityResolver
+	snapshotConfiguredID      string
+	snapshotRunStreamIdentity string
+	snapshotLoadTimeout       time.Duration
+	restoredSeq               uint64
+	restoredGenerationID      string
+	snapshotRestored          bool
+	latestSnapshotSeq         uint64
+	latestSnapshotAt          time.Time
 
-	checkpointKey        string
-	checkpointContractID string
-	checkpointRestored   bool
-	checkpointCutoffSeq  uint64
+	checkpointKey              string
+	checkpointContractID       string
+	checkpointIdentityResolver StreamIdentityResolver
+	checkpointRestored         bool
+	checkpointCutoffSeq        uint64
 }
 
 // ProjectorStatus is a concurrency-safe snapshot of a projector's
@@ -495,17 +513,22 @@ func decodeCoreEvent(data []byte) (DecodedEvent[*corev1.Event], error) {
 }
 
 // ConfigureSnapshots enables best-effort bootstrap restore for this projector.
-// It must be called before Run. A load or restore failure is logged and falls
-// back to an empty projection followed by full EVT replay.
-func (p *Projector) ConfigureSnapshots(key string, source ProjectionSnapshotSource, streamIdentity string) error {
+// The identity resolver receives the same fresh stream information used by the
+// restore request. It must be called before Run. A load or restore failure is
+// logged and falls back to an empty projection followed by full EVT replay.
+func (p *Projector) ConfigureSnapshots(key string, source ProjectionSnapshotSource, resolveStreamIdentity StreamIdentityResolver) error {
 	if key == "" {
 		return fmt.Errorf("projection snapshot key is required")
 	}
 	if source == nil {
 		return fmt.Errorf("projection snapshot source is nil")
 	}
-	if !ValidStreamIdentity(streamIdentity) {
-		return fmt.Errorf("projection snapshot EVT stream identity is invalid")
+	if resolveStreamIdentity == nil {
+		return fmt.Errorf("projection snapshot stream identity resolver is required")
+	}
+	configuredStreamIdentity, err := resolveProjectionStreamIdentity(p.stream.CachedInfo(), resolveStreamIdentity)
+	if err != nil {
+		return fmt.Errorf("resolve projection snapshot stream identity: %w", err)
 	}
 	contractProjection, ok := p.proj.(snapshotContractProjectionState)
 	if !ok {
@@ -526,7 +549,8 @@ func (p *Projector) ConfigureSnapshots(key string, source ProjectionSnapshotSour
 	p.snapshotKey = key
 	p.snapshotContractID = contractID
 	p.snapshotSource = source
-	p.snapshotStreamID = streamIdentity
+	p.snapshotIdentityResolver = resolveStreamIdentity
+	p.snapshotConfiguredID = configuredStreamIdentity
 	p.snapshotLoadTimeout = projectionSnapshotLoadTimeout
 	return nil
 }
@@ -539,64 +563,63 @@ func (p *Projector) SnapshotContractID() string {
 	return p.snapshotContractID
 }
 
-// CaptureSnapshot serializes projection state and the corresponding applied
-// EVT sequence at one barrier. An empty protobuf payload is valid canonical
-// state and still carries the projection's replay cutoff.
-func (p *Projector) CaptureSnapshot() (ProjectionSnapshot, error) {
-	p.applyMu.Lock()
-	defer p.applyMu.Unlock()
-
-	projection, ok := p.proj.(snapshotProjectionState)
-	if !ok {
-		return ProjectionSnapshot{}, fmt.Errorf("projection does not support snapshots")
+// CaptureSnapshot serializes projection state, the corresponding applied EVT
+// sequence, and the stream identity bound to this run at one barrier. An empty
+// protobuf payload is valid canonical state and still carries the projection's
+// replay cutoff.
+func (p *Projector) CaptureSnapshot(ctx context.Context) (ProjectionSnapshot, error) {
+	p.mu.Lock()
+	resolveStreamIdentity := p.snapshotIdentityResolver
+	streamIdentity := p.snapshotRunStreamIdentity
+	p.mu.Unlock()
+	if resolveStreamIdentity != nil {
+		currentIdentity, err := p.resolveCurrentStreamIdentity(ctx, resolveStreamIdentity)
+		if err != nil {
+			return ProjectionSnapshot{}, fmt.Errorf("resolve stream identity before snapshot capture: %w", err)
+		}
+		if streamIdentity == "" || currentIdentity != streamIdentity {
+			return ProjectionSnapshot{}, fmt.Errorf("stream identity changed during projector run")
+		}
 	}
-	payload, err := projection.Snapshot()
+
+	payload, seq, err := func() ([]byte, uint64, error) {
+		p.applyMu.Lock()
+		defer p.applyMu.Unlock()
+		projection, ok := p.proj.(snapshotProjectionState)
+		if !ok {
+			return nil, 0, fmt.Errorf("projection does not support snapshots")
+		}
+		payload, err := projection.Snapshot()
+		if err != nil {
+			return nil, 0, err
+		}
+		p.mu.Lock()
+		seq := p.lastSeq
+		p.mu.Unlock()
+		return payload, seq, nil
+	}()
 	if err != nil {
 		return ProjectionSnapshot{}, err
 	}
-	p.mu.Lock()
-	seq := p.lastSeq
-	p.mu.Unlock()
-	return ProjectionSnapshot{CutoffSequence: seq, Payload: payload}, nil
+
+	if resolveStreamIdentity != nil {
+		currentIdentity, err := p.resolveCurrentStreamIdentity(ctx, resolveStreamIdentity)
+		if err != nil {
+			return ProjectionSnapshot{}, fmt.Errorf("resolve stream identity after snapshot capture: %w", err)
+		}
+		if currentIdentity != streamIdentity {
+			return ProjectionSnapshot{}, fmt.Errorf("stream identity changed during projector run")
+		}
+	}
+	return ProjectionSnapshot{CutoffSequence: seq, StreamIdentity: streamIdentity, Payload: payload}, nil
 }
 
-// NewStreamIdentity deterministically derives an opaque identity for one EVT
-// stream incarnation. created is used only when initializing missing metadata;
-// normal restarts read the persisted identity instead.
-func NewStreamIdentity(created time.Time) (string, error) {
-	if created.IsZero() {
-		return "", fmt.Errorf("EVT stream creation time is required")
+func (p *Projector) resolveCurrentStreamIdentity(ctx context.Context, resolve StreamIdentityResolver) (string, error) {
+	info, err := p.stream.Info(ctx)
+	if err != nil {
+		return "", err
 	}
-	sum := sha256.Sum256([]byte("chatto/evt-incarnation/v1\x00" + created.UTC().Format(time.RFC3339Nano)))
-	return streamIdentityPrefix + hex.EncodeToString(sum[:16]), nil
-}
-
-// ValidStreamIdentity reports whether identity has Chatto's versioned EVT
-// stream-incarnation format.
-func ValidStreamIdentity(identity string) bool {
-	if len(identity) != len(streamIdentityPrefix)+32 || !strings.HasPrefix(identity, streamIdentityPrefix) {
-		return false
-	}
-	_, err := hex.DecodeString(identity[len(streamIdentityPrefix):])
-	return err == nil
-}
-
-// StreamIdentity reads the durable incarnation identity cached when EVT was
-// opened. Unlike StreamInfo.Created, this value survives process reconstruction
-// and backup restore.
-func StreamIdentity(stream jetstream.Stream) (string, error) {
-	if stream == nil {
-		return "", fmt.Errorf("EVT stream is required")
-	}
-	info := stream.CachedInfo()
-	if info == nil {
-		return "", fmt.Errorf("EVT stream info is unavailable")
-	}
-	identity := info.Config.Metadata[EVTStreamIdentityMetadataKey]
-	if !ValidStreamIdentity(identity) {
-		return "", fmt.Errorf("EVT stream identity is missing or invalid")
-	}
-	return identity, nil
+	return resolveProjectionStreamIdentity(info, resolve)
 }
 
 // Status returns the projector's current lifecycle state. Safe to call from
@@ -1271,7 +1294,8 @@ func (p *Projector) restoreForRun(ctx context.Context, targetSeq uint64) error {
 	checkpointKey := p.checkpointKey
 	key := p.snapshotKey
 	contractID := p.snapshotContractID
-	streamIdentity := p.snapshotStreamID
+	resolveStreamIdentity := p.snapshotIdentityResolver
+	configuredStreamIdentity := p.snapshotConfiguredID
 	loadTimeout := p.snapshotLoadTimeout
 	p.mu.Unlock()
 	if checkpointKey != "" {
@@ -1280,19 +1304,40 @@ func (p *Projector) restoreForRun(ctx context.Context, targetSeq uint64) error {
 	if source == nil {
 		return coldRestore()
 	}
-	streamName := ""
-	if info := p.stream.CachedInfo(); info != nil {
-		streamName = info.Config.Name
-	}
 	if loadTimeout <= 0 {
 		loadTimeout = projectionSnapshotLoadTimeout
 	}
 	loadCtx, cancelLoad := context.WithTimeout(ctx, loadTimeout)
 	defer cancelLoad()
+	info, err := p.stream.Info(loadCtx)
+	if err != nil {
+		p.mu.Lock()
+		p.snapshotRunStreamIdentity = configuredStreamIdentity
+		p.mu.Unlock()
+		p.logger.Info("Projection snapshot stream info unavailable; replaying EVT",
+			"projection", key,
+			"stage", "restore_stream_info",
+			"error", err)
+		return coldRestore()
+	}
+	streamIdentity, err := resolveProjectionStreamIdentity(info, resolveStreamIdentity)
+	if err != nil {
+		p.mu.Lock()
+		p.snapshotRunStreamIdentity = configuredStreamIdentity
+		p.mu.Unlock()
+		p.logger.Info("Projection snapshot stream identity unavailable; replaying EVT",
+			"projection", key,
+			"stage", "restore_stream_identity",
+			"error", err)
+		return coldRestore()
+	}
+	p.mu.Lock()
+	p.snapshotRunStreamIdentity = streamIdentity
+	p.mu.Unlock()
 	snapshot, err := source.LoadProjectionSnapshot(loadCtx, ProjectionSnapshotLoadRequest{
 		ProjectionKey:  key,
 		ContractID:     contractID,
-		StreamName:     streamName,
+		StreamName:     info.Config.Name,
 		StreamIdentity: streamIdentity,
 		MaxCutoff:      targetSeq,
 	})

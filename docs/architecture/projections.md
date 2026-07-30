@@ -87,10 +87,13 @@ Related decisions: [ADR-007](../adr/ADR-007-per-user-encryption-with-crypto-shre
 The projector framework also supports a projection-owned local checkpoint.
 The checkpoint contract binds the derived state and its highest atomically
 applied EVT sequence to a stable projection key, a projection contract ID, and
-the current EVT stream incarnation and retained sequence bounds. A valid
-checkpoint replays only the remaining EVT tail. Its global stream cutoff may
-be newer than the last event matching the projection's current filters; only a
-cutoff beyond the EVT stream tail is a future checkpoint.
+the current EVT stream incarnation and retained sequence bounds. Chatto
+supplies the identity resolver; at restore time the projector invokes it with
+the same fresh stream-info snapshot that supplies the sequence bounds, then
+carries the result as an opaque value. A valid checkpoint replays only the
+remaining EVT tail. Its global stream cutoff may be newer than the last event
+matching the projection's current filters; only a cutoff beyond the EVT stream
+tail is a future checkpoint.
 
 A projection uses at most one restore authority: ADR-050 snapshots, a local
 checkpoint, or neither. A projection without either starts empty and cold-replays
@@ -188,6 +191,16 @@ cannot read, rotate, or compare each other's generations.
 A new secret uses a different generation epoch and pointer locator. EVT carries
 a versioned opaque incarnation ID so snapshot validation survives process
 reconstruction and backup restore but changes when EVT is recreated.
+`internal/evtstream` owns Chatto's metadata key, format, generation, and
+validation. Core composition passes its resolver into projector restore
+configuration. The projector binds the resolved value to its run and captures
+it with snapshot state and cutoff. Capture checks the current incarnation
+immediately before and after the projection barrier, performs no NATS I/O while
+holding that barrier, and refuses publication if the identity differs. The
+worker publishes the captured value. A transient lookup failure during
+best-effort restore falls back to the identity validated at configuration, so
+publication can recover after cold replay without accepting an actual stream
+recreation. Persistence mechanics treat the identity as opaque.
 
 `core.projection_snapshot_retention` defaults to seven days. NATS applies it as
 the Object Store TTL. S3 uses a bounded age-expiry pass after daily publication

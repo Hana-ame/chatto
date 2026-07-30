@@ -290,85 +290,53 @@
   });
 
   // Scroll to a specific event by ID (for jump-to-message)
-  let scrollAttemptId = 0;
   $effect(() => {
-    const attemptId = ++scrollAttemptId;
+    let cancelled = false;
     const targetId = scrollToEventId;
     if (!targetId || !virtualizerHandle || virtualItems.length === 0) return;
-    const targetEventId = targetId;
 
     // Disable auto-scroll so it doesn't race with the jump scroll.
     viewport.beginJump();
 
-    // After a cache replacement, virtua can need several frames before the
-    // target item is indexed, measured, and mounted. Retry the full lookup +
-    // scroll path instead of giving up before the target is renderable.
-    tick().then(() => {
-      let attempts = 0;
-      const maxAttempts = 60;
-      let completed = false;
+    void tick().then(async () => {
+      // A replaced virtual window can take several frames to index, measure,
+      // and mount its target. The initial attempt plus 60 retries preserves the
+      // existing bounded wait without a separate callback state machine.
+      for (let attempt = 0; attempt <= 60 && !cancelled; attempt++) {
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+        if (cancelled) return;
 
-      function complete(landed: boolean) {
-        if (completed || scrollAttemptId !== attemptId) return;
-        if (!landed) {
-          completed = true;
-          onScrollToEventComplete?.(false);
-          return;
-        }
-
-        // Check after the successful target scroll has settled. Starting this
-        // timer before the virtual row mounts can re-enable bottom scrolling
-        // based on the previous window's offset.
-        setTimeout(() => {
-          if (completed || !virtualizerHandle || scrollAttemptId !== attemptId) return;
-          const dist =
-            virtualizerHandle.getScrollSize() -
-            virtualizerHandle.getScrollOffset() -
-            virtualizerHandle.getViewportSize();
-          viewport.settleJump(dist);
-          completed = true;
-          onScrollToEventComplete?.(true);
-        }, 200);
-      }
-
-      function tryScrollAndHighlight() {
-        if (scrollAttemptId !== attemptId) return;
-
-        const targetIdx = virtualItems.findIndex(
-          (item) => item.type === 'event' && item.event.id === targetEventId
+        const targetIndex = virtualItems.findIndex(
+          (item) => item.type === 'event' && item.event.id === targetId
         );
-        if (targetIdx !== -1) {
-          safeScrollToIndex(targetIdx, { align: 'center' });
-        }
+        if (targetIndex !== -1) safeScrollToIndex(targetIndex, { align: 'center' });
 
-        // Scope to this EventList's scroll container so the thread pane
-        // highlights within the thread, not in the main room view.
-        const scope = scrollContainer ?? document;
-        const target = scope.querySelector(eventSelector(targetEventId));
-        if (target instanceof HTMLElement) {
-          target.classList.add('highlight-flash');
-          target.addEventListener(
-            'animationend',
-            () => target.classList.remove('highlight-flash'),
-            { once: true }
-          );
-          complete(true);
-          return;
-        }
+        // Scope lookup to this EventList so the thread pane cannot highlight
+        // the matching event in the main room timeline.
+        const target = (scrollContainer ?? document).querySelector(eventSelector(targetId));
+        if (!(target instanceof HTMLElement)) continue;
 
-        if (attempts >= maxAttempts) {
-          complete(false);
-          return;
-        }
-        attempts++;
-        requestAnimationFrame(tryScrollAndHighlight);
+        target.classList.add('highlight-flash');
+        target.addEventListener(
+          'animationend',
+          () => target.classList.remove('highlight-flash'),
+          { once: true }
+        );
+
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        if (cancelled) return;
+        const distance = distanceFromBottom();
+        if (distance === null) return;
+        viewport.settleJump(distance);
+        onScrollToEventComplete?.(true);
+        return;
       }
 
-      requestAnimationFrame(tryScrollAndHighlight);
+      if (!cancelled) onScrollToEventComplete?.(false);
     });
 
     return () => {
-      if (scrollAttemptId === attemptId) scrollAttemptId++;
+      cancelled = true;
     };
   });
 

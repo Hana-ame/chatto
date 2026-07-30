@@ -33,8 +33,21 @@ to the user settings page for the active server.
   import Dialog from '$lib/ui/Dialog.svelte';
   import UserAvatar from './UserAvatar.svelte';
   import UserCustomStatusBadge from './UserCustomStatusBadge.svelte';
-  import UserCustomStatusEditor from './UserCustomStatusEditor.svelte';
   import VoiceCallControlButton from './voice/VoiceCallControlButton.svelte';
+
+  let customStatusEditorModule: Promise<typeof import('./UserCustomStatusEditor.svelte')> | null =
+    null;
+  let customStatusEditorLoadAttempt = $state(0);
+
+  function loadCustomStatusEditor(_attempt: number) {
+    customStatusEditorModule ??= import('./UserCustomStatusEditor.svelte').catch(
+      (error: unknown) => {
+        customStatusEditorModule = null;
+        throw error;
+      }
+    );
+    return customStatusEditorModule;
+  }
 
   const connection = useConnection();
   const presenceCache = getPresenceCache();
@@ -181,14 +194,27 @@ to the user settings page for the active server.
 </script>
 
 {#snippet customStatusEditor(sheet = false)}
-  {#if activeServerUser}
-    <UserCustomStatusEditor
-      status={activeServerUser.customStatus}
-      config={customStatusAPIConfig()}
-      {sheet}
-      onChange={updateCurrentCustomStatus}
-      onClose={() => (customStatusDialogVisible = false)}
-    />
+  {#if activeServerUser && customStatusDialogVisible}
+    {#await loadCustomStatusEditor(customStatusEditorLoadAttempt) then { default: UserCustomStatusEditor }}
+      <UserCustomStatusEditor
+        status={activeServerUser.customStatus}
+        config={customStatusAPIConfig()}
+        {sheet}
+        onChange={updateCurrentCustomStatus}
+        onClose={() => (customStatusDialogVisible = false)}
+      />
+    {:catch}
+      <div class="flex flex-col items-center gap-3 p-4 text-center" role="alert">
+        <p class="text-sm text-muted">{m['common.error.network']()}</p>
+        <button
+          type="button"
+          class="btn-secondary"
+          onclick={() => (customStatusEditorLoadAttempt += 1)}
+        >
+          {m['common.retry']()}
+        </button>
+      </div>
+    {/await}
   {/if}
 {/snippet}
 

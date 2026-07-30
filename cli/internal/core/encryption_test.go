@@ -435,7 +435,8 @@ func TestDeleteUserEncryptionKey_UsesStoredDEKWrappingRefs(t *testing.T) {
 
 	user, err := core.CreateUser(ctx, "system", "storeddekref", "Stored DEK Ref", "password123")
 	require.NoError(t, err)
-	contentKeyEvent, ok := core.ContentKeys.Active(user.Id, corev1.UserDEKPurpose_USER_DEK_PURPOSE_MESSAGE_BODY)
+	contentKeyEvent, ok, err := core.userModel.activeContentKey(user.Id, corev1.UserDEKPurpose_USER_DEK_PURPOSE_MESSAGE_BODY)
+	require.NoError(t, err)
 	require.True(t, ok)
 	evtWrappingKeyRef := contentKeyEvent.GetWrappingKeyRef()
 	require.NotEmpty(t, evtWrappingKeyRef)
@@ -458,6 +459,32 @@ func TestDeleteUserEncryptionKey_UsesStoredDEKWrappingRefs(t *testing.T) {
 	exists, err = core.encryption.keyWrapper.KeyExists(ctx, storedWrappingKeyRef)
 	require.NoError(t, err)
 	require.False(t, exists, "stored DEK wrapping key ref should also be shredded")
+}
+
+func TestDeleteUserEncryptionKey_FailsClosedWithoutContentKeyProjection(t *testing.T) {
+	core := setupTestCoreWithEncryption(t)
+	ctx := testContext(t)
+
+	user, err := core.CreateUser(ctx, "system", "missingkeyprojection", "Missing Key Projection", "password123")
+	require.NoError(t, err)
+	contentKeyEvent, ok, err := core.userModel.activeContentKey(user.Id, corev1.UserDEKPurpose_USER_DEK_PURPOSE_MESSAGE_BODY)
+	require.NoError(t, err)
+	require.True(t, ok)
+	wrappingKeyRef := contentKeyEvent.GetWrappingKeyRef()
+	require.NotEmpty(t, wrappingKeyRef)
+
+	wiredUserModel := core.userModel
+	core.userModel = &UserModel{}
+	t.Cleanup(func() {
+		core.userModel = wiredUserModel
+	})
+
+	err = core.DeleteUserEncryptionKeyAs(ctx, user.Id, user.Id)
+	require.ErrorIs(t, err, errContentKeyProjectionUnavailable)
+
+	exists, err := core.encryption.keyWrapper.KeyExists(ctx, wrappingKeyRef)
+	require.NoError(t, err)
+	require.True(t, exists, "wrapping key must remain intact when projected key state is unavailable")
 }
 
 func TestDeleteUserEncryptionKey_ShredsLegacyUserKeyRef(t *testing.T) {

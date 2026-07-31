@@ -1,0 +1,59 @@
+import type { ServerConnection } from '$lib/state/server/serverConnection.svelte';
+
+type AdminQueryConnection = Pick<ServerConnection, 'queryScope'>;
+
+function adminRoot(serverId: string, connection: AdminQueryConnection) {
+  return ['server', serverId, 'session', connection.queryScope, 'admin'] as const;
+}
+
+function permissionTiersRoot(serverId: string, connection: AdminQueryConnection) {
+  return [...adminRoot(serverId, connection), 'permission-tier'] as const;
+}
+
+export const adminQueryKeys = {
+  root: adminRoot,
+  membersRoot(serverId: string, connection: AdminQueryConnection) {
+    return [...adminRoot(serverId, connection), 'members'] as const;
+  },
+  members(serverId: string, connection: AdminQueryConnection, search: string) {
+    return [...adminQueryKeys.membersRoot(serverId, connection), { search }] as const;
+  },
+  member(serverId: string, connection: AdminQueryConnection, userId: string) {
+    return [...adminRoot(serverId, connection), 'member', userId] as const;
+  },
+  permissionTiers(serverId: string, connection: AdminQueryConnection) {
+    return permissionTiersRoot(serverId, connection);
+  },
+  permissionTier(
+    serverId: string,
+    connection: AdminQueryConnection,
+    roomId: string | null,
+    groupId: string | null
+  ) {
+    return [...permissionTiersRoot(serverId, connection), { roomId, groupId }] as const;
+  },
+  rolePermissions(serverId: string, connection: AdminQueryConnection, roleName: string) {
+    return [...adminRoot(serverId, connection), 'role-permissions', roleName] as const;
+  },
+  userPermissions(serverId: string, connection: AdminQueryConnection, userId: string) {
+    return [...adminRoot(serverId, connection), 'user-permissions', userId] as const;
+  },
+  eventLog(
+    serverId: string,
+    connection: AdminQueryConnection,
+    filter: {
+      eventType: string;
+      actorId: string;
+      createdAtFrom: string;
+      createdAtTo: string;
+    }
+  ) {
+    return [...adminRoot(serverId, connection), 'event-log', filter] as const;
+  },
+  eventTypes(serverId: string, connection: AdminQueryConnection) {
+    return [...adminRoot(serverId, connection), 'event-types'] as const;
+  },
+  event(serverId: string, connection: AdminQueryConnection, sequence: string) {
+    return [...adminRoot(serverId, connection), 'event', sequence] as const;
+  }
+};

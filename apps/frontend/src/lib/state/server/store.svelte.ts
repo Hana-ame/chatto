@@ -16,12 +16,10 @@ import { ActiveCallRoomsState } from './activeCallRooms.svelte';
 import { NavigationStore } from './rooms.svelte';
 import { RoomDirectoryStore } from './roomDirectory.svelte';
 import { AdminRoomLayoutStore } from './adminRoomLayout.svelte';
-import { AdminEventLogStore } from './adminEventLog.svelte';
 import { createRoomCommandAPI } from '$lib/api-client/rooms';
 import { createNotificationAPI } from '$lib/api-client/notifications';
 import { createVoiceCallAPI } from '$lib/api-client/voiceCalls';
 import { createAdminRoomLayoutAPI } from '$lib/api-client/adminRoomLayout';
-import { createAdminEventLogAPI } from '$lib/api-client/adminEventLog';
 import { createMessageSearchAPI, type MessageSearchAPI } from '$lib/api-client/messageSearch';
 import { createMemberDirectoryAPI } from '$lib/api-client/memberDirectory';
 import { createRoleAPI } from '$lib/api-client/roles';
@@ -49,6 +47,7 @@ import { RealtimeProjectionSyncState } from './realtimeSync.svelte';
 import type { ActiveCall } from '@chatto/api-types/api/v1/voice_calls_pb';
 import { MessageSearchStore } from './messageSearch.svelte';
 import { MentionRolesStore } from './mentionRoles.svelte';
+import { removeRegisteredServerQueries } from '$lib/query/cacheRegistry';
 
 /**
  * What kind of indicator a server (or the DM area) should display.
@@ -86,7 +85,6 @@ export class ServerStateStore {
   readonly navigation: NavigationStore;
   readonly roomDirectory: RoomDirectoryStore;
   readonly adminRoomLayout: AdminRoomLayoutStore;
-  readonly adminEventLog: AdminEventLogStore;
   readonly messageSearch: MessageSearchStore;
   readonly mentionRoles: MentionRolesStore;
   readonly projection = new ServerProjectionStore();
@@ -137,7 +135,6 @@ export class ServerStateStore {
     const notificationAPI = serverConnection.getAPI(createNotificationAPI);
     const voiceCallAPI = serverConnection.getAPI(createVoiceCallAPI);
     const adminRoomLayoutAPI = serverConnection.getAPI(createAdminRoomLayoutAPI);
-    const adminEventLogAPI = serverConnection.getAPI(createAdminEventLogAPI);
     const messageSearchAPI = serverConnection.getAPI(createMessageSearchAPI);
     this.#messageSearchAPI = messageSearchAPI;
     const memberDirectoryAPI = serverConnection.getAPI(createMemberDirectoryAPI);
@@ -163,7 +160,6 @@ export class ServerStateStore {
       roomCommandAPI
     );
     this.adminRoomLayout = new AdminRoomLayoutStore(adminRoomLayoutAPI, roomCommandAPI);
-    this.adminEventLog = new AdminEventLogStore(adminEventLogAPI);
     this.messageSearch = new MessageSearchStore(messageSearchAPI);
     this.mentionRoles = new MentionRolesStore(roleAPI);
 
@@ -782,6 +778,7 @@ export class ServerStateStore {
 
   /** Clean up resources. */
   dispose(): void {
+    removeRegisteredServerQueries(this.serverId);
     this.#disposeEffects();
     this.adminRoomLayout.deactivateProjectionRefresh();
     this.#adminRoomLayoutSubscriptions = 0;

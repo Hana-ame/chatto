@@ -75,8 +75,13 @@ vi.mock('$lib/state/server/connection.svelte', () => ({
     showConnectionLostBanner: false,
     connectBaseUrl: '/api/connect',
     bearerToken: 'token',
+    queryScope: 'permission-matrix-test',
     getAPI: (factory: (config: never) => unknown) => factory({} as never)
   })
+}));
+
+vi.mock('$lib/state/activeServer.svelte', () => ({
+  getActiveServer: () => 'server-test'
 }));
 
 beforeEach(() => {

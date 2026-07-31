@@ -1,14 +1,9 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { resolve } from '$app/paths';
   import { serverIdToSegment } from '$lib/navigation';
   import { getActiveServer } from '$lib/state/activeServer.svelte';
-  import {
-    createAdminUserManagementAPI,
-    type AdminMember,
-    type AdminRoleSummary
-  } from '$lib/api-client/adminUsers';
+  import { createAdminUserManagementAPI, type AdminRoleSummary } from '$lib/api-client/adminUsers';
   import { Panel, DataTable } from '$lib/components/admin';
   import { Hint, PaneContent, Pill } from '$lib/ui';
   import PaneHeader from '$lib/ui/PaneHeader.svelte';
@@ -19,6 +14,9 @@
   import { formatDate as formatDateUtil } from '$lib/utils/formatTime';
   import { getLocale } from '$lib/i18n/runtime';
   import { useDebounce } from '$lib/hooks/useDebounce.svelte';
+  import { createInfiniteQuery } from '@tanstack/svelte-query';
+  import { adminQueryKeys } from '$lib/query/admin';
+  import { queryClient } from '$lib/query/client';
   import * as m from '$lib/i18n/messages';
 
   const userSettings = getUserSettings();
@@ -27,21 +25,47 @@
   const PAGE_SIZE = 20;
 
   let searchInput = $state('');
-  let activeSearch = '';
-  let users = $state<AdminMember[]>([]);
-  let roles = $state<AdminRoleSummary[]>([]);
-  let totalCount = $state(0);
-  let hasMore = $state(false);
-  let loading = $state(true);
-  let loadingMore = $state(false);
-  let error = $state<string | null>(null);
-  let requestId = 0;
+  let activeSearch = $state('');
   const searchDebounce = useDebounce();
   let scrollContainer = $state<HTMLDivElement>();
 
-  onMount(() => {
-    void loadFirstPage('');
+  const membersQuery = createInfiniteQuery(
+    () => ({
+      queryKey: adminQueryKeys.members(getActiveServer(), connection(), activeSearch),
+      queryFn: ({ pageParam, signal }) =>
+        connection()
+          .getAPI(createAdminUserManagementAPI)
+          .listMembers(
+            { search: activeSearch || null, limit: PAGE_SIZE, offset: pageParam },
+            { signal }
+          ),
+      initialPageParam: 0,
+      getNextPageParam: (lastPage, _pages, lastPageParam) =>
+        lastPage.hasMore && lastPage.users.length > 0
+          ? lastPageParam + lastPage.users.length
+          : undefined
+    }),
+    () => queryClient
+  );
+
+  const users = $derived.by(() => {
+    const seen = new Set<string>();
+    return (membersQuery.data?.pages ?? []).flatMap((page) =>
+      page.users.filter((user) => {
+        if (seen.has(user.id)) return false;
+        seen.add(user.id);
+        return true;
+      })
+    );
   });
+  const roles = $derived<AdminRoleSummary[]>(membersQuery.data?.pages.at(-1)?.roles ?? []);
+  const totalCount = $derived(membersQuery.data?.pages.at(-1)?.totalCount ?? 0);
+  const hasMore = $derived(membersQuery.hasNextPage);
+  const loading = $derived(membersQuery.isPending);
+  const loadingMore = $derived(membersQuery.isFetchingNextPage);
+  const error = $derived(
+    membersQuery.error instanceof Error ? membersQuery.error.message : membersQuery.error
+  );
 
   function scheduleSearch(event: Event) {
     const value = event.currentTarget instanceof HTMLInputElement ? event.currentTarget.value : '';
@@ -49,71 +73,13 @@
     searchDebounce.run(() => {
       const nextSearch = value.trim();
       if (nextSearch === activeSearch) return;
-      void loadFirstPage(nextSearch);
+      activeSearch = nextSearch;
     }, 300);
-  }
-
-  async function queryMembers(search: string, offset: number) {
-    return connection().getAPI(createAdminUserManagementAPI).listMembers({
-      search: search || null,
-      limit: PAGE_SIZE,
-      offset
-    });
-  }
-
-  async function loadFirstPage(search = activeSearch) {
-    const currentRequest = ++requestId;
-    activeSearch = search;
-    loading = true;
-    error = null;
-    users = [];
-    totalCount = 0;
-    hasMore = false;
-
-    try {
-      const result = await queryMembers(search, 0);
-      if (currentRequest !== requestId) return;
-
-      roles = result.roles;
-      users = result.users;
-      totalCount = result.totalCount;
-      hasMore = result.hasMore;
-    } catch (e) {
-      if (currentRequest !== requestId) return;
-      error = e instanceof Error ? e.message : m['admin.members.load_failed']();
-    } finally {
-      if (currentRequest === requestId) {
-        loading = false;
-      }
-    }
   }
 
   async function loadMore() {
     if (loading || loadingMore || !hasMore) return;
-
-    const currentRequest = ++requestId;
-    const search = activeSearch;
-    const offset = users.length;
-    loadingMore = true;
-    error = null;
-
-    try {
-      const result = await queryMembers(search, offset);
-      if (currentRequest !== requestId) return;
-
-      const seen = new Set(users.map((user) => user.id));
-      roles = result.roles;
-      users = [...users, ...result.users.filter((user) => !seen.has(user.id))];
-      totalCount = result.totalCount;
-      hasMore = result.hasMore;
-    } catch (e) {
-      if (currentRequest !== requestId) return;
-      error = e instanceof Error ? e.message : m['admin.members.load_more_failed']();
-    } finally {
-      if (currentRequest === requestId) {
-        loadingMore = false;
-      }
-    }
+    await membersQuery.fetchNextPage();
   }
 
   function getRoleDisplayName(roleName: string): string {

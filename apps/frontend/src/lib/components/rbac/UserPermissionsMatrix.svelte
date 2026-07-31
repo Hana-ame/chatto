@@ -6,7 +6,6 @@ matrix and the mutation dispatch for cell clicks; delegates rendering to
 `SubjectPermissionsMatrix`.
 -->
 <script lang="ts">
-  import { untrack } from 'svelte';
   import { Hint } from '$lib/ui';
   import { useConnection } from '$lib/state/server/connection.svelte';
   import { createPermissionAPI } from '$lib/api-client/permissions';
@@ -22,6 +21,10 @@ matrix and the mutation dispatch for cell clicks; delegates rendering to
     type MatrixScope,
     type CellState
   } from './SubjectPermissionsMatrix.svelte';
+  import { createQuery } from '@tanstack/svelte-query';
+  import { getActiveServer } from '$lib/state/activeServer.svelte';
+  import { adminQueryKeys } from '$lib/query/admin';
+  import { queryClient } from '$lib/query/client';
 
   type Matrix = MatrixData & { userId: string };
 
@@ -33,52 +36,20 @@ matrix and the mutation dispatch for cell clicks; delegates rendering to
     return connection().getAPI(createPermissionAPI);
   }
 
-  let data = $state<Matrix | null>(null);
-  let loading = $state(true);
-  let error = $state<string | null>(null);
+  const matrixQuery = createQuery(
+    () => ({
+      queryKey: adminQueryKeys.userPermissions(getActiveServer(), connection(), userId),
+      queryFn: ({ signal }) => permissionAPI().getUserPermissionMatrix(userId, { signal })
+    }),
+    () => queryClient
+  );
+
+  const data = $derived<Matrix | null>(matrixQuery.data ?? null);
+  const loading = $derived(matrixQuery.isPending);
+  const loadError = $derived(matrixQuery.error instanceof Error ? matrixQuery.error.message : null);
+  let mutationError = $state<string | null>(null);
   let updatingKey = $state<string | null>(null);
-
-  $effect(() => {
-    void load(userId);
-  });
-
-  async function load(uid: string) {
-    // Only show the loading state on the initial load; refreshes after a
-    // mutation keep the existing matrix visible so the page doesn't flash
-    // a blank panel between request and response.
-    //
-    // Wrap the `data` read in `untrack` so the caller `$effect` doesn't
-    // subscribe to it — otherwise every assignment below would re-fire
-    // the effect and loop.
-    const current = untrack(() => data);
-    if (!current || current.userId !== uid) loading = true;
-    error = null;
-
-    let matrix: Matrix | null = null;
-    try {
-      matrix = await permissionAPI().getUserPermissionMatrix(uid);
-    } catch (err) {
-      if (uid !== userId) return;
-      loading = false;
-      error = err instanceof Error ? err.message : String(err);
-      return;
-    }
-
-    if (uid !== userId) return;
-
-    loading = false;
-    if (!matrix) {
-      error = m['rbac.permissions.no_data']();
-      return;
-    }
-    const loadedMatrix = matrix;
-    data = {
-      userId: loadedMatrix.userId,
-      applicablePermissions: [...loadedMatrix.applicablePermissions],
-      scopes: loadedMatrix.scopes.map((s) => ({ ...s })),
-      cells: loadedMatrix.cells.map((c) => ({ ...c }))
-    };
-  }
+  let mutationGeneration = 0;
 
   function mutationScopeFor(scope: MatrixScope): UserMutationScope {
     if (scope.kind === 'GROUP') {
@@ -94,33 +65,40 @@ matrix and the mutation dispatch for cell clicks; delegates rendering to
 
   async function handleCycle(scope: MatrixScope, permission: string, next: CellState) {
     if (!data) return;
+    const generation = ++mutationGeneration;
+    const serverId = getActiveServer();
+    const activeConnection = connection();
+    const activeUserId = data.userId;
+    const queryKey = adminQueryKeys.userPermissions(serverId, activeConnection, activeUserId);
     const cellKey = `${scope.id}::${permission}`;
     updatingKey = cellKey;
-    error = null;
+    mutationError = null;
 
     const result = await setUserPermission(
-      permissionAPI(),
-      data.userId,
+      activeConnection.getAPI(createPermissionAPI),
+      activeUserId,
       mutationScopeFor(scope),
       permission,
       next as UserPermissionState
     );
     if (result.error) {
-      error = result.error;
+      if (mutationGeneration === generation) {
+        mutationError = result.error;
+        updatingKey = null;
+      }
       toast.error(result.error);
-      updatingKey = null;
       return;
     }
 
     // Reload the matrix so both the override AND effective decisions stay
     // consistent — a server-scope grant flows into rooms via inheritance.
-    await load(data.userId);
-    updatingKey = null;
+    await queryClient.invalidateQueries({ queryKey, exact: true });
+    if (mutationGeneration === generation) updatingKey = null;
   }
 </script>
 
-{#if error}
-  <Hint tone="danger">{error}</Hint>
+{#if mutationError || loadError}
+  <Hint tone="danger">{mutationError ?? loadError}</Hint>
 {/if}
 
 {#if loading}

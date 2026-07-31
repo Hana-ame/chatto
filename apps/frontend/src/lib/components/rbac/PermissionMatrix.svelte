@@ -36,6 +36,10 @@ focusing a cell highlights its permission row and role column.
   import { setRolePermission, type MutationScope } from './permissionMutations';
   import MatrixCell from './MatrixCell.svelte';
   import * as m from '$lib/i18n/messages';
+  import { createQuery } from '@tanstack/svelte-query';
+  import { getActiveServer } from '$lib/state/activeServer.svelte';
+  import { adminQueryKeys } from '$lib/query/admin';
+  import { queryClient } from '$lib/query/client';
 
   type State = 'allow' | 'deny' | 'neutral';
   type MatrixCoordinate = { category: string; column: string; permission: string };
@@ -138,63 +142,35 @@ focusing a cell highlights its permission row and role column.
     return connection().getAPI(createPermissionAPI);
   }
 
-  let data = $state<TierRoles | null>(null);
-  let loading = $state(true);
-  let error = $state<string | null>(null);
+  function matrixKey() {
+    return adminQueryKeys.permissionTier(
+      getActiveServer(),
+      connection(),
+      roomId ?? null,
+      groupId ?? null
+    );
+  }
+
+  const matrixQuery = createQuery(
+    () => ({
+      queryKey: matrixKey(),
+      queryFn: ({ signal }) =>
+        permissionAPI().getRolePermissionTierMatrix(
+          { roomId: roomId ?? null, groupId: groupId ?? null },
+          { signal }
+        )
+    }),
+    () => queryClient
+  );
+
+  const data = $derived(matrixQuery.data ?? null);
+  const loading = $derived(matrixQuery.isPending);
+  const loadError = $derived(matrixQuery.error instanceof Error ? matrixQuery.error.message : null);
+  let mutationError = $state<string | null>(null);
   let updating = $state<string[]>([]); // "{roleName}::{permission}" entries with mutations in flight
   let hoveredCell = $state<MatrixCoordinate | null>(null);
   let focusedCell = $state<MatrixCoordinate | null>(null);
   const highlightedCell = $derived(hoveredCell ?? focusedCell);
-
-  $effect(() => {
-    const s = spaceId ?? null;
-    const rm = roomId ?? null;
-    const st = groupId ?? null;
-    void load(s, rm, st);
-  });
-
-  async function load(s: string | null, rm: string | null, st: string | null) {
-    loading = true;
-    error = null;
-
-    let matrix: TierRoles | null = null;
-    try {
-      matrix = await permissionAPI().getRolePermissionTierMatrix({
-        roomId: rm,
-        groupId: st
-      });
-    } catch (err) {
-      if (s !== (spaceId ?? null) || rm !== (roomId ?? null) || st !== (groupId ?? null)) {
-        return;
-      }
-      loading = false;
-      error = err instanceof Error ? err.message : String(err);
-      return;
-    }
-
-    if (s !== (spaceId ?? null) || rm !== (roomId ?? null) || st !== (groupId ?? null)) {
-      return;
-    }
-
-    loading = false;
-    if (!matrix) {
-      error = m['rbac.permissions.no_data']();
-      return;
-    }
-    // Clone so we can safely apply optimistic updates.
-    data = {
-      applicablePermissions: [...matrix.applicablePermissions],
-      roles: matrix.roles.map((r: TierRole) => ({
-        ...r,
-        override: {
-          permissions: [...r.override.permissions],
-          permissionDenials: [...r.override.permissionDenials]
-        },
-        inheritedAllows: [...r.inheritedAllows],
-        inheritedDenials: [...r.inheritedDenials]
-      }))
-    };
-  }
 
   // ----- Layout -----------------------------------------------------------
 
@@ -279,35 +255,58 @@ focusing a cell highlights its permission row and role column.
 
   async function cycle(role: TierRole, permission: string, next: State) {
     if (!data) return;
+    const serverId = getActiveServer();
+    const activeConnection = connection();
+    const queryKey = adminQueryKeys.permissionTier(
+      serverId,
+      activeConnection,
+      roomId ?? null,
+      groupId ?? null
+    );
+    const mutationScope = scopeFor(role);
     const cellKey = `${role.roleName}::${permission}`;
     if (updating.includes(cellKey)) return;
     updating = [...updating, cellKey];
-    error = null;
+    mutationError = null;
 
-    const result = await setRolePermission(permissionAPI(), scopeFor(role), permission, next);
+    const result = await setRolePermission(
+      activeConnection.getAPI(createPermissionAPI),
+      mutationScope,
+      permission,
+      next
+    );
     if (result.error) {
-      error = result.error;
+      mutationError = result.error;
       toast.error(result.error);
       updating = updating.filter((key) => key !== cellKey);
       return;
     }
 
-    // Optimistic update on the cell's role.
-    role.override.permissions = role.override.permissions.filter((p) => p !== permission);
-    role.override.permissionDenials = role.override.permissionDenials.filter(
-      (p) => p !== permission
-    );
-    if (next === 'allow') {
-      role.override.permissions = [...role.override.permissions, permission];
-    } else if (next === 'deny') {
-      role.override.permissionDenials = [...role.override.permissionDenials, permission];
-    }
+    queryClient.setQueryData<TierRoles>(queryKey, (old) => {
+      if (!old) return old;
+      return {
+        ...old,
+        roles: old.roles.map((candidate) => {
+          if (candidate.roleName !== role.roleName) return candidate;
+          const permissions = candidate.override.permissions.filter((p) => p !== permission);
+          const permissionDenials = candidate.override.permissionDenials.filter(
+            (p) => p !== permission
+          );
+          if (next === 'allow') permissions.push(permission);
+          if (next === 'deny') permissionDenials.push(permission);
+          return { ...candidate, override: { permissions, permissionDenials } };
+        })
+      };
+    });
+    void queryClient.invalidateQueries({
+      queryKey: adminQueryKeys.rolePermissions(serverId, activeConnection, role.roleName)
+    });
     updating = updating.filter((key) => key !== cellKey);
   }
 </script>
 
-{#if error}
-  <Hint tone="danger">{error}</Hint>
+{#if mutationError || loadError}
+  <Hint tone="danger">{mutationError ?? loadError}</Hint>
 {/if}
 
 {#if loading}

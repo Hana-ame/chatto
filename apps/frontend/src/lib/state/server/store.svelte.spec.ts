@@ -63,19 +63,6 @@ const { soundMocks, apiMocks } = vi.hoisted(() => ({
         unreadCount: 0
       })
     ),
-    listAdminEventLogEvents: vi.fn(() =>
-      Promise.resolve({
-        entries: [],
-        hasOlder: false,
-        endCursor: null,
-        totalCount: '0',
-        scannedCount: 0,
-        scanLimit: 50,
-        scanLimited: false
-      })
-    ),
-    listAdminEventLogEventTypes: vi.fn(() => Promise.resolve([])),
-    getAdminEventLogEvent: vi.fn(() => Promise.resolve(null)),
     getAuthenticatedServerState: vi.fn<() => Promise<AuthenticatedServerState>>(() =>
       Promise.resolve({
         name: 'Store Event Test',
@@ -234,20 +221,6 @@ vi.mock('$lib/api-client/notifications', () => ({
 vi.mock('$lib/api-client/roles', () => ({
   createRoleAPI: vi.fn(() => ({
     listRoles: apiMocks.listRoles
-  }))
-}));
-
-vi.mock('$lib/api-client/adminEventLog', () => ({
-  EMPTY_ADMIN_EVENT_LOG_FILTER: {
-    eventType: '',
-    actorId: '',
-    createdAtFrom: '',
-    createdAtTo: ''
-  },
-  createAdminEventLogAPI: vi.fn(() => ({
-    listEvents: apiMocks.listAdminEventLogEvents,
-    listEventTypes: apiMocks.listAdminEventLogEventTypes,
-    getEvent: apiMocks.getAdminEventLogEvent
   }))
 }));
 

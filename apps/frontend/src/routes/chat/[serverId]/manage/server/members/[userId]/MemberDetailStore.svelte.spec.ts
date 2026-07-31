@@ -76,6 +76,18 @@ function deferred<T>(): {
 }
 
 describe('MemberDetailStore', () => {
+  it('reuses fresh member details when navigating back within one server session', async () => {
+    const getMember = vi.fn((userId: string) => Promise.resolve(details(member(userId))));
+    const store = new MemberDetailStore(() => api({ getMember }));
+
+    await store.setMember('server-1', 'alice');
+    await store.setMember('server-1', 'bob');
+    await store.setMember('server-1', 'alice');
+
+    expect(getMember).toHaveBeenCalledTimes(2);
+    expect(store.member).toEqual(member('alice'));
+  });
+
   it('ignores an older member response after the route changes', async () => {
     const aliceDetails = deferred<AdminMemberDetails>();
     const getMember = vi
@@ -91,8 +103,16 @@ describe('MemberDetailStore', () => {
     aliceDetails.resolve(details(member('alice')));
     await staleLoad;
 
-    expect(getMember).toHaveBeenNthCalledWith(1, 'alice');
-    expect(getMember).toHaveBeenNthCalledWith(2, 'bob');
+    expect(getMember).toHaveBeenNthCalledWith(
+      1,
+      'alice',
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    );
+    expect(getMember).toHaveBeenNthCalledWith(
+      2,
+      'bob',
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    );
     expect(store.member).toEqual(member('bob'));
     expect(store.loading).toBe(false);
   });

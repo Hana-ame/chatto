@@ -93,6 +93,7 @@
     "@chatto/api-types": "workspace:*",
     "@connectrpc/connect": "^1.7.0",
     "@connectrpc/connect-web": "^1.7.0",
+    "@tanstack/svelte-query": "^6.1.38",
     "gemoji": "^8.1.0",
     "heic2any": "^0.0.4",
     "hls.js": "^1.6.16",

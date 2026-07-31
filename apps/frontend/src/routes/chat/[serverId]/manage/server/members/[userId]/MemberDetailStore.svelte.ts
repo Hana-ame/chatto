@@ -6,8 +6,12 @@ import type {
   AdminUserManagementAPI
 } from '$lib/api-client/adminUsers';
 import * as m from '$lib/i18n/messages';
+import type { ServerConnection } from '$lib/state/server/serverConnection.svelte';
+import { adminQueryKeys } from '$lib/query/admin';
+import { queryClient } from '$lib/query/client';
 
 type APIProvider = () => AdminUserManagementAPI;
+type QueryConnectionProvider = () => Pick<ServerConnection, 'queryScope'>;
 type MemberTarget = {
   serverId: string;
   userId: string;
@@ -34,12 +38,17 @@ export class MemberDetailStore {
   error = $state<string | null>(null);
 
   readonly #getAPI: APIProvider;
+  readonly #getQueryConnection: QueryConnectionProvider;
   #serverId = '';
   #userId = '';
   #generation = 0;
 
-  constructor(getAPI: APIProvider) {
+  constructor(
+    getAPI: APIProvider,
+    getQueryConnection: QueryConnectionProvider = () => ({ queryScope: 'member-detail' })
+  ) {
     this.#getAPI = getAPI;
+    this.#getQueryConnection = getQueryConnection;
   }
 
   setMember(serverId: string, userId: string): Promise<void> {
@@ -74,6 +83,12 @@ export class MemberDetailStore {
       login: updated.login,
       displayName: updated.displayName
     };
+    this.#updateCachedMember(target, (member) => ({
+      ...member,
+      login: updated.login,
+      displayName: updated.displayName
+    }));
+    this.#invalidateMemberLists(target);
     return updated;
   }
 
@@ -85,6 +100,8 @@ export class MemberDetailStore {
     if (!cleared || !this.#isCurrent(target) || !this.member) return false;
 
     this.member = { ...this.member, lastLoginChange: null };
+    this.#updateCachedMember(target, (member) => ({ ...member, lastLoginChange: null }));
+    this.#invalidateMemberLists(target);
     return true;
   }
 
@@ -96,6 +113,8 @@ export class MemberDetailStore {
     if (!this.#isCurrent(target)) return null;
 
     this.member = updated;
+    this.#updateCachedMember(target, () => updated);
+    this.#invalidateMemberLists(target);
     return updated;
   }
 
@@ -124,6 +143,7 @@ export class MemberDetailStore {
 
       if (result.member) {
         this.member = result.member;
+        this.#updateCachedMember(target, () => result.member!);
       } else {
         try {
           await this.#refresh(target);
@@ -133,6 +153,8 @@ export class MemberDetailStore {
           }
         }
       }
+
+      this.#invalidateMemberLists(target);
 
       return this.#isCurrent(target);
     } finally {
@@ -155,7 +177,10 @@ export class MemberDetailStore {
 
   async #load(target: MemberTarget): Promise<void> {
     try {
-      const details = await this.#getAPI().getMember(target.userId);
+      const details = await queryClient.fetchQuery({
+        queryKey: this.#queryKey(target),
+        queryFn: ({ signal }) => this.#getAPI().getMember(target.userId, { signal })
+      });
       if (!this.#isCurrent(target)) return;
       this.#apply(details);
     } catch (error) {
@@ -167,8 +192,30 @@ export class MemberDetailStore {
   }
 
   async #refresh(target: MemberTarget): Promise<void> {
-    const details = await this.#getAPI().getMember(target.userId);
+    await queryClient.invalidateQueries({ queryKey: this.#queryKey(target), exact: true });
+    const details = await queryClient.fetchQuery({
+      queryKey: this.#queryKey(target),
+      queryFn: ({ signal }) => this.#getAPI().getMember(target.userId, { signal }),
+      retry: false
+    });
     if (this.#isCurrent(target)) this.#apply(details);
+  }
+
+  #queryKey(target: Pick<MemberTarget, 'serverId' | 'userId'>) {
+    return adminQueryKeys.member(target.serverId, this.#getQueryConnection(), target.userId);
+  }
+
+  #updateCachedMember(target: MemberTarget, update: (member: AdminMember) => AdminMember): void {
+    queryClient.setQueryData<AdminMemberDetails>(this.#queryKey(target), (details) => {
+      if (!details?.member) return details;
+      return { ...details, member: update(details.member) };
+    });
+  }
+
+  #invalidateMemberLists(target: MemberTarget): void {
+    void queryClient.invalidateQueries({
+      queryKey: adminQueryKeys.membersRoot(target.serverId, this.#getQueryConnection())
+    });
   }
 
   #apply(details: AdminMemberDetails): void {

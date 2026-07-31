@@ -3,7 +3,8 @@
   import { resolve } from '$app/paths';
   import { serverIdToSegment } from '$lib/navigation';
   import { getActiveServer } from '$lib/state/activeServer.svelte';
-  import { serverRegistry } from '$lib/state/server/registry.svelte';
+  import { useConnection } from '$lib/state/server/connection.svelte';
+  import { createAdminEventLogAPI } from '$lib/api-client/adminEventLog';
   import { Panel } from '$lib/components/admin';
   import { Hint, PaneContent, Pill } from '$lib/ui';
   import PaneHeader from '$lib/ui/PaneHeader.svelte';
@@ -11,13 +12,23 @@
   import { getUserSettings } from '$lib/state/userSettings.svelte';
   import { formatDateTime as formatDateTimeUtil } from '$lib/utils/formatTime';
   import * as m from '$lib/i18n/messages';
+  import { createQuery } from '@tanstack/svelte-query';
+  import { adminQueryKeys } from '$lib/query/admin';
+  import { queryClient } from '$lib/query/client';
 
   const userSettings = getUserSettings();
+  const connection = useConnection();
 
   const sequence = $derived(page.params.sequence!);
   const activeServerId = $derived(getActiveServer());
-  const eventLog = $derived(serverRegistry.getStore(activeServerId).adminEventLog);
-  const entryPromise = $derived(eventLog.getEvent(sequence));
+  const entryQuery = createQuery(
+    () => ({
+      queryKey: adminQueryKeys.event(activeServerId, connection(), sequence),
+      queryFn: ({ signal }) =>
+        connection().getAPI(createAdminEventLogAPI).getEvent(sequence, { signal })
+    }),
+    () => queryClient
+  );
 
   const backHref = $derived(
     resolve('/chat/[serverId]/manage/server/event-log', {
@@ -42,12 +53,18 @@
 
   <PaneContent>
     <div class="flex min-h-0 flex-col gap-6">
-    {#await entryPromise}
-      <div class="text-muted">{m['admin.event_log.loading_event']()}</div>
-    {:then entry}
-      {#if !entry}
+      {#if entryQuery.isPending}
+        <div class="text-muted">{m['admin.event_log.loading_event']()}</div>
+      {:else if entryQuery.error}
+        <Hint tone="danger">
+          {entryQuery.error instanceof Error
+            ? entryQuery.error.message
+            : m['admin.event_log.unavailable']()}
+        </Hint>
+      {:else if !entryQuery.data}
         <Hint tone="warning">{m['admin.event_log.not_found']({ sequence })}</Hint>
       {:else}
+        {@const entry = entryQuery.data}
         <Panel title={m['admin.event_log.metadata']()}>
           <dl class="grid grid-cols-1 gap-3 sm:grid-cols-[max-content_1fr] sm:gap-x-6">
             <dt class="text-sm text-muted">{m['admin.event_log.stream_sequence']()}</dt>
@@ -84,11 +101,6 @@
             class="overflow-x-auto rounded-md bg-surface-emphasized p-4 font-mono text-xs leading-relaxed">{entry.payloadJson}</pre>
         </Panel>
       {/if}
-    {:catch err}
-      <Hint tone="danger"
-        >{err instanceof Error ? err.message : m['admin.event_log.unavailable']()}</Hint
-      >
-    {/await}
     </div>
   </PaneContent>
 </div>

@@ -22,8 +22,9 @@
   const store = $derived(serverScope.store);
   const userId = $derived(page.params.userId!);
   const currentUser = $derived(store.currentUser);
-  const memberDetail = new MemberDetailStore(() =>
-    connection().getAPI(createAdminUserManagementAPI)
+  const memberDetail = new MemberDetailStore(
+    () => connection().getAPI(createAdminUserManagementAPI),
+    () => connection()
   );
   const isSelf = $derived(currentUser.user?.id === userId);
   const canViewMemberEmails = $derived(isSelf || store.permissions.canAdminViewUsers);

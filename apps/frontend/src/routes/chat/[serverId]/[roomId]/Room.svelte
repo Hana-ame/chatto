@@ -30,6 +30,7 @@
   import { onRoomMessageMutated } from '$lib/state/room/messageMutationEvents';
   import { getAppUiState } from '$lib/state/appUi.svelte';
   import { useServerScope } from '$lib/state/server/scope.svelte';
+  import { MessageSearchState } from '$lib/state/server/messageSearch.svelte';
   import { getLiveDisplayName } from '$lib/state/userProfiles.svelte';
   import { resolve } from '$app/paths';
   import { serverIdToSegment } from '$lib/navigation';
@@ -76,6 +77,7 @@
   const serverSegment = $derived(serverIdToSegment(activeServerId));
   const stores = $derived(serverScope.store);
   const roomFilesStore = $derived(stores.filesForRoom(roomId));
+  const roomMessageSearchStore = $derived(stores.messageSearchForRoom(roomId));
   const serverInfo = $derived(stores.serverInfo);
   const appUi = getAppUiState();
   const desktopRoomLayout = new MediaQuery('(min-width: 1024px)', false);
@@ -274,13 +276,34 @@
 
   // Header action visibility — flat derivations keep the template clean
   let showVoiceCall = $derived(!!room.roomData && !!serverInfo.livekitUrl);
+  const supportsMessageSearch = $derived(serverInfo.supportsFeature('messageSearch'));
+  const messageSearchAvailable = $derived(
+    supportsMessageSearch &&
+      !stores.messageSearch.statusLoading &&
+      (stores.messageSearch.statusError ||
+        (stores.messageSearch.statusLoaded &&
+          stores.messageSearch.status.state !== MessageSearchState.DISABLED))
+  );
+  $effect(() => {
+    if (supportsMessageSearch) void stores.messageSearch.ensureStatus();
+  });
   // Channel rooms can be left unless membership is granted by Universal policy.
   let showLeaveRoom = $derived(!!room.roomData && !room.isDM && !room.roomData.room.isUniversal);
   const activeRoomSidebarPanel = $derived(
-    roomSidebarPanelForRoom(room.isDM, appUi.activeDesktopRoomSidebarPanel, showVoiceCall)
+    roomSidebarPanelForRoom(
+      room.isDM,
+      appUi.activeDesktopRoomSidebarPanel,
+      showVoiceCall,
+      messageSearchAvailable
+    )
   );
   const mobileRoomSidebarPanel = $derived(
-    roomSidebarPanelForRoom(room.isDM, appUi.mobileRoomSidebarPanel, showVoiceCall)
+    roomSidebarPanelForRoom(
+      room.isDM,
+      appUi.mobileRoomSidebarPanel,
+      showVoiceCall,
+      messageSearchAvailable
+    )
   );
   const roomFilesPanelActive = $derived(
     visibleRoomSidebarPanel(
@@ -289,7 +312,9 @@
       mobileRoomSidebarPanel
     ) === 'files'
   );
-  const roomSidebarTogglePanels = $derived(roomSidebarPanelsForRoom(room.isDM, showVoiceCall));
+  const roomSidebarTogglePanels = $derived(
+    roomSidebarPanelsForRoom(room.isDM, showVoiceCall, messageSearchAvailable)
+  );
   const hasActiveRoomCall = $derived(
     stores.activeCallRooms.has(roomId) || stores.voiceCall.isInCall(roomId)
   );
@@ -302,6 +327,7 @@
     roomId,
     hasActiveCall: hasActiveRoomCall,
     loading: room.isRoomLoading,
+    searchStore: roomMessageSearchStore,
     filesStore: roomFilesStore,
     livekitUrl: serverInfo.livekitUrl ?? undefined,
     canBanRoomMembers: canBanMembersFromRoomSidebar(room.isDM, room.roomData?.canBanRoomMembers),
@@ -350,6 +376,26 @@
     appUi.closeDesktopRoomSidebarPanel();
   }
 
+  function handleWindowKeydown(event: KeyboardEvent): void {
+    if (
+      event.defaultPrevented ||
+      event.altKey ||
+      event.shiftKey ||
+      (!event.metaKey && !event.ctrlKey) ||
+      event.key !== '/' ||
+      !messageSearchAvailable
+    ) {
+      return;
+    }
+
+    event.preventDefault();
+    if (desktopRoomLayout.current) {
+      appUi.openDesktopRoomSidebarPanel('search');
+    } else {
+      appUi.openMobileRoomSidebarPanel('search');
+    }
+  }
+
   function toggleDesktopCallWide(): void {
     if (activeRoomSidebarPanel !== 'call' || !hasActiveRoomCall) return;
     appUi.toggleRoomCallWide(activeServerId, roomId);
@@ -368,6 +414,19 @@
     if (closeMobile) {
       appUi.closeMobileRoomSidebarPanel();
     }
+  }
+
+  function openSearchResult(
+    messageEventId: string,
+    threadRootEventId: string | null,
+    closeMobile = false
+  ): void {
+    if (threadRootEventId) {
+      openThread(threadRootEventId, { highlightEventId: messageEventId });
+    } else {
+      void jumpState.jumpToMessage(messageEventId);
+    }
+    if (closeMobile) appUi.closeMobileRoomSidebarPanel();
   }
 
   // Drop zone state for drag-and-drop image uploads
@@ -395,6 +454,9 @@
 
 <svelte:window
   onkeydown={(e) => {
+    handleWindowKeydown(e);
+    if (e.defaultPrevented) return;
+
     if (e.key === 'Escape' && mobileRoomSidebarPanel && !e.defaultPrevented) {
       e.preventDefault();
       appUi.closeMobileRoomSidebarPanel();
@@ -596,6 +658,8 @@
               activePanel: mobileRoomSidebarPanel,
               onOpenFile: (messageEventId, threadRootEventId) =>
                 openFileMessage(messageEventId, threadRootEventId, true),
+              onOpenSearchResult: (messageEventId, threadRootEventId) =>
+                openSearchResult(messageEventId, threadRootEventId, true),
               onClose: () => appUi.closeMobileRoomSidebarPanel()
             }
           : null}
@@ -610,6 +674,7 @@
           activePanel: activeRoomSidebarPanel,
           maximized: isDesktopCallMaximized,
           onOpenFile: openFileMessage,
+          onOpenSearchResult: openSearchResult,
           onToggleMaximized: toggleDesktopCallWide,
           onClose: closeDesktopRoomSidebarPanel
         }}

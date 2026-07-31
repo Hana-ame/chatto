@@ -7,6 +7,7 @@ import { RoomKind } from '@chatto/api-types/api/v1/rooms_pb';
 import { RealtimeProjectionEvent } from '@chatto/api-types/realtime/v1/realtime_pb';
 import { TimelineEventKind } from '$lib/render/timelineEvents';
 import { MessagesStore } from '$lib/state/room';
+import { MessageSearchState } from '$lib/state/server/messageSearch.svelte';
 
 const { mocks } = vi.hoisted(() => {
   const queryData = {
@@ -50,6 +51,7 @@ const { mocks } = vi.hoisted(() => {
         getThreadEventsAround: vi.fn()
       },
       roomFilesRetain: vi.fn(),
+      messageSearchSupported: false,
       livekitUrl: null as string | null,
       roomKind: 1,
       getAppUiState: vi.fn(),
@@ -204,7 +206,16 @@ vi.mock('$lib/state/server/registry.svelte', () => ({
         livekitUrl: mocks.livekitUrl,
         videoProcessingEnabled: false,
         maxUploadSize: 25 * 1024 * 1024,
-        maxVideoUploadSize: 25 * 1024 * 1024
+        maxVideoUploadSize: 25 * 1024 * 1024,
+        supportsFeature: (feature: string) =>
+          feature === 'messageSearch' && mocks.messageSearchSupported
+      },
+      messageSearch: {
+        statusLoading: false,
+        statusError: false,
+        statusLoaded: true,
+        status: { state: MessageSearchState.READY },
+        ensureStatus: vi.fn()
       },
       notifications: mocks.notifications,
       pendingHighlights: {
@@ -219,6 +230,7 @@ vi.mock('$lib/state/server/registry.svelte', () => ({
       mentionRoles: mocks.mentionRoles,
       messagesForRoom: mocks.messagesForRoom,
       filesForRoom: () => ({ retain: mocks.roomFilesRetain }),
+      messageSearchForRoom: () => ({}),
       restoreProjectedRoomWindow:
         serverId === 'server-2'
           ? mocks.nextServerRestoreProjectedRoomWindow
@@ -396,6 +408,7 @@ beforeEach(() => {
     new MessagesStore({} as never, () => 'test-user', mocks.timeline)
   );
   mocks.livekitUrl = null;
+  mocks.messageSearchSupported = false;
   mocks.roomKind = RoomKind.CHANNEL;
   mocks.pendingHighlightConsume.mockReset();
   mocks.pendingHighlightConsume.mockReturnValue(null);
@@ -461,6 +474,45 @@ describe('Room interaction bundles', () => {
     await expect
       .element(q(container, '[data-testid="room-sidebar-desktop-pane"]'))
       .toBeInTheDocument();
+  });
+
+  it('opens the desktop room search sidebar with Cmd+/', async () => {
+    mocks.messageSearchSupported = true;
+    const { container } = render(Room, { props: { roomId: 'room-1' } });
+    const event = new KeyboardEvent('keydown', {
+      key: '/',
+      metaKey: true,
+      bubbles: true,
+      cancelable: true
+    });
+
+    window.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(appUi.activeDesktopRoomSidebarPanel).toBe('search');
+    expect(
+      await waitForElement(container, '[data-testid="room-sidebar-desktop-pane"]')
+    ).toBeTruthy();
+  });
+
+  it('opens the mobile room search sidebar with Ctrl+/', async () => {
+    mocks.messageSearchSupported = true;
+    stubMatchMedia(false);
+    const { container } = render(Room, { props: { roomId: 'room-1' } });
+    const event = new KeyboardEvent('keydown', {
+      key: '/',
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true
+    });
+
+    window.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(appUi.mobileRoomSidebarPanel).toBe('search');
+    expect(
+      await waitForElement(container, '[data-testid="room-sidebar-mobile-pane"]')
+    ).toBeTruthy();
   });
 });
 

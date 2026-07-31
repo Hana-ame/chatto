@@ -4,6 +4,7 @@ import { serverConnectionManager } from './serverConnection.svelte';
 import { eventBusManager } from './eventBus.svelte';
 import { Codecs, globalSlot } from '$lib/storage/slot';
 import { getPublicServerInfo } from '$lib/api-client/server';
+import { removeRegisteredServerQueries } from '$lib/query/cacheRegistry';
 
 /**
  * A registered Chatto server in the multi-server client.
@@ -279,6 +280,7 @@ class ServerRegistry {
 		if (server.reauthRequiredAt !== null) return;
 
 		eventBusManager.stopBus(id);
+		removeRegisteredServerQueries(id);
 		server.reauthRequiredAt = Date.now();
 		serversSlot.set(this.servers);
 		const store = this.tryGetStore(id);

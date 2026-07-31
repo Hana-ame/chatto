@@ -33,8 +33,10 @@ The cache has the following boundaries:
   current `ServerConnection`. Replacing credentials or transport creates a new
   scope even when the server and user IDs are unchanged.
 - The query cache is memory-only. Disposing a server store removes every query
-  under that server's key prefix, including during logout, credential
-  replacement, authentication failure, and server removal.
+  under that server's key prefix during logout, credential replacement, and
+  server removal. Authentication failure purges the same prefix immediately
+  and unmounts private route content so active observers cannot retain a
+  visible copy.
 - Query functions pass TanStack's `AbortSignal` to ConnectRPC so superseded or
   unmounted reads can be cancelled.
 - Mutations update or invalidate only explicitly related keys. Mutation
@@ -42,7 +44,8 @@ The cache has the following boundaries:
   it so a late result cannot update a reused route's next resource.
 - Authorization or visibility loss must remove affected private results when
   it can occur without disposing the whole server store. Invalidating them for
-  a later refetch is not a sufficient privacy fence.
+  a later refetch is not a sufficient privacy fence. Active observers are
+  synchronously scrubbed before an authoritative refetch.
 - Query defaults use a short stale window, bounded garbage-collection time, no
   focus refetch, no mutation retry, and at most one retry for transient reads.
   Authentication, permission, invalid-argument, and not-found failures are not

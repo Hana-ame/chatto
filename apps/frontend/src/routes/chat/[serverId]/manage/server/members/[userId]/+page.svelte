@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onDestroy } from 'svelte';
   import { resolve } from '$app/paths';
   import { page } from '$app/state';
   import { createAdminUserManagementAPI } from '$lib/api-client/adminUsers';
@@ -26,6 +27,7 @@
     () => connection().getAPI(createAdminUserManagementAPI),
     () => connection()
   );
+  onDestroy(() => memberDetail.dispose());
   const isSelf = $derived(currentUser.user?.id === userId);
   const canViewMemberEmails = $derived(isSelf || store.permissions.canAdminViewUsers);
   const canAdminManageAccounts = $derived(store.permissions.canAdminManageAccounts);

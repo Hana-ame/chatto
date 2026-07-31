@@ -30,21 +30,26 @@
   let scrollContainer = $state<HTMLDivElement>();
 
   const membersQuery = createInfiniteQuery(
-    () => ({
-      queryKey: adminQueryKeys.members(getActiveServer(), connection(), activeSearch),
-      queryFn: ({ pageParam, signal }) =>
-        connection()
-          .getAPI(createAdminUserManagementAPI)
-          .listMembers(
-            { search: activeSearch || null, limit: PAGE_SIZE, offset: pageParam },
-            { signal }
-          ),
-      initialPageParam: 0,
-      getNextPageParam: (lastPage, _pages, lastPageParam) =>
-        lastPage.hasMore && lastPage.users.length > 0
-          ? lastPageParam + lastPage.users.length
-          : undefined
-    }),
+    () => {
+      const serverId = getActiveServer();
+      const activeConnection = connection();
+      const search = activeSearch;
+      return {
+        queryKey: adminQueryKeys.members(serverId, activeConnection, search),
+        queryFn: ({ pageParam, signal }) =>
+          activeConnection
+            .getAPI(createAdminUserManagementAPI)
+            .listMembers(
+              { search: search || null, limit: PAGE_SIZE, offset: pageParam },
+              { signal }
+            ),
+        initialPageParam: 0,
+        getNextPageParam: (lastPage, _pages, lastPageParam) =>
+          lastPage.hasMore && lastPage.users.length > 0
+            ? lastPageParam + lastPage.users.length
+            : undefined
+      };
+    },
     () => queryClient
   );
 

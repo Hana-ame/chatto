@@ -5,6 +5,7 @@ import type {
 } from '$lib/api-client/adminUsers';
 import { describe, expect, it, vi } from 'vitest';
 import { MemberDetailStore } from './MemberDetailStore.svelte';
+import { removeRegisteredAdminUserQueries } from '$lib/query/cacheRegistry';
 
 function member(id: string, roles = ['everyone']): AdminMember {
   return {
@@ -134,6 +135,45 @@ describe('MemberDetailStore', () => {
 
     expect(getMember).toHaveBeenCalledTimes(2);
     expect(store.member?.displayName).toBe('Server Two User');
+  });
+
+  it('reloads the same member when the connection session changes', async () => {
+    let queryScope = 'old-session';
+    let currentAPI = api({
+      getMember: vi
+        .fn()
+        .mockResolvedValue(details({ ...member('alice'), displayName: 'Old Session Alice' }))
+    });
+    const store = new MemberDetailStore(
+      () => currentAPI,
+      () => ({ queryScope })
+    );
+
+    await store.setMember('server-1', 'alice');
+    queryScope = 'new-session';
+    currentAPI = api({
+      getMember: vi
+        .fn()
+        .mockResolvedValue(details({ ...member('alice'), displayName: 'New Session Alice' }))
+    });
+    await store.setMember('server-1', 'alice');
+
+    expect(store.member?.displayName).toBe('New Session Alice');
+    store.dispose();
+  });
+
+  it('clears mounted member details when realtime removes that user', async () => {
+    const store = new MemberDetailStore(() =>
+      api({ getMember: vi.fn().mockResolvedValue(details(member('alice'))) })
+    );
+    await store.setMember('server-1', 'alice');
+
+    removeRegisteredAdminUserQueries('server-1', 'alice');
+
+    expect(store.member).toBeNull();
+    expect(store.roles).toEqual([]);
+    expect(store.loading).toBe(false);
+    store.dispose();
   });
 
   it('does not apply a completed role mutation to the next member', async () => {

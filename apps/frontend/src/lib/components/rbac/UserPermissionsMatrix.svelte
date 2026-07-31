@@ -6,6 +6,7 @@ matrix and the mutation dispatch for cell clicks; delegates rendering to
 `SubjectPermissionsMatrix`.
 -->
 <script lang="ts">
+  import { onDestroy } from 'svelte';
   import { Hint } from '$lib/ui';
   import { useConnection } from '$lib/state/server/connection.svelte';
   import { createPermissionAPI } from '$lib/api-client/permissions';
@@ -32,24 +33,41 @@ matrix and the mutation dispatch for cell clicks; delegates rendering to
 
   const connection = useConnection();
 
-  function permissionAPI() {
-    return connection().getAPI(createPermissionAPI);
-  }
-
   const matrixQuery = createQuery(
-    () => ({
-      queryKey: adminQueryKeys.userPermissions(getActiveServer(), connection(), userId),
-      queryFn: ({ signal }) => permissionAPI().getUserPermissionMatrix(userId, { signal })
-    }),
+    () => {
+      const serverId = getActiveServer();
+      const activeConnection = connection();
+      const activeUserId = userId;
+      return {
+        queryKey: adminQueryKeys.userPermissions(serverId, activeConnection, activeUserId),
+        queryFn: ({ signal }) =>
+          activeConnection
+            .getAPI(createPermissionAPI)
+            .getUserPermissionMatrix(activeUserId, { signal })
+      };
+    },
     () => queryClient
   );
 
   const data = $derived<Matrix | null>(matrixQuery.data ?? null);
   const loading = $derived(matrixQuery.isPending);
   const loadError = $derived(matrixQuery.error instanceof Error ? matrixQuery.error.message : null);
-  let mutationError = $state<string | null>(null);
+  let mutationError = $state<{ context: string; message: string } | null>(null);
   let updatingKey = $state<string | null>(null);
+  let mutationContext = $state<string | null>(null);
   let mutationGeneration = 0;
+  const activeMutationContext = $derived(
+    JSON.stringify([getActiveServer(), connection().queryScope, userId])
+  );
+  const visibleMutationError = $derived(
+    mutationError?.context === activeMutationContext ? mutationError.message : null
+  );
+  const visibleUpdatingKey = $derived(
+    mutationContext === activeMutationContext ? updatingKey : null
+  );
+  onDestroy(() => {
+    mutationGeneration += 1;
+  });
 
   function mutationScopeFor(scope: MatrixScope): UserMutationScope {
     if (scope.kind === 'GROUP') {
@@ -69,9 +87,11 @@ matrix and the mutation dispatch for cell clicks; delegates rendering to
     const serverId = getActiveServer();
     const activeConnection = connection();
     const activeUserId = data.userId;
+    const context = JSON.stringify([serverId, activeConnection.queryScope, activeUserId]);
     const queryKey = adminQueryKeys.userPermissions(serverId, activeConnection, activeUserId);
     const cellKey = `${scope.id}::${permission}`;
     updatingKey = cellKey;
+    mutationContext = context;
     mutationError = null;
 
     const result = await setUserPermission(
@@ -81,12 +101,15 @@ matrix and the mutation dispatch for cell clicks; delegates rendering to
       permission,
       next as UserPermissionState
     );
+    if (mutationGeneration !== generation) return;
     if (result.error) {
+      if (mutationGeneration === generation && context === activeMutationContext) {
+        mutationError = { context, message: result.error };
+        toast.error(result.error);
+      }
       if (mutationGeneration === generation) {
-        mutationError = result.error;
         updatingKey = null;
       }
-      toast.error(result.error);
       return;
     }
 
@@ -97,8 +120,8 @@ matrix and the mutation dispatch for cell clicks; delegates rendering to
   }
 </script>
 
-{#if mutationError || loadError}
-  <Hint tone="danger">{mutationError ?? loadError}</Hint>
+{#if visibleMutationError || loadError}
+  <Hint tone="danger">{visibleMutationError ?? loadError}</Hint>
 {/if}
 
 {#if loading}
@@ -106,5 +129,10 @@ matrix and the mutation dispatch for cell clicks; delegates rendering to
 {:else if !data}
   <Hint tone="info">{m['rbac.permissions.no_data']()}</Hint>
 {:else}
-  <SubjectPermissionsMatrix {data} {updatingKey} onCycle={handleCycle} subjectKind="user" />
+  <SubjectPermissionsMatrix
+    {data}
+    updatingKey={visibleUpdatingKey}
+    onCycle={handleCycle}
+    subjectKind="user"
+  />
 {/if}

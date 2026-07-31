@@ -42,26 +42,35 @@
   const activeFilter = $derived(filterFromUrl(page.url));
   const activeFilterKey = $derived(filterKey(activeFilter));
   const eventLogQuery = createInfiniteQuery(
-    () => ({
-      queryKey: adminQueryKeys.eventLog(activeServerId, connection(), activeFilter),
-      queryFn: ({ pageParam, signal }) =>
-        connection()
-          .getAPI(createAdminEventLogAPI)
-          .listEvents({ limit: 50, before: pageParam, filter: activeFilter }, { signal }),
-      initialPageParam: null as string | null,
-      getNextPageParam: (lastPage) =>
-        lastPage.hasOlder
-          ? (lastPage.endCursor ?? lastPage.entries.at(-1)?.sequence ?? undefined)
-          : undefined
-    }),
+    () => {
+      const serverId = activeServerId;
+      const activeConnection = connection();
+      const filter = activeFilter;
+      return {
+        queryKey: adminQueryKeys.eventLog(serverId, activeConnection, filter),
+        queryFn: ({ pageParam, signal }) =>
+          activeConnection
+            .getAPI(createAdminEventLogAPI)
+            .listEvents({ limit: 50, before: pageParam, filter }, { signal }),
+        initialPageParam: null as string | null,
+        getNextPageParam: (lastPage) =>
+          lastPage.hasOlder
+            ? (lastPage.endCursor ?? lastPage.entries.at(-1)?.sequence ?? undefined)
+            : undefined
+      };
+    },
     () => queryClient
   );
   const eventTypesQuery = createQuery(
-    () => ({
-      queryKey: adminQueryKeys.eventTypes(activeServerId, connection()),
-      queryFn: ({ signal }) =>
-        connection().getAPI(createAdminEventLogAPI).listEventTypes({ signal })
-    }),
+    () => {
+      const serverId = activeServerId;
+      const activeConnection = connection();
+      return {
+        queryKey: adminQueryKeys.eventTypes(serverId, activeConnection),
+        queryFn: ({ signal }) =>
+          activeConnection.getAPI(createAdminEventLogAPI).listEventTypes({ signal })
+      };
+    },
     () => queryClient
   );
   const eventLog = $derived.by(() => {

@@ -47,7 +47,11 @@ import { RealtimeProjectionSyncState } from './realtimeSync.svelte';
 import type { ActiveCall } from '@chatto/api-types/api/v1/voice_calls_pb';
 import { MessageSearchStore } from './messageSearch.svelte';
 import { MentionRolesStore } from './mentionRoles.svelte';
-import { removeRegisteredServerQueries } from '$lib/query/cacheRegistry';
+import {
+  removeRegisteredAdminQueries,
+  removeRegisteredAdminUserQueries,
+  removeRegisteredServerQueries
+} from '$lib/query/cacheRegistry';
 
 /**
  * What kind of indicator a server (or the DM area) should display.
@@ -362,6 +366,7 @@ export class ServerStateStore {
         }
         case 'userRemove': {
           const userId = operation.operation.value.userId;
+          removeRegisteredAdminUserQueries(this.serverId, userId);
           this.forEachMessageSearch((store) => store.invalidateAuthor(userId));
           removeUserSummaryCacheEntry(this.serverId, userId);
           this.notifications.scrubUser(userId);
@@ -594,6 +599,7 @@ export class ServerStateStore {
 
   /** Clear every mirror whose authority was invalidated by a reset frame. */
   private resetProjectionMirrors(): void {
+    removeRegisteredAdminQueries(this.serverId);
     clearUserSummaryCache(this.serverId);
     for (const store of Object.values(this.#roomMessages)) store.resetProjectionState();
     for (const store of Object.values(this.#threadMessages)) store.resetProjectionState();
@@ -653,7 +659,21 @@ export class ServerStateStore {
 
   /** Update permissions from viewer query data. */
   setPermissions(viewer: ViewerData): void {
+    const previous = this.permissions;
     this.permissions = { ...viewer, loaded: true };
+    const lostAdminCapability =
+      previous.loaded &&
+      ((previous.canViewAdmin && !viewer.canViewAdmin) ||
+        (previous.canAdminViewUsers && !viewer.canAdminViewUsers) ||
+        (previous.canAdminManageAccounts && !viewer.canAdminManageAccounts) ||
+        (previous.canAssignRoles && !viewer.canAssignRoles) ||
+        (previous.canAdminViewRoles && !viewer.canAdminViewRoles) ||
+        (previous.canAdminManageRoles && !viewer.canAdminManageRoles) ||
+        (previous.canAdminViewSystem && !viewer.canAdminViewSystem) ||
+        (previous.canAdminViewAudit && !viewer.canAdminViewAudit));
+    if (lostAdminCapability) {
+      removeRegisteredAdminQueries(this.serverId);
+    }
   }
 
   /**

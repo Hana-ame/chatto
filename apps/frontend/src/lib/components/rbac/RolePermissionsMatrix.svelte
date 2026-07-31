@@ -8,6 +8,7 @@ rendering to `SubjectPermissionsMatrix` (shared with the user variant).
   Mutations go through the admin permission API via `setRolePermission`.
 -->
 <script lang="ts">
+  import { onDestroy } from 'svelte';
   import { Hint } from '$lib/ui';
   import { useConnection } from '$lib/state/server/connection.svelte';
   import { createPermissionAPI } from '$lib/api-client/permissions';
@@ -34,25 +35,42 @@ rendering to `SubjectPermissionsMatrix` (shared with the user variant).
 
   const connection = useConnection();
 
-  function permissionAPI() {
-    return connection().getAPI(createPermissionAPI);
-  }
-
   const matrixQuery = createQuery(
-    () => ({
-      queryKey: adminQueryKeys.rolePermissions(getActiveServer(), connection(), roleName),
-      queryFn: ({ signal }) => permissionAPI().getRolePermissionMatrix(roleName, { signal })
-    }),
+    () => {
+      const serverId = getActiveServer();
+      const activeConnection = connection();
+      const activeRoleName = roleName;
+      return {
+        queryKey: adminQueryKeys.rolePermissions(serverId, activeConnection, activeRoleName),
+        queryFn: ({ signal }) =>
+          activeConnection
+            .getAPI(createPermissionAPI)
+            .getRolePermissionMatrix(activeRoleName, { signal })
+      };
+    },
     () => queryClient
   );
 
   const data = $derived<Matrix | null>(matrixQuery.data ?? null);
   const loading = $derived(matrixQuery.isPending);
   const loadError = $derived(matrixQuery.error instanceof Error ? matrixQuery.error.message : null);
-  let mutationError = $state<string | null>(null);
+  let mutationError = $state<{ context: string; message: string } | null>(null);
   let updatingKey = $state<string | null>(null);
+  let mutationContext = $state<string | null>(null);
   let mutationGeneration = 0;
   const isOwnerRole = $derived(roleName === 'owner');
+  const activeMutationContext = $derived(
+    JSON.stringify([getActiveServer(), connection().queryScope, roleName])
+  );
+  const visibleMutationError = $derived(
+    mutationError?.context === activeMutationContext ? mutationError.message : null
+  );
+  const visibleUpdatingKey = $derived(
+    mutationContext === activeMutationContext ? updatingKey : null
+  );
+  onDestroy(() => {
+    mutationGeneration += 1;
+  });
 
   function mutationScopeFor(scope: MatrixScope, name: string): RoleMutationScope {
     if (scope.kind === 'GROUP') {
@@ -72,9 +90,11 @@ rendering to `SubjectPermissionsMatrix` (shared with the user variant).
     const serverId = getActiveServer();
     const activeConnection = connection();
     const activeRoleName = data.roleName;
+    const context = JSON.stringify([serverId, activeConnection.queryScope, activeRoleName]);
     const queryKey = adminQueryKeys.rolePermissions(serverId, activeConnection, activeRoleName);
     const cellKey = `${scope.id}::${permission}`;
     updatingKey = cellKey;
+    mutationContext = context;
     mutationError = null;
 
     const result = await setRolePermission(
@@ -83,12 +103,15 @@ rendering to `SubjectPermissionsMatrix` (shared with the user variant).
       permission,
       next as PermissionState
     );
+    if (mutationGeneration !== generation) return;
     if (result.error) {
+      if (mutationGeneration === generation && context === activeMutationContext) {
+        mutationError = { context, message: result.error };
+        toast.error(result.error);
+      }
       if (mutationGeneration === generation) {
-        mutationError = result.error;
         updatingKey = null;
       }
-      toast.error(result.error);
       return;
     }
 
@@ -100,8 +123,8 @@ rendering to `SubjectPermissionsMatrix` (shared with the user variant).
   }
 </script>
 
-{#if mutationError || loadError}
-  <Hint tone="danger">{mutationError ?? loadError}</Hint>
+{#if visibleMutationError || loadError}
+  <Hint tone="danger">{visibleMutationError ?? loadError}</Hint>
 {/if}
 
 {#if loading}
@@ -111,7 +134,7 @@ rendering to `SubjectPermissionsMatrix` (shared with the user variant).
 {:else}
   <SubjectPermissionsMatrix
     {data}
-    {updatingKey}
+    updatingKey={visibleUpdatingKey}
     onCycle={handleCycle}
     subjectKind="role"
     forceAllow={isOwnerRole}

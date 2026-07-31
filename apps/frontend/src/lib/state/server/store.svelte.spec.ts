@@ -39,9 +39,14 @@ import {
 } from '@chatto/api-types/realtime/v1/realtime_pb';
 import { MAX_RETAINED_ROOM_TIMELINES } from './realtimeSync.svelte';
 
-const { soundMocks, apiMocks } = vi.hoisted(() => ({
+const { soundMocks, apiMocks, cacheMocks } = vi.hoisted(() => ({
   soundMocks: {
     playCallSound: vi.fn(() => Promise.resolve())
+  },
+  cacheMocks: {
+    removeRegisteredAdminQueries: vi.fn(),
+    removeRegisteredAdminUserQueries: vi.fn(),
+    removeRegisteredServerQueries: vi.fn()
   },
   apiMocks: {
     listRooms: vi.fn(() => Promise.resolve([])),
@@ -161,6 +166,8 @@ const { soundMocks, apiMocks } = vi.hoisted(() => ({
     )
   }
 }));
+
+vi.mock('$lib/query/cacheRegistry', () => cacheMocks);
 
 vi.mock('$lib/audio/callSounds', () => ({
   playCallSound: soundMocks.playCallSound
@@ -677,6 +684,7 @@ describe('ServerStateStore live server updates', () => {
     expect(store.roomDirectory.allRooms).toEqual([]);
     expect(store.roomDirectory.isLoading).toBe(true);
     expect(store.currentUser.loading).toBe(true);
+    expect(cacheMocks.removeRegisteredAdminQueries).toHaveBeenCalledWith(registered.id);
 
     for (const handler of bus.projectionHandlers) {
       handler(
@@ -706,6 +714,29 @@ describe('ServerStateStore live server updates', () => {
     expect(store.serverInfo.motd).toBe('rehydrated');
     expect(store.serverInfo.livekitUrl).toBe('wss://fresh');
     expect(store.activeCallRooms.has('R2')).toBe(true);
+  });
+
+  it('purges cached admin reads when an admin capability is revoked', () => {
+    const store = makeStore(new FakeServerConnection([]));
+    store.setPermissions({
+      canViewAdmin: true,
+      canStartDMs: true,
+      canAdminViewUsers: true,
+      canAdminManageAccounts: true,
+      canAssignRoles: true,
+      canAdminViewRoles: true,
+      canAdminManageRoles: true,
+      canAdminViewSystem: true,
+      canAdminViewAudit: true
+    });
+    cacheMocks.removeRegisteredAdminQueries.mockClear();
+
+    store.setPermissions({
+      ...store.permissions,
+      canAdminViewAudit: false
+    });
+
+    expect(cacheMocks.removeRegisteredAdminQueries).toHaveBeenCalledWith(registered.id);
   });
 
   it('purges removed users from navigation and retained render stores', () => {
@@ -769,6 +800,7 @@ describe('ServerStateStore live server updates', () => {
     expect(store.projection.rooms.get('R1')?.memberUserIds).toEqual([]);
     expect(store.navigation.rooms[0]?.members).toEqual([]);
     expect(messages.events[0]).toMatchObject({ actorId: 'U2', actor: null });
+    expect(cacheMocks.removeRegisteredAdminUserQueries).toHaveBeenCalledWith(registered.id, 'U2');
   });
 
   it('keeps a first-view room timeline loading while requesting it from realtime', () => {

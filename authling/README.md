@@ -1,8 +1,9 @@
 # Authling
 
 Authling is a standalone, self-hostable OpenID Connect identity provider. Its
-experimental runtime currently persists and replays opaque accounts, but it
-does not implement an identity-provider flow or expose a public API yet.
+experimental runtime currently provides verified-email signup and persists
+encrypted local credentials, but it does not implement login, sessions, OIDC,
+or a public API yet.
 
 Contributors must read [`AGENTS.md`](AGENTS.md) before making Authling changes.
 Authling's ADRs, FDRs, architecture inventory, and glossary live under
@@ -37,8 +38,21 @@ Run Authling's tasks from the Authling directory:
 
 ```sh
 cd authling
+mise setup
 mise test
 ```
+
+`mise setup` installs the Go and web dependencies, including Playwright's
+Chromium build. You can then run the browser end-to-end suite with:
+
+```sh
+mise test-e2e
+```
+
+Each end-to-end test starts dedicated Authling and Mailpit processes with an
+isolated temporary embedded-NATS directory and Mailpit database. The harness
+removes that state after the test. Set `AUTHLING_E2E_KEEP_STATE=1` to preserve
+it while diagnosing a failure.
 
 Build and inspect the executable:
 
@@ -47,16 +61,27 @@ mise build
 ./bin/authling version
 ```
 
-Run the experimental standalone account runtime using the checked-in
-development configuration in `authling.toml`:
+Start Mailpit in one terminal, then run Authling with the checked-in development
+configuration in another:
+
+```sh
+mise mailpit
+```
 
 ```sh
 mise authling run
 ```
 
-The development configuration serves Authling's initial status page at
-<http://127.0.0.1:8080>. Set `AUTHLING_HTTP_BIND_ADDRESS` to override the
-listener.
+Or run both development processes together:
+
+```sh
+mise dev
+```
+
+The development configuration serves Authling at <http://127.0.0.1:8080>, with
+signup at <http://127.0.0.1:8080/signup>. Mailpit receives SMTP on port 1025 and
+shows captured messages at <http://127.0.0.1:8025>. Set
+`AUTHLING_HTTP_BIND_ADDRESS` to override the Authling listener.
 
 Authling renders its user interface with templ. Vite compiles Tailwind CSS and
 locally packaged fonts and icons into assets that are embedded in the Go
@@ -66,6 +91,5 @@ Embedded NATS is opt-in and has no TCP listener. For an external NATS
 deployment, configure `nats.client.url` and `nats.client.credentials_file`
 instead. Equivalent `AUTHLING_NATS_*` environment variables override TOML.
 
-The runtime currently has no public account-management or identity protocol.
-Account creation is exercised through the internal domain boundary while the
-public identity protocol is designed.
+The runtime currently has no login, session, public account-management, or
+identity protocol.

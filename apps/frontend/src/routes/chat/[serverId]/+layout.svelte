@@ -85,9 +85,7 @@
 </script>
 
 {#if reauthRequired}
-  <Chrome>
-    {#snippet children()}{/snippet}
-  </Chrome>
+  <Chrome />
 {:else if currentUserState?.user}
   <Chrome>
     {@render children?.()}

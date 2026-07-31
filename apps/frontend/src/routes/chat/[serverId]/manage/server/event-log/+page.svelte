@@ -2,7 +2,7 @@
   import { goto } from '$app/navigation';
   import { resolve } from '$app/paths';
   import { page } from '$app/state';
-  import { SvelteURLSearchParams } from 'svelte/reactivity';
+  import { SvelteSet, SvelteURLSearchParams } from 'svelte/reactivity';
   import { serverIdToSegment } from '$lib/navigation';
   import { getActiveServer } from '$lib/state/activeServer.svelte';
   import { useConnection } from '$lib/state/server/connection.svelte';
@@ -76,7 +76,7 @@
   const eventLog = $derived.by(() => {
     const pages = eventLogQuery.data?.pages ?? [];
     const latestPage: AdminEventLogPage | undefined = pages.at(-1);
-    const seen = new Set<string>();
+    const seen = new SvelteSet<string>();
     const entries = pages.flatMap((eventPage) =>
       eventPage.entries.filter((entry) => {
         if (seen.has(entry.sequence)) return false;

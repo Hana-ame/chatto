@@ -14,6 +14,7 @@
   import { formatDate as formatDateUtil } from '$lib/utils/formatTime';
   import { getLocale } from '$lib/i18n/runtime';
   import { useDebounce } from '$lib/hooks/useDebounce.svelte';
+  import { SvelteSet } from 'svelte/reactivity';
   import { createInfiniteQuery } from '@tanstack/svelte-query';
   import { adminQueryKeys } from '$lib/query/admin';
   import { queryClient } from '$lib/query/client';
@@ -54,7 +55,7 @@
   );
 
   const users = $derived.by(() => {
-    const seen = new Set<string>();
+    const seen = new SvelteSet<string>();
     return (membersQuery.data?.pages ?? []).flatMap((page) =>
       page.users.filter((user) => {
         if (seen.has(user.id)) return false;

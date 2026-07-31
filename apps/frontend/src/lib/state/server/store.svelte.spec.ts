@@ -167,8 +167,6 @@ const { soundMocks, apiMocks, cacheMocks } = vi.hoisted(() => ({
   }
 }));
 
-vi.mock('$lib/query/cacheRegistry', () => cacheMocks);
-
 vi.mock('$lib/audio/callSounds', () => ({
   playCallSound: soundMocks.playCallSound
 }));
@@ -254,6 +252,7 @@ vi.mock('$lib/api-client/attachments', async (importActual) => {
 
 import { ServerStateStore } from './store.svelte';
 import { eventBusManager, setRealtimeSocketFactoryForTests } from './eventBus.svelte';
+import { registerServerQueryCache } from '$lib/query/cacheRegistry';
 import type { ServerConnection } from './serverConnection.svelte';
 import type { RegisteredServer } from './registry.svelte';
 
@@ -387,6 +386,14 @@ function projectedRoomFile(attachmentId = 'A1', messageEventId = 'M1'): RoomFile
 }
 
 beforeEach(() => {
+  registerServerQueryCache({
+    server: cacheMocks.removeRegisteredServerQueries,
+    admin: cacheMocks.removeRegisteredAdminQueries,
+    adminUser: cacheMocks.removeRegisteredAdminUserQueries
+  });
+  cacheMocks.removeRegisteredServerQueries.mockClear();
+  cacheMocks.removeRegisteredAdminQueries.mockClear();
+  cacheMocks.removeRegisteredAdminUserQueries.mockClear();
   apiMocks.listRooms.mockResolvedValue([]);
   apiMocks.listRoomGroups.mockResolvedValue([]);
   apiMocks.listRoomMembers.mockResolvedValue({

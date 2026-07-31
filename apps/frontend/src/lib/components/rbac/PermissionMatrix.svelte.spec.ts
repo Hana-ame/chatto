@@ -377,12 +377,20 @@ describe('PermissionMatrix', () => {
     expect(button.getAttribute('aria-busy')).toBe('true');
     expect(button.querySelector('.animate-spin.uil--spinner')).not.toBeNull();
 
+    nextTierRoles = {
+      ...HAPPY_TIER_ROLES,
+      roles: HAPPY_TIER_ROLES.roles.map((role) =>
+        role.roleName === 'moderator'
+          ? { ...role, override: { permissions: [], permissionDenials: [] } }
+          : role
+      )
+    };
     resolveUpdate?.();
-    await settle();
-
-    expect(button.hasAttribute('aria-busy')).toBe(false);
-    expect(button.querySelector('.animate-spin.uil--spinner')).toBeNull();
-    expect(button.querySelector('.uil--minus')).not.toBeNull();
+    await vi.waitFor(() => {
+      expect(button.hasAttribute('aria-busy')).toBe(false);
+      expect(button.querySelector('.animate-spin.uil--spinner')).toBeNull();
+      expect(button.querySelector('.uil--minus')).not.toBeNull();
+    });
   });
 
   it('invokes onRoleClick when a column header is clicked', async () => {

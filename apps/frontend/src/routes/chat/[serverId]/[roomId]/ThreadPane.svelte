@@ -2,9 +2,7 @@
   import { fly } from 'svelte/transition';
   import { createReadStateAPI, type MarkThreadAsReadResult } from '$lib/api-client/readState';
   import { useProjectionEvent, createTypingIndicator, useUnreadMarker } from '$lib/hooks';
-  import { useConnection } from '$lib/state/server/connection.svelte';
-  import { serverRegistry } from '$lib/state/server/registry.svelte';
-  import { getActiveServer } from '$lib/state/activeServer.svelte';
+  import { useServerScope } from '$lib/state/server/scope.svelte';
   import { isMessagePostedEvent } from '$lib/render/timelineEvents';
   import * as m from '$lib/i18n/messages';
   import { dropZone } from '$lib/attachments/dropZone.svelte';
@@ -56,28 +54,31 @@
     onReplyConsumed?: () => void;
   } = $props();
 
-  const connection = useConnection();
+  const serverScope = useServerScope();
+  const connection = () => serverScope.connection;
+  const activeServerId = $derived(serverScope.serverId);
   const members = $derived(getRoomMembers());
-  const currentUser = $derived(serverRegistry.getStore(getActiveServer()).currentUser);
+  const stores = $derived(serverScope.store);
+  const currentUser = $derived(stores.currentUser);
 
-  const stores = serverRegistry.getStore(getActiveServer());
   const store = $derived(stores.messagesForThread(roomId, threadRootEventId));
 
   // Thread timelines contain decrypted history and are useful only while a
   // pane renders them. Ref-count the stable selector so closing or switching
   // a pane releases its store instead of retaining every thread ever opened.
   $effect(() => {
+    const mountedStores = stores;
     const mountedStore = store;
     const mountedRoomId = roomId;
     const mountedThreadRootEventId = threadRootEventId;
-    stores.retainMessagesForThread(mountedRoomId, mountedThreadRootEventId, mountedStore);
+    mountedStores.retainMessagesForThread(mountedRoomId, mountedThreadRootEventId, mountedStore);
     return () =>
-      stores.releaseMessagesForThread(mountedRoomId, mountedThreadRootEventId, mountedStore);
+      mountedStores.releaseMessagesForThread(mountedRoomId, mountedThreadRootEventId, mountedStore);
   });
 
   $effect(() =>
     onRoomMessageMutated((detail) => {
-      if (detail.serverId !== getActiveServer() || detail.roomId !== roomId) return;
+      if (detail.serverId !== activeServerId || detail.roomId !== roomId) return;
       if (detail.reason === 'message-deleted') {
         store.applyLocalMessageDeletion(detail.eventId);
         return;

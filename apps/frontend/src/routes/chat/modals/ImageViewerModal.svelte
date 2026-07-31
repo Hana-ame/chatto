@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { page } from '$app/state';
   import { replaceState } from '$app/navigation';
   import type { ImageViewerModalState } from '$lib/modal';
@@ -8,7 +9,6 @@
     refreshAttachmentUrlsForAssets
   } from '$lib/attachments/attachmentUrls';
   import { assetUrlForServer } from '$lib/assets/assetUrls';
-  import { getActiveServer } from '$lib/state/activeServer.svelte';
   import { serverConnectionManager } from '$lib/state/server/serverConnection.svelte';
   import ImageModal from '$lib/ui/ImageModal.svelte';
 
@@ -20,18 +20,25 @@
     onclose: () => void;
   } = $props();
 
-  const activeServerId = $derived(getActiveServer());
+  const modalIdentity = untrack(() => ({
+    serverId: modal.serverId,
+    roomId: modal.roomId,
+    eventId: modal.eventId
+  }));
   let currentIndex = $derived(modal.imageIndex);
 
   // Preserve roughly an hour of margin ahead of the 23-hour minimum ticket validity.
   const URL_REFRESH_MS = 22 * 60 * 60 * 1000;
 
   async function refreshUrls() {
-    const api = serverConnectionManager.getClient(activeServerId).getAPI(createAttachmentAPI);
+    const currentImageItems = modal.imageItems;
+    const api = serverConnectionManager
+      .getClient(modalIdentity.serverId)
+      .getAPI(createAttachmentAPI);
     const freshUrls = await refreshAttachmentUrlsForAssets(
       api,
-      modal.roomId,
-      modal.imageItems.map((item) => item.id).filter((id): id is string => !!id),
+      modalIdentity.roomId,
+      currentImageItems.map((item) => item.id).filter((id): id is string => !!id),
       LIGHTBOX_ATTACHMENT_IMAGE_REFRESH
     );
     if (freshUrls.size === 0) return;
@@ -39,8 +46,9 @@
     const latestModal = page.state.modal;
     if (
       latestModal?.type !== 'imageViewer' ||
-      latestModal.roomId !== modal.roomId ||
-      latestModal.eventId !== modal.eventId
+      latestModal.serverId !== modalIdentity.serverId ||
+      latestModal.roomId !== modalIdentity.roomId ||
+      latestModal.eventId !== modalIdentity.eventId
     ) {
       return;
     }
@@ -51,10 +59,10 @@
         return {
           ...item,
           src: refreshed
-            ? (assetUrlForServer(activeServerId, refreshed.thumbnailAssetUrl?.url) ?? '')
+            ? (assetUrlForServer(modalIdentity.serverId, refreshed.thumbnailAssetUrl?.url) ?? '')
             : item.src,
           originalSrc: refreshed
-            ? (assetUrlForServer(activeServerId, refreshed.assetUrl?.url) ?? undefined)
+            ? (assetUrlForServer(modalIdentity.serverId, refreshed.assetUrl?.url) ?? undefined)
             : item.originalSrc
         };
       })
@@ -65,7 +73,7 @@
       return;
     }
 
-    const currentImageId = modal.imageItems[currentIndex]?.id;
+    const currentImageId = latestModal.imageItems[currentIndex]?.id;
     const refreshedImageIndex = currentImageId
       ? imageItems.findIndex((item) => item.id === currentImageId)
       : -1;

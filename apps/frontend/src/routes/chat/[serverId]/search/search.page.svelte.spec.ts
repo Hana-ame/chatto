@@ -96,7 +96,8 @@ describe('message search page', () => {
     const { container } = render(SearchPageTestHarness);
 
     const input = container.querySelector('input') as HTMLInputElement;
-    await userEvent.fill(input, 'motherfucking search');
+    input.value = 'motherfucking search';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
     expect(mocks.search).not.toHaveBeenCalled();
     await waitForSearchDebounce();
 
@@ -120,8 +121,10 @@ describe('message search page', () => {
     );
     expect(document.activeElement).toBe(input);
 
-    await userEvent.fill(input, 'replacement query');
-    await userEvent.keyboard('{Enter}');
+    input.value = 'replacement query';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.form!.requestSubmit();
+    await tick();
 
     expect(mocks.search).toHaveBeenLastCalledWith(
       {
@@ -196,12 +199,12 @@ describe('message search page', () => {
     const { container } = render(SearchPageTestHarness);
     const input = container.querySelector('input') as HTMLInputElement;
 
-    await userEvent.fill(input, 'needle');
-    await userEvent.click(
-      [...container.querySelectorAll('label')].find(
-        (label) => label.textContent?.trim() === 'Newest'
-      )!
-    );
+    input.value = 'needle';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    [...container.querySelectorAll('label')]
+      .find((label) => label.textContent?.trim() === 'Newest')!
+      .click();
+    await tick();
 
     expect(mocks.search).toHaveBeenCalledOnce();
     expect(mocks.search).toHaveBeenCalledWith(

@@ -1,25 +1,40 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
-  import { getAdminSystemInfo, type AdminSystemInfo } from '$lib/api-client/adminDiagnostics';
-  import {
-    Panel,
-    StatCard,
-    DataTable,
-    formatBytes,
-    formatNumber
-  } from '$lib/components/admin';
+  import { getAdminSystemInfo } from '$lib/api-client/adminDiagnostics';
+  import { Panel, StatCard, DataTable, formatBytes, formatNumber } from '$lib/components/admin';
   import { Hint, PaneContent, Pill } from '$lib/ui';
   import PaneHeader from '$lib/ui/PaneHeader.svelte';
   import PageTitle from '$lib/ui/PageTitle.svelte';
   import { useConnection } from '$lib/state/server/connection.svelte';
+  import { getActiveServer } from '$lib/state/activeServer.svelte';
+  import { createQuery } from '@tanstack/svelte-query';
+  import { adminQueryKeys } from '$lib/query/admin';
+  import { queryClient } from '$lib/query/client';
   import * as m from '$lib/i18n/messages';
   import AssetCleanupPanel from './AssetCleanupPanel.svelte';
 
   const connection = useConnection();
 
-  let systemInfo = $state.raw<AdminSystemInfo | null>(null);
-  let loading = $state(true);
-  let error = $state<string | null>(null);
+  const systemInfoQuery = createQuery(
+    () => {
+      const serverId = getActiveServer();
+      const activeConnection = connection();
+      return {
+        queryKey: adminQueryKeys.systemInfo(serverId, activeConnection),
+        queryFn: ({ signal }) => getAdminSystemInfo(activeConnection.apiConfig, { signal })
+      };
+    },
+    () => queryClient
+  );
+
+  const systemInfo = $derived(systemInfoQuery.data ?? null);
+  const loading = $derived(systemInfoQuery.isPending);
+  const error = $derived(
+    systemInfoQuery.error instanceof Error
+      ? systemInfoQuery.error.message
+      : systemInfoQuery.error == null
+        ? null
+        : String(systemInfoQuery.error)
+  );
 
   const streams = $derived(systemInfo?.nats.streams ?? []);
   const consumers = $derived(systemInfo?.nats.consumers ?? []);
@@ -69,23 +84,6 @@
       if (!largest || stream.bytes > largest.bytes) largest = stream;
     }
     return largest;
-  });
-
-  async function loadSystemInfo() {
-    loading = true;
-    error = null;
-    try {
-      systemInfo = await getAdminSystemInfo(connection().apiConfig);
-    } catch (err) {
-      error = err instanceof Error ? err.message : String(err);
-      systemInfo = null;
-    } finally {
-      loading = false;
-    }
-  }
-
-  onMount(() => {
-    void loadSystemInfo();
   });
 
   function formatLimit(limit: number, formatter: (n: number) => string = String): string {

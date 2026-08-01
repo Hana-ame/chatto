@@ -18,6 +18,12 @@ export const adminQueryKeys = {
   members(serverId: string, connection: AdminQueryConnection, search: string) {
     return [...adminQueryKeys.membersRoot(serverId, connection), { search }] as const;
   },
+  bansRoot(serverId: string, connection: AdminQueryConnection) {
+    return [...adminRoot(serverId, connection), 'bans'] as const;
+  },
+  bans(serverId: string, connection: AdminQueryConnection) {
+    return adminQueryKeys.bansRoot(serverId, connection);
+  },
   member(serverId: string, connection: AdminQueryConnection, userId: string) {
     return [...adminRoot(serverId, connection), 'member', userId] as const;
   },
@@ -55,5 +61,8 @@ export const adminQueryKeys = {
   },
   event(serverId: string, connection: AdminQueryConnection, sequence: string) {
     return [...adminRoot(serverId, connection), 'event', sequence] as const;
+  },
+  systemInfo(serverId: string, connection: AdminQueryConnection) {
+    return [...adminRoot(serverId, connection), 'system-info'] as const;
   }
 };

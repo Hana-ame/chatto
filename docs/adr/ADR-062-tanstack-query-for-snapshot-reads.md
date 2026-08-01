@@ -61,6 +61,8 @@ unordered copy of canonical projection state.
 The initial pilot applies this decision to admin member lists and details,
 permission matrices, and event-log lists and details. Other snapshot reads can
 move incrementally when doing so removes meaningful custom lifecycle code.
+The first follow-up applies it to paginated moderation bans and the bounded
+system-diagnostics snapshot.
 
 ## Consequences
 

@@ -7,12 +7,16 @@
   import { Hint, PaneContent, Pill } from '$lib/ui';
   import PaneHeader from '$lib/ui/PaneHeader.svelte';
   import PageTitle from '$lib/ui/PageTitle.svelte';
-  import { getUserSettings } from '$lib/state/userSettings.svelte';
-  import { formatDateTime as formatDateTimeUtil } from '$lib/utils/formatTime';
+  import {
+    formatDateTime as formatDateTimeUtil,
+    timeFormatSettingsFor
+  } from '$lib/utils/formatTime';
   import * as m from '$lib/i18n/messages';
 
   const serverScope = useServerScope();
-  const userSettings = getUserSettings();
+  const userSettings = $derived(
+    timeFormatSettingsFor(serverScope.store.currentUser.user?.settings)
+  );
 
   const sequence = $derived(page.params.sequence!);
   const eventLog = $derived(serverScope.store.adminEventLog);

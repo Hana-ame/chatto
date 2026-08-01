@@ -83,17 +83,10 @@ vi.mock('$lib/state/activeServer.svelte', () => ({
   getActiveServer: () => 'origin'
 }));
 
-vi.mock('$lib/state/userSettings.svelte', () => ({
-  getUserSettings: () => ({
-    effectiveTimezone: undefined,
-    effectiveHour12: undefined
-  })
-}));
-
 vi.mock('$lib/state/server/scope.svelte', () => ({
   useServerScope: () => ({
     serverId: 'origin',
-    store: {},
+    store: { currentUser: { user: { settings: null } } },
     connection: {
       isConnected: true,
       showConnectionLostBanner: false,

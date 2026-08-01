@@ -38,6 +38,36 @@ func TestRuntimeCreatesAccountWithReadYourWrites(t *testing.T) {
 	stopTestRuntime(t, runtime, cancel, runErrors)
 }
 
+func TestRuntimeAppliesConfiguredPasswordMinimumLength(t *testing.T) {
+	cfg := embeddedTestConfig(t)
+	cfg.Authentication.PasswordMinimumLength = 12
+	runtime, cancel, runErrors := startTestRuntime(t, cfg)
+
+	if _, err := runtime.Accounts.CreateLocal(testContext(t), "person@example.com", "12345678901"); !errors.Is(err, accounts.ErrInvalidPassword) || err.Error() != "password must contain at least 12 characters and at most 1024 bytes" {
+		t.Fatalf("eleven-character password error = %v, want configured policy error", err)
+	}
+	if _, err := runtime.Accounts.CreateLocal(testContext(t), "person@example.com", "123456789012"); err != nil {
+		t.Fatalf("create account with twelve-character password: %v", err)
+	}
+
+	stopTestRuntime(t, runtime, cancel, runErrors)
+}
+
+func TestRuntimeRejectsCommonPasswords(t *testing.T) {
+	runtime, cancel, runErrors := startTestRuntime(t, embeddedTestConfig(t))
+
+	for _, password := range []string{"password123", "Password123", "1234567890"} {
+		if _, err := runtime.Accounts.CreateLocal(testContext(t), "person@example.com", password); !errors.Is(err, accounts.ErrInvalidPassword) || err.Error() != "password is too common; choose a less predictable password" {
+			t.Fatalf("CreateLocal password %q error = %v, want common-password policy error", password, err)
+		}
+	}
+	if _, err := runtime.Accounts.CreateLocal(testContext(t), "person@example.com", "password123 is only part of this passphrase"); err != nil {
+		t.Fatalf("create account with non-blocklisted passphrase: %v", err)
+	}
+
+	stopTestRuntime(t, runtime, cancel, runErrors)
+}
+
 func TestRuntimeReplaysAccountsAfterFullRestart(t *testing.T) {
 	cfg := embeddedTestConfig(t)
 	first, cancelFirst, firstErrors := startTestRuntime(t, cfg)
@@ -93,6 +123,16 @@ func TestVerifiedEmailRegistrationCreatesAccountOnlyAfterConfirmation(t *testing
 	if account.ID == "" || runtime.Accounts.Count() != 1 {
 		t.Fatalf("created account = %+v, count = %d", account, runtime.Accounts.Count())
 	}
+	authenticated, err := runtime.Authentication.Login(testContext(t), " PERSON@example.COM ", "a long secure passphrase")
+	if err != nil || authenticated != account {
+		t.Fatalf("authenticated account = %+v, error = %v; want %+v", authenticated, err, account)
+	}
+	if _, err := runtime.Authentication.Login(testContext(t), "person@example.com", "wrong password"); !errors.Is(err, accounts.ErrInvalidCredentials) {
+		t.Fatalf("wrong-password error = %v, want ErrInvalidCredentials", err)
+	}
+	if _, err := runtime.Authentication.Login(testContext(t), "absent@example.com", "wrong password"); !errors.Is(err, accounts.ErrInvalidCredentials) {
+		t.Fatalf("absent-account error = %v, want ErrInvalidCredentials", err)
+	}
 	if _, err := runtime.Registration.Complete(testContext(t), flow, "a long secure passphrase"); !errors.Is(err, registration.ErrInvalidFlow) {
 		t.Fatalf("reused flow error = %v, want ErrInvalidFlow", err)
 	}
@@ -118,6 +158,60 @@ func TestVerifiedEmailRegistrationCreatesAccountOnlyAfterConfirmation(t *testing
 		t.Fatalf("duplicate completion error = %v, want ErrEmailClaimed", err)
 	}
 	stopTestRuntime(t, restarted, cancelRestarted, restartErrors)
+}
+
+func TestBrowserSessionSurvivesRestartAndCanBeRevoked(t *testing.T) {
+	cfg := embeddedTestConfig(t)
+	first, cancelFirst, firstErrors := startTestRuntime(t, cfg)
+	account, err := first.Accounts.Create(testContext(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, created, err := first.Sessions.Create(testContext(t), account.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := first.Sessions.Validate(testContext(t), token); err != nil || got != created {
+		t.Fatalf("validated session = %+v, error = %v; want %+v", got, err, created)
+	}
+	stopTestRuntime(t, first, cancelFirst, firstErrors)
+
+	restarted, cancelRestarted, restartedErrors := startTestRuntime(t, cfg)
+	if got, err := restarted.Sessions.Validate(testContext(t), token); err != nil || got.AccountID != account.ID {
+		t.Fatalf("restarted session = %+v, error = %v; want account %q", got, err, account.ID)
+	}
+	if err := restarted.Sessions.Revoke(testContext(t), token); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := restarted.Sessions.Validate(testContext(t), token); err == nil {
+		t.Fatal("revoked session still validates")
+	}
+	stopTestRuntime(t, restarted, cancelRestarted, restartedErrors)
+}
+
+func TestLoginThrottlesAfterTenFailedAttempts(t *testing.T) {
+	sender := &capturingSender{}
+	runtime, cancel, runErrors := startTestRuntime(t, embeddedTestConfig(t), sender)
+	defer stopTestRuntime(t, runtime, cancel, runErrors)
+	flow, err := runtime.Registration.Start(testContext(t), "limited@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	code := regexp.MustCompile(`\b[0-9]{6}\b`).FindString(sender.last().Body)
+	if err := runtime.Registration.Verify(testContext(t), flow, code); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.Registration.Complete(testContext(t), flow, "a sufficiently long throttle password"); err != nil {
+		t.Fatal(err)
+	}
+	for range 10 {
+		if _, err := runtime.Authentication.Login(testContext(t), "limited@example.com", "wrong password"); !errors.Is(err, accounts.ErrInvalidCredentials) {
+			t.Fatalf("failed login error = %v, want ErrInvalidCredentials", err)
+		}
+	}
+	if _, err := runtime.Authentication.Login(testContext(t), "limited@example.com", "a sufficiently long throttle password"); !errors.Is(err, accounts.ErrInvalidCredentials) {
+		t.Fatalf("throttled valid login error = %v, want ErrInvalidCredentials", err)
+	}
 }
 
 func TestRegistrationExhaustsFlowAfterFiveWrongCodes(t *testing.T) {

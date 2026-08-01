@@ -7,7 +7,7 @@ test('serves the public pages with browser security headers', async ({ page }) =
   expect(response?.headers()['content-security-policy']).toContain("default-src 'none'");
   expect(response?.headers()['content-security-policy']).toContain("form-action 'self'");
   expect(response?.headers()['content-security-policy']).toContain("frame-ancestors 'none'");
-  expect(response?.headers()['referrer-policy']).toBe('no-referrer');
+  expect(response?.headers()['referrer-policy']).toBe('origin');
   expect(response?.headers()['x-content-type-options']).toBe('nosniff');
   expect(response?.headers()['x-frame-options']).toBe('DENY');
 
@@ -16,7 +16,7 @@ test('serves the public pages with browser security headers', async ({ page }) =
   await expect(page.getByRole('heading', { name: 'Create your account' })).toBeVisible();
 });
 
-for (const path of ['/signup', '/signup/verify', '/signup/complete']) {
+for (const path of ['/login', '/logout', '/signup', '/signup/verify', '/signup/complete']) {
   test(`rejects cross-origin form submission to ${path}`, async ({ request, stack }) => {
     const response = await request.post(`${stack.baseURL}${path}`, {
       headers: {

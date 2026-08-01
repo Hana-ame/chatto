@@ -11,13 +11,31 @@ import (
 	"hmans.de/chatto/pkg/appconfig"
 )
 
-const DefaultPath = "authling.toml"
+const (
+	DefaultPath                  = "authling.toml"
+	DefaultPasswordMinimumLength = 10
+)
 
 // Config is Authling's canonical process configuration.
 type Config struct {
-	HTTP HTTPConfig `toml:"http"`
-	NATS NATSConfig `toml:"nats"`
-	SMTP SMTPConfig `toml:"smtp"`
+	HTTP           HTTPConfig           `toml:"http"`
+	Authentication AuthenticationConfig `toml:"authentication"`
+	NATS           NATSConfig           `toml:"nats"`
+	SMTP           SMTPConfig           `toml:"smtp"`
+}
+
+// AuthenticationConfig controls local authentication policy.
+type AuthenticationConfig struct {
+	PasswordMinimumLength int `toml:"password_minimum_length" env:"AUTHLING_AUTHENTICATION_PASSWORD_MINIMUM_LENGTH"`
+}
+
+// PasswordMinimumLengthOrDefault returns the configured minimum number of
+// Unicode characters accepted for a local password.
+func (c AuthenticationConfig) PasswordMinimumLengthOrDefault() int {
+	if c.PasswordMinimumLength == 0 {
+		return DefaultPasswordMinimumLength
+	}
+	return c.PasswordMinimumLength
 }
 
 // SMTPTLSPolicy controls SMTP transport encryption.
@@ -58,6 +76,25 @@ func (c SMTPConfig) TLSPolicyOrDefault() SMTPTLSPolicy {
 // HTTPConfig controls Authling's public HTTP listener.
 type HTTPConfig struct {
 	BindAddress string `toml:"bind_address" env:"AUTHLING_HTTP_BIND_ADDRESS"`
+	// PublicURL is the externally visible origin. It determines whether browser
+	// cookies require HTTPS and will become the basis of Authling's issuer URL.
+	PublicURL string `toml:"public_url" env:"AUTHLING_HTTP_PUBLIC_URL"`
+}
+
+// PublicURLOrDefault returns the configured browser origin. A loopback
+// listener defaults to its own plain-HTTP origin for local development.
+func (c HTTPConfig) PublicURLOrDefault() string {
+	if strings.TrimSpace(c.PublicURL) != "" {
+		return c.PublicURL
+	}
+	return "http://" + c.BindAddressOrDefault()
+}
+
+// SecureCookies reports whether the public origin requires HTTPS cookies.
+// Validate must be called before this method.
+func (c HTTPConfig) SecureCookies() bool {
+	parsed, err := url.Parse(c.PublicURLOrDefault())
+	return err == nil && strings.EqualFold(parsed.Scheme, "https")
 }
 
 // BindAddressOrDefault returns the configured listener address or the safe
@@ -126,6 +163,9 @@ func (c *Config) applyDefaults() {
 // Validate checks that Authling has exactly one usable NATS deployment mode.
 func (c Config) Validate() error {
 	var problems []string
+	if minimum := c.Authentication.PasswordMinimumLengthOrDefault(); minimum < 8 || minimum > 128 {
+		problems = append(problems, "authentication.password_minimum_length must be between 8 and 128")
+	}
 	host, portText, err := net.SplitHostPort(c.HTTP.BindAddressOrDefault())
 	if err != nil {
 		problems = append(problems, "http.bind_address must be a host:port listener address")
@@ -136,6 +176,18 @@ func (c Config) Validate() error {
 		}
 		if strings.ContainsAny(host, "\r\n") {
 			problems = append(problems, "http.bind_address contains invalid characters")
+		}
+	}
+	publicURL, publicURLErr := url.Parse(c.HTTP.PublicURLOrDefault())
+	if publicURLErr != nil || publicURL.Host == "" ||
+		(publicURL.Scheme != "http" && publicURL.Scheme != "https") ||
+		publicURL.User != nil || (publicURL.Path != "" && publicURL.Path != "/") ||
+		publicURL.RawQuery != "" || publicURL.Fragment != "" {
+		problems = append(problems, "http.public_url must be an absolute HTTP(S) origin without credentials, paths, queries, or fragments")
+	} else if publicURL.Scheme == "http" {
+		bindHost, _, bindErr := net.SplitHostPort(c.HTTP.BindAddressOrDefault())
+		if bindErr != nil || !isLoopbackHost(bindHost) || !isLoopbackHost(publicURL.Hostname()) {
+			problems = append(problems, "http.public_url may use plain HTTP only when both the public URL and listener are loopback")
 		}
 	}
 	replicas := c.NATS.ReplicasOrDefault()
@@ -190,6 +242,14 @@ func (c Config) Validate() error {
 		return fmt.Errorf("config validation failed:\n  - %s", strings.Join(problems, "\n  - "))
 	}
 	return nil
+}
+
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	address := net.ParseIP(host)
+	return address != nil && address.IsLoopback()
 }
 
 func validNATSScheme(scheme string) bool {

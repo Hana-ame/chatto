@@ -1,9 +1,9 @@
 # Authling
 
 Authling is a standalone, self-hostable OpenID Connect identity provider. Its
-experimental runtime currently provides verified-email signup and persists
-encrypted local credentials, but it does not implement login, sessions, OIDC,
-or a public API yet.
+experimental runtime currently provides verified-email signup, encrypted local
+credentials, password login, and revocable browser sessions. It does not yet
+implement OIDC or a public API.
 
 Contributors must read [`AGENTS.md`](AGENTS.md) before making Authling changes.
 Authling's ADRs, FDRs, architecture inventory, and glossary live under
@@ -78,10 +78,25 @@ Or run both development processes together:
 mise dev
 ```
 
-The development configuration serves Authling at <http://127.0.0.1:8080>, with
-signup at <http://127.0.0.1:8080/signup>. Mailpit receives SMTP on port 1025 and
-shows captured messages at <http://127.0.0.1:8025>. Set
-`AUTHLING_HTTP_BIND_ADDRESS` to override the Authling listener.
+The development configuration serves Authling at <http://localhost:8080>, with
+signup at <http://localhost:8080/signup> and login at
+<http://localhost:8080/login>. Mailpit receives SMTP on port 1025 and shows
+captured messages at <http://127.0.0.1:8025>. Set
+`AUTHLING_HTTP_BIND_ADDRESS` to override the Authling listener and
+`AUTHLING_HTTP_PUBLIC_URL` to its externally visible origin. The checked-in
+configuration declares a loopback HTTP origin for local development.
+
+Local passwords require ten Unicode characters by default. Configure
+`authentication.password_minimum_length` (or
+`AUTHLING_AUTHENTICATION_PASSWORD_MINIMUM_LENGTH`) to choose a minimum from
+eight through 128; passwords remain limited to 1,024 UTF-8 bytes. Authling also
+rejects exact, case-insensitive matches from its small built-in list of common
+passwords. This baseline list is not yet a comprehensive compromised-password
+corpus.
+
+Authling's HTTP listener does not terminate TLS. Production deployments must
+place it behind an HTTPS reverse proxy and configure an `https://` public URL.
+Plain HTTP is supported only when both the public URL and listener are loopback.
 
 Authling renders its user interface with templ. Vite compiles Tailwind CSS and
 locally packaged fonts and icons into assets that are embedded in the Go
@@ -91,5 +106,4 @@ Embedded NATS is opt-in and has no TCP listener. For an external NATS
 deployment, configure `nats.client.url` and `nats.client.credentials_file`
 instead. Equivalent `AUTHLING_NATS_*` environment variables override TOML.
 
-The runtime currently has no login, session, public account-management, or
-identity protocol.
+The runtime currently has no public account-management or identity protocol.

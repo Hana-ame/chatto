@@ -1,0 +1,57 @@
+name: build-linux
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - ci/deploy
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup environment
+        uses: ./.github/actions/setup
+
+      - name: Resolve version
+        id: version
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse HEAD)"
+          development_version="$(mise env --json | jq -r '.CHATTO_DEVELOPMENT_VERSION // empty')"
+          if [[ -n "$development_version" ]]; then
+            version="${development_version}+${sha:0:12}"
+          else
+            release_version="$(sed -n 's/.*Version = "\([^"]*\)".*/\1/p' cli/version.go)"
+            version="${release_version}+${sha:0:12}"
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Build frontend assets
+        run: mise build-frontend
+        env:
+          CHATTO_BUILD_VERSION: ${{ steps.version.outputs.version }}
+          CHATTO_FRONTEND_PRECOMPRESS: "1"
+
+      - name: Build CLI binary
+        run: |
+          set -euo pipefail
+          cd cli
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
+            -ldflags="-s -w -X main.Version=${VERSION}" \
+            -o /tmp/chatto .
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: chatto-linux-amd64
+          path: /tmp/chatto
+          if-no-files-found: error

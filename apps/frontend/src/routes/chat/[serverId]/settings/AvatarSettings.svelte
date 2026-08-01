@@ -1,18 +1,18 @@
 <script lang="ts">
+  import { useServerScope } from '$lib/state/server/scope.svelte';
   import type { AccountAPI } from '$lib/api-client/account';
   import DropZoneOverlay from '$lib/attachments/DropZoneOverlay.svelte';
   import { dropZone } from '$lib/attachments/dropZone.svelte';
   import * as m from '$lib/i18n/messages';
-  import { getActiveServer } from '$lib/state/activeServer.svelte';
-  import { serverRegistry } from '$lib/state/server/registry.svelte';
   import { FormSection } from '$lib/ui';
   import { Button } from '$lib/ui/form';
   import { toast } from '$lib/ui/toast';
   import { getAvatarInitials } from '$lib/utils/initials';
 
-  // This route is scoped to one server, so the current-user store is stable
-  // for the component lifetime while its fields remain reactive.
-  const currentUser = serverRegistry.getStore(getActiveServer()).currentUser;
+  // The server route keys its subtree by server, so the current-user store is
+  // stable for the component lifetime while its fields remain reactive.
+  const serverScope = useServerScope();
+  const currentUser = serverScope.store.currentUser;
 
   let { getAccountAPI }: { getAccountAPI: () => AccountAPI } = $props();
 
@@ -41,6 +41,7 @@
 
     try {
       const updated = await getAccountAPI().uploadAvatar(file);
+      if (!serverScope.isCurrent()) return;
       avatarUrl = updated.avatarUrl ?? null;
 
       if (currentUser.user) {
@@ -52,12 +53,15 @@
 
       toast.success(m['settings.profile.avatar.uploaded']());
     } catch (error) {
+      if (!serverScope.isCurrent()) return;
       toast.error(
         error instanceof Error ? error.message : m['settings.profile.avatar.upload_failed']()
       );
     } finally {
-      uploading = false;
-      if (fileInput) fileInput.value = '';
+      if (serverScope.isCurrent()) {
+        uploading = false;
+        if (fileInput) fileInput.value = '';
+      }
     }
   }
 
@@ -80,6 +84,7 @@
 
     try {
       const updated = await getAccountAPI().deleteAvatar();
+      if (!serverScope.isCurrent()) return;
       avatarUrl = updated.avatarUrl ?? null;
 
       if (currentUser.user) {
@@ -91,11 +96,12 @@
 
       toast.success(m['settings.profile.avatar.removed']());
     } catch (error) {
+      if (!serverScope.isCurrent()) return;
       toast.error(
         error instanceof Error ? error.message : m['settings.profile.avatar.delete_failed']()
       );
     } finally {
-      deleting = false;
+      if (serverScope.isCurrent()) deleting = false;
     }
   }
 </script>

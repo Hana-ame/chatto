@@ -197,12 +197,14 @@ calls, and similar room-specific panels can plug into the same shell. See the
       const api = connection().getAPI(createRoomCommandAPI);
       await api.banMember({ roomId, userId: member.id, reason, expiresAt });
     } catch (error) {
+      if (!serverScope.isCurrent()) return;
       banningMemberId = null;
       banError = m['room.sidebar.ban_failed']();
       toast.error(banError);
       console.error('Failed to ban member from room:', error);
       return;
     }
+    if (!serverScope.isCurrent()) return;
     banningMemberId = null;
 
     toast.success(m['room.sidebar.ban_success']({ name: displayName }));
@@ -452,7 +454,7 @@ calls, and similar room-specific panels can plug into the same shell. See the
       ? m['common.deleted_user']()
       : m['room.sidebar.view_profile']({ name: getLiveDisplayName(member.id, member.displayName) })}
   >
-    <UserAvatar user={member} size="sm" showPresence />
+    <UserAvatar user={member} serverId={serverScope.serverId} size="sm" showPresence />
     <div class="min-w-0 flex-1">
       <div class="flex min-w-0 items-center gap-1.5">
         <span class="min-w-0 truncate">

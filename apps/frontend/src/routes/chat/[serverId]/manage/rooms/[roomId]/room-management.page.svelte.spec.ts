@@ -35,22 +35,6 @@ vi.mock('$lib/hooks', () => ({
   }
 }));
 
-vi.mock('$lib/state/server/serverConnection.svelte', () => ({
-  serverConnectionManager: {
-    getClient: (serverId: string) => ({
-      serverId,
-      connectBaseUrl: `https://${serverId}.example.test/api/connect`,
-      bearerToken: `${serverId}-token`,
-      getAPI: (factory: (config: never) => unknown) =>
-        factory({
-          serverId,
-          baseUrl: `https://${serverId}.example.test/api/connect`,
-          bearerToken: `${serverId}-token`
-        } as never)
-    })
-  }
-}));
-
 vi.mock('$lib/state/server/registry.svelte', () => ({
   serverRegistry: {
     isOriginServer: () => false,
@@ -65,6 +49,36 @@ vi.mock('$lib/state/server/registry.svelte', () => ({
     }),
     getStore: () => ({})
   }
+}));
+
+vi.mock('$lib/state/server/scope.svelte', () => ({
+  useServerScope: () => ({
+    get serverId() {
+      return roomManagementPageTestState.serverId;
+    },
+    get connection() {
+      const serverId = roomManagementPageTestState.serverId;
+      return {
+        getAPI: (factory: (config: never) => unknown) =>
+          factory({
+            serverId,
+            baseUrl: `https://${serverId}.example.test/api/connect`,
+            bearerToken: `${serverId}-token`
+          } as never)
+      };
+    },
+    get store() {
+      return {
+        serverInfo: {
+          get version() {
+            return mocks.serverVersion;
+          },
+          supportsFeature: () => mocks.serverVersion === '0.5.0'
+        }
+      };
+    },
+    isCurrent: () => true
+  })
 }));
 
 vi.mock('$lib/state/server/chromePermissions.svelte', () => ({

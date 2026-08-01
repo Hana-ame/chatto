@@ -10,7 +10,7 @@ rendering to `SubjectPermissionsMatrix` (shared with the user variant).
 <script lang="ts">
   import { untrack } from 'svelte';
   import { Hint } from '$lib/ui';
-  import { useConnection } from '$lib/state/server/connection.svelte';
+  import { useServerScope } from '$lib/state/server/scope.svelte';
   import { createPermissionAPI } from '$lib/api-client/permissions';
   import { toast } from '$lib/ui/toast';
   import * as m from '$lib/i18n/messages';
@@ -29,23 +29,27 @@ rendering to `SubjectPermissionsMatrix` (shared with the user variant).
 
   let { roleName }: { roleName: string } = $props();
 
-  const connection = useConnection();
+  const serverScope = useServerScope();
 
   function permissionAPI() {
-    return connection().getAPI(createPermissionAPI);
+    return serverScope.connection.getAPI(createPermissionAPI);
   }
 
   let data = $state<Matrix | null>(null);
   let loading = $state(true);
   let error = $state<string | null>(null);
   let updatingKey = $state<string | null>(null);
+  let resourceGeneration = 0;
   const isOwnerRole = $derived(roleName === 'owner');
 
   $effect(() => {
-    void load(roleName);
+    const name = roleName;
+    const generation = ++resourceGeneration;
+    updatingKey = null;
+    void load(name, generation);
   });
 
-  async function load(name: string) {
+  async function load(name: string, generation: number) {
     const current = untrack(() => data);
     if (!current || current.roleName !== name) loading = true;
     error = null;
@@ -54,13 +58,14 @@ rendering to `SubjectPermissionsMatrix` (shared with the user variant).
     try {
       matrix = await permissionAPI().getRolePermissionMatrix(name);
     } catch (err) {
-      if (name !== roleName) return;
+      if (!serverScope.isCurrent() || generation !== resourceGeneration || name !== roleName)
+        return;
       loading = false;
       error = err instanceof Error ? err.message : String(err);
       return;
     }
 
-    if (name !== roleName) return;
+    if (!serverScope.isCurrent() || generation !== resourceGeneration || name !== roleName) return;
 
     loading = false;
     if (!matrix) {
@@ -89,17 +94,26 @@ rendering to `SubjectPermissionsMatrix` (shared with the user variant).
   }
 
   async function handleCycle(scope: MatrixScope, permission: string, next: CellState) {
-    if (!data) return;
+    if (!data || updatingKey) return;
+    const targetRoleName = data.roleName;
+    const generation = resourceGeneration;
     const cellKey = `${scope.id}::${permission}`;
     updatingKey = cellKey;
     error = null;
 
     const result = await setRolePermission(
       permissionAPI(),
-      mutationScopeFor(scope, data.roleName),
+      mutationScopeFor(scope, targetRoleName),
       permission,
       next as PermissionState
     );
+    if (
+      !serverScope.isCurrent() ||
+      generation !== resourceGeneration ||
+      targetRoleName !== roleName ||
+      data?.roleName !== targetRoleName
+    )
+      return;
     if (result.error) {
       error = result.error;
       toast.error(result.error);
@@ -107,8 +121,9 @@ rendering to `SubjectPermissionsMatrix` (shared with the user variant).
       return;
     }
 
-    await load(data.roleName);
-    updatingKey = null;
+    await load(targetRoleName, generation);
+    if (serverScope.isCurrent() && generation === resourceGeneration && targetRoleName === roleName)
+      updatingKey = null;
   }
 </script>
 
@@ -127,6 +142,6 @@ rendering to `SubjectPermissionsMatrix` (shared with the user variant).
     onCycle={handleCycle}
     subjectKind="role"
     forceAllow={isOwnerRole}
-    readOnly={isOwnerRole}
+    readOnly={isOwnerRole || updatingKey !== null}
   />
 {/if}

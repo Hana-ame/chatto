@@ -29,7 +29,7 @@ focusing a cell highlights its permission row and role column.
   import { Panel, DataTable } from '$lib/components/admin';
   import { Hint, HelpTooltip } from '$lib/ui';
   import { ShortcutTextInput } from '$lib/ui/form';
-  import { useConnection } from '$lib/state/server/connection.svelte';
+  import { useServerScope } from '$lib/state/server/scope.svelte';
   import { createPermissionAPI } from '$lib/api-client/permissions';
   import { toast } from '$lib/ui/toast';
   import { getPermissionDescription } from '$lib/permissions';
@@ -38,6 +38,11 @@ focusing a cell highlights its permission row and role column.
   import * as m from '$lib/i18n/messages';
 
   type State = 'allow' | 'deny' | 'neutral';
+  type PermissionScopeIdentity = {
+    spaceId: string | null;
+    roomId: string | null;
+    groupId: string | null;
+  };
   type MatrixCoordinate = { category: string; column: string; permission: string };
 
   type TierPerms = { permissions: string[]; permissionDenials: string[] };
@@ -132,10 +137,10 @@ focusing a cell highlights its permission row and role column.
     scrollContents?: boolean;
   } = $props();
 
-  const connection = useConnection();
+  const serverScope = useServerScope();
 
   function permissionAPI() {
-    return connection().getAPI(createPermissionAPI);
+    return serverScope.connection.getAPI(createPermissionAPI);
   }
 
   let data = $state<TierRoles | null>(null);
@@ -144,16 +149,19 @@ focusing a cell highlights its permission row and role column.
   let updating = $state<string[]>([]); // "{roleName}::{permission}" entries with mutations in flight
   let hoveredCell = $state<MatrixCoordinate | null>(null);
   let focusedCell = $state<MatrixCoordinate | null>(null);
+  let resourceGeneration = 0;
   const highlightedCell = $derived(hoveredCell ?? focusedCell);
 
   $effect(() => {
     const s = spaceId ?? null;
     const rm = roomId ?? null;
     const st = groupId ?? null;
-    void load(s, rm, st);
+    const generation = ++resourceGeneration;
+    updating = [];
+    void load(s, rm, st, generation);
   });
 
-  async function load(s: string | null, rm: string | null, st: string | null) {
+  async function load(s: string | null, rm: string | null, st: string | null, generation: number) {
     loading = true;
     error = null;
 
@@ -164,7 +172,13 @@ focusing a cell highlights its permission row and role column.
         groupId: st
       });
     } catch (err) {
-      if (s !== (spaceId ?? null) || rm !== (roomId ?? null) || st !== (groupId ?? null)) {
+      if (
+        !serverScope.isCurrent() ||
+        generation !== resourceGeneration ||
+        s !== (spaceId ?? null) ||
+        rm !== (roomId ?? null) ||
+        st !== (groupId ?? null)
+      ) {
         return;
       }
       loading = false;
@@ -172,7 +186,13 @@ focusing a cell highlights its permission row and role column.
       return;
     }
 
-    if (s !== (spaceId ?? null) || rm !== (roomId ?? null) || st !== (groupId ?? null)) {
+    if (
+      !serverScope.isCurrent() ||
+      generation !== resourceGeneration ||
+      s !== (spaceId ?? null) ||
+      rm !== (roomId ?? null) ||
+      st !== (groupId ?? null)
+    ) {
       return;
     }
 
@@ -277,14 +297,35 @@ focusing a cell highlights its permission row and role column.
     return { tier: 'server', roleName: role.roleName };
   }
 
+  function currentScopeIdentity(): PermissionScopeIdentity {
+    return {
+      spaceId: spaceId ?? null,
+      roomId: roomId ?? null,
+      groupId: groupId ?? null
+    };
+  }
+
+  function isCurrentScope(identity: PermissionScopeIdentity): boolean {
+    const current = currentScopeIdentity();
+    return (
+      serverScope.isCurrent() &&
+      identity.spaceId === current.spaceId &&
+      identity.roomId === current.roomId &&
+      identity.groupId === current.groupId
+    );
+  }
+
   async function cycle(role: TierRole, permission: string, next: State) {
     if (!data) return;
+    const identity = currentScopeIdentity();
+    const generation = resourceGeneration;
     const cellKey = `${role.roleName}::${permission}`;
     if (updating.includes(cellKey)) return;
     updating = [...updating, cellKey];
     error = null;
 
     const result = await setRolePermission(permissionAPI(), scopeFor(role), permission, next);
+    if (generation !== resourceGeneration || !isCurrentScope(identity)) return;
     if (result.error) {
       error = result.error;
       toast.error(result.error);

@@ -24,11 +24,16 @@ vi.mock('$app/paths', () => ({
       .replace('[threadId]', params?.threadId ?? '')
 }));
 
-vi.mock('$lib/state/server/connection.svelte', () => ({
-  useConnection: () => () => ({
-    client: {
-      mutation: vi.fn().mockResolvedValue({ error: null })
-    }
+vi.mock('$lib/state/server/scope.svelte', () => ({
+  useServerScope: () => ({
+    serverId: 'server-1',
+    store: {},
+    connection: {
+      client: {
+        mutation: vi.fn().mockResolvedValue({ error: null })
+      }
+    },
+    isCurrent: () => true
   })
 }));
 

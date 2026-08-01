@@ -5,16 +5,19 @@
   import { useServerScope } from '$lib/state/server/scope.svelte';
   import { createAccountAPI } from '$lib/api-client/account';
   import { TimeFormat } from '@chatto/api-types/api/v1/viewer_pb';
-  import { getUserSettings, hour12ForTimeFormat } from '$lib/state/userSettings.svelte';
+  import { untrack } from 'svelte';
   import { userPreferences, type DisplayTheme } from '$lib/state/userPreferences.svelte';
   import { ChoiceRow, PaneHeader, FormSection } from '$lib/ui';
   import { Button, Combobox, FormError } from '$lib/ui/form';
   import { toast } from '$lib/ui/toast';
-  import { formatMessageTime } from '$lib/utils/formatTime';
+  import {
+    formatMessageTime,
+    hour12ForTimeFormat
+  } from '$lib/utils/formatTime';
 
   const serverScope = useServerScope();
-  const userSettings = getUserSettings();
   const currentUser = $derived(serverScope.store.currentUser);
+  const savedSettings = $derived(currentUser.user?.settings);
   const activeLocale = $derived(getLocale());
 
   function accountAPI() {
@@ -24,10 +27,13 @@
   // All available IANA timezone names
   const allTimezones = Intl.supportedValuesOf('timeZone');
 
-  // Form state - initialize from current settings
-  let timezoneSearch = $state(userSettings.timezone ?? '');
-  let selectedTimezone = $state(userSettings.timezone ?? '');
-  let selectedTimeFormat = $state<TimeFormat>(userSettings.timeFormat);
+  // These are edit buffers, so capture the scoped viewer settings once when
+  // the page mounts. The enclosing keyed ServerScope remounts on auth changes.
+  let timezoneSearch = $state(untrack(() => savedSettings?.timezone ?? ''));
+  let selectedTimezone = $state(untrack(() => savedSettings?.timezone ?? ''));
+  let selectedTimeFormat = $state<TimeFormat>(
+    untrack(() => savedSettings?.timeFormat ?? TimeFormat.TIME_FORMAT_AUTO)
+  );
   let isSaving = $state(false);
   let error = $state('');
 
@@ -43,8 +49,8 @@
 
   // Track if the form has been modified
   const isModified = $derived(
-    (selectedTimezone || null) !== userSettings.timezone ||
-      selectedTimeFormat !== userSettings.timeFormat
+    (selectedTimezone || null) !== (savedSettings?.timezone ?? null) ||
+      selectedTimeFormat !== (savedSettings?.timeFormat ?? TimeFormat.TIME_FORMAT_AUTO)
   );
 
   // Timezone validation
@@ -87,13 +93,11 @@
     error = '';
 
     try {
-      // Update the local settings state so formatting changes take effect immediately
       const settings = await accountAPI().updateSettings({
         timezone: selectedTimezone || null,
         timeFormat: selectedTimeFormat
       });
       if (!serverScope.isCurrent()) return;
-      userSettings.updateFromData(settings);
       if (currentUser.user) {
         currentUser.user = {
           ...currentUser.user,

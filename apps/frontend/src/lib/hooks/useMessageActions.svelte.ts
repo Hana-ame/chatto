@@ -1,4 +1,4 @@
-import { useConnection } from '$lib/state/server/connection.svelte';
+import { useServerScope } from '$lib/state/server/scope.svelte';
 import { toast } from '$lib/ui/toast';
 import { pushState } from '$app/navigation';
 import { getComposerContext, type MessagesStore } from '$lib/state/room';
@@ -34,7 +34,7 @@ export async function copyMessageTextToClipboard(messageBody: string): Promise<v
 
 /** Shared reaction mutation handlers for all message reaction controls. */
 export function useReactionActions() {
-  const connection = useConnection();
+  const serverScope = useServerScope();
 
   function reactionName(emojiOrName: string): string | null {
     return emojiToName(emojiOrName) ?? emojiOrName;
@@ -50,14 +50,16 @@ export function useReactionActions() {
     });
 
     try {
-      const result = await connection().getAPI(createReactionAPI).addReaction({
+      const result = await serverScope.connection.getAPI(createReactionAPI).addReaction({
         roomId: params.roomId,
         messageEventId: params.messageEventId,
         emoji: name
       });
+      if (!serverScope.isCurrent()) return;
       optimistic?.applyServerReaction(result.reaction);
     } catch {
       optimistic?.rollback();
+      if (!serverScope.isCurrent()) return;
       toast.error(m['room.message.reaction_failed']());
     }
   }
@@ -72,14 +74,16 @@ export function useReactionActions() {
     });
 
     try {
-      const result = await connection().getAPI(createReactionAPI).removeReaction({
+      const result = await serverScope.connection.getAPI(createReactionAPI).removeReaction({
         roomId: params.roomId,
         messageEventId: params.messageEventId,
         emoji: name
       });
+      if (!serverScope.isCurrent()) return;
       optimistic?.applyServerReaction(result.reaction);
     } catch {
       optimistic?.rollback();
+      if (!serverScope.isCurrent()) return;
       toast.error(m['room.message.reaction_failed']());
     }
   }

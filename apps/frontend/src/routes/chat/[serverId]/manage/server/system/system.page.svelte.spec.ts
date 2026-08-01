@@ -8,17 +8,18 @@ const mocks = vi.hoisted(() => ({
   getAdminSystemInfo: vi.fn()
 }));
 
-vi.mock('$lib/state/activeServer.svelte', () => ({
-  getActiveServer: () => 'origin'
-}));
-
-vi.mock('$lib/state/server/connection.svelte', () => ({
-  useConnection: () => () => ({
-    queryScope: 'system-test',
-    apiConfig: {
-      baseUrl: '/api/connect',
-      bearerToken: 'token'
-    }
+vi.mock('$lib/state/server/scope.svelte', () => ({
+  useServerScope: () => ({
+    serverId: 'origin',
+    store: {},
+    connection: {
+      queryScope: 'system-test',
+      apiConfig: {
+        baseUrl: '/api/connect',
+        bearerToken: 'token'
+      }
+    },
+    isCurrent: () => true
   })
 }));
 

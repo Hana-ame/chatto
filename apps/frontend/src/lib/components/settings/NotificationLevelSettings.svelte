@@ -8,10 +8,8 @@ These preferences are server-side and sync across devices.
   import { NotificationLevel } from '@chatto/api-types/api/v1/notification_preferences_pb';
   import { notificationLevelOrDefault } from '$lib/api-client/enumDefaults';
   import { onMount } from 'svelte';
-  import { useConnection } from '$lib/state/server/connection.svelte';
-  import { serverRegistry } from '$lib/state/server/registry.svelte';
+  import { useServerScope } from '$lib/state/server/scope.svelte';
 
-  import { getActiveServer } from '$lib/state/activeServer.svelte';
   import { ChoiceRow, FormSection } from '$lib/ui';
   import { FormError } from '$lib/ui/form';
   import { toast } from '$lib/ui/toast';
@@ -24,9 +22,10 @@ These preferences are server-side and sync across devices.
   import { createRoomDirectoryAPI, RoomDirectoryScope } from '$lib/api-client/roomDirectory';
   import { getViewerStateViaConnect } from '$lib/api-client/viewer';
 
-  const serverId = getActiveServer();
-  const notificationLevelStore = serverRegistry.getStore(serverId).notificationLevels;
-  const connection = useConnection();
+  const serverScope = useServerScope();
+  const serverId = serverScope.serverId;
+  const connection = serverScope.connection;
+  const notificationLevelStore = serverScope.store.notificationLevels;
 
   let serverLevel = $state<NotificationLevel>(NotificationLevel.DEFAULT);
   let serverEffectiveLevel = $state<NotificationLevel>(NotificationLevel.NORMAL);
@@ -59,13 +58,13 @@ These preferences are server-side and sync across devices.
     error = '';
 
     try {
-      const conn = connection();
       const config = preferenceConfig();
       const [serverPref, viewer, channelRooms] = await Promise.all([
         getServerNotificationPreference(config),
         getViewerStateViaConnect(config),
-        conn.getAPI(createRoomDirectoryAPI).listRooms(RoomDirectoryScope.CHANNELS)
+        connection.getAPI(createRoomDirectoryAPI).listRooms(RoomDirectoryScope.CHANNELS)
       ]);
+      if (!serverScope.isCurrent()) return;
 
       const mappedServerPref = notificationPreferenceFromAPI(serverPref);
       serverLevel =
@@ -95,9 +94,10 @@ These preferences are server-side and sync across devices.
         notificationLevelStore.setRoomPreference(room.id, room.level, room.effectiveLevel);
       }
     } catch (e) {
+      if (!serverScope.isCurrent()) return;
       error = e instanceof Error ? e.message : m['settings.notifications.levels.load_failed']();
     } finally {
-      loading = false;
+      if (serverScope.isCurrent()) loading = false;
     }
   }
 
@@ -108,18 +108,21 @@ These preferences are server-side and sync across devices.
       const pref = notificationPreferenceFromAPI(
         await updateServerNotificationPreference(preferenceConfig(), newLevel)
       );
+      if (!serverScope.isCurrent()) return;
       serverLevel = pref.level;
       serverEffectiveLevel = pref.effectiveLevel;
       notificationLevelStore.setServerPreference(pref.level, pref.effectiveLevel);
 
       await loadPreferences();
+      if (!serverScope.isCurrent()) return;
       toast.success(m['settings.notifications.levels.server_updated']());
     } catch (e) {
+      if (!serverScope.isCurrent()) return;
       toast.error(
         e instanceof Error ? e.message : m['settings.notifications.levels.update_failed']()
       );
     } finally {
-      savingServerLevel = false;
+      if (serverScope.isCurrent()) savingServerLevel = false;
     }
   }
 
@@ -128,6 +131,7 @@ These preferences are server-side and sync across devices.
 
     try {
       const pref = await setRoomLevel(roomId, newLevel);
+      if (!serverScope.isCurrent()) return;
       const idx = rooms.findIndex((r) => r.id === roomId);
       if (idx !== -1) {
         rooms[idx] = { ...rooms[idx], level: pref.level, effectiveLevel: pref.effectiveLevel };
@@ -136,11 +140,12 @@ These preferences are server-side and sync across devices.
       notificationLevelStore.setRoomPreference(roomId, pref.level, pref.effectiveLevel);
       toast.success(m['settings.notifications.levels.room_updated']());
     } catch (e) {
+      if (!serverScope.isCurrent()) return;
       toast.error(
         e instanceof Error ? e.message : m['settings.notifications.levels.update_failed']()
       );
     } finally {
-      savingRoomId = null;
+      if (serverScope.isCurrent()) savingRoomId = null;
     }
   }
 
@@ -178,7 +183,7 @@ These preferences are server-side and sync across devices.
   }
 
   function preferenceConfig() {
-    return { ...connection().apiConfig, serverId };
+    return { ...connection.apiConfig, serverId };
   }
 
   function notificationPreferenceFromAPI(pref: {

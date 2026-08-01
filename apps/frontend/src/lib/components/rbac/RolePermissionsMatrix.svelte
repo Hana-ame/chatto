@@ -10,7 +10,7 @@ rendering to `SubjectPermissionsMatrix` (shared with the user variant).
 <script lang="ts">
   import { onDestroy } from 'svelte';
   import { Hint } from '$lib/ui';
-  import { useConnection } from '$lib/state/server/connection.svelte';
+  import { useServerScope } from '$lib/state/server/scope.svelte';
   import { createPermissionAPI } from '$lib/api-client/permissions';
   import { toast } from '$lib/ui/toast';
   import * as m from '$lib/i18n/messages';
@@ -25,7 +25,6 @@ rendering to `SubjectPermissionsMatrix` (shared with the user variant).
     type CellState
   } from './SubjectPermissionsMatrix.svelte';
   import { createQuery } from '@tanstack/svelte-query';
-  import { getActiveServer } from '$lib/state/activeServer.svelte';
   import { adminQueryKeys } from '$lib/query/admin';
   import { queryClient } from '$lib/query/client';
 
@@ -33,12 +32,12 @@ rendering to `SubjectPermissionsMatrix` (shared with the user variant).
 
   let { roleName }: { roleName: string } = $props();
 
-  const connection = useConnection();
+  const serverScope = useServerScope();
 
   const matrixQuery = createQuery(
     () => {
-      const serverId = getActiveServer();
-      const activeConnection = connection();
+      const serverId = serverScope.serverId;
+      const activeConnection = serverScope.connection;
       const activeRoleName = roleName;
       return {
         queryKey: adminQueryKeys.rolePermissions(serverId, activeConnection, activeRoleName),
@@ -60,7 +59,7 @@ rendering to `SubjectPermissionsMatrix` (shared with the user variant).
   let mutationGeneration = 0;
   const isOwnerRole = $derived(roleName === 'owner');
   const activeMutationContext = $derived(
-    JSON.stringify([getActiveServer(), connection().queryScope, roleName])
+    JSON.stringify([serverScope.serverId, serverScope.connection.queryScope, roleName])
   );
   const visibleMutationError = $derived(
     mutationError?.context === activeMutationContext ? mutationError.message : null
@@ -85,10 +84,10 @@ rendering to `SubjectPermissionsMatrix` (shared with the user variant).
   }
 
   async function handleCycle(scope: MatrixScope, permission: string, next: CellState) {
-    if (!data) return;
+    if (!data || visibleUpdatingKey) return;
     const generation = ++mutationGeneration;
-    const serverId = getActiveServer();
-    const activeConnection = connection();
+    const serverId = serverScope.serverId;
+    const activeConnection = serverScope.connection;
     const activeRoleName = data.roleName;
     const context = JSON.stringify([serverId, activeConnection.queryScope, activeRoleName]);
     const queryKey = adminQueryKeys.rolePermissions(serverId, activeConnection, activeRoleName);
@@ -103,7 +102,7 @@ rendering to `SubjectPermissionsMatrix` (shared with the user variant).
       permission,
       next as PermissionState
     );
-    if (mutationGeneration !== generation) return;
+    if (mutationGeneration !== generation || !serverScope.isCurrent()) return;
     if (result.error) {
       if (mutationGeneration === generation && context === activeMutationContext) {
         mutationError = { context, message: result.error };
@@ -116,6 +115,7 @@ rendering to `SubjectPermissionsMatrix` (shared with the user variant).
     }
 
     await queryClient.invalidateQueries({ queryKey, exact: true });
+    if (!serverScope.isCurrent()) return;
     void queryClient.invalidateQueries({
       queryKey: adminQueryKeys.permissionTiers(serverId, activeConnection)
     });
@@ -138,6 +138,6 @@ rendering to `SubjectPermissionsMatrix` (shared with the user variant).
     onCycle={handleCycle}
     subjectKind="role"
     forceAllow={isOwnerRole}
-    readOnly={isOwnerRole}
+    readOnly={isOwnerRole || visibleUpdatingKey !== null}
   />
 {/if}

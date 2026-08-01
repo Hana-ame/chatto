@@ -6,7 +6,7 @@
   import SkeletonImg from '$lib/ui/SkeletonImg.svelte';
   import { SvelteMap, SvelteSet } from 'svelte/reactivity';
   import { pushState } from '$app/navigation';
-  import { useConnection } from '$lib/state/server/connection.svelte';
+  import { useServerScope } from '$lib/state/server/scope.svelte';
   import * as m from '$lib/i18n/messages';
   import { toast } from '$lib/ui/toast';
   import {
@@ -278,7 +278,7 @@
     hasImageGallery ? attachments.filter((a) => !isGalleryImageAttachment(a)) : attachments
   );
 
-  const connection = useConnection();
+  const serverScope = useServerScope();
 
   function attachmentAssetUrls(attachment: Attachment) {
     return [
@@ -368,7 +368,7 @@
   }
 
   function currentAttachmentAPI() {
-    return connection().getAPI(createAttachmentAPI);
+    return serverScope.connection.getAPI(createAttachmentAPI);
   }
 
   async function refreshLightboxUrls(): Promise<Map<string, RefreshedAttachmentUrls>> {
@@ -388,6 +388,7 @@
     // Refresh in one round-trip so navigating between images in the
     // lightbox can't hit an expired URL mid-session.
     const freshUrls = await refreshLightboxUrls();
+    if (!serverScope.isCurrent()) return;
     const imageItems: ImageItem[] = imageAttachments
       .map((a) => ({
         id: a.id,
@@ -425,6 +426,7 @@
 
   async function openDownload(attachment: Attachment) {
     const freshUrls = await refreshAndApplyUrls();
+    if (!serverScope.isCurrent()) return;
     const fresh = normalizeAssetUrl(
       freshUrls.has(attachment.id) ? freshUrls.get(attachment.id)!.assetUrl : attachment.assetUrl
     )?.url;

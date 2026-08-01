@@ -2,8 +2,7 @@
   import { page } from '$app/state';
   import { resolve } from '$app/paths';
   import { serverIdToSegment } from '$lib/navigation';
-  import { getActiveServer } from '$lib/state/activeServer.svelte';
-  import { useConnection } from '$lib/state/server/connection.svelte';
+  import { useServerScope } from '$lib/state/server/scope.svelte';
   import { createAdminEventLogAPI } from '$lib/api-client/adminEventLog';
   import { Panel } from '$lib/components/admin';
   import { Hint, PaneContent, Pill } from '$lib/ui';
@@ -17,14 +16,14 @@
   import { queryClient } from '$lib/query/client';
 
   const userSettings = getUserSettings();
-  const connection = useConnection();
+  const serverScope = useServerScope();
 
   const sequence = $derived(page.params.sequence!);
-  const activeServerId = $derived(getActiveServer());
+  const activeServerId = $derived(serverScope.serverId);
   const entryQuery = createQuery(
     () => {
       const serverId = activeServerId;
-      const activeConnection = connection();
+      const activeConnection = serverScope.connection;
       const eventSequence = sequence;
       return {
         queryKey: adminQueryKeys.event(serverId, activeConnection, eventSequence),
@@ -37,7 +36,7 @@
 
   const backHref = $derived(
     resolve('/chat/[serverId]/manage/server/event-log', {
-      serverId: serverIdToSegment(getActiveServer())
+      serverId: serverIdToSegment(activeServerId)
     })
   );
 

@@ -14,22 +14,22 @@
     type LinkedExternalIdentityInfo
   } from '$lib/api-client/externalIdentities';
   import * as m from '$lib/i18n/messages';
-  import type { ServerConnection } from '$lib/state/server/serverConnection.svelte';
   import { serverRegistry } from '$lib/state/server/registry.svelte';
+  import { useServerScope } from '$lib/state/server/scope.svelte';
   import { ConfirmDialog, Dialog, FormSection, Hint } from '$lib/ui';
   import { Button, FormError, TextInput } from '$lib/ui/form';
 
   let {
     currentUser,
-    connection,
-    serverId,
     accountSettingsPath
   }: {
     currentUser: CurrentUserState;
-    connection: () => ServerConnection;
-    serverId: string;
     accountSettingsPath: string;
   } = $props();
+
+  const serverScope = useServerScope();
+  const serverId = $derived(serverScope.serverId);
+  const connection = $derived(serverScope.connection);
 
   let loadSerial = 0;
   let providers = $state.raw<ExternalIdentityProviderInfo[]>([]);
@@ -75,15 +75,31 @@
     loading = true;
     error = '';
     try {
-      const result = await connection().getAPI(createExternalIdentityAPI).list();
-      if (currentLoadSerial !== loadSerial || activeServerId !== serverId) return;
+      const result = await connection.getAPI(createExternalIdentityAPI).list();
+      if (
+        !serverScope.isCurrent() ||
+        currentLoadSerial !== loadSerial ||
+        activeServerId !== serverId
+      ) {
+        return;
+      }
       providers = result.providers;
       linkedIdentities = result.linkedIdentities;
     } catch (err) {
-      if (currentLoadSerial !== loadSerial || activeServerId !== serverId) return;
+      if (
+        !serverScope.isCurrent() ||
+        currentLoadSerial !== loadSerial ||
+        activeServerId !== serverId
+      ) {
+        return;
+      }
       error = err instanceof Error ? err.message : m['settings.account.sso.load_failed']();
     } finally {
-      if (currentLoadSerial === loadSerial && activeServerId === serverId) {
+      if (
+        serverScope.isCurrent() &&
+        currentLoadSerial === loadSerial &&
+        activeServerId === serverId
+      ) {
         loading = false;
       }
     }
@@ -108,7 +124,7 @@
     provider: ExternalIdentityProviderInfo,
     currentPassword?: string
   ) {
-    const client = connection();
+    const client = connection;
     linkingProviderId = provider.id;
     error = '';
     try {
@@ -117,8 +133,10 @@
         redirectPath: accountSettingsPath,
         currentPassword
       });
+      if (!serverScope.isCurrent()) return;
       window.location.href = startUrl;
     } catch (err) {
+      if (!serverScope.isCurrent()) return;
       if (err instanceof ConnectError && err.code === Code.FailedPrecondition && hasPassword) {
         linkFreshAuthProvider = provider;
         linkCurrentPassword = '';
@@ -210,18 +228,27 @@
     currentPassword?: string
   ) {
     const { subjectHash, providerLabel } = target;
-    const client = connection();
+    const client = connection;
     disconnectingSubjectHash = subjectHash;
     error = '';
     try {
       beginExplicitSignOutRedirect();
       await client.getAPI(createExternalIdentityAPI).disconnect(subjectHash, currentPassword);
+      const signedOutServerId = client.serverId ?? serverId;
+      if (!serverScope.isCurrent()) {
+        cancelExplicitSignOutRedirect();
+        return;
+      }
       disconnectTarget = null;
       disconnectFreshAuthTarget = null;
       disconnectCurrentPassword = '';
       disconnectFreshAuthError = '';
-      finishDisconnectedSession(client.serverId ?? serverId);
+      finishDisconnectedSession(signedOutServerId);
     } catch (err) {
+      if (!serverScope.isCurrent()) {
+        cancelExplicitSignOutRedirect();
+        return;
+      }
       if (err instanceof ConnectError && err.code === Code.FailedPrecondition) {
         cancelExplicitSignOutRedirect();
         disconnectTarget = null;

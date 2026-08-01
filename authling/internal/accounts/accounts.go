@@ -6,9 +6,11 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -32,14 +34,43 @@ var ErrIDCollision = errors.New("generated account id already exists")
 // signup responses must not disclose whether an email already exists.
 var ErrEmailClaimed = errors.New("email is already claimed")
 
-// ErrInvalidPassword indicates that a password does not meet the initial
-// length policy.
-var ErrInvalidPassword = errors.New("password must contain at least 15 characters and at most 1024 bytes")
+// ErrInvalidPassword indicates that a password does not meet the active
+// password policy.
+var ErrInvalidPassword = errors.New("password does not meet policy")
+
+type invalidPasswordError struct{ minimumLength int }
+
+func (e invalidPasswordError) Error() string {
+	return fmt.Sprintf("password must contain at least %d characters and at most 1024 bytes", e.minimumLength)
+}
+
+func (invalidPasswordError) Is(target error) bool { return target == ErrInvalidPassword }
+
+type commonPasswordError struct{}
+
+func (commonPasswordError) Error() string {
+	return "password is too common; choose a less predictable password"
+}
+
+func (commonPasswordError) Is(target error) bool { return target == ErrInvalidPassword }
+
+// ErrInvalidCredentials deliberately combines absent accounts and password
+// mismatches so callers cannot disclose which email addresses are registered.
+var ErrInvalidCredentials = errors.New("invalid email or password")
 
 // Account is the current projected structural state of an Authling account.
 type Account struct {
 	ID        string
 	CreatedAt time.Time
+}
+
+type protectedCredential struct {
+	accountID                  string
+	eventID                    string
+	userKeyRef                 string
+	credentialKeyRef           string
+	passwordVerifierNonce      []byte
+	passwordVerifierCiphertext []byte
 }
 
 // Projection rebuilds the active account registry from durable events.
@@ -48,6 +79,7 @@ type Projection struct {
 	accounts      map[string]Account
 	emails        map[[32]byte]string
 	pendingEmails map[string][32]byte
+	credentials   map[string]protectedCredential
 	keyReferences map[string]struct{}
 	vault         *keyvault.Vault
 	indexKey      []byte
@@ -134,7 +166,18 @@ func (p *Projection) Apply(event *corev1.Event, _ uint64) error {
 		if p.keyReferences == nil {
 			p.keyReferences = make(map[string]struct{})
 		}
+		if p.credentials == nil {
+			p.credentials = make(map[string]protectedCredential)
+		}
 		p.pendingEmails[account.ID] = emailDigest
+		p.credentials[account.ID] = protectedCredential{
+			accountID:                  account.ID,
+			eventID:                    event.GetId(),
+			userKeyRef:                 payload.GetUserKeyRef(),
+			credentialKeyRef:           payload.GetCredentialKeyRef(),
+			passwordVerifierNonce:      append([]byte(nil), payload.GetPasswordVerifierNonce()...),
+			passwordVerifierCiphertext: append([]byte(nil), payload.GetPasswordVerifierCiphertext()...),
+		}
 		p.keyReferences[payload.GetUserKeyRef()] = struct{}{}
 		p.keyReferences[payload.GetCredentialKeyRef()] = struct{}{}
 	}
@@ -161,6 +204,17 @@ func (p *Projection) HasEmail(email string) bool {
 	return ok
 }
 
+func (p *Projection) credentialForEmail(email string) (protectedCredential, bool) {
+	p.RLock()
+	defer p.RUnlock()
+	accountID, ok := p.emails[digest(p.indexKey, email)]
+	if !ok {
+		return protectedCredential{}, false
+	}
+	credential, ok := p.credentials[accountID]
+	return credential, ok
+}
+
 // Get returns one projected account.
 func (p *Projection) Get(accountID string) (Account, bool) {
 	p.RLock()
@@ -179,18 +233,42 @@ func (p *Projection) Count() int {
 // Service validates account commands, commits events with OCC, and waits for
 // the serving projection before returning.
 type Service struct {
-	publisher *evtstream.Publisher
-	handle    events.ProjectionHandle[*Projection]
-	vault     *keyvault.Vault
+	publisher             *evtstream.Publisher
+	handle                events.ProjectionHandle[*Projection]
+	vault                 *keyvault.Vault
+	dummyCredential       protectedCredential
+	passwordMinimumLength int
 }
 
 // NewService constructs the account command and read boundary.
 func NewService(
+	ctx context.Context,
 	publisher *evtstream.Publisher,
 	handle events.ProjectionHandle[*Projection],
 	vault *keyvault.Vault,
-) *Service {
-	return &Service{publisher: publisher, handle: handle, vault: vault}
+	passwordMinimumLength int,
+) (*Service, error) {
+	userRef, dataRef, dataKey, err := vault.AuthenticationDummyKey(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer clear(dataKey)
+	const eventID = "authentication-dummy-event"
+	const accountID = "authentication-dummy-account"
+	sealed, err := datacrypto.Seal(dataKey, []byte(dummyPasswordVerifier), credentialAAD(eventID, accountID, userRef, dataRef, "password-verifier"))
+	if err != nil {
+		return nil, fmt.Errorf("seal authentication dummy credential: %w", err)
+	}
+	return &Service{
+		publisher:             publisher,
+		handle:                handle,
+		vault:                 vault,
+		passwordMinimumLength: passwordMinimumLength,
+		dummyCredential: protectedCredential{
+			accountID: accountID, eventID: eventID, userKeyRef: userRef, credentialKeyRef: dataRef,
+			passwordVerifierNonce: sealed.Nonce, passwordVerifierCiphertext: sealed.Ciphertext,
+		},
+	}, nil
 }
 
 // Create creates one opaque account and returns its projected state.
@@ -235,8 +313,11 @@ func (s *Service) CreateLocal(ctx context.Context, email, password string) (Acco
 	if s.handle.Projection().HasEmail(email) {
 		return Account{}, ErrEmailClaimed
 	}
-	if utf8.RuneCountInString(password) < 15 || len(password) > 1024 {
-		return Account{}, ErrInvalidPassword
+	if utf8.RuneCountInString(password) < s.passwordMinimumLength || len(password) > 1024 {
+		return Account{}, invalidPasswordError{minimumLength: s.passwordMinimumLength}
+	}
+	if isCommonPassword(password) {
+		return Account{}, commonPasswordError{}
 	}
 	verifier, err := hashPassword(password)
 	if err != nil {
@@ -315,6 +396,9 @@ func (s *Service) CreateLocal(ctx context.Context, email, password string) (Acco
 	return Account{}, fmt.Errorf("account registry conflict")
 }
 
+// PasswordMinimumLength returns the active local password policy.
+func (s *Service) PasswordMinimumLength() int { return s.passwordMinimumLength }
+
 // NormalizeEmail defines Authling's initial deployment-wide comparison value.
 func NormalizeEmail(email string) string { return strings.ToLower(strings.TrimSpace(email)) }
 
@@ -352,4 +436,100 @@ func (s *Service) Count() int {
 // HasEmail reports whether a normalized local email is already claimed.
 func (s *Service) HasEmail(email string) bool {
 	return s.handle.Projection().HasEmail(NormalizeEmail(email))
+}
+
+// AuthenticateLocal verifies an email/password credential without retaining
+// plaintext protected data in the projection. Absent accounts still perform
+// the same Argon2id work as password mismatches.
+func (s *Service) AuthenticateLocal(ctx context.Context, email, password string) (Account, error) {
+	email = NormalizeEmail(email)
+	password = norm.NFC.String(password)
+	credential, exists := s.handle.Projection().credentialForEmail(email)
+	if !exists {
+		credential = s.dummyCredential
+	}
+	dataKey, err := s.vault.ResolveDataKey(ctx, credential.credentialKeyRef, credential.userKeyRef)
+	if err != nil {
+		return Account{}, fmt.Errorf("resolve local credential key: %w", err)
+	}
+	defer clear(dataKey)
+	plaintext, err := datacrypto.Open(
+		dataKey,
+		credential.passwordVerifierCiphertext,
+		credential.passwordVerifierNonce,
+		credentialAAD(credential.eventID, credential.accountID, credential.userKeyRef, credential.credentialKeyRef, "password-verifier"),
+	)
+	if err != nil {
+		return Account{}, fmt.Errorf("decrypt password verifier: %w", err)
+	}
+	verifier := string(plaintext)
+	clear(plaintext)
+	valid, err := verifyPassword(verifier, password)
+	if err != nil {
+		return Account{}, fmt.Errorf("decode password verifier: %w", err)
+	}
+	if !valid {
+		return Account{}, ErrInvalidCredentials
+	}
+	if !exists {
+		return Account{}, ErrInvalidCredentials
+	}
+	account, ok := s.handle.Projection().Get(credential.accountID)
+	if !ok {
+		return Account{}, fmt.Errorf("authenticated account is absent from projection")
+	}
+	return account, nil
+}
+
+const dummyPasswordVerifier = "$argon2id$v=19$m=19456,t=2,p=1$MDEyMzQ1Njc4OWFiY2RlZg$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+
+func verifyPassword(verifier, password string) (bool, error) {
+	parts := strings.Split(verifier, "$")
+	if len(parts) != 6 || parts[0] != "" || parts[1] != "argon2id" || parts[2] != "v=19" {
+		return false, fmt.Errorf("unsupported verifier header")
+	}
+	var memory uint64
+	var iterations uint64
+	var parallelism uint64
+	parameters := strings.Split(parts[3], ",")
+	if len(parameters) != 3 {
+		return false, fmt.Errorf("invalid verifier parameters")
+	}
+	for _, parameter := range parameters {
+		name, value, ok := strings.Cut(parameter, "=")
+		if !ok {
+			return false, fmt.Errorf("invalid verifier parameter")
+		}
+		parsed, err := strconv.ParseUint(value, 10, 32)
+		if err != nil {
+			return false, fmt.Errorf("invalid verifier parameter value")
+		}
+		switch name {
+		case "m":
+			memory = parsed
+		case "t":
+			iterations = parsed
+		case "p":
+			parallelism = parsed
+		default:
+			return false, fmt.Errorf("unsupported verifier parameter")
+		}
+	}
+	if memory < 8*1024 || memory > 64*1024 || iterations < 1 || iterations > 5 || parallelism < 1 || parallelism > 4 {
+		return false, fmt.Errorf("unsafe verifier parameters")
+	}
+	salt, err := base64.RawStdEncoding.DecodeString(parts[4])
+	if err != nil || len(salt) < 16 || len(salt) > 64 {
+		return false, fmt.Errorf("invalid verifier salt")
+	}
+	want, err := base64.RawStdEncoding.DecodeString(parts[5])
+	if err != nil || len(want) < 16 || len(want) > 64 {
+		return false, fmt.Errorf("invalid verifier hash")
+	}
+	tooLong := len(password) > 1024
+	if tooLong {
+		password = password[:1024]
+	}
+	got := argon2.IDKey([]byte(password), salt, uint32(iterations), uint32(memory), uint8(parallelism), uint32(len(want)))
+	return !tooLong && subtle.ConstantTimeCompare(got, want) == 1, nil
 }

@@ -6,7 +6,6 @@
   import { UserPermissionsMatrix } from '$lib/components/rbac';
   import * as m from '$lib/i18n/messages';
   import { serverIdToSegment } from '$lib/navigation';
-  import { useConnection } from '$lib/state/server/connection.svelte';
   import { useServerScope } from '$lib/state/server/scope.svelte';
   import { Hint, PaneContent } from '$lib/ui';
   import { FormError } from '$lib/ui/form';
@@ -17,15 +16,14 @@
   import MemberOverviewPanel from './MemberOverviewPanel.svelte';
   import MemberRoleAssignments from './MemberRoleAssignments.svelte';
 
-  const connection = useConnection();
   const serverScope = useServerScope();
   const activeServerId = $derived(serverScope.serverId);
   const store = $derived(serverScope.store);
   const userId = $derived(page.params.userId!);
   const currentUser = $derived(store.currentUser);
   const memberDetail = new MemberDetailStore(
-    () => connection().getAPI(createAdminUserManagementAPI),
-    () => connection()
+    () => serverScope.connection.getAPI(createAdminUserManagementAPI),
+    () => serverScope.connection
   );
   onDestroy(() => memberDetail.dispose());
   const isSelf = $derived(currentUser.user?.id === userId);

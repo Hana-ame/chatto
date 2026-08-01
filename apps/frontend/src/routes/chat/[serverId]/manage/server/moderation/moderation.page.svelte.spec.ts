@@ -62,10 +62,6 @@ class MockIntersectionObserver implements IntersectionObserver {
   }
 }
 
-vi.mock('$lib/state/activeServer.svelte', () => ({
-  getActiveServer: () => 'origin'
-}));
-
 vi.mock('$lib/state/userSettings.svelte', () => ({
   getUserSettings: () => ({
     effectiveTimezone: undefined,
@@ -73,13 +69,18 @@ vi.mock('$lib/state/userSettings.svelte', () => ({
   })
 }));
 
-vi.mock('$lib/state/server/connection.svelte', () => ({
-  useConnection: () => () => ({
-    queryScope: 'moderation-test',
-    getAPI: () => ({
-      listBans: mocks.listBans,
-      unbanMember: mocks.unbanMember
-    })
+vi.mock('$lib/state/server/scope.svelte', () => ({
+  useServerScope: () => ({
+    serverId: 'origin',
+    store: {},
+    connection: {
+      queryScope: 'moderation-test',
+      getAPI: () => ({
+        listBans: mocks.listBans,
+        unbanMember: mocks.unbanMember
+      })
+    },
+    isCurrent: () => true
   })
 }));
 

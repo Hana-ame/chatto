@@ -8,7 +8,7 @@ matrix and the mutation dispatch for cell clicks; delegates rendering to
 <script lang="ts">
   import { onDestroy } from 'svelte';
   import { Hint } from '$lib/ui';
-  import { useConnection } from '$lib/state/server/connection.svelte';
+  import { useServerScope } from '$lib/state/server/scope.svelte';
   import { createPermissionAPI } from '$lib/api-client/permissions';
   import { toast } from '$lib/ui/toast';
   import * as m from '$lib/i18n/messages';
@@ -23,7 +23,6 @@ matrix and the mutation dispatch for cell clicks; delegates rendering to
     type CellState
   } from './SubjectPermissionsMatrix.svelte';
   import { createQuery } from '@tanstack/svelte-query';
-  import { getActiveServer } from '$lib/state/activeServer.svelte';
   import { adminQueryKeys } from '$lib/query/admin';
   import { queryClient } from '$lib/query/client';
 
@@ -31,12 +30,12 @@ matrix and the mutation dispatch for cell clicks; delegates rendering to
 
   let { userId }: { userId: string } = $props();
 
-  const connection = useConnection();
+  const serverScope = useServerScope();
 
   const matrixQuery = createQuery(
     () => {
-      const serverId = getActiveServer();
-      const activeConnection = connection();
+      const serverId = serverScope.serverId;
+      const activeConnection = serverScope.connection;
       const activeUserId = userId;
       return {
         queryKey: adminQueryKeys.userPermissions(serverId, activeConnection, activeUserId),
@@ -57,7 +56,7 @@ matrix and the mutation dispatch for cell clicks; delegates rendering to
   let mutationContext = $state<string | null>(null);
   let mutationGeneration = 0;
   const activeMutationContext = $derived(
-    JSON.stringify([getActiveServer(), connection().queryScope, userId])
+    JSON.stringify([serverScope.serverId, serverScope.connection.queryScope, userId])
   );
   const visibleMutationError = $derived(
     mutationError?.context === activeMutationContext ? mutationError.message : null
@@ -82,10 +81,10 @@ matrix and the mutation dispatch for cell clicks; delegates rendering to
   }
 
   async function handleCycle(scope: MatrixScope, permission: string, next: CellState) {
-    if (!data) return;
+    if (!data || visibleUpdatingKey) return;
     const generation = ++mutationGeneration;
-    const serverId = getActiveServer();
-    const activeConnection = connection();
+    const serverId = serverScope.serverId;
+    const activeConnection = serverScope.connection;
     const activeUserId = data.userId;
     const context = JSON.stringify([serverId, activeConnection.queryScope, activeUserId]);
     const queryKey = adminQueryKeys.userPermissions(serverId, activeConnection, activeUserId);
@@ -101,7 +100,7 @@ matrix and the mutation dispatch for cell clicks; delegates rendering to
       permission,
       next as UserPermissionState
     );
-    if (mutationGeneration !== generation) return;
+    if (mutationGeneration !== generation || !serverScope.isCurrent()) return;
     if (result.error) {
       if (mutationGeneration === generation && context === activeMutationContext) {
         mutationError = { context, message: result.error };
@@ -116,6 +115,7 @@ matrix and the mutation dispatch for cell clicks; delegates rendering to
     // Reload the matrix so both the override AND effective decisions stay
     // consistent — a server-scope grant flows into rooms via inheritance.
     await queryClient.invalidateQueries({ queryKey, exact: true });
+    if (!serverScope.isCurrent()) return;
     if (mutationGeneration === generation) updatingKey = null;
   }
 </script>
@@ -134,5 +134,6 @@ matrix and the mutation dispatch for cell clicks; delegates rendering to
     updatingKey={visibleUpdatingKey}
     onCycle={handleCycle}
     subjectKind="user"
+    readOnly={visibleUpdatingKey !== null}
   />
 {/if}

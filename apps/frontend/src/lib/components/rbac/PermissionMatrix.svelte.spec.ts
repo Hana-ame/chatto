@@ -55,7 +55,7 @@ const HAPPY_TIER_ROLES: TierRoles = {
 };
 
 // A module-level holder so individual tests can swap the resolver payload
-// before rendering. The `useConnection` mock dereferences it on every call.
+// before rendering. The scoped API mock dereferences it on every call.
 let nextTierRoles: TierRoles | null = HAPPY_TIER_ROLES;
 const permissionMocks = vi.hoisted(() => ({
   getRolePermissionTierMatrix: vi.fn(),
@@ -69,19 +69,16 @@ vi.mock('$lib/api-client/permissions', () => ({
   }))
 }));
 
-vi.mock('$lib/state/server/connection.svelte', () => ({
-  useConnection: () => () => ({
-    isConnected: true,
-    showConnectionLostBanner: false,
-    connectBaseUrl: '/api/connect',
-    bearerToken: 'token',
-    queryScope: 'permission-matrix-test',
-    getAPI: (factory: (config: never) => unknown) => factory({} as never)
+vi.mock('$lib/state/server/scope.svelte', () => ({
+  useServerScope: () => ({
+    serverId: 'server-test',
+    store: {},
+    connection: {
+      queryScope: 'permission-matrix-test',
+      getAPI: (factory: (config: never) => unknown) => factory({} as never)
+    },
+    isCurrent: () => true
   })
-}));
-
-vi.mock('$lib/state/activeServer.svelte', () => ({
-  getActiveServer: () => 'server-test'
 }));
 
 beforeEach(() => {
@@ -391,6 +388,47 @@ describe('PermissionMatrix', () => {
       expect(button.querySelector('.animate-spin.uil--spinner')).toBeNull();
       expect(button.querySelector('.uil--minus')).not.toBeNull();
     });
+  });
+
+  it('isolates pending permission state after its resource scope changes', async () => {
+    const updates: Array<{
+      resolve: () => void;
+      reject: (error: Error) => void;
+    }> = [];
+    permissionMocks.setRolePermission.mockImplementation(
+      () =>
+        new Promise<void>((resolve, reject) => {
+          updates.push({ resolve, reject });
+        })
+    );
+    const rendered = render(PermissionMatrix, { props: { roomId: 'room-a' } });
+    await settle();
+
+    const button = rendered.container.querySelector(
+      'button[aria-label*="Moderator"][aria-label*="room.create"]'
+    ) as HTMLButtonElement;
+    button.click();
+    await rendered.rerender({ roomId: 'room-b' });
+    await settle();
+
+    const replacementButton = rendered.container.querySelector(
+      'button[aria-label*="Moderator"][aria-label*="room.create"]'
+    ) as HTMLButtonElement;
+    expect(replacementButton.disabled).toBe(false);
+
+    replacementButton.click();
+    flushSync();
+    expect(replacementButton.disabled).toBe(true);
+
+    updates[0].reject(new Error('stale permission failure'));
+    await settle();
+
+    expect(rendered.container.textContent).not.toContain('stale permission failure');
+    expect(replacementButton.disabled).toBe(true);
+
+    updates[1].resolve();
+    await settle();
+    expect(replacementButton.disabled).toBe(false);
   });
 
   it('invokes onRoleClick when a column header is clicked', async () => {

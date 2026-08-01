@@ -1,15 +1,14 @@
 # FDR-002: Verified Email Signup
 
 **Status:** Experimental
-**Last reviewed:** 2026-07-31
+**Last reviewed:** 2026-08-01
 
 ## Overview
 
 Authling lets a person create a local email-and-password account only after
 proving control of the email address with a short-lived one-time code. The
 initial flow is server-rendered and requires no JavaScript. It creates the
-durable account but does not yet create a browser session; login and logout are
-separate follow-up work.
+durable account and starts the browser session defined by FDR-003.
 
 ## Behavior
 
@@ -25,12 +24,20 @@ separate follow-up work.
    work. At most four password completions run concurrently per process.
 5. A correct code moves the same expiring flow to a verified state. It still
    does not create an account.
-6. The person chooses a password of at least 15 Unicode characters and at most
-   1,024 UTF-8 bytes. Authling uses Argon2id with a random salt and stores only
-   the verifier in its own encrypted credential field.
+6. The person chooses a password whose minimum length is configured by the
+   operator and whose maximum is 1,024 UTF-8 bytes. The default minimum is ten
+   Unicode characters; operators may select a value from eight through 128.
+   Authling rejects exact, case-insensitive matches from a small built-in list
+   of commonly chosen passwords. It does not reject a longer password merely
+   because that password contains a listed value.
+   Authling uses Argon2id with a random salt and stores only the verifier in its
+   own encrypted credential field.
 7. Authling atomically creates the per-account history and claims the
    normalized address through a separate registry event. The flow is consumed
    after both facts become visible in the serving projection.
+8. Authling creates a fresh browser session and takes the person to the signed-in
+   account page. If session storage is unavailable, the account remains created
+   and the person can sign in later.
 
 Requests for an already claimed address follow the same throttling, SMTP, and
 verification path as available addresses so status and timing do not disclose
@@ -77,17 +84,36 @@ volume and correctness matters more than parallel write throughput. It avoids
 putting email-derived digests in event subjects or durable indexes, preserving
 the data-protection and cryptographic-erasure contract in ADR-002.
 
-### Keep account creation separate from authentication
+### Treat verified signup as an authentication ceremony
 
-This slice ends at a confirmation page. A future login/session FDR will define
-cookie, CSRF, throttling, revocation, and logout behavior before Authling
-automatically signs in a newly created account.
+Proof of the emailed code and selection of the new password establish the same
+browser session as a later password login. FDR-003 owns cookie, expiry,
+revocation, and logout behavior; durable account creation remains complete even
+if the temporary session cannot be stored.
+
+### Keep the minimum length configurable
+
+The default ten-character minimum keeps initial self-hosted deployments
+approachable, while operators with different assurance requirements can raise
+it. Authling enforces a lower bound of eight so configuration cannot
+accidentally remove meaningful password-length protection. The byte ceiling
+remains fixed to bound verifier resource use.
+
+### Reject common passwords without composition rules
+
+Authling rejects exact matches from a small built-in baseline list instead of
+requiring particular character classes. This catches predictable choices such
+as common numeric sequences and `Password123` without encouraging equally
+predictable variations or rejecting ordinary passphrases. Case-insensitive
+comparison prevents capitalization alone from bypassing the list; login and
+all other password verification remain case-sensitive.
 
 ## Limitations
 
-- The password policy does not yet use a comprehensive compromised-password
-  blocklist. The feature must remain Experimental until that control and its
-  operator update story are implemented.
+- The built-in common-password list is only a baseline. It does not yet use a
+  comprehensive, maintained compromised-password corpus or have an operator
+  update and extension story. The feature remains Experimental until those
+  controls exist.
 - Key provisioning writes a durable operation marker before key material and
   removes it after the referencing event commits. Normal failures compensate
   immediately. A crash orphan remains discoverable but is deliberately not
@@ -102,7 +128,8 @@ automatically signs in a newly created account.
 - **ADRs:** [ADR-001](../adr/ADR-001-event-sourced-nats-architecture.md),
   [ADR-002](../adr/ADR-002-hierarchical-keys-and-cryptographic-erasure.md),
   [ADR-003](../adr/ADR-003-server-rendered-templ-ui.md)
-- **Features:** [FDR-001](FDR-001-standalone-account-runtime.md)
+- **Features:** [FDR-001](FDR-001-standalone-account-runtime.md),
+  [FDR-003](FDR-003-local-login-and-browser-sessions.md)
 - **Security baseline:** [NIST SP 800-63B](https://pages.nist.gov/800-63-4/sp800-63b.html),
   [OWASP Authentication](https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html),
   [OWASP Password Storage](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html),

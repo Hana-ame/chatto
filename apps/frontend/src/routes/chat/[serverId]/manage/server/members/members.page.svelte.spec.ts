@@ -79,10 +79,6 @@ vi.mock('$app/navigation', () => ({
   invalidateAll: vi.fn()
 }));
 
-vi.mock('$lib/state/activeServer.svelte', () => ({
-  getActiveServer: () => 'origin'
-}));
-
 vi.mock('$lib/state/userSettings.svelte', () => ({
   getUserSettings: () => ({
     effectiveTimezone: undefined,
@@ -90,14 +86,15 @@ vi.mock('$lib/state/userSettings.svelte', () => ({
   })
 }));
 
-vi.mock('$lib/state/server/connection.svelte', () => ({
-  useConnection: () => () => ({
-    isConnected: true,
-    showConnectionLostBanner: false,
-    connectBaseUrl: 'http://localhost/api/connect',
-    bearerToken: null,
-    queryScope: 'members-test',
-    getAPI: (factory: (config: never) => unknown) => factory({} as never)
+vi.mock('$lib/state/server/scope.svelte', () => ({
+  useServerScope: () => ({
+    serverId: 'origin',
+    store: {},
+    connection: {
+      queryScope: 'members-test',
+      getAPI: (factory: (config: never) => unknown) => factory({} as never)
+    },
+    isCurrent: () => true
   })
 }));
 

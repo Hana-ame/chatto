@@ -29,7 +29,7 @@ focusing a cell highlights its permission row and role column.
   import { Panel, DataTable } from '$lib/components/admin';
   import { Hint, HelpTooltip } from '$lib/ui';
   import { ShortcutTextInput } from '$lib/ui/form';
-  import { useConnection } from '$lib/state/server/connection.svelte';
+  import { useServerScope } from '$lib/state/server/scope.svelte';
   import { createPermissionAPI } from '$lib/api-client/permissions';
   import { toast } from '$lib/ui/toast';
   import { getPermissionDescription } from '$lib/permissions';
@@ -37,7 +37,6 @@ focusing a cell highlights its permission row and role column.
   import MatrixCell from './MatrixCell.svelte';
   import * as m from '$lib/i18n/messages';
   import { createQuery } from '@tanstack/svelte-query';
-  import { getActiveServer } from '$lib/state/activeServer.svelte';
   import { adminQueryKeys } from '$lib/query/admin';
   import { queryClient } from '$lib/query/client';
 
@@ -136,12 +135,12 @@ focusing a cell highlights its permission row and role column.
     scrollContents?: boolean;
   } = $props();
 
-  const connection = useConnection();
+  const serverScope = useServerScope();
 
   const matrixQuery = createQuery(
     () => {
-      const serverId = getActiveServer();
-      const activeConnection = connection();
+      const serverId = serverScope.serverId;
+      const activeConnection = serverScope.connection;
       const activeRoomId = roomId ?? null;
       const activeGroupId = groupId ?? null;
       return {
@@ -173,7 +172,13 @@ focusing a cell highlights its permission row and role column.
   let focusedCell = $state<MatrixCoordinate | null>(null);
   const highlightedCell = $derived(hoveredCell ?? focusedCell);
   const activeMutationContext = $derived(
-    mutationContext(getActiveServer(), connection().queryScope, roomId ?? null, groupId ?? null)
+    mutationContext(
+      serverScope.serverId,
+      serverScope.connection.queryScope,
+      spaceId ?? null,
+      roomId ?? null,
+      groupId ?? null
+    )
   );
   const visibleMutationError = $derived(
     mutationError?.context === activeMutationContext ? mutationError.message : null
@@ -254,10 +259,11 @@ focusing a cell highlights its permission row and role column.
   function mutationContext(
     serverId: string,
     queryScope: string,
+    activeSpaceId: string | null,
     activeRoomId: string | null,
     activeGroupId: string | null
   ): string {
-    return JSON.stringify([serverId, queryScope, activeRoomId, activeGroupId]);
+    return JSON.stringify([serverId, queryScope, activeSpaceId, activeRoomId, activeGroupId]);
   }
 
   function cellIsUpdating(cellKey: string): boolean {
@@ -278,8 +284,8 @@ focusing a cell highlights its permission row and role column.
 
   async function cycle(role: TierRole, permission: string, next: State) {
     if (!data) return;
-    const serverId = getActiveServer();
-    const activeConnection = connection();
+    const serverId = serverScope.serverId;
+    const activeConnection = serverScope.connection;
     const queryKey = adminQueryKeys.permissionTier(
       serverId,
       activeConnection,
@@ -291,6 +297,7 @@ focusing a cell highlights its permission row and role column.
     const context = mutationContext(
       serverId,
       activeConnection.queryScope,
+      spaceId ?? null,
       roomId ?? null,
       groupId ?? null
     );
@@ -305,7 +312,7 @@ focusing a cell highlights its permission row and role column.
       permission,
       next
     );
-    if (disposed) return;
+    if (disposed || !serverScope.isCurrent()) return;
     if (result.error) {
       if (context === activeMutationContext) {
         mutationError = { context, message: result.error };

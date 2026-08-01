@@ -16,8 +16,7 @@
   import { formatDate as formatDateUtil } from '$lib/utils/formatTime';
   import { getLocale } from '$lib/i18n/runtime';
   import { toast } from '$lib/ui/toast';
-  import { useConnection } from '$lib/state/server/connection.svelte';
-  import { getActiveServer } from '$lib/state/activeServer.svelte';
+  import { useServerScope } from '$lib/state/server/scope.svelte';
   import { SvelteSet } from 'svelte/reactivity';
   import { createInfiniteQuery, createMutation } from '@tanstack/svelte-query';
   import { adminQueryKeys } from '$lib/query/admin';
@@ -26,7 +25,7 @@
 
   const userSettings = getUserSettings();
   const activeLocale = $derived(getLocale());
-  const connection = useConnection();
+  const serverScope = useServerScope();
   const PAGE_SIZE = 20;
 
   let scrollContainer = $state<HTMLDivElement>();
@@ -40,8 +39,8 @@
 
   const bansQuery = createInfiniteQuery(
     () => {
-      const serverId = getActiveServer();
-      const activeConnection = connection();
+      const serverId = serverScope.serverId;
+      const activeConnection = serverScope.connection;
       return {
         queryKey: adminQueryKeys.bans(serverId, activeConnection),
         queryFn: ({ pageParam, signal }) =>
@@ -114,19 +113,15 @@
     unbanError = null;
   }
 
-  function isCurrentUnban(request: number, serverId: string, queryScope: string): boolean {
-    return (
-      request === unbanRequest &&
-      getActiveServer() === serverId &&
-      connection().queryScope === queryScope
-    );
+  function isCurrentUnban(request: number): boolean {
+    return request === unbanRequest && serverScope.isCurrent();
   }
 
   async function unban(ban: RoomBanSummary, reason: string) {
     if (unbanMutation.isPending) return;
     const request = ++unbanRequest;
-    const serverId = getActiveServer();
-    const activeConnection = connection();
+    const serverId = serverScope.serverId;
+    const activeConnection = serverScope.connection;
     unbanError = null;
     try {
       await unbanMutation.mutateAsync({
@@ -136,12 +131,12 @@
         reason
       });
     } catch {
-      if (!isCurrentUnban(request, serverId, activeConnection.queryScope)) return;
+      if (!isCurrentUnban(request)) return;
       unbanError = m['admin.moderation.unban_failed']();
       toast.error(unbanError);
       return;
     }
-    if (!isCurrentUnban(request, serverId, activeConnection.queryScope)) return;
+    if (!isCurrentUnban(request)) return;
 
     toast.success(m['admin.moderation.unban_success']());
     unbanDialogBan = null;

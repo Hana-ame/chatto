@@ -4,8 +4,7 @@
   import { page } from '$app/state';
   import { SvelteSet, SvelteURLSearchParams } from 'svelte/reactivity';
   import { serverIdToSegment } from '$lib/navigation';
-  import { getActiveServer } from '$lib/state/activeServer.svelte';
-  import { useConnection } from '$lib/state/server/connection.svelte';
+  import { useServerScope } from '$lib/state/server/scope.svelte';
   import {
     createAdminEventLogAPI,
     type AdminEventLogPage,
@@ -28,9 +27,9 @@
 
   const userSettings = getUserSettings();
   const activeLocale = $derived(getLocale());
-  const connection = useConnection();
+  const serverScope = useServerScope();
 
-  const activeServerId = $derived(getActiveServer());
+  const activeServerId = $derived(serverScope.serverId);
 
   let scrollContainer = $state<HTMLDivElement>();
   let loadedUrlKey = '';
@@ -44,7 +43,7 @@
   const eventLogQuery = createInfiniteQuery(
     () => {
       const serverId = activeServerId;
-      const activeConnection = connection();
+      const activeConnection = serverScope.connection;
       const filter = activeFilter;
       return {
         queryKey: adminQueryKeys.eventLog(serverId, activeConnection, filter),
@@ -64,7 +63,7 @@
   const eventTypesQuery = createQuery(
     () => {
       const serverId = activeServerId;
-      const activeConnection = connection();
+      const activeConnection = serverScope.connection;
       return {
         queryKey: adminQueryKeys.eventTypes(serverId, activeConnection),
         queryFn: ({ signal }) =>

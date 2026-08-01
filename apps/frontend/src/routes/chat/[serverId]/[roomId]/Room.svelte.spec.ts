@@ -5,6 +5,7 @@ import { SvelteMap } from 'svelte/reactivity';
 import { q } from '$lib/test-utils';
 import { RoomKind } from '@chatto/api-types/api/v1/rooms_pb';
 import { RealtimeProjectionEvent } from '@chatto/api-types/realtime/v1/realtime_pb';
+import type { RoomTimelineAPI } from '$lib/api-client/roomTimeline';
 import { TimelineEventKind } from '$lib/render/timelineEvents';
 import { MessagesStore } from '$lib/state/room';
 import { MessageSearchState } from '$lib/state/server/messageSearch.svelte';
@@ -154,38 +155,30 @@ vi.mock('$lib/hooks', () => ({
   })
 }));
 
-vi.mock('$lib/state/server/connection.svelte', () => ({
-  useConnection: () => () => ({
-    isConnected: true,
-    showConnectionLostBanner: false,
-    serverId: 'server-1',
-    connectBaseUrl: 'http://localhost/api/connect',
-    bearerToken: null,
-    getAPI: (factory: (config: never) => unknown) => factory({} as never),
-    client: {
-      query: mocks.query,
-      mutation: mocks.mutation,
-      subscription: mocks.subscription
-    }
-  })
-}));
-
 vi.mock('$lib/state/server/scope.svelte', async () => {
-  const [{ useConnection }, { serverRegistry }] = await Promise.all([
-    import('$lib/state/server/connection.svelte'),
-    import('$lib/state/server/registry.svelte')
-  ]);
+  const { serverRegistry } = await import('$lib/state/server/registry.svelte');
   return {
     useServerScope: () => ({
       get serverId() {
         return scopeState.get('serverId')!;
       },
-      get connection() {
-        return useConnection()();
+      connection: {
+        isConnected: true,
+        showConnectionLostBanner: false,
+        serverId: 'server-1',
+        connectBaseUrl: 'http://localhost/api/connect',
+        bearerToken: null,
+        getAPI: (factory: (config: never) => unknown) => factory({} as never),
+        client: {
+          query: mocks.query,
+          mutation: mocks.mutation,
+          subscription: mocks.subscription
+        }
       },
       get store() {
         return serverRegistry.getStore(scopeState.get('serverId')!);
-      }
+      },
+      isCurrent: () => true
     })
   };
 });
@@ -593,6 +586,37 @@ describe('Room local message echo', () => {
 
     await expect
       .element(q(container, '[data-testid="pending-highlight-id"]'))
+      .toHaveTextContent('');
+  });
+
+  it('clears an unresolved root highlight after switching rooms', async () => {
+    type AroundPage = Awaited<ReturnType<RoomTimelineAPI['getRoomEventsAround']>>;
+    let resolveAround: ((page: AroundPage) => void) | undefined;
+    mocks.pendingHighlightConsume.mockReturnValueOnce('msg-linked');
+    mocks.timeline.getRoomEventsAround.mockReturnValue(
+      new Promise((resolve) => {
+        resolveAround = resolve;
+      })
+    );
+    const rendered = render(Room, { props: { roomId: 'room-1' } });
+
+    await vi.waitFor(() => expect(mocks.timeline.getRoomEventsAround).toHaveBeenCalledOnce());
+    await rendered.rerender({ roomId: 'room-2' });
+
+    await expect
+      .element(q(rendered.container, '[data-testid="pending-highlight-id"]'))
+      .toHaveTextContent('');
+
+    resolveAround?.({
+      events: [roomMessageEvent('msg-linked')],
+      startCursor: 'tl:linked',
+      endCursor: 'tl:linked',
+      hasOlder: true,
+      hasNewer: true
+    });
+
+    await expect
+      .element(q(rendered.container, '[data-testid="pending-highlight-id"]'))
       .toHaveTextContent('');
   });
 

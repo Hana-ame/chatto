@@ -101,10 +101,6 @@ vi.mock('$lib/navigation', () => ({
   segmentToServerId: (segment: string) => (segment === '-' ? 'origin' : null)
 }));
 
-vi.mock('$lib/state/activeServer.svelte', () => ({
-  getActiveServer: () => 'origin'
-}));
-
 vi.mock('$lib/state/userSettings.svelte', () => ({
   getUserSettings: () => ({
     effectiveTimezone: undefined,
@@ -112,11 +108,15 @@ vi.mock('$lib/state/userSettings.svelte', () => ({
   })
 }));
 
-vi.mock('$lib/state/server/connection.svelte', () => ({
-  useConnection: () => () => ({
+vi.mock('$lib/state/server/scope.svelte', () => ({
+  useServerScope: () => ({
     serverId: 'origin',
-    queryScope: 'event-log-test',
-    getAPI: (factory: (config: never) => unknown) => factory({} as never)
+    store: {},
+    connection: {
+      queryScope: 'event-log-test',
+      getAPI: (factory: (config: never) => unknown) => factory({} as never)
+    },
+    isCurrent: () => true
   })
 }));
 

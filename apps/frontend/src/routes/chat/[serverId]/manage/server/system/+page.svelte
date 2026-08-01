@@ -4,20 +4,19 @@
   import { Hint, PaneContent, Pill } from '$lib/ui';
   import PaneHeader from '$lib/ui/PaneHeader.svelte';
   import PageTitle from '$lib/ui/PageTitle.svelte';
-  import { useConnection } from '$lib/state/server/connection.svelte';
-  import { getActiveServer } from '$lib/state/activeServer.svelte';
+  import { useServerScope } from '$lib/state/server/scope.svelte';
   import { createQuery } from '@tanstack/svelte-query';
   import { adminQueryKeys } from '$lib/query/admin';
   import { queryClient } from '$lib/query/client';
   import * as m from '$lib/i18n/messages';
   import AssetCleanupPanel from './AssetCleanupPanel.svelte';
 
-  const connection = useConnection();
+  const serverScope = useServerScope();
 
   const systemInfoQuery = createQuery(
     () => {
-      const serverId = getActiveServer();
-      const activeConnection = connection();
+      const serverId = serverScope.serverId;
+      const activeConnection = serverScope.connection;
       return {
         queryKey: adminQueryKeys.systemInfo(serverId, activeConnection),
         queryFn: ({ signal }) => getAdminSystemInfo(activeConnection.apiConfig, { signal })

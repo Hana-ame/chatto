@@ -179,6 +179,11 @@ func runServer(configPath string) {
 		chattoCore.VideoMaxUploadSize = int64(cfg.Video.MaxUploadSizeOrDefault())
 	}
 
+	// ffmpeg re-encodes uploaded attachment images to AVIF. The configured
+	// path is preferred; empty falls back to PATH lookup, and a missing
+	// ffmpeg keeps original image bytes.
+	chattoCore.FFmpegPath = cfg.Video.FFmpegPath
+
 	if err := chattoCore.EnableLiveKitCallReconciliation(cfg.LiveKit); err != nil {
 		log.Error("Failed to configure LiveKit call-state reconciliation", "error", err)
 		exitCode = 1

@@ -513,15 +513,27 @@ func (m *AssetUploadModel) storeCompletedUpload(ctx context.Context, session *As
 	var animatedGIF bool
 
 	if isImage {
-		result, err := assets.ProcessAttachmentImageWithConfig(reader, m.core.AssetsConfig())
+		assetsCfg := m.core.AssetsConfig()
+		result, err := assets.ProcessAttachmentImageWithConfig(reader, assetsCfg)
 		if err != nil {
 			return nil, false, fmt.Errorf("failed to process image: %w", err)
 		}
 		content = result.Original
-		size = int64(len(content))
 		width = int32(result.Width)
 		height = int32(result.Height)
 		animatedGIF = contentType == "image/gif" && assets.IsAnimatedGIF(content)
+		// Animated GIFs keep their original bytes: the video pipeline
+		// converts them to MP4/HLS, so encoding a static AVIF would drop
+		// the animation.
+		if !animatedGIF {
+			if encoded, encErr := assets.EncodeAVIF(ctx, content, assetsCfg.FFmpegPath); encErr == nil {
+				content = encoded
+				contentType = "image/avif"
+			} else if !errors.Is(encErr, assets.ErrAVIFUnavailable) {
+				m.core.logger.Warn("Failed to re-encode attachment image to AVIF; storing original", "error", encErr, "attachment_id", attachmentID)
+			}
+		}
+		size = int64(len(content))
 		reader = bytes.NewReader(content)
 	} else {
 		size = session.Size

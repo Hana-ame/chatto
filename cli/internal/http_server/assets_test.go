@@ -15,6 +15,7 @@ import (
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -602,10 +603,15 @@ func TestAsset_OriginalAttachment_ServesCorrectly(t *testing.T) {
 		t.Errorf("Expected Accept-Ranges: none, got %q", got)
 	}
 
-	// Should have correct content type
+	// Should have correct content type. Uploaded images are re-encoded to
+	// AVIF when ffmpeg is available and stored unchanged otherwise.
 	contentType := originalResp.Header.Get("Content-Type")
-	if contentType != "image/png" {
-		t.Errorf("Expected Content-Type: image/png, got: %s", contentType)
+	wantContentType := "image/png"
+	if _, err := exec.LookPath("ffmpeg"); err == nil {
+		wantContentType = "image/avif"
+	}
+	if contentType != wantContentType {
+		t.Errorf("Expected Content-Type: %s, got: %s", wantContentType, contentType)
 	}
 
 	// Body should be readable

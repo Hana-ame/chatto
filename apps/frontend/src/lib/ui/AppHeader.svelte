@@ -6,6 +6,7 @@
   import { getActiveServer } from '$lib/state/activeServer.svelte';
   import { version } from '$app/environment';
   import { sidebarNav, quickSwitcher } from '$lib/state/globals.svelte';
+  import AccountDataSyncButton from '$lib/accountData/AccountDataSyncButton.svelte';
   import * as m from '$lib/i18n/messages';
   import UnreadDot from '$lib/ui/UnreadDot.svelte';
   import MotdContent from '$lib/ui/MotdContent.svelte';
@@ -36,7 +37,7 @@
 </script>
 
 <header class="app-header flex items-center justify-between gap-2 p-2 text-muted md:text-sm">
-  <!-- Leading: Sidebar toggle + Notifications -->
+  <!-- Leading: global navigation, notifications, and client-wide actions -->
   <div class="flex items-center gap-3">
     <!-- Hamburger - 44px tap target for mobile accessibility -->
     <button
@@ -77,6 +78,8 @@
         <span class="iconify text-lg uil--apps"></span>
       </button>
     {/if}
+
+    <AccountDataSyncButton />
 
     <!-- Connection lost indicator: only show when an authenticated server has lost connection.
          Skip the origin server if the user isn't authenticated (no WebSocket expected). -->

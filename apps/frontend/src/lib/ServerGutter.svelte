@@ -54,7 +54,7 @@ is connected to, plus the add-server button pinned to the bottom. See the
   </ScrollFader>
 
   <!-- Add Server - pinned to the bottom -->
-  <div class="flex shrink-0 justify-center p-2 max-md:pl-3">
+  <div class="flex shrink-0 flex-col items-center gap-2 p-2 max-md:pl-3">
     <button
       type="button"
       onclick={() => (addServerDialogVisible = true)}

@@ -35,6 +35,50 @@ The persisted `localStorage` slot intentionally remains named `instances` so
 upgrades retain existing server registrations and remote bearer tokens. This
 is a storage-compatibility name, not current domain terminology.
 
+Users can separately authorize the frontend to synchronize the public registry
+through Authling's global account-data space. A persisted TinyBase
+`MergeableStore` contains only server IDs, immutable origins, names, icon URLs,
+and registration times. Bearer tokens, local user summaries, and
+reauthentication state never enter account data. A synchronized row cannot
+change the origin behind an existing local server ID, so a remote write cannot
+redirect a retained local credential. A server restored on another device is
+registered as signed out until that device completes its own Chatto login.
+Selecting that signed-out server starts its normal device-local OAuth sign-in.
+Signing out of all servers first clears the frontend's Authling account-data
+grant and local TinyBase cache, then clears the local Chatto registry. It does
+not synchronize deletion of the account's durable server list. Authling's own
+browser SSO session remains separate until Authling supports RP-initiated
+logout.
+
+The frontend retains Authling's five-minute account-data access token in
+`localStorage`, bound to the trusted issuer and frontend client ID. Reloads,
+tabs, browser restarts, and transient transport closure can reuse the token
+until its expiry. Expired, malformed, or configuration-mismatched grants are
+removed instead of being sent to another Authling client or issuer.
+
+The frontend origin owns the Authling selection. It reads the versioned,
+non-secret `/client-config.json` bootstrap document from that same origin. A
+Chatto server serving the bundled frontend generates the document from
+`frontend.authling_issuer`. A static frontend can replace the checked-in empty
+document, while a packaged client can provide the same schema through its
+trusted application host. A remote Chatto server cannot select or replace the
+frontend's global identity provider.
+
+Chatto server login and frontend account data use separate CIMD clients. The
+server client redirects to its provider callback and receives only the scopes
+needed for local login. The frontend client redirects to the SPA callback and
+requests `account_data`. This keeps each authorization code and token bound to
+the component that consumes it.
+
+The frontend presents Authling as its own sign-in action. A successful frontend
+authorization reads the stable Authling account ID from UserInfo and starts
+account-data synchronization. When a Chatto server advertises an OIDC provider
+whose issuer exactly matches the frontend's trusted Authling issuer, the client
+can pass that provider's ID as a hint to the server authorization endpoint. The
+server accepts only one of its configured provider IDs and starts its own OIDC
+flow. The existing Authling browser session makes that second authentication
+quick, while Chatto still owns local account creation, linking, and permission.
+
 ### URL-Based Server Routing
 
 The URL is the sole source of truth for which server is active:
@@ -64,6 +108,8 @@ Bearer tokens use NATS KV TTL (default 90 days). Each successful `ValidateAuthTo
 ### Negative
 
 - Registered-server bearer tokens in `localStorage` are vulnerable to XSS (cookie auth is not)
+- The short-lived Authling account-data token has the same `localStorage` XSS
+  exposure, bounded by its five-minute expiry and account-data-only scope
 - This makes XSS prevention part of the auth boundary. The shipped frontend sets
   a report-only CSP with Trusted Types reporting so deployments can surface
   dangerous script and DOM-sink patterns before policy enforcement is viable for
@@ -71,6 +117,9 @@ Bearer tokens use NATS KV TTL (default 90 days). Each successful `ValidateAuthTo
 - `chatto.discovery.v1.ServerDiscoveryService.GetServer` is the only ConnectRPC endpoint with unconditional wildcard CORS — rich data needed pre-registration must go there, not in authenticated ConnectRPC calls
 - Separately hosted multi-server frontends must be listed explicitly in each remote server's `webserver.oauth_redirect_origins` or exact `webserver.allowed_origins` before OAuth authorization codes can redirect back to them; wildcard CORS does not imply OAuth redirect trust. `oauth_redirect_origins = ["*"]` exists only as a temporary controlled-alpha escape hatch.
 - Users approve the first OAuth authorization for each trusted client origin; Chatto remembers that consent per user + origin instead of relying on an operator-managed OAuth client registry
+- Authling server-list synchronization needs a separate `account_data` consent and repeats authorization when its five-minute access token expires
+- Signing in to a Chatto server remains a separate OIDC authorization because the frontend and server are separate clients with different tokens and scopes
+- A frontend distribution must publish or inject its trusted Authling client configuration; connected Chatto servers cannot supply this global setting
 - The probe is async for unauthenticated users, so the origin may not be registered by the time the first render completes
 
 ### Trade-offs

@@ -35,27 +35,30 @@ const POPUP_TIMEOUT_MS = 5 * 60 * 1000;
 
 class OAuthPopupError extends Error {}
 
-export async function startServerOAuthFlow(
+export function startServerOAuthFlow(
   serverUrl: string,
   serverInfo: Pick<PublicServerInfo, 'name' | 'authorizeUrl' | 'iconUrl'>,
+  beforeNavigate?: () => void,
+  providerId?: string | null
+): Promise<void> {
+  return runServerOAuthFlow(
+    serverUrl,
+    Promise.resolve({ serverInfo, providerId: providerId ?? null }),
+    beforeNavigate
+  );
+}
+
+async function runServerOAuthFlow(
+  serverUrl: string,
+  details: Promise<{
+    serverInfo: Pick<PublicServerInfo, 'name' | 'authorizeUrl' | 'iconUrl'>;
+    providerId: string | null;
+  }>,
   beforeNavigate?: () => void
 ): Promise<void> {
-  if (!serverInfo.authorizeUrl) {
-    throw new Error('This server does not support OAuth sign-in.');
-  }
-
   const verifier = generateCodeVerifier();
   const state = generateState();
   const redirectUri = `${window.location.origin}/servers/callback?mode=popup`;
-
-  const flow = {
-    verifier,
-    state,
-    remoteUrl: serverUrl,
-    serverName: serverInfo.name,
-    serverIconUrl: serverInfo.iconUrl ?? null
-  };
-  saveFlowState(flow);
 
   const usesDesktopWindow = hasDesktopOAuthWindowBridge();
   let authorizationWindow: AuthorizationWindow;
@@ -91,6 +94,18 @@ export async function startServerOAuthFlow(
   const responseWait = waitForPopupResponse(authorizationWindow, state, responseChannel);
 
   try {
+    const { serverInfo, providerId } = await details;
+    if (!serverInfo.authorizeUrl) {
+      throw new Error('This server does not support OAuth sign-in.');
+    }
+    const flow = {
+      verifier,
+      state,
+      remoteUrl: serverUrl,
+      serverName: serverInfo.name,
+      serverIconUrl: serverInfo.iconUrl ?? null
+    };
+    saveFlowState(flow);
     const challenge = await generateCodeChallenge(verifier);
     const params = new URLSearchParams({
       response_type: 'code',
@@ -99,6 +114,7 @@ export async function startServerOAuthFlow(
       code_challenge_method: 'S256',
       state
     });
+    if (providerId) params.set('provider_id', providerId);
 
     await authorizationWindow.navigate(`${serverUrl}${serverInfo.authorizeUrl}?${params}`);
 
@@ -294,13 +310,22 @@ export async function completeServerOAuthFlow(
   return id;
 }
 
-export async function startRemoteReauthentication(server: RegisteredServer): Promise<void> {
-  const info = await getPublicServerInfo(server.url, { signal: AbortSignal.timeout(10000) });
-  await startServerOAuthFlow(server.url, {
-    name: info.name || server.name,
-    authorizeUrl: info.authorizeUrl,
-    iconUrl: info.iconUrl ?? server.iconUrl
-  });
+export function startRemoteReauthentication(server: RegisteredServer): Promise<void> {
+  const details = getPublicServerInfo(server.url, { signal: AbortSignal.timeout(10000) }).then(
+    async (info) => {
+      const { findAuthlingServerProvider } = await import('$lib/authling/serverProvider');
+      const provider = await findAuthlingServerProvider(info.authProviders).catch(() => null);
+      return {
+        serverInfo: {
+          name: info.name || server.name,
+          authorizeUrl: info.authorizeUrl,
+          iconUrl: info.iconUrl ?? server.iconUrl
+        },
+        providerId: provider?.id ?? null
+      };
+    }
+  );
+  return runServerOAuthFlow(server.url, details);
 }
 
 export function beginOriginReauthentication(): void {
@@ -309,10 +334,13 @@ export function beginOriginReauthentication(): void {
   clearCachedUser();
   serverRegistry.clearOriginAuthentication();
 
-  const redirect = resolve('/login') + '?' + new URLSearchParams({
-    error: 'authentication_required',
-    redirect: path
-  });
+  const redirect =
+    resolve('/login') +
+    '?' +
+    new URLSearchParams({
+      error: 'authentication_required',
+      redirect: path
+    });
   // eslint-disable-next-line svelte/no-navigation-without-resolve -- base route is resolved above; query parameters preserve the current app path
   void goto(redirect, { invalidateAll: true });
 }

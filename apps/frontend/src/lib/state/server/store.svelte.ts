@@ -51,6 +51,8 @@ import {
   reconcileRegisteredAdminRoomGroupQueries,
   reconcileRegisteredAdminRoomQueries,
   reconcileRegisteredFollowedThreadQueries,
+  invalidateRegisteredRoomMemberQueries,
+  purgeRegisteredRoomMemberQueries,
   removeRegisteredAdminQueries,
   removeRegisteredAdminUserQueries,
   removeRegisteredServerQueries,
@@ -58,6 +60,7 @@ import {
   scrubRegisteredFollowedThreadMessage,
   scrubRegisteredFollowedThreadRoom,
   scrubRegisteredFollowedThreadUser,
+  scrubRegisteredRoomMemberUser,
   updateRegisteredFollowedThreadSummary
 } from '$lib/query/cacheRegistry';
 
@@ -377,6 +380,7 @@ export class ServerStateStore {
         case 'userRemove': {
           const userId = operation.operation.value.userId;
           scrubRegisteredFollowedThreadUser(this.serverId);
+          scrubRegisteredRoomMemberUser(this.serverId, userId);
           removeRegisteredAdminUserQueries(this.serverId, userId);
           this.forEachMessageSearch((store) => store.invalidateAuthor(userId));
           removeUserSummaryCacheEntry(this.serverId, userId);
@@ -404,6 +408,7 @@ export class ServerStateStore {
           } else if (viewerState?.isMember === true) {
             this.restoreRoomAccess(roomId);
           }
+          invalidateRegisteredRoomMemberQueries(this.serverId, roomId);
           break;
         }
         case 'roomRemove': {
@@ -413,6 +418,7 @@ export class ServerStateStore {
           this.roomDirectory.removeMembershipProjection(roomId);
           this.roomUnread.removeRoomProjection(roomId);
           this.forRoomMessageSearch(roomId, (store) => store.revokeRoom(roomId));
+          purgeRegisteredRoomMemberQueries(this.serverId, roomId);
           this.clearRoomAccess(roomId, true);
           break;
         }

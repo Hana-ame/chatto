@@ -57,7 +57,10 @@ const { soundMocks, apiMocks, cacheMocks } = vi.hoisted(() => ({
     scrubFollowedThreadRoom: vi.fn(),
     scrubFollowedThreadMessage: vi.fn(),
     scrubFollowedThreadUser: vi.fn(),
-    updateFollowedThreadSummary: vi.fn()
+    updateFollowedThreadSummary: vi.fn(),
+    invalidateRoomMemberQueries: vi.fn(),
+    purgeRoomMemberQueries: vi.fn(),
+    scrubRoomMemberUser: vi.fn()
   },
   apiMocks: {
     listRooms: vi.fn(() => Promise.resolve([])),
@@ -265,6 +268,7 @@ import { ServerStateStore } from './store.svelte';
 import { eventBusManager, setRealtimeSocketFactoryForTests } from './eventBus.svelte';
 import {
   registerFollowedThreadQueryCache,
+  registerRoomMemberQueryCache,
   registerServerQueryCache
 } from '$lib/query/cacheRegistry';
 import type { ServerConnection } from './serverConnection.svelte';
@@ -415,12 +419,20 @@ beforeEach(() => {
     scrubUser: cacheMocks.scrubFollowedThreadUser,
     updateSummary: cacheMocks.updateFollowedThreadSummary
   });
+  registerRoomMemberQueryCache({
+    invalidateRoom: cacheMocks.invalidateRoomMemberQueries,
+    purgeRoom: cacheMocks.purgeRoomMemberQueries,
+    scrubUser: cacheMocks.scrubRoomMemberUser
+  });
   cacheMocks.resetFollowedThreads.mockClear();
   cacheMocks.reconcileFollowedThreads.mockClear();
   cacheMocks.scrubFollowedThreadRoom.mockClear();
   cacheMocks.scrubFollowedThreadMessage.mockClear();
   cacheMocks.scrubFollowedThreadUser.mockClear();
   cacheMocks.updateFollowedThreadSummary.mockClear();
+  cacheMocks.invalidateRoomMemberQueries.mockClear();
+  cacheMocks.purgeRoomMemberQueries.mockClear();
+  cacheMocks.scrubRoomMemberUser.mockClear();
   cacheMocks.reconcileRegisteredAdminRoomQueries.mockClear();
   cacheMocks.reconcileRegisteredAdminRoomGroupQueries.mockClear();
   cacheMocks.removeRegisteredServerQueries.mockClear();
@@ -841,6 +853,7 @@ describe('ServerStateStore live server updates', () => {
     expect(messages.events[0]).toMatchObject({ actorId: 'U2', actor: null });
     expect(cacheMocks.removeRegisteredAdminUserQueries).toHaveBeenCalledWith(registered.id, 'U2');
     expect(cacheMocks.scrubFollowedThreadUser).toHaveBeenCalledWith(registered.id);
+    expect(cacheMocks.scrubRoomMemberUser).toHaveBeenCalledWith(registered.id, 'U2');
   });
 
   it('reconciles query-backed room snapshots from process-wide projection events', () => {
@@ -898,6 +911,7 @@ describe('ServerStateStore live server updates', () => {
       'R1',
       false
     );
+    expect(cacheMocks.invalidateRoomMemberQueries).toHaveBeenCalledWith(registered.id, 'R1');
     expect(cacheMocks.reconcileRegisteredAdminRoomQueries).toHaveBeenNthCalledWith(
       2,
       registered.id,
@@ -909,6 +923,7 @@ describe('ServerStateStore live server updates', () => {
       ['G1']
     );
     expect(cacheMocks.scrubFollowedThreadRoom).toHaveBeenCalledWith(registered.id, 'R2');
+    expect(cacheMocks.purgeRoomMemberQueries).toHaveBeenCalledWith(registered.id, 'R2');
     expect(cacheMocks.reconcileFollowedThreads).toHaveBeenCalledWith(
       registered.id,
       expect.any(Map)
@@ -987,6 +1002,7 @@ describe('ServerStateStore live server updates', () => {
     expect(store.projection.timelines.has('R1')).toBe(false);
     expect(messages.events).toEqual([]);
     expect(cacheMocks.scrubFollowedThreadRoom).toHaveBeenCalledWith(registered.id, 'R1');
+    expect(cacheMocks.purgeRoomMemberQueries).not.toHaveBeenCalledWith(registered.id, 'R1');
     expect(messages.isInitialLoading).toBe(false);
     expect(store.realtimeSync.desiredRoomIds).toEqual(['R1']);
     expect(store.realtimeSync.retainedRoomIds).toEqual(['R1']);

@@ -1,14 +1,16 @@
 <script lang="ts">
-  import { useServerScope } from '$lib/state/server/scope.svelte';
   import { goto } from '$app/navigation';
   import { resolve } from '$app/paths';
   import { page } from '$app/state';
-  import { SvelteURLSearchParams } from 'svelte/reactivity';
+  import { SvelteSet, SvelteURLSearchParams } from 'svelte/reactivity';
   import { serverIdToSegment } from '$lib/navigation';
-  import type {
-    AdminEventLogEntry,
-    AdminEventLogFilter
-  } from '$lib/state/server/adminEventLog.svelte';
+  import { useServerScope } from '$lib/state/server/scope.svelte';
+  import {
+    createAdminEventLogAPI,
+    type AdminEventLogPage,
+    type AdminEventLogEntry,
+    type AdminEventLogFilter
+  } from '$lib/api-client/adminEventLog';
   import { Panel, DataTable } from '$lib/components/admin';
   import UserCombobox from '$lib/components/users/UserCombobox.svelte';
   import { Hint, PaneContent, Pill } from '$lib/ui';
@@ -22,17 +24,17 @@
   } from '$lib/utils/formatTime';
   import { getLocale } from '$lib/i18n/runtime';
   import * as m from '$lib/i18n/messages';
+  import { createInfiniteQuery, createQuery } from '@tanstack/svelte-query';
+  import { adminQueryKeys } from '$lib/query/admin';
+  import { queryClient } from '$lib/query/client';
 
   const serverScope = useServerScope();
-
   const userSettings = $derived(
     timeFormatSettingsFor(serverScope.store.currentUser.user?.settings)
   );
   const activeLocale = $derived(getLocale());
 
   const activeServerId = $derived(serverScope.serverId);
-  const stores = $derived(serverScope.store);
-  const eventLog = $derived(stores.adminEventLog);
 
   let scrollContainer = $state<HTMLDivElement>();
   let loadedUrlKey = '';
@@ -43,6 +45,69 @@
 
   const activeFilter = $derived(filterFromUrl(page.url));
   const activeFilterKey = $derived(filterKey(activeFilter));
+  const eventLogQuery = createInfiniteQuery(
+    () => {
+      const serverId = activeServerId;
+      const activeConnection = serverScope.connection;
+      const filter = activeFilter;
+      return {
+        queryKey: adminQueryKeys.eventLog(serverId, activeConnection, filter),
+        queryFn: ({ pageParam, signal }) =>
+          activeConnection
+            .getAPI(createAdminEventLogAPI)
+            .listEvents({ limit: 50, before: pageParam, filter }, { signal }),
+        initialPageParam: null as string | null,
+        getNextPageParam: (lastPage) =>
+          lastPage.hasOlder
+            ? (lastPage.endCursor ?? lastPage.entries.at(-1)?.sequence ?? undefined)
+            : undefined
+      };
+    },
+    () => queryClient
+  );
+  const eventTypesQuery = createQuery(
+    () => {
+      const serverId = activeServerId;
+      const activeConnection = serverScope.connection;
+      return {
+        queryKey: adminQueryKeys.eventTypes(serverId, activeConnection),
+        queryFn: ({ signal }) =>
+          activeConnection.getAPI(createAdminEventLogAPI).listEventTypes({ signal })
+      };
+    },
+    () => queryClient
+  );
+  const eventLog = $derived.by(() => {
+    const pages = eventLogQuery.data?.pages ?? [];
+    const latestPage: AdminEventLogPage | undefined = pages.at(-1);
+    const seen = new SvelteSet<string>();
+    const entries = pages.flatMap((eventPage) =>
+      eventPage.entries.filter((entry) => {
+        if (seen.has(entry.sequence)) return false;
+        seen.add(entry.sequence);
+        return true;
+      })
+    );
+    return {
+      entries,
+      totalCount: latestPage?.totalCount ?? '0',
+      scannedCount: latestPage?.scannedCount ?? 0,
+      scanLimit: latestPage?.scanLimit ?? 50,
+      scanLimited: latestPage?.scanLimited ?? false,
+      hasOlder: eventLogQuery.hasNextPage,
+      loading: eventLogQuery.isPending,
+      loadingMore: eventLogQuery.isFetchingNextPage,
+      error: eventLogQuery.error instanceof Error ? eventLogQuery.error.message : null,
+      activeFilter,
+      hasActiveFilter: hasActiveFilter(activeFilter),
+      eventTypes: eventTypesQuery.data ?? [],
+      eventTypesLoading: eventTypesQuery.isPending,
+      eventTypesUnsupported: false,
+      loadMore: async () => {
+        await eventLogQuery.fetchNextPage();
+      }
+    };
+  });
   const draftFilter = $derived<AdminEventLogFilter>({
     eventType: draftEventType.trim(),
     actorId: draftActorId.trim(),
@@ -71,8 +136,6 @@
     draftEventTypeText = filter.eventType;
     draftActorId = filter.actorId;
     draftActorText = filter.actorId;
-    void eventLog.loadEventTypes();
-    void eventLog.loadFirstPage(filter);
   });
 
   function filterFromUrl(url: URL): AdminEventLogFilter {
@@ -86,6 +149,12 @@
 
   function filterKey(filter: AdminEventLogFilter): string {
     return JSON.stringify(filter);
+  }
+
+  function hasActiveFilter(filter: AdminEventLogFilter): boolean {
+    return Boolean(
+      filter.eventType || filter.actorId || filter.createdAtFrom || filter.createdAtTo
+    );
   }
 
   function formatTotalCount(count: string): string {
@@ -179,10 +248,6 @@
     <div class="flex flex-col gap-4">
       {#if eventLog.error}
         <Hint tone="danger">{eventLog.error}</Hint>
-      {/if}
-
-      {#if eventLog.compatibilityMessage}
-        <Hint tone="warning">{eventLog.compatibilityMessage}</Hint>
       {/if}
 
       {#if eventLog.scanLimited}

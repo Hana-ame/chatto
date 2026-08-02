@@ -170,6 +170,11 @@ generated protobuf clients, Vitest browser tests, Playwright e2e, and Storybook.
 ## Pagination, Lists, And Realtime UI
 
 - Use automatic "load more" pagination when a scroll/container edge is reached.
+- Use TanStack Query for snapshot-style ConnectRPC reads. Scope private query
+  keys by server and connection session, keep the cache memory-only, and purge
+  it at authentication and privacy boundaries. Keep realtime projections,
+  timelines, notifications, presence, calls, and message search in their
+  owning per-server stores; see ADR-062.
 - Use event-driven updates from the per-server event bus and explicit projected
   refetches rather than assuming a normalized client cache.
 - For paginated caches reconciled from realtime snapshots, queue relevant

@@ -5,6 +5,9 @@ import type {
 } from '$lib/api-client/adminUsers';
 import { describe, expect, it, vi } from 'vitest';
 import { MemberDetailStore } from './MemberDetailStore.svelte';
+import { removeRegisteredAdminUserQueries } from '$lib/query/cacheRegistry';
+import { adminQueryKeys } from '$lib/query/admin';
+import { queryClient } from '$lib/query/client';
 
 function member(id: string, roles = ['everyone']): AdminMember {
   return {
@@ -76,6 +79,18 @@ function deferred<T>(): {
 }
 
 describe('MemberDetailStore', () => {
+  it('reuses fresh member details when navigating back within one server session', async () => {
+    const getMember = vi.fn((userId: string) => Promise.resolve(details(member(userId))));
+    const store = new MemberDetailStore(() => api({ getMember }));
+
+    await store.setMember('server-1', 'alice');
+    await store.setMember('server-1', 'bob');
+    await store.setMember('server-1', 'alice');
+
+    expect(getMember).toHaveBeenCalledTimes(2);
+    expect(store.member).toEqual(member('alice'));
+  });
+
   it('ignores an older member response after the route changes', async () => {
     const aliceDetails = deferred<AdminMemberDetails>();
     const getMember = vi
@@ -91,8 +106,16 @@ describe('MemberDetailStore', () => {
     aliceDetails.resolve(details(member('alice')));
     await staleLoad;
 
-    expect(getMember).toHaveBeenNthCalledWith(1, 'alice');
-    expect(getMember).toHaveBeenNthCalledWith(2, 'bob');
+    expect(getMember).toHaveBeenNthCalledWith(
+      1,
+      'alice',
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    );
+    expect(getMember).toHaveBeenNthCalledWith(
+      2,
+      'bob',
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    );
     expect(store.member).toEqual(member('bob'));
     expect(store.loading).toBe(false);
   });
@@ -114,6 +137,45 @@ describe('MemberDetailStore', () => {
 
     expect(getMember).toHaveBeenCalledTimes(2);
     expect(store.member?.displayName).toBe('Server Two User');
+  });
+
+  it('reloads the same member when the connection session changes', async () => {
+    let queryScope = 'old-session';
+    let currentAPI = api({
+      getMember: vi
+        .fn()
+        .mockResolvedValue(details({ ...member('alice'), displayName: 'Old Session Alice' }))
+    });
+    const store = new MemberDetailStore(
+      () => currentAPI,
+      () => ({ queryScope })
+    );
+
+    await store.setMember('server-1', 'alice');
+    queryScope = 'new-session';
+    currentAPI = api({
+      getMember: vi
+        .fn()
+        .mockResolvedValue(details({ ...member('alice'), displayName: 'New Session Alice' }))
+    });
+    await store.setMember('server-1', 'alice');
+
+    expect(store.member?.displayName).toBe('New Session Alice');
+    store.dispose();
+  });
+
+  it('clears mounted member details when realtime removes that user', async () => {
+    const store = new MemberDetailStore(() =>
+      api({ getMember: vi.fn().mockResolvedValue(details(member('alice'))) })
+    );
+    await store.setMember('server-1', 'alice');
+
+    removeRegisteredAdminUserQueries('server-1', 'alice');
+
+    expect(store.member).toBeNull();
+    expect(store.roles).toEqual([]);
+    expect(store.loading).toBe(false);
+    store.dispose();
   });
 
   it('does not apply a completed role mutation to the next member', async () => {
@@ -155,6 +217,27 @@ describe('MemberDetailStore', () => {
     expect(await store.toggleRole('admin', false)).toBe(true);
     expect(store.error).toBe('projection temporarily unavailable');
     expect(store.updatingRole).toBe(null);
+  });
+
+  it('invalidates the member permission matrix after a role assignment changes', async () => {
+    const connection = { queryScope: 'member-detail' };
+    const permissionKey = adminQueryKeys.userPermissions('server-1', connection, 'alice');
+    queryClient.setQueryData(permissionKey, { effective: 'stale' });
+    const store = new MemberDetailStore(() =>
+      api({
+        getMember: vi.fn().mockResolvedValue(details(member('alice'))),
+        assignRole: vi.fn().mockResolvedValue({
+          changed: true,
+          member: member('alice', ['everyone', 'admin'])
+        })
+      })
+    );
+
+    await store.setMember('server-1', 'alice');
+    await store.toggleRole('admin', false);
+
+    expect(queryClient.getQueryState(permissionKey)?.isInvalidated).toBe(true);
+    store.dispose();
   });
 
   it('applies successful identity and password updates to the current member', async () => {

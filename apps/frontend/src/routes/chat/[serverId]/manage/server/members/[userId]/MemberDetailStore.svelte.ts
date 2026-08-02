@@ -6,11 +6,18 @@ import type {
   AdminUserManagementAPI
 } from '$lib/api-client/adminUsers';
 import * as m from '$lib/i18n/messages';
+import type { ServerConnection } from '$lib/state/server/serverConnection.svelte';
+import { adminQueryKeys } from '$lib/query/admin';
+import { queryClient } from '$lib/query/client';
+import { registerAdminUserRemovalListener } from '$lib/query/cacheRegistry';
 
 type APIProvider = () => AdminUserManagementAPI;
+type QueryConnectionProvider = () => Pick<ServerConnection, 'queryScope'>;
 type MemberTarget = {
   serverId: string;
   userId: string;
+  queryScope: string;
+  api: AdminUserManagementAPI;
   generation: number;
 };
 
@@ -34,26 +41,51 @@ export class MemberDetailStore {
   error = $state<string | null>(null);
 
   readonly #getAPI: APIProvider;
+  readonly #getQueryConnection: QueryConnectionProvider;
   #serverId = '';
   #userId = '';
+  #queryScope = '';
+  #api: AdminUserManagementAPI | null = null;
   #generation = 0;
+  readonly #removeUserRemovalListener: () => void;
 
-  constructor(getAPI: APIProvider) {
+  constructor(
+    getAPI: APIProvider,
+    getQueryConnection: QueryConnectionProvider = () => ({ queryScope: 'member-detail' })
+  ) {
     this.#getAPI = getAPI;
+    this.#getQueryConnection = getQueryConnection;
+    this.#removeUserRemovalListener = registerAdminUserRemovalListener((serverId, userId) => {
+      if (serverId !== this.#serverId || userId !== this.#userId) return;
+      this.#generation += 1;
+      this.#clear();
+    });
+  }
+
+  dispose(): void {
+    this.#generation += 1;
+    this.#removeUserRemovalListener();
+    this.#clear();
   }
 
   setMember(serverId: string, userId: string): Promise<void> {
-    if (serverId === this.#serverId && userId === this.#userId) return Promise.resolve();
+    const queryScope = this.#getQueryConnection().queryScope;
+    if (serverId === this.#serverId && userId === this.#userId && queryScope === this.#queryScope) {
+      return Promise.resolve();
+    }
 
     this.#serverId = serverId;
     this.#userId = userId;
+    this.#queryScope = queryScope;
+    const api = this.#getAPI();
+    this.#api = api;
     const generation = ++this.#generation;
     this.#clear();
 
     if (!serverId || !userId) return Promise.resolve();
 
     this.loading = true;
-    return this.#load({ serverId, userId, generation });
+    return this.#load({ serverId, userId, queryScope, api, generation });
   }
 
   async updateIdentity(input: {
@@ -63,7 +95,7 @@ export class MemberDetailStore {
     const target = this.#target();
     if (!target || !this.member) return null;
 
-    const updated = await this.#getAPI().updateUser({
+    const updated = await target.api.updateUser({
       userId: target.userId,
       ...input
     });
@@ -74,6 +106,12 @@ export class MemberDetailStore {
       login: updated.login,
       displayName: updated.displayName
     };
+    this.#updateCachedMember(target, (member) => ({
+      ...member,
+      login: updated.login,
+      displayName: updated.displayName
+    }));
+    this.#invalidateMemberLists(target);
     return updated;
   }
 
@@ -81,10 +119,12 @@ export class MemberDetailStore {
     const target = this.#target();
     if (!target || !this.member) return false;
 
-    const cleared = await this.#getAPI().clearUsernameCooldown(target.userId);
+    const cleared = await target.api.clearUsernameCooldown(target.userId);
     if (!cleared || !this.#isCurrent(target) || !this.member) return false;
 
     this.member = { ...this.member, lastLoginChange: null };
+    this.#updateCachedMember(target, (member) => ({ ...member, lastLoginChange: null }));
+    this.#invalidateMemberLists(target);
     return true;
   }
 
@@ -92,10 +132,12 @@ export class MemberDetailStore {
     const target = this.#target();
     if (!target || !this.member) return null;
 
-    const updated = await this.#getAPI().updateUserPassword(target.userId, password);
+    const updated = await target.api.updateUserPassword(target.userId, password);
     if (!this.#isCurrent(target)) return null;
 
     this.member = updated;
+    this.#updateCachedMember(target, () => updated);
+    this.#invalidateMemberLists(target);
     return updated;
   }
 
@@ -110,8 +152,8 @@ export class MemberDetailStore {
       let result;
       try {
         result = currentlyHasRole
-          ? await this.#getAPI().revokeRole(target.userId, roleName)
-          : await this.#getAPI().assignRole(target.userId, roleName);
+          ? await target.api.revokeRole(target.userId, roleName)
+          : await target.api.assignRole(target.userId, roleName);
       } catch (error) {
         if (this.#isCurrent(target)) {
           this.error =
@@ -124,6 +166,7 @@ export class MemberDetailStore {
 
       if (result.member) {
         this.member = result.member;
+        this.#updateCachedMember(target, () => result.member!);
       } else {
         try {
           await this.#refresh(target);
@@ -133,6 +176,9 @@ export class MemberDetailStore {
           }
         }
       }
+
+      this.#invalidateMemberLists(target);
+      this.#invalidateUserPermissions(target);
 
       return this.#isCurrent(target);
     } finally {
@@ -155,7 +201,10 @@ export class MemberDetailStore {
 
   async #load(target: MemberTarget): Promise<void> {
     try {
-      const details = await this.#getAPI().getMember(target.userId);
+      const details = await queryClient.fetchQuery({
+        queryKey: this.#queryKey(target),
+        queryFn: ({ signal }) => target.api.getMember(target.userId, { signal })
+      });
       if (!this.#isCurrent(target)) return;
       this.#apply(details);
     } catch (error) {
@@ -167,8 +216,37 @@ export class MemberDetailStore {
   }
 
   async #refresh(target: MemberTarget): Promise<void> {
-    const details = await this.#getAPI().getMember(target.userId);
+    await queryClient.invalidateQueries({ queryKey: this.#queryKey(target), exact: true });
+    const details = await queryClient.fetchQuery({
+      queryKey: this.#queryKey(target),
+      queryFn: ({ signal }) => target.api.getMember(target.userId, { signal }),
+      retry: false
+    });
     if (this.#isCurrent(target)) this.#apply(details);
+  }
+
+  #queryKey(target: Pick<MemberTarget, 'serverId' | 'userId' | 'queryScope'>) {
+    return adminQueryKeys.member(target.serverId, target, target.userId);
+  }
+
+  #updateCachedMember(target: MemberTarget, update: (member: AdminMember) => AdminMember): void {
+    queryClient.setQueryData<AdminMemberDetails>(this.#queryKey(target), (details) => {
+      if (!details?.member) return details;
+      return { ...details, member: update(details.member) };
+    });
+  }
+
+  #invalidateMemberLists(target: MemberTarget): void {
+    void queryClient.invalidateQueries({
+      queryKey: adminQueryKeys.membersRoot(target.serverId, target)
+    });
+  }
+
+  #invalidateUserPermissions(target: MemberTarget): void {
+    void queryClient.invalidateQueries({
+      queryKey: adminQueryKeys.userPermissions(target.serverId, target, target.userId),
+      exact: true
+    });
   }
 
   #apply(details: AdminMemberDetails): void {
@@ -182,10 +260,12 @@ export class MemberDetailStore {
   }
 
   #target(): MemberTarget | null {
-    return this.#serverId && this.#userId
+    return this.#serverId && this.#userId && this.#api
       ? {
           serverId: this.#serverId,
           userId: this.#userId,
+          queryScope: this.#queryScope,
+          api: this.#api,
           generation: this.#generation
         }
       : null;
@@ -195,6 +275,7 @@ export class MemberDetailStore {
     return (
       target.serverId === this.#serverId &&
       target.userId === this.#userId &&
+      target.queryScope === this.#queryScope &&
       target.generation === this.#generation
     );
   }

@@ -39,9 +39,14 @@ import {
 } from '@chatto/api-types/realtime/v1/realtime_pb';
 import { MAX_RETAINED_ROOM_TIMELINES } from './realtimeSync.svelte';
 
-const { soundMocks, apiMocks } = vi.hoisted(() => ({
+const { soundMocks, apiMocks, cacheMocks } = vi.hoisted(() => ({
   soundMocks: {
     playCallSound: vi.fn(() => Promise.resolve())
+  },
+  cacheMocks: {
+    removeRegisteredAdminQueries: vi.fn(),
+    removeRegisteredAdminUserQueries: vi.fn(),
+    removeRegisteredServerQueries: vi.fn()
   },
   apiMocks: {
     listRooms: vi.fn(() => Promise.resolve([])),
@@ -63,19 +68,6 @@ const { soundMocks, apiMocks } = vi.hoisted(() => ({
         unreadCount: 0
       })
     ),
-    listAdminEventLogEvents: vi.fn(() =>
-      Promise.resolve({
-        entries: [],
-        hasOlder: false,
-        endCursor: null,
-        totalCount: '0',
-        scannedCount: 0,
-        scanLimit: 50,
-        scanLimited: false
-      })
-    ),
-    listAdminEventLogEventTypes: vi.fn(() => Promise.resolve([])),
-    getAdminEventLogEvent: vi.fn(() => Promise.resolve(null)),
     getAuthenticatedServerState: vi.fn<() => Promise<AuthenticatedServerState>>(() =>
       Promise.resolve({
         name: 'Store Event Test',
@@ -237,20 +229,6 @@ vi.mock('$lib/api-client/roles', () => ({
   }))
 }));
 
-vi.mock('$lib/api-client/adminEventLog', () => ({
-  EMPTY_ADMIN_EVENT_LOG_FILTER: {
-    eventType: '',
-    actorId: '',
-    createdAtFrom: '',
-    createdAtTo: ''
-  },
-  createAdminEventLogAPI: vi.fn(() => ({
-    listEvents: apiMocks.listAdminEventLogEvents,
-    listEventTypes: apiMocks.listAdminEventLogEventTypes,
-    getEvent: apiMocks.getAdminEventLogEvent
-  }))
-}));
-
 vi.mock('$lib/api-client/serverState', () => ({
   getAuthenticatedServerState: apiMocks.getAuthenticatedServerState
 }));
@@ -274,6 +252,7 @@ vi.mock('$lib/api-client/attachments', async (importActual) => {
 
 import { ServerStateStore } from './store.svelte';
 import { eventBusManager, setRealtimeSocketFactoryForTests } from './eventBus.svelte';
+import { registerServerQueryCache } from '$lib/query/cacheRegistry';
 import type { ServerConnection } from './serverConnection.svelte';
 import type { RegisteredServer } from './registry.svelte';
 
@@ -407,6 +386,14 @@ function projectedRoomFile(attachmentId = 'A1', messageEventId = 'M1'): RoomFile
 }
 
 beforeEach(() => {
+  registerServerQueryCache({
+    server: cacheMocks.removeRegisteredServerQueries,
+    admin: cacheMocks.removeRegisteredAdminQueries,
+    adminUser: cacheMocks.removeRegisteredAdminUserQueries
+  });
+  cacheMocks.removeRegisteredServerQueries.mockClear();
+  cacheMocks.removeRegisteredAdminQueries.mockClear();
+  cacheMocks.removeRegisteredAdminUserQueries.mockClear();
   apiMocks.listRooms.mockResolvedValue([]);
   apiMocks.listRoomGroups.mockResolvedValue([]);
   apiMocks.listRoomMembers.mockResolvedValue({
@@ -704,6 +691,7 @@ describe('ServerStateStore live server updates', () => {
     expect(store.roomDirectory.allRooms).toEqual([]);
     expect(store.roomDirectory.isLoading).toBe(true);
     expect(store.currentUser.loading).toBe(true);
+    expect(cacheMocks.removeRegisteredAdminQueries).toHaveBeenCalledWith(registered.id);
 
     for (const handler of bus.projectionHandlers) {
       handler(
@@ -733,6 +721,29 @@ describe('ServerStateStore live server updates', () => {
     expect(store.serverInfo.motd).toBe('rehydrated');
     expect(store.serverInfo.livekitUrl).toBe('wss://fresh');
     expect(store.activeCallRooms.has('R2')).toBe(true);
+  });
+
+  it('purges cached admin reads when an admin capability is revoked', () => {
+    const store = makeStore(new FakeServerConnection([]));
+    store.setPermissions({
+      canViewAdmin: true,
+      canStartDMs: true,
+      canAdminViewUsers: true,
+      canAdminManageAccounts: true,
+      canAssignRoles: true,
+      canAdminViewRoles: true,
+      canAdminManageRoles: true,
+      canAdminViewSystem: true,
+      canAdminViewAudit: true
+    });
+    cacheMocks.removeRegisteredAdminQueries.mockClear();
+
+    store.setPermissions({
+      ...store.permissions,
+      canAdminViewAudit: false
+    });
+
+    expect(cacheMocks.removeRegisteredAdminQueries).toHaveBeenCalledWith(registered.id);
   });
 
   it('purges removed users from navigation and retained render stores', () => {
@@ -796,6 +807,7 @@ describe('ServerStateStore live server updates', () => {
     expect(store.projection.rooms.get('R1')?.memberUserIds).toEqual([]);
     expect(store.navigation.rooms[0]?.members).toEqual([]);
     expect(messages.events[0]).toMatchObject({ actorId: 'U2', actor: null });
+    expect(cacheMocks.removeRegisteredAdminUserQueries).toHaveBeenCalledWith(registered.id, 'U2');
   });
 
   it('keeps a first-view room timeline loading while requesting it from realtime', () => {

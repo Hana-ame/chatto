@@ -3,6 +3,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render } from 'vitest-browser-svelte';
 import { flushSync } from 'svelte';
 import PermissionMatrix from './PermissionMatrix.svelte';
+import { adminQueryKeys } from '$lib/query/admin';
+import { queryClient } from '$lib/query/client';
 
 type TierRoles = {
   applicablePermissions: string[];
@@ -55,7 +57,7 @@ const HAPPY_TIER_ROLES: TierRoles = {
 };
 
 // A module-level holder so individual tests can swap the resolver payload
-// before rendering. The scoped connection dereferences it on every call.
+// before rendering. The scoped API mock dereferences it on every call.
 let nextTierRoles: TierRoles | null = HAPPY_TIER_ROLES;
 const permissionMocks = vi.hoisted(() => ({
   getRolePermissionTierMatrix: vi.fn(),
@@ -71,13 +73,10 @@ vi.mock('$lib/api-client/permissions', () => ({
 
 vi.mock('$lib/state/server/scope.svelte', () => ({
   useServerScope: () => ({
-    serverId: 'origin',
+    serverId: 'server-test',
     store: {},
     connection: {
-      isConnected: true,
-      showConnectionLostBanner: false,
-      connectBaseUrl: '/api/connect',
-      bearerToken: 'token',
+      queryScope: 'permission-matrix-test',
       getAPI: (factory: (config: never) => unknown) => factory({} as never)
     },
     isCurrent: () => true
@@ -377,12 +376,37 @@ describe('PermissionMatrix', () => {
     expect(button.getAttribute('aria-busy')).toBe('true');
     expect(button.querySelector('.animate-spin.uil--spinner')).not.toBeNull();
 
+    nextTierRoles = {
+      ...HAPPY_TIER_ROLES,
+      roles: HAPPY_TIER_ROLES.roles.map((role) =>
+        role.roleName === 'moderator'
+          ? { ...role, override: { permissions: [], permissionDenials: [] } }
+          : role
+      )
+    };
     resolveUpdate?.();
+    await vi.waitFor(() => {
+      expect(button.hasAttribute('aria-busy')).toBe(false);
+      expect(button.querySelector('.animate-spin.uil--spinner')).toBeNull();
+      expect(button.querySelector('.uil--minus')).not.toBeNull();
+    });
+  });
+
+  it('invalidates cached user matrices after a role permission changes', async () => {
+    const connection = { queryScope: 'permission-matrix-test' };
+    const userPermissionKey = adminQueryKeys.userPermissions('server-test', connection, 'member-1');
+    queryClient.setQueryData(userPermissionKey, { effective: 'stale' });
+    const { container } = render(PermissionMatrix, { props: { spaceId: 'space-1' } });
     await settle();
 
-    expect(button.hasAttribute('aria-busy')).toBe(false);
-    expect(button.querySelector('.animate-spin.uil--spinner')).toBeNull();
-    expect(button.querySelector('.uil--minus')).not.toBeNull();
+    const button = container.querySelector(
+      'button[aria-label*="Moderator"][aria-label*="room.create"]'
+    ) as HTMLButtonElement;
+    button.click();
+
+    await vi.waitFor(() =>
+      expect(queryClient.getQueryState(userPermissionKey)?.isInvalidated).toBe(true)
+    );
   });
 
   it('isolates pending permission state after its resource scope changes', async () => {

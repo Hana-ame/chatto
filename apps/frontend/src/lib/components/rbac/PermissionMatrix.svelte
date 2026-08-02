@@ -25,7 +25,7 @@ headers are clickable when `onRoleClick` is provided
 focusing a cell highlights its permission row and role column.
 -->
 <script lang="ts">
-  import type { Snippet } from 'svelte';
+  import { onDestroy, type Snippet } from 'svelte';
   import { Panel, DataTable } from '$lib/components/admin';
   import { Hint, HelpTooltip } from '$lib/ui';
   import { ShortcutTextInput } from '$lib/ui/form';
@@ -36,13 +36,12 @@ focusing a cell highlights its permission row and role column.
   import { setRolePermission, type MutationScope } from './permissionMutations';
   import MatrixCell from './MatrixCell.svelte';
   import * as m from '$lib/i18n/messages';
+  import { createQuery } from '@tanstack/svelte-query';
+  import { adminQueryKeys } from '$lib/query/admin';
+  import { queryClient } from '$lib/query/client';
+  import { invalidateRolePermissionDependents } from '$lib/query/adminInvalidation';
 
   type State = 'allow' | 'deny' | 'neutral';
-  type PermissionScopeIdentity = {
-    spaceId: string | null;
-    roomId: string | null;
-    groupId: string | null;
-  };
   type MatrixCoordinate = { category: string; column: string; permission: string };
 
   type TierPerms = { permissions: string[]; permissionDenials: string[] };
@@ -139,82 +138,55 @@ focusing a cell highlights its permission row and role column.
 
   const serverScope = useServerScope();
 
-  function permissionAPI() {
-    return serverScope.connection.getAPI(createPermissionAPI);
-  }
+  const matrixQuery = createQuery(
+    () => {
+      const serverId = serverScope.serverId;
+      const activeConnection = serverScope.connection;
+      const activeRoomId = roomId ?? null;
+      const activeGroupId = groupId ?? null;
+      return {
+        queryKey: adminQueryKeys.permissionTier(
+          serverId,
+          activeConnection,
+          activeRoomId,
+          activeGroupId
+        ),
+        queryFn: ({ signal }) =>
+          activeConnection
+            .getAPI(createPermissionAPI)
+            .getRolePermissionTierMatrix(
+              { roomId: activeRoomId, groupId: activeGroupId },
+              { signal }
+            )
+      };
+    },
+    () => queryClient
+  );
 
-  let data = $state<TierRoles | null>(null);
-  let loading = $state(true);
-  let error = $state<string | null>(null);
-  let updating = $state<string[]>([]); // "{roleName}::{permission}" entries with mutations in flight
+  const data = $derived(matrixQuery.data ?? null);
+  const loading = $derived(matrixQuery.isPending);
+  const loadError = $derived(matrixQuery.error instanceof Error ? matrixQuery.error.message : null);
+  let mutationError = $state<{ context: string; message: string } | null>(null);
+  let updating = $state<string[]>([]);
+  let disposed = false;
   let hoveredCell = $state<MatrixCoordinate | null>(null);
   let focusedCell = $state<MatrixCoordinate | null>(null);
-  let resourceGeneration = 0;
   const highlightedCell = $derived(hoveredCell ?? focusedCell);
-
-  $effect(() => {
-    const s = spaceId ?? null;
-    const rm = roomId ?? null;
-    const st = groupId ?? null;
-    const generation = ++resourceGeneration;
-    updating = [];
-    void load(s, rm, st, generation);
+  const activeMutationContext = $derived(
+    mutationContext(
+      serverScope.serverId,
+      serverScope.connection.queryScope,
+      spaceId ?? null,
+      roomId ?? null,
+      groupId ?? null
+    )
+  );
+  const visibleMutationError = $derived(
+    mutationError?.context === activeMutationContext ? mutationError.message : null
+  );
+  onDestroy(() => {
+    disposed = true;
   });
-
-  async function load(s: string | null, rm: string | null, st: string | null, generation: number) {
-    loading = true;
-    error = null;
-
-    let matrix: TierRoles | null = null;
-    try {
-      matrix = await permissionAPI().getRolePermissionTierMatrix({
-        roomId: rm,
-        groupId: st
-      });
-    } catch (err) {
-      if (
-        !serverScope.isCurrent() ||
-        generation !== resourceGeneration ||
-        s !== (spaceId ?? null) ||
-        rm !== (roomId ?? null) ||
-        st !== (groupId ?? null)
-      ) {
-        return;
-      }
-      loading = false;
-      error = err instanceof Error ? err.message : String(err);
-      return;
-    }
-
-    if (
-      !serverScope.isCurrent() ||
-      generation !== resourceGeneration ||
-      s !== (spaceId ?? null) ||
-      rm !== (roomId ?? null) ||
-      st !== (groupId ?? null)
-    ) {
-      return;
-    }
-
-    loading = false;
-    if (!matrix) {
-      error = m['rbac.permissions.no_data']();
-      return;
-    }
-    // Clone so we can safely apply optimistic updates.
-    data = {
-      applicablePermissions: [...matrix.applicablePermissions],
-      roles: matrix.roles.map((r: TierRole) => ({
-        ...r,
-        override: {
-          permissions: [...r.override.permissions],
-          permissionDenials: [...r.override.permissionDenials]
-        },
-        inheritedAllows: [...r.inheritedAllows],
-        inheritedDenials: [...r.inheritedDenials]
-      }))
-    };
-  }
 
   // ----- Layout -----------------------------------------------------------
 
@@ -285,6 +257,20 @@ focusing a cell highlights its permission row and role column.
     return '';
   }
 
+  function mutationContext(
+    serverId: string,
+    queryScope: string,
+    activeSpaceId: string | null,
+    activeRoomId: string | null,
+    activeGroupId: string | null
+  ): string {
+    return JSON.stringify([serverId, queryScope, activeSpaceId, activeRoomId, activeGroupId]);
+  }
+
+  function cellIsUpdating(cellKey: string): boolean {
+    return updating.includes(`${activeMutationContext}:${cellKey}`);
+  }
+
   // ----- Mutations --------------------------------------------------------
 
   function scopeFor(role: TierRole): MutationScope {
@@ -297,58 +283,72 @@ focusing a cell highlights its permission row and role column.
     return { tier: 'server', roleName: role.roleName };
   }
 
-  function currentScopeIdentity(): PermissionScopeIdentity {
-    return {
-      spaceId: spaceId ?? null,
-      roomId: roomId ?? null,
-      groupId: groupId ?? null
-    };
-  }
-
-  function isCurrentScope(identity: PermissionScopeIdentity): boolean {
-    const current = currentScopeIdentity();
-    return (
-      serverScope.isCurrent() &&
-      identity.spaceId === current.spaceId &&
-      identity.roomId === current.roomId &&
-      identity.groupId === current.groupId
-    );
-  }
-
   async function cycle(role: TierRole, permission: string, next: State) {
     if (!data) return;
-    const identity = currentScopeIdentity();
-    const generation = resourceGeneration;
+    const serverId = serverScope.serverId;
+    const activeConnection = serverScope.connection;
+    const queryKey = adminQueryKeys.permissionTier(
+      serverId,
+      activeConnection,
+      roomId ?? null,
+      groupId ?? null
+    );
+    const mutationScope = scopeFor(role);
     const cellKey = `${role.roleName}::${permission}`;
-    if (updating.includes(cellKey)) return;
-    updating = [...updating, cellKey];
-    error = null;
+    const context = mutationContext(
+      serverId,
+      activeConnection.queryScope,
+      spaceId ?? null,
+      roomId ?? null,
+      groupId ?? null
+    );
+    const pendingKey = `${context}:${cellKey}`;
+    if (updating.includes(pendingKey)) return;
+    updating = [...updating, pendingKey];
+    mutationError = null;
 
-    const result = await setRolePermission(permissionAPI(), scopeFor(role), permission, next);
-    if (generation !== resourceGeneration || !isCurrentScope(identity)) return;
+    const result = await setRolePermission(
+      activeConnection.getAPI(createPermissionAPI),
+      mutationScope,
+      permission,
+      next
+    );
+    if (disposed || !serverScope.isCurrent()) return;
     if (result.error) {
-      error = result.error;
-      toast.error(result.error);
-      updating = updating.filter((key) => key !== cellKey);
+      if (context === activeMutationContext) {
+        mutationError = { context, message: result.error };
+        toast.error(result.error);
+      }
+      updating = updating.filter((key) => key !== pendingKey);
       return;
     }
 
-    // Optimistic update on the cell's role.
-    role.override.permissions = role.override.permissions.filter((p) => p !== permission);
-    role.override.permissionDenials = role.override.permissionDenials.filter(
-      (p) => p !== permission
-    );
-    if (next === 'allow') {
-      role.override.permissions = [...role.override.permissions, permission];
-    } else if (next === 'deny') {
-      role.override.permissionDenials = [...role.override.permissionDenials, permission];
-    }
-    updating = updating.filter((key) => key !== cellKey);
+    queryClient.setQueryData<TierRoles>(queryKey, (old) => {
+      if (!old) return old;
+      return {
+        ...old,
+        roles: old.roles.map((candidate) => {
+          if (candidate.roleName !== role.roleName) return candidate;
+          const permissions = candidate.override.permissions.filter((p) => p !== permission);
+          const permissionDenials = candidate.override.permissionDenials.filter(
+            (p) => p !== permission
+          );
+          if (next === 'allow') permissions.push(permission);
+          if (next === 'deny') permissionDenials.push(permission);
+          return { ...candidate, override: { permissions, permissionDenials } };
+        })
+      };
+    });
+    void queryClient.invalidateQueries({
+      queryKey: adminQueryKeys.rolePermissions(serverId, activeConnection, role.roleName)
+    });
+    invalidateRolePermissionDependents(serverId, activeConnection);
+    updating = updating.filter((key) => key !== pendingKey);
   }
 </script>
 
-{#if error}
-  <Hint tone="danger">{error}</Hint>
+{#if visibleMutationError || loadError}
+  <Hint tone="danger">{visibleMutationError ?? loadError}</Hint>
 {/if}
 
 {#if loading}
@@ -469,7 +469,7 @@ focusing a cell highlights its permission row and role column.
           {@const displayOverride = virtualOwner ? 'allow' : ov}
           {@const displayInherited = virtualOwner ? 'neutral' : inh}
           {@const cellKey = `${role.roleName}::${permission}`}
-          {@const isUpdating = updating.includes(cellKey)}
+          {@const isUpdating = cellIsUpdating(cellKey)}
           {@const ariaParts = virtualOwner
             ? [`Owner is always granted ${permission}`]
             : [

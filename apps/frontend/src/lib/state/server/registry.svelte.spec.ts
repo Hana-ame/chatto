@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { generateServerId, type RegisteredServer } from './registry.svelte';
+import { queryClient } from '$lib/query/client';
 
 const STORAGE_KEY = 'chatto:instances';
 
@@ -212,6 +213,7 @@ describe('ServerRegistry', () => {
 					userDisplayName: 'Alice'
 				})
 			);
+			queryClient.setQueryData(['server', 'remote', 'private'], 'cached admin data');
 
 			registry.handleAuthenticationRequired('remote');
 
@@ -220,6 +222,7 @@ describe('ServerRegistry', () => {
 			const stored = JSON.parse(localStorage.getItem(STORAGE_KEY)!);
 			expect(stored).toHaveLength(1);
 			expect(stored[0].reauthRequiredAt).toEqual(expect.any(Number));
+			expect(queryClient.getQueryData(['server', 'remote', 'private'])).toBeUndefined();
 		});
 
 		it('clears reauth-required state explicitly', async () => {

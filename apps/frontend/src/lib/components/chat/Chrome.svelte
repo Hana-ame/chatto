@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { Snippet } from 'svelte';
   import { resolve } from '$app/paths';
   import { page } from '$app/state';
   import { viewerResponseToState } from '$lib/api-client/viewer';
@@ -20,7 +21,7 @@
   import { getAdminNavItems } from './adminNav';
   import * as m from '$lib/i18n/messages';
 
-  let { children } = $props();
+  let { children }: { children?: Snippet } = $props();
 
   const serverScope = useServerScope();
   const serverSegment = $derived(serverIdToSegment(serverScope.serverId));

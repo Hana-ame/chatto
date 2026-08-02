@@ -16,12 +16,10 @@ import { ActiveCallRoomsState } from './activeCallRooms.svelte';
 import { NavigationStore } from './rooms.svelte';
 import { RoomDirectoryStore } from './roomDirectory.svelte';
 import { AdminRoomLayoutStore } from './adminRoomLayout.svelte';
-import { AdminEventLogStore } from './adminEventLog.svelte';
 import { createRoomCommandAPI } from '$lib/api-client/rooms';
 import { createNotificationAPI } from '$lib/api-client/notifications';
 import { createVoiceCallAPI } from '$lib/api-client/voiceCalls';
 import { createAdminRoomLayoutAPI } from '$lib/api-client/adminRoomLayout';
-import { createAdminEventLogAPI } from '$lib/api-client/adminEventLog';
 import { createMessageSearchAPI, type MessageSearchAPI } from '$lib/api-client/messageSearch';
 import { createMemberDirectoryAPI } from '$lib/api-client/memberDirectory';
 import { createRoleAPI } from '$lib/api-client/roles';
@@ -49,6 +47,11 @@ import { RealtimeProjectionSyncState } from './realtimeSync.svelte';
 import type { ActiveCall } from '@chatto/api-types/api/v1/voice_calls_pb';
 import { MessageSearchStore } from './messageSearch.svelte';
 import { MentionRolesStore } from './mentionRoles.svelte';
+import {
+  removeRegisteredAdminQueries,
+  removeRegisteredAdminUserQueries,
+  removeRegisteredServerQueries
+} from '$lib/query/cacheRegistry';
 
 /**
  * What kind of indicator a server (or the DM area) should display.
@@ -86,7 +89,6 @@ export class ServerStateStore {
   readonly navigation: NavigationStore;
   readonly roomDirectory: RoomDirectoryStore;
   readonly adminRoomLayout: AdminRoomLayoutStore;
-  readonly adminEventLog: AdminEventLogStore;
   readonly messageSearch: MessageSearchStore;
   readonly mentionRoles: MentionRolesStore;
   readonly projection = new ServerProjectionStore();
@@ -137,7 +139,6 @@ export class ServerStateStore {
     const notificationAPI = serverConnection.getAPI(createNotificationAPI);
     const voiceCallAPI = serverConnection.getAPI(createVoiceCallAPI);
     const adminRoomLayoutAPI = serverConnection.getAPI(createAdminRoomLayoutAPI);
-    const adminEventLogAPI = serverConnection.getAPI(createAdminEventLogAPI);
     const messageSearchAPI = serverConnection.getAPI(createMessageSearchAPI);
     this.#messageSearchAPI = messageSearchAPI;
     const memberDirectoryAPI = serverConnection.getAPI(createMemberDirectoryAPI);
@@ -163,7 +164,6 @@ export class ServerStateStore {
       roomCommandAPI
     );
     this.adminRoomLayout = new AdminRoomLayoutStore(adminRoomLayoutAPI, roomCommandAPI);
-    this.adminEventLog = new AdminEventLogStore(adminEventLogAPI);
     this.messageSearch = new MessageSearchStore(messageSearchAPI);
     this.mentionRoles = new MentionRolesStore(roleAPI);
 
@@ -366,6 +366,7 @@ export class ServerStateStore {
         }
         case 'userRemove': {
           const userId = operation.operation.value.userId;
+          removeRegisteredAdminUserQueries(this.serverId, userId);
           this.forEachMessageSearch((store) => store.invalidateAuthor(userId));
           removeUserSummaryCacheEntry(this.serverId, userId);
           this.notifications.scrubUser(userId);
@@ -598,6 +599,7 @@ export class ServerStateStore {
 
   /** Clear every mirror whose authority was invalidated by a reset frame. */
   private resetProjectionMirrors(): void {
+    removeRegisteredAdminQueries(this.serverId);
     clearUserSummaryCache(this.serverId);
     for (const store of Object.values(this.#roomMessages)) store.resetProjectionState();
     for (const store of Object.values(this.#threadMessages)) store.resetProjectionState();
@@ -657,7 +659,21 @@ export class ServerStateStore {
 
   /** Update permissions from viewer query data. */
   setPermissions(viewer: ViewerData): void {
+    const previous = this.permissions;
     this.permissions = { ...viewer, loaded: true };
+    const lostAdminCapability =
+      previous.loaded &&
+      ((previous.canViewAdmin && !viewer.canViewAdmin) ||
+        (previous.canAdminViewUsers && !viewer.canAdminViewUsers) ||
+        (previous.canAdminManageAccounts && !viewer.canAdminManageAccounts) ||
+        (previous.canAssignRoles && !viewer.canAssignRoles) ||
+        (previous.canAdminViewRoles && !viewer.canAdminViewRoles) ||
+        (previous.canAdminManageRoles && !viewer.canAdminManageRoles) ||
+        (previous.canAdminViewSystem && !viewer.canAdminViewSystem) ||
+        (previous.canAdminViewAudit && !viewer.canAdminViewAudit));
+    if (lostAdminCapability) {
+      removeRegisteredAdminQueries(this.serverId);
+    }
   }
 
   /**
@@ -782,6 +798,7 @@ export class ServerStateStore {
 
   /** Clean up resources. */
   dispose(): void {
+    removeRegisteredServerQueries(this.serverId);
     this.#disposeEffects();
     this.adminRoomLayout.deactivateProjectionRefresh();
     this.#adminRoomLayoutSubscriptions = 0;

@@ -112,6 +112,7 @@ export class MemberDetailStore {
       displayName: updated.displayName
     }));
     this.#invalidateMemberLists(target);
+    this.#invalidateRoleDetailsForMember(target, this.member.roles);
     return updated;
   }
 
@@ -179,6 +180,7 @@ export class MemberDetailStore {
 
       this.#invalidateMemberLists(target);
       this.#invalidateUserPermissions(target);
+      this.#invalidateRoleDetails(target, roleName);
 
       return this.#isCurrent(target);
     } finally {
@@ -247,6 +249,17 @@ export class MemberDetailStore {
       queryKey: adminQueryKeys.userPermissions(target.serverId, target, target.userId),
       exact: true
     });
+  }
+
+  #invalidateRoleDetails(target: MemberTarget, roleName: string): void {
+    void queryClient.invalidateQueries({
+      queryKey: adminQueryKeys.role(target.serverId, target, roleName),
+      exact: true
+    });
+  }
+
+  #invalidateRoleDetailsForMember(target: MemberTarget, roleNames: string[]): void {
+    for (const roleName of roleNames) this.#invalidateRoleDetails(target, roleName);
   }
 
   #apply(details: AdminMemberDetails): void {

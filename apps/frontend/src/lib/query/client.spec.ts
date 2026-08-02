@@ -3,7 +3,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   removeRegisteredAdminQueries,
   removeRegisteredAdminUserQueries,
-  removeRegisteredServerQueries
+  removeRegisteredServerQueries,
+  registerQueryCacheRemovalListener
 } from './cacheRegistry';
 import { queryClient } from './client';
 
@@ -18,6 +19,18 @@ describe('server query cache', () => {
 
     expect(queryClient.getQueryData(['server', 'one', 'resource'])).toBeUndefined();
     expect(queryClient.getQueryData(['server', 'two', 'resource'])).toBe('private-two');
+  });
+
+  it('notifies late-mutation fences before server and admin cache removal', () => {
+    const listener = vi.fn();
+    const unregister = registerQueryCacheRemovalListener(listener);
+
+    removeRegisteredAdminQueries('one');
+    removeRegisteredServerQueries('two');
+
+    expect(listener).toHaveBeenNthCalledWith(1, 'one');
+    expect(listener).toHaveBeenNthCalledWith(2, 'two');
+    unregister();
   });
 
   it('removes admin data without discarding unrelated server queries', () => {
@@ -82,6 +95,16 @@ describe('server query cache', () => {
       ],
       pageParams: [0]
     });
+    queryClient.setQueryData(['server', 'one', 'session', 'scope', 'admin', 'role', 'moderator'], {
+      role: { name: 'moderator' },
+      users: [
+        { id: 'removed', login: 'removed', displayName: 'Removed User' },
+        { id: 'retained', login: 'retained', displayName: 'Retained User' }
+      ],
+      roles: [],
+      viewerCanManageRoles: true,
+      viewerCanAssignRoles: true
+    });
 
     removeRegisteredAdminUserQueries('one', 'removed');
 
@@ -140,6 +163,17 @@ describe('server query cache', () => {
         }
       ]
     });
+    expect(
+      queryClient.getQueryData<{ users: Array<{ id: string }> }>([
+        'server',
+        'one',
+        'session',
+        'scope',
+        'admin',
+        'role',
+        'moderator'
+      ])?.users
+    ).toEqual([{ id: 'retained', login: 'retained', displayName: 'Retained User' }]);
   });
 
   it('does not retry authentication or permission failures', async () => {

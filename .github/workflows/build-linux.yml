@@ -70,16 +70,17 @@ jobs:
           linux_dir="/tmp/staging-linux"
           win_dir="/tmp/staging-windows"
           out_dir="/tmp/release"
-          mkdir -p "$linux_dir" "$out_dir"
+          mkdir -p "$linux_dir" "$win_dir" "$out_dir"
 
           cp /tmp/chatto "$linux_dir/chatto"
           cp LICENSES/AGPL-3.0-or-later.txt NOTICE "$linux_dir/"
           cp LICENSES/AGPL-3.0-or-later.txt NOTICE "$win_dir/"
 
-          tar -czf "$out_dir/chatto_Linux_x86_64.tar.gz" -C "$linux_dir" chatto LICENSES NOTICE
+          tar -czf "$out_dir/chatto_Linux_x86_64.tar.gz" \
+            -C "$linux_dir" chatto AGPL-3.0-or-later.txt NOTICE
           (
             cd "$win_dir"
-            zip -q -r "$out_dir/chatto_Windows_x86_64.zip" chatto.exe LICENSES NOTICE
+            zip -q -r "$out_dir/chatto_Windows_x86_64.zip" chatto.exe AGPL-3.0-or-later.txt NOTICE
           )
 
       - name: Upload artifact

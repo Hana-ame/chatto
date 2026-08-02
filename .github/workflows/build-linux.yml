@@ -1,4 +1,4 @@
-name: build-linux
+name: build-release
 
 on:
   workflow_dispatch:
@@ -7,7 +7,11 @@ on:
       - ci/deploy
 
 permissions:
-  contents: read
+  contents: write
+
+concurrency:
+  group: build-release
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -39,7 +43,7 @@ jobs:
           CHATTO_BUILD_VERSION: ${{ steps.version.outputs.version }}
           CHATTO_FRONTEND_PRECOMPRESS: "1"
 
-      - name: Build CLI binary
+      - name: Build Linux binary
         run: |
           set -euo pipefail
           cd cli
@@ -49,9 +53,68 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
 
+      - name: Build Windows binary
+        run: |
+          set -euo pipefail
+          cd cli
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath \
+            -ldflags="-s -w -X main.Version=${VERSION}" \
+            -o /tmp/staging-windows/chatto.exe .
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+
+      - name: Package release assets
+        run: |
+          set -euo pipefail
+
+          linux_dir="/tmp/staging-linux"
+          win_dir="/tmp/staging-windows"
+          out_dir="/tmp/release"
+          mkdir -p "$linux_dir" "$out_dir"
+
+          cp /tmp/chatto "$linux_dir/chatto"
+          cp LICENSES/AGPL-3.0-or-later.txt NOTICE "$linux_dir/"
+          cp LICENSES/AGPL-3.0-or-later.txt NOTICE "$win_dir/"
+
+          tar -czf "$out_dir/chatto_Linux_x86_64.tar.gz" -C "$linux_dir" chatto LICENSES NOTICE
+          (
+            cd "$win_dir"
+            zip -q -r "$out_dir/chatto_Windows_x86_64.zip" chatto.exe LICENSES NOTICE
+          )
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: chatto-linux-amd64
           path: /tmp/chatto
           if-no-files-found: error
+
+      - name: Delete previous rolling release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release delete "ci/dev" --yes --cleanup-tag || true
+
+      - name: Publish rolling release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          cat > /tmp/release/notes.md <<EOF
+          Dev build for ${GITHUB_REF_NAME}.
+
+          - Version: \`${VERSION}\`
+          - Commit: \`${GITHUB_SHA}\`
+          - Platforms: Linux (amd64), Windows (amd64)
+
+          Windows users: download \`chatto_Windows_x86_64.zip\`, unzip, and run \`chatto.exe\`.
+          EOF
+
+          gh release create "ci/dev" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Dev build ${VERSION}" \
+            --notes-file /tmp/release/notes.md \
+            --prerelease \
+            /tmp/release/chatto_Linux_x86_64.tar.gz \
+            /tmp/release/chatto_Windows_x86_64.zip

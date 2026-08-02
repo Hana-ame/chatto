@@ -33,13 +33,13 @@
 
     <div class="flex flex-wrap items-center justify-center gap-x-5 gap-y-2">
       <a
-        href="https://github.com/chattocorp/chatto"
+        href="https://github.com/Hana-ame/chatto"
         target="_blank"
         rel="noopener noreferrer"
         class="inline-flex items-center gap-1.5 link"
       >
         <span class="iconify text-base mdi--github" aria-hidden="true"></span>
-        <span>github.com/chattocorp/chatto</span>
+        <span>github.com/Hana-ame/chatto</span>
         <span class="iconify text-sm mdi--open-in-new" aria-hidden="true"></span>
       </a>
       <a

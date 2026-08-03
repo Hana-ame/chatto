@@ -8,10 +8,14 @@ calls, and similar room-specific panels can plug into the same shell. See the
 -->
 <script module lang="ts">
   import { PresenceStatus } from '@chatto/api-types/api/v1/presence_pb';
+
+  export const PRESENCE_GROUPING_DEBOUNCE_MS = 1_000;
   export type RoomSidebarPanel = 'members' | 'search' | 'files' | 'call';
 </script>
 
 <script lang="ts">
+  import { untrack } from 'svelte';
+  import type { Attachment } from 'svelte/attachments';
   import * as m from '$lib/i18n/messages';
   import { startDMWith } from '$lib/dm/startDM';
   import UserAvatar from '$lib/components/UserAvatar.svelte';
@@ -112,7 +116,12 @@ calls, and similar room-specific panels can plug into the same shell. See the
   let banDialogMember = $state<RoomMember | null>(null);
   let banError = $state<string | null>(null);
   const memberSearchDebounce = useDebounce();
+  const presenceGroupingDebounce = useDebounce();
   let memberSearchInput = $state<HTMLInputElement | null>(null);
+  let groupedOnlineState = $state.raw(new Map<string, boolean>());
+  let observedLiveOnlineState = new Map<string, boolean>();
+  let groupedMembersSnapshot: RoomMember[] | null = null;
+  let observedPresenceVersion = -1;
 
   function togglePopover(memberId: string, e: MouseEvent) {
     if (popoverMemberId === memberId) {
@@ -152,14 +161,73 @@ calls, and similar room-specific panels can plug into the same shell. See the
   }
 
   const sortedMembers = $derived(sortByName(members));
+
+  function readOnlineState(list: RoomMember[]): Map<string, boolean> {
+    return new Map(list.map((member) => [member.id, isOnlineStatus(getPresence(member))]));
+  }
+
+  function onlineStatesEqual(
+    left: ReadonlyMap<string, boolean>,
+    right: ReadonlyMap<string, boolean>
+  ): boolean {
+    if (left.size !== right.size) return false;
+    for (const [userId, status] of left) {
+      if (right.get(userId) !== status) return false;
+    }
+    return true;
+  }
+
+  // Membership and search changes stay immediate. Presence-only changes settle after a short quiet
+  // period so busy rooms do not continuously move rows between the Online and Offline groups.
+  const syncPresenceGrouping: Attachment = () => {
+    const currentMembers = members;
+    const presenceVersion = presenceCache.version;
+    const viewerId = currentUserId;
+    untrack(() => {
+      if (currentMembers !== groupedMembersSnapshot) {
+        groupedMembersSnapshot = currentMembers;
+        observedPresenceVersion = presenceVersion;
+        presenceGroupingDebounce.cancel();
+        observedLiveOnlineState = readOnlineState(currentMembers);
+        groupedOnlineState = observedLiveOnlineState;
+        return;
+      }
+      if (presenceVersion === observedPresenceVersion) return;
+      observedPresenceVersion = presenceVersion;
+      const nextOnlineState = readOnlineState(currentMembers);
+      if (onlineStatesEqual(nextOnlineState, observedLiveOnlineState)) return;
+      observedLiveOnlineState = nextOnlineState;
+
+      const currentMember = viewerId
+        ? currentMembers.find((member) => member.id === viewerId)
+        : undefined;
+      if (
+        currentMember &&
+        groupedOnlineState.get(currentMember.id) !== nextOnlineState.get(currentMember.id)
+      ) {
+        groupedOnlineState = new Map([
+          ...groupedOnlineState,
+          [currentMember.id, nextOnlineState.get(currentMember.id) ?? false]
+        ]);
+      }
+
+      if (onlineStatesEqual(groupedOnlineState, nextOnlineState)) {
+        presenceGroupingDebounce.cancel();
+        return;
+      }
+      presenceGroupingDebounce.run(() => {
+        groupedOnlineState = nextOnlineState;
+      }, PRESENCE_GROUPING_DEBOUNCE_MS);
+    });
+  };
+
   const groupedMembers = $derived.by(() => {
-    // Explicit versions include value-only presence transitions such as OFFLINE→ONLINE.
-    void presenceCache.version;
-    void membersStore.presenceVersion;
     const online: RoomMember[] = [];
     const offline: RoomMember[] = [];
     for (const member of sortedMembers) {
-      (isOnlineStatus(getPresence(member)) ? online : offline).push(member);
+      const groupedOnline =
+        groupedOnlineState.get(member.id) ?? isOnlineStatus(member.presenceStatus);
+      (groupedOnline ? online : offline).push(member);
     }
     return { online, offline };
   });
@@ -244,6 +312,7 @@ calls, and similar room-specific panels can plug into the same shell. See the
 
 <aside
   bind:this={sidebarElement}
+  {@attach syncPresenceGrouping}
   class={[
     'relative flex min-h-0 flex-col bg-background',
     presentation === 'desktop'

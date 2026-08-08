@@ -4,6 +4,7 @@
   import { fly } from 'svelte/transition';
   import { m } from '$lib/i18n/messages';
   import { fromInlineEndOffset } from '$lib/i18n/direction';
+  import { expoOutTransition } from '$lib/ui/motion';
 
   let roomSidebarModule: Promise<typeof import('./RoomSidebar.svelte')> | null = null;
   let roomSidebarLoadAttempt = $state(0);
@@ -58,7 +59,7 @@
     <div
       class="absolute inset-y-0 end-0 z-20 flex min-h-0 w-full min-w-0 flex-col overflow-hidden border-s border-border bg-background inline-end-overlay-shadow sm:w-[90%] lg:hidden"
       data-testid="room-sidebar-mobile-pane"
-      transition:fly={{ x: fromInlineEndOffset(300), duration: 200 }}
+      transition:fly={{ x: fromInlineEndOffset(300), ...expoOutTransition() }}
     >
       {@render sidebar(sidebarProps)}
     </div>

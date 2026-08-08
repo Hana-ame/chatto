@@ -45,7 +45,8 @@ func (c *TLSConfig) HTTPPortOrDefault() int {
 type WebserverConfig struct {
 	URL                    string        `toml:"url" env:"CHATTO_WEBSERVER_URL" comment:"Public URL where the webserver is accessible. Used for generating absolute URLs."`
 	Port                   int           `toml:"port" env:"CHATTO_WEBSERVER_PORT" comment:"Port for the webserver to listen on."`
-	AllowedOrigins         []string      `toml:"allowed_origins" env:"CHATTO_WEBSERVER_ALLOWED_ORIGINS" comment:"Origins allowed for cross-server browser API access. Use [\"*\"] to allow bearer-token clients without cookies; use exact origins to allow credentialed CORS/WebSocket access. Exact non-wildcard entries are also trusted for OAuth redirect callbacks."`
+	BindAddress            string        `toml:"bind_address,commented" env:"CHATTO_WEBSERVER_BIND_ADDRESS" comment:"Address to bind the webserver. Default: all interfaces (0.0.0.0). Set to 127.0.0.1 to restrict access to localhost only."`
+	AllowedOrigins         []string      `toml:"allowed_origins" env:"CHATTO_WEBSERVER_ALLOWED_ORIGINS" comment:"Origins allowed for cross-server browser API access. Use [\"*\"] to allow bearer-token clients without cookies; use origin origins to allow credentialed CORS/WebSocket access. Exact non-wildcard entries are also trusted for OAuth redirect callbacks."`
 	OAuthRedirectOrigins   []string      `toml:"oauth_redirect_origins" env:"CHATTO_WEBSERVER_OAUTH_REDIRECT_ORIGINS" comment:"Additional origins trusted only for OAuth redirect callbacks. Leave empty unless another web origin must complete OAuth. Use exact HTTPS origins in production; loopback development origins may use HTTP."`
 	TrustedProxies         []string      `toml:"trusted_proxies,commented" env:"CHATTO_WEBSERVER_TRUSTED_PROXIES" comment:"IP addresses or CIDR ranges of reverse proxies allowed to supply forwarded host and client-IP headers. Default: none."`
 	APICompression         *bool         `toml:"api_compression" env:"CHATTO_WEBSERVER_API_COMPRESSION" comment:"Compress eligible ConnectRPC API responses with gzip. Disable to reduce compressor memory and CPU at the cost of higher network usage. Default: true."`
@@ -354,4 +355,12 @@ func (c *WebserverConfig) EffectivePort() int {
 		return 443
 	}
 	return c.Port
+}
+
+// BindAddressOrDefault returns the bind address, or ":" (all interfaces) if not set.
+func (c *WebserverConfig) BindAddressOrDefault() string {
+	if c.BindAddress == "" {
+		return ":"
+	}
+	return c.BindAddress
 }

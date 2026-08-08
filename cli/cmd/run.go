@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"os/signal"
@@ -264,7 +265,13 @@ func runServer(configPath string) {
 	}
 
 	// Create and run HTTP server
-	addr := fmt.Sprintf(":%d", cfg.Webserver.EffectivePort())
+	bind := cfg.Webserver.BindAddressOrDefault()
+	var addr string
+	if bind == ":" {
+		addr = fmt.Sprintf(":%d", cfg.Webserver.EffectivePort())
+	} else {
+		addr = net.JoinHostPort(bind, fmt.Sprint(cfg.Webserver.EffectivePort()))
+	}
 	httpServer, err := http_server.NewHTTPServer(http_server.HTTPServerConfig{
 		Config:  cfg,
 		NC:      nc,

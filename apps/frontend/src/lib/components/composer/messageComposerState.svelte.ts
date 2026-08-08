@@ -57,6 +57,7 @@ export type MessageComposerProps = {
   onCancelReply?: () => void;
   onEscape?: () => void;
   showAlsoSendToChannel?: boolean;
+  showCreateThread?: boolean;
 };
 
 type MessageComposerDependencies = {
@@ -65,6 +66,7 @@ type MessageComposerDependencies = {
   getReplyEventId: () => string | undefined;
   getCanPost: () => boolean;
   getCanAttach: () => boolean;
+  getCanCreateThread: () => boolean;
   getAutoFocus: () => boolean;
   getPlaceholder: () => string | undefined;
   getOnReady: () => MessageComposerProps['onReady'];
@@ -104,6 +106,7 @@ export class MessageComposerState {
   fileInputElement = $state<HTMLInputElement>();
   formattingState = $state<ComposerFormattingState>({ ...emptyFormattingState });
   alsoSendToChannel = $state(false);
+  createThread = $state(false);
   editorNextEnterWillSend = $state(false);
   manualRichMode = $state(false);
   editorHasRichStructure = $state(false);
@@ -184,7 +187,7 @@ export class MessageComposerState {
     return this.#dependencies.getThreadRootEventId() ? 'thread-reply-input' : 'message-input';
   }
 
-  get showEditEchoCheckbox(): boolean {
+  get showEditEchoToggle(): boolean {
     return (
       this.isEditing &&
       this.editState.threadRootEventId !== null &&
@@ -363,6 +366,7 @@ export class MessageComposerState {
       if (this.#autocompleteRoomId !== roomId) {
         this.#autocompleteRoomId = roomId;
         this.autocomplete.resetForRoom();
+        this.createThread = false;
       }
       if (this.isEditing) {
         this.draft.switchKey(this.draftKey);
@@ -438,6 +442,7 @@ export class MessageComposerState {
     this.message = '';
     this.manualRichMode = false;
     this.alsoSendToChannel = false;
+    this.createThread = false;
     this.editorApi?.setContent('');
   }
 
@@ -476,7 +481,11 @@ export class MessageComposerState {
       threadRootEventId: this.#dependencies.getThreadRootEventId() ?? null,
       inReplyTo: this.#dependencies.getReplyEventId() ?? null,
       linkPreviewToken: this.linkPreviews.buildToken(),
-      alsoSendToChannel: this.alsoSendToChannel
+      alsoSendToChannel: this.alsoSendToChannel,
+      createThread:
+        this.#dependencies.getCanCreateThread() &&
+        !this.#dependencies.getThreadRootEventId() &&
+        this.createThread
     });
   }
 
@@ -493,7 +502,7 @@ export class MessageComposerState {
       eventId,
       body
     };
-    if (this.showEditEchoCheckbox) input.alsoSendToChannel = this.alsoSendToChannel;
+    if (this.showEditEchoToggle) input.alsoSendToChannel = this.alsoSendToChannel;
     await this.submission.editMessage(input);
   }
 

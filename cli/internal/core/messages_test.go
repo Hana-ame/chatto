@@ -61,6 +61,185 @@ func TestChattoCore_PostMessage(t *testing.T) {
 	}
 }
 
+func TestMessageModelPostMessageCreatesEmptyThreadAndFollowsAuthor(t *testing.T) {
+	chatto, _ := setupTestCore(t)
+	ctx := testContext(t)
+	user, err := chatto.CreateUser(ctx, SystemActorID, "thread-root-author", "Thread Root Author", "password123")
+	require.NoError(t, err)
+	room, err := chatto.CreateRoom(ctx, user.Id, KindChannel, "", "thread-root-room", "")
+	require.NoError(t, err)
+	_, err = chatto.JoinRoom(ctx, user.Id, KindChannel, user.Id, room.Id)
+	require.NoError(t, err)
+	agg := evtstream.RoomAggregate(room.Id)
+	beforeSeq, err := chatto.EventPublisher.LastSubjectSeq(ctx, agg.AllEventsFilter())
+	require.NoError(t, err)
+
+	result, err := chatto.Messages().PostMessage(ctx, MessagePostInput{
+		ActorID:      user.Id,
+		RoomID:       room.Id,
+		Body:         "Please discuss this in a thread",
+		CreateThread: true,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result.Event)
+	require.Empty(t, result.Event.GetMessagePosted().GetInThread())
+
+	metadata, err := chatto.GetThreadMetadata(ctx, KindChannel, room.Id, result.Event.Id)
+	require.NoError(t, err)
+	require.True(t, metadata.Exists)
+	require.Zero(t, metadata.ReplyCount)
+	following, err := chatto.IsFollowingThread(ctx, KindChannel, user.Id, room.Id, result.Event.Id)
+	require.NoError(t, err)
+	require.True(t, following)
+
+	createdBatch, _, err := chatto.EventPublisher.SubjectEventsAfter(ctx, agg.AllEventsFilter(), beforeSeq)
+	require.NoError(t, err)
+	require.Len(t, createdBatch, 4)
+	require.NotNil(t, createdBatch[0].GetMessageBody(), "the encrypted body must precede its public message")
+	require.NotNil(t, createdBatch[1].GetMessagePosted())
+	require.Equal(t, result.Event.Id, createdBatch[1].Id)
+	require.NotNil(t, createdBatch[2].GetThreadFollowed(), "the author follow must precede thread publication")
+	require.NotNil(t, createdBatch[3].GetThreadCreated(), "thread publication must follow the projected root")
+
+	created, _, err := chatto.EventPublisher.SubjectEvents(ctx, agg.Subject(evtstream.EventThreadCreated))
+	require.NoError(t, err)
+	require.Len(t, created, 1)
+	require.Equal(t, result.Event.Id, created[0].GetThreadCreated().GetThreadRootEventId())
+	followed, _, err := chatto.EventPublisher.SubjectEvents(ctx, agg.Subject(evtstream.EventThreadFollowed))
+	require.NoError(t, err)
+	require.Len(t, followed, 1)
+	require.Equal(t, corev1.ThreadFollowSource_THREAD_FOLLOW_SOURCE_ROOT_AUTHOR_CREATED, followed[0].GetThreadFollowed().GetSource())
+}
+
+func TestExplicitThreadCreationRechecksAuthorizationAfterConcurrentRevocation(t *testing.T) {
+	chatto, _ := setupTestCore(t)
+	ctx := testContext(t)
+	user, err := chatto.CreateUser(ctx, SystemActorID, "thread-revocation-author", "Thread Revocation Author", "password123")
+	require.NoError(t, err)
+	room, err := chatto.CreateRoom(ctx, user.Id, KindChannel, "", "thread-revocation-room", "")
+	require.NoError(t, err)
+	_, err = chatto.JoinRoom(ctx, user.Id, KindChannel, user.Id, room.Id)
+	require.NoError(t, err)
+
+	authorizationChecks := 0
+	authorize := func(ctx context.Context) error {
+		authorizationChecks++
+		_, err := chatto.Messages().AuthorizePost(ctx, MessagePostAuthorizationInput{
+			ActorID:      user.Id,
+			RoomID:       room.Id,
+			Body:         "must not be committed",
+			CreateThread: true,
+		})
+		if err != nil {
+			return err
+		}
+		if authorizationChecks == 1 {
+			// Simulate a revocation landing immediately after the successful
+			// authorization decision but before the message batch commits.
+			return chatto.DenyUserRoomPermission(ctx, SystemActorID, room.Id, user.Id, PermMessagePostInThread)
+		}
+		return nil
+	}
+
+	_, err = chatto.PostMessage(ctx, KindChannel, room.Id, user.Id, "must not be committed", nil, "", "", nil, false,
+		WithThreadCreation(),
+		withPostMessageCommitAuthorization(func(ctx context.Context, _ string) error { return authorize(ctx) }),
+	)
+	require.ErrorIs(t, err, ErrPermissionDenied)
+	require.GreaterOrEqual(t, authorizationChecks, 2, "authorization must be rerun after the fence conflict")
+
+	agg := evtstream.RoomAggregate(room.Id)
+	posted, _, err := chatto.EventPublisher.SubjectEvents(ctx, agg.Subject(evtstream.EventMessagePosted))
+	require.NoError(t, err)
+	require.Empty(t, posted, "the root message must not commit after permission revocation")
+	created, _, err := chatto.EventPublisher.SubjectEvents(ctx, agg.Subject(evtstream.EventThreadCreated))
+	require.NoError(t, err)
+	require.Empty(t, created, "the thread must not commit after permission revocation")
+}
+
+func TestExplicitThreadCreationRechecksMembershipAfterConcurrentLeave(t *testing.T) {
+	chatto, _ := setupTestCore(t)
+	ctx := testContext(t)
+	user, err := chatto.CreateUser(ctx, SystemActorID, "thread-leave-author", "Thread Leave Author", "password123")
+	require.NoError(t, err)
+	room, err := chatto.CreateRoom(ctx, user.Id, KindChannel, "", "thread-leave-room", "")
+	require.NoError(t, err)
+	_, err = chatto.JoinRoom(ctx, user.Id, KindChannel, user.Id, room.Id)
+	require.NoError(t, err)
+
+	authorizationChecks := 0
+	authorize := func(ctx context.Context) error {
+		authorizationChecks++
+		_, err := chatto.Messages().AuthorizePost(ctx, MessagePostAuthorizationInput{
+			ActorID:      user.Id,
+			RoomID:       room.Id,
+			Body:         "must not be committed",
+			CreateThread: true,
+		})
+		if err != nil {
+			return err
+		}
+		if authorizationChecks == 1 {
+			// Simulate the actor leaving immediately after the successful
+			// authorization decision but before the message batch commits.
+			return chatto.LeaveRoom(ctx, user.Id, KindChannel, user.Id, room.Id)
+		}
+		return nil
+	}
+
+	_, err = chatto.PostMessage(ctx, KindChannel, room.Id, user.Id, "must not be committed", nil, "", "", nil, false,
+		WithThreadCreation(),
+		withPostMessageCommitAuthorization(func(ctx context.Context, _ string) error { return authorize(ctx) }),
+	)
+	require.ErrorIs(t, err, ErrNotRoomMember)
+	require.GreaterOrEqual(t, authorizationChecks, 2, "authorization must be rerun after the room OCC conflict")
+
+	agg := evtstream.RoomAggregate(room.Id)
+	posted, _, err := chatto.EventPublisher.SubjectEvents(ctx, agg.Subject(evtstream.EventMessagePosted))
+	require.NoError(t, err)
+	require.Empty(t, posted, "the root message must not commit after the actor leaves")
+	created, _, err := chatto.EventPublisher.SubjectEvents(ctx, agg.Subject(evtstream.EventThreadCreated))
+	require.NoError(t, err)
+	require.Empty(t, created, "the thread must not commit after the actor leaves")
+}
+
+func TestMessageModelRejectsCreateThreadForReply(t *testing.T) {
+	chatto, _ := setupTestCore(t)
+	ctx := testContext(t)
+	user, err := chatto.CreateUser(ctx, SystemActorID, "thread-create-validation", "Thread Create Validation", "password123")
+	require.NoError(t, err)
+	room, err := chatto.CreateRoom(ctx, user.Id, KindChannel, "", "thread-create-validation", "")
+	require.NoError(t, err)
+	_, err = chatto.JoinRoom(ctx, user.Id, KindChannel, user.Id, room.Id)
+	require.NoError(t, err)
+	root, err := chatto.PostMessage(ctx, KindChannel, room.Id, user.Id, "root", nil, "", "", nil, false)
+	require.NoError(t, err)
+
+	_, err = chatto.Messages().PostMessage(ctx, MessagePostInput{
+		ActorID:           user.Id,
+		RoomID:            room.Id,
+		Body:              "invalid",
+		ThreadRootEventID: root.Id,
+		CreateThread:      true,
+	})
+	require.ErrorIs(t, err, ErrInvalidArgument)
+
+	reply, err := chatto.PostMessage(ctx, KindChannel, room.Id, user.Id, "reply", nil, root.Id, "", nil, false)
+	require.NoError(t, err)
+	_, err = chatto.Messages().PostMessage(ctx, MessagePostInput{
+		ActorID:      user.Id,
+		RoomID:       room.Id,
+		Body:         "invalid inherited reply",
+		InReplyTo:    reply.Id,
+		CreateThread: true,
+	})
+	require.ErrorIs(t, err, ErrInvalidArgument)
+
+	created, _, err := chatto.EventPublisher.SubjectEvents(ctx, evtstream.RoomAggregate(room.Id).Subject(evtstream.EventThreadCreated))
+	require.NoError(t, err)
+	require.Len(t, created, 1, "rejected nested thread creation must not persist another thread")
+}
+
 func TestPostMessageRejectsEchoAsThreadRoot(t *testing.T) {
 	core, _ := setupTestCore(t)
 	ctx := testContext(t)

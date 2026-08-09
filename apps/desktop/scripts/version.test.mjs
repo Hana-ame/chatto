@@ -1,7 +1,17 @@
 import assert from "node:assert/strict";
-import { macOSVersions } from "./version.ts";
+import test from "node:test";
+import { macOSVersions, releaseBuildVersion } from "./version.mjs";
 
-Deno.test("maps desktop releases to macOS bundle versions", () => {
+test("converts stable and prerelease SemVer to numeric build versions", () => {
+  assert.equal(releaseBuildVersion("1.2.3"), "1.2.3");
+  assert.equal(releaseBuildVersion("0.1.0-alpha.4"), "0.1.0.4");
+});
+
+test("rejects versions the packaging metadata cannot represent", () => {
+  assert.throws(() => releaseBuildVersion("desktop-next"), TypeError);
+});
+
+test("maps desktop releases to macOS bundle versions", () => {
   assert.deepEqual(macOSVersions("0.1.0"), {
     shortVersion: "0.1.0",
     bundleVersion: "0.1.0",
@@ -24,6 +34,6 @@ Deno.test("maps desktop releases to macOS bundle versions", () => {
   });
 });
 
-Deno.test("rejects invalid desktop versions", () => {
+test("rejects invalid macOS desktop versions", () => {
   assert.throws(() => macOSVersions("desktop-dev"), TypeError);
 });

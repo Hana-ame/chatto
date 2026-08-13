@@ -1,3 +1,20 @@
+# 【本地新增 workflow】push 到 ci/deploy 时构建并发布 rolling release。
+#
+# 【思路】本 fork 的部署链路:ci/deploy 分支 → GitHub Actions 编译(内嵌
+# bundled frontend,这是唯一正确来源)→ 滚动 release 资产 `ci/dev` →
+# cloudcone 用 curl 下载部署。绝不在本地 go build:本地产物不带
+# .client/200.html,部署后 SPA 全 500(2026-08-08 曾出事故)。
+#
+# 【踩坑】
+# 1. `gh release create ci/dev` 没指定 --target,ci/dev tag 会被创建到
+#    默认分支(main),造成"当前部署的是 main 版本"的误导;2026-08-14
+#    已手动删除该 tag,后续推送 ci/deploy 时 rebuild 会重建 tag。
+# 2. 版本号 hash 原为 12 位,过长;22a53e10 起改为 ${sha:0:6}。
+# 3. 版本号来源:mise.toml 的 CHATTO_DEVELOPMENT_VERSION 优先(开发版),
+#    否则回退 cli/version.go 的 release version,保证 release 也能出包。
+# 4. 滚动 release 每次都先 `gh release delete ci/dev --cleanup-tag` 再重建,
+#    所以 ci/dev 永远指向最新构建,部署脚本无需知道具体 tag。
+
 name: build-release
 
 on:
@@ -91,6 +108,8 @@ jobs:
           if-no-files-found: error
 
       - name: Delete previous rolling release
+        # 【踩坑】|| true:首次构建时 release 不存在,delete 失败是预期行为,
+        # 不能因此中断 workflow。--cleanup-tag 连带删掉旧的 ci/dev tag。
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release delete "ci/dev" --yes --cleanup-tag || true

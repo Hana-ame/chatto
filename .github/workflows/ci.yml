@@ -291,6 +291,9 @@ jobs:
       - name: Setup environment
         uses: ./.github/actions/setup
         with:
+          # 【本地改动 32e1f566】Authling 测试依赖 ffmpeg(图片/视频处理
+          # 走 ffmpeg)。上游 CI 不装,导致本 fork 的 Authling 测试在
+          # 无 ffmpeg 环境跳过/失败。
           install-ffmpeg: "true"
 
       - name: Run Authling tests

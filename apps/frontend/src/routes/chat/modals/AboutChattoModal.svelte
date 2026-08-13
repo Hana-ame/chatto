@@ -32,13 +32,15 @@
     <p class="text-muted tabular-nums">v{version}</p>
 
     <div class="flex flex-wrap items-center justify-center gap-x-5 gap-y-2">
+      <!-- 【本地改动】仓库地址指向本 fork(Hana-ame/chatto)。合并 upstream
+           main 时该 URL 曾回到 chattocorp/chatto,需保留本 fork 链接。 -->
       <a
         href="https://github.com/Hana-ame/chatto"
         target="_blank"
         rel="noopener noreferrer"
         class="inline-flex items-center gap-1.5 link"
       >
-<span class="iconify icon-[mdi--github] text-base" aria-hidden="true"></span>
+        <span class="iconify icon-[mdi--github] text-base" aria-hidden="true"></span>
         <span>github.com/Hana-ame/chatto</span>
         <span class="iconify icon-[mdi--open-in-new] text-sm" aria-hidden="true"></span>
       </a>

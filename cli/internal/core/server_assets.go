@@ -24,6 +24,9 @@ func (c *ChattoCore) assetURL(path string) string {
 }
 
 // AssetsConfig returns the assets configuration as an assets.Config.
+// 【本地改动 32e1f566 + 218426d6】把 ChattoCore 上的 FFmpegPath 和
+// AVIFEnabled 透传给 assets.Config,供上传路径 EncodeAVIF 和渲染路径
+// TransformImageWithFFmpeg 使用。
 func (c *ChattoCore) AssetsConfig() assets.Config {
 	maxUploadSize := int64(c.config.Assets.MaxUploadSize)
 	if maxUploadSize == 0 {

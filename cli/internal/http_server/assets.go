@@ -645,8 +645,8 @@ func (s *HTTPServer) serveTransformedAssetWithParams(c *gin.Context, req transfo
 		return
 	}
 
-	// Transform the image. AVIF input needs ffmpeg for decoding, which is
-	// the same binary used for upload-time AVIF re-encoding.
+	// Transform the image. 【本地改动 32e1f566】AVIF 输入需要 ffmpeg 解码
+	// (Go 标准库不认识 AVIF),用的就是上传阶段 AVIF 重编码那同一个二进制。
 	var result *assets.TransformResult
 	if req.JPEGQuality > 0 {
 		result, err = assets.TransformImageWithFFmpeg(data, params.Width, params.Height, assets.FitMode(params.Fit), assets.TransformOptions{
@@ -744,6 +744,8 @@ func (s *HTTPServer) serveTransformedServerAsset(c *gin.Context, key, signedPath
 
 // isImageContentType checks if the content type is an image.
 func isImageContentType(contentType string) bool {
+	// 【本地改动 32e1f566】识别 image/avif:上传阶段可能把附件转成 AVIF,
+	// 渲染/下载路径必须当作图片处理。
 	return contentType == "image/jpeg" ||
 		contentType == "image/png" ||
 		contentType == "image/gif" ||

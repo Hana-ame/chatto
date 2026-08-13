@@ -66,9 +66,15 @@ type VideoConfig struct {
 	MaxUploadSize datasize.ByteSize `toml:"max_upload_size,commented" env:"CHATTO_VIDEO_MAX_UPLOAD_SIZE" comment:"Maximum size for video uploads. Supports human-readable formats like '100 MB'. Default: 100 MB."`
 }
 
-// AssetProcessingConfig controls the durable asset-processing worker. Enabled
-// determines whether chatto run embeds the worker; the standalone chatto
-// asset-processing command runs explicitly but uses the remaining settings.
+// AssetProcessingConfig 控制 durable asset-processing worker。Enabled
+// 决定 chatto run 是否内嵌 worker;独立命令 chatto asset-processing 显式
+// 运行但共用其余设置。
+//
+// 【本地改动 218426d6】新增 AVIFEnabled:room 附件图片上传时是否重编码
+// 为 AVIF。用 *bool 是为了区分"没配置"(默认 true,保持原行为)和
+// "显式配置 false"(关掉)。项目里 APICompression 用的是同款模式。
+// 之所以要显式开关:此前只要服务器装了带 AV1 编码器的 ffmpeg,AVIF
+// 就自动生效,想关都关不掉。
 type AssetProcessingConfig struct {
 	Enabled           bool   `toml:"enabled" env:"CHATTO_ASSET_PROCESSING_ENABLED" comment:"Start the built-in asset-processing worker inside chatto run."`
 	AVIFEnabled       *bool  `toml:"avif_enabled,commented" env:"CHATTO_ASSET_PROCESSING_AVIF_ENABLED" comment:"Re-encode eligible room attachment images to AVIF on upload. Requires an ffmpeg binary with an AV1 encoder (auto-detected from PATH when ffmpeg_path is empty). When disabled, original image bytes are stored unchanged. Affects room attachments only; avatars, server branding, and link previews stay WebP regardless. Default: true."`
@@ -78,12 +84,11 @@ type AssetProcessingConfig struct {
 	TempDir           string `toml:"temp_dir,commented" env:"CHATTO_ASSET_PROCESSING_TEMP_DIR" comment:"Temporary directory for asset processing. Default: system temp directory."`
 }
 
-// AVIFEnabledOrDefault reports whether AVIF re-encoding of room attachment
-// images is on, defaulting to true (best-effort AVIF is the historical
-// behavior; a server without ffmpeg silently stores originals anyway). The
-// asset-processing worker's Enabled flag is deliberately NOT consulted here:
-// AVIF re-encoding runs on the upload path with plain ffmpeg, independent of
-// the durable worker.
+// AVIFEnabledOrDefault 报告 room 附件 AVIF 重编码是否开启,默认 true
+// (best-effort AVIF 是历史行为;没装 ffmpeg 的服务器本来就静默存原图)。
+// 【踩坑】故意不参考 worker 的 Enabled:AVIF 重编码在上传路径上用普通
+// ffmpeg 完成,与 durable worker 无关。最初实现把两者绑在一起,会错误地
+// 在 worker 关闭时把 AVIF 也关掉,已修正。
 func (c *AssetProcessingConfig) AVIFEnabledOrDefault() bool {
 	if c.AVIFEnabled == nil {
 		return true

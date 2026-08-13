@@ -193,13 +193,14 @@ func runServer(configPath string) {
 		chattoCore.VideoUploadsEnabled = true
 	}
 
-	// ffmpeg re-encodes uploaded attachment images to AVIF. The configured
-	// path is preferred; empty falls back to PATH lookup, and a missing
-	// ffmpeg keeps original image bytes.
-	// 2026-08-14: upstream moved ffmpeg config to AssetProcessingConfig.
+	// ffmpeg 重编码上传的附件图片为 AVIF。优先用配置的路径;为空则从
+	// PATH 查找;ffmpeg 缺失时保持原图字节。
+	// 【背景 2026-08-14】合并 upstream main 后,上游把 ffmpeg 配置从
+	// VideoConfig 移到了 AssetProcessingConfig(上游把视频处理改成
+	// durable worker 架构),这里跟着改读取位置,否则编译不过。
 	chattoCore.FFmpegPath = cfg.AssetProcessing.FFmpegPath
-	// avif_enabled = false keeps original bytes without ever probing or
-	// spawning ffmpeg. Only room attachments are affected.
+	// avif_enabled = false 时保持原图,且完全不探测/不调用 ffmpeg。
+	// 只影响 room 附件(头像/branding/链接预览始终 WebP)。
 	chattoCore.AVIFEnabled = cfg.AssetProcessing.AVIFEnabledOrDefault()
 
 	if err := chattoCore.EnableLiveKitCallReconciliation(cfg.LiveKit); err != nil {
@@ -272,6 +273,11 @@ func runServer(configPath string) {
 	}
 
 	// Create and run HTTP server
+	// 【本地改动 92d33bff】支持配置 webserver 监听地址 bind_address。
+	// 【目的】cloudcone 部署时通过 nginx 反代,chatto 只需监听
+	// 127.0.0.1,不暴露公网端口。上游只有 :port 一种写法(绑定全部
+	// 接口),本地加了 BindAddressOrDefault():未配置时返回 ":" 保持
+	// 上游行为不变;配置了则用 net.JoinHostPort 拼地址。
 	bind := cfg.Webserver.BindAddressOrDefault()
 	var addr string
 	if bind == ":" {

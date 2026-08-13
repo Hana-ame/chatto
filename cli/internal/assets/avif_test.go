@@ -41,6 +41,11 @@ func TestEncodeAVIFKeepsTransparency(t *testing.T) {
 	}
 }
 
+// TestEncodeAVIFResolvesFFmpegFromPath 守护"空路径从 PATH 解析"。
+// 【发现背景 2026-08-14】临时文件重构(修 libsvtav1 管道挂死)时,探测
+// 和编码两处各解析一次路径,只改了探测侧,导致编码侧拿到空路径报
+// "exec: no command"。
+// 【修复方式】EncodeAVIF 开头对空路径也做 exec.LookPath(见 avif.go 注释)。
 func TestEncodeAVIFResolvesFFmpegFromPath(t *testing.T) {
 	if _, err := exec.LookPath("ffmpeg"); err != nil {
 		t.Skip("ffmpeg is not installed")
@@ -62,11 +67,12 @@ func TestEncodeAVIFUnavailableWithoutFFmpeg(t *testing.T) {
 	}
 }
 
-// TestEncodeAVIFDisabled guards the avif_enabled config toggle: with
-// AVIFEnabled false the encoder must report unavailable (storing original
-// bytes) without ever probing or spawning ffmpeg. Added 2026-08-14 when the
-// explicit disable switch was introduced; before that, disabling AVIF on a
-// server with ffmpeg installed was impossible.
+// TestEncodeAVIFDisabled 守护 avif_enabled 配置开关:AVIFEnabled=false 时
+// 编码器必须报"不可用"(即存原图),且完全不探测/不调用 ffmpeg。
+// 【发现背景 2026-08-14】引入显式关闭开关时新增;此前服务器只要装了带
+// AV1 编码器的 ffmpeg,AVIF 就自动生效,想关都关不掉。
+// 【修复方式】EncodeAVIF 开头检查 cfg.AVIFEnabled,false 直接返回
+// ErrAVIFUnavailable——与"没有 ffmpeg"同一条路径,调用方无需区分。
 func TestEncodeAVIFDisabled(t *testing.T) {
 	_, err := EncodeAVIF(context.Background(), createTestImage(10, 10), Config{FFmpegPath: "/definitely/not/ffmpeg", AVIFEnabled: false})
 	if !errors.Is(err, ErrAVIFUnavailable) {

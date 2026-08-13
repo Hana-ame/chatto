@@ -70,16 +70,17 @@ type ChattoCore struct {
 	// Set this after ChattoCore is created, from VideoConfig.
 	VideoMaxUploadSize int64
 
-	// FFmpegPath is the ffmpeg binary used to re-encode uploaded attachment
-	// images to AVIF. When empty, ffmpeg is resolved from PATH. When ffmpeg
-	// is unavailable, image uploads are stored unchanged.
-	// Set this after ChattoCore is created, from AssetProcessingConfig.
+	// FFmpegPath 是用于把上传的附件图片重编码为 AVIF 的 ffmpeg 二进制。
+	// 为空时从 PATH 解析;ffmpeg 不可用时附件保持原图存储。
+	// 【本地改动 32e1f566 + 218426d6】ChattoCore 创建后设置,数据来源为
+	// AssetProcessingConfig。merge upstream 后字段本身保留(上游没有
+	// AVIF 功能),但配置读取位置从 cfg.Video 移到 cfg.AssetProcessing。
 	FFmpegPath string
 
-	// AVIFEnabled turns AVIF re-encoding of room attachment images on or
-	// off. Set this after ChattoCore is created, from
-	// AssetProcessingConfig.AVIFEnabledOrDefault(). It only affects room
-	// attachments; avatars, branding, and link previews stay WebP.
+	// AVIFEnabled 控制 room 附件图片上传时是否重编码为 AVIF。
+	// 【本地改动 218426d6】ChattoCore 创建后设置,数据来源为
+	// AssetProcessingConfig.AVIFEnabledOrDefault()。只影响 room 附件;
+	// 头像/branding/链接预览始终 WebP。
 	AVIFEnabled bool
 
 	// VideoUploadsEnabled makes message commits enqueue durable processing work

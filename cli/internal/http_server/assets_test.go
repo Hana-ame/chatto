@@ -603,8 +603,9 @@ func TestAsset_OriginalAttachment_ServesCorrectly(t *testing.T) {
 		t.Errorf("Expected Accept-Ranges: none, got %q", got)
 	}
 
-	// Should have correct content type. Uploaded images are re-encoded to
-	// AVIF when ffmpeg is available and stored unchanged otherwise.
+	// Should have correct content type. 上传的图片在有 ffmpeg 时会被
+	// 重编码为 AVIF,否则原样存储(【本地改动 32e1f566】,断言跟随
+	// 环境,不能写死 image/png)。
 	contentType := originalResp.Header.Get("Content-Type")
 	wantContentType := "image/png"
 	if _, err := exec.LookPath("ffmpeg"); err == nil {

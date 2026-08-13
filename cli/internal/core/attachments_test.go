@@ -38,9 +38,10 @@ func createTestPNG(width, height int) []byte {
 // Attachment Upload Tests
 // ============================================================================
 
-// ffmpegAvailable reports whether ffmpeg is installed. Uploaded attachment
-// images are re-encoded to AVIF when ffmpeg is available and stored unchanged
-// otherwise.
+// ffmpegAvailable 报告 ffmpeg 是否已安装。上传的附件图片在 ffmpeg
+// 可用时会被重编码为 AVIF,否则原样存储。
+// 【本地改动 32e1f566】测试断言跟随上传路径的真实行为:有 ffmpeg 的
+// CI 环境上传 PNG 会得到 image/avif,本地无 ffmpeg 时才是 image/png。
 func ffmpegAvailable() bool {
 	_, err := exec.LookPath("ffmpeg")
 	return err == nil
@@ -86,6 +87,8 @@ func TestChattoCore_UploadAttachment(t *testing.T) {
 		}
 
 		wantContentType := "image/png"
+		// 【本地改动 32e1f566】同 ffmpegAvailable:上传路径在 ffmpeg
+		// 可用时转 AVIF,断言必须与环境一致,不能写死 image/png。
 		if ffmpegAvailable() {
 			wantContentType = "image/avif"
 		}

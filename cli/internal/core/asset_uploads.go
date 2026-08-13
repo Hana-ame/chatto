@@ -526,10 +526,13 @@ func (m *AssetUploadModel) storeCompletedUpload(ctx context.Context, session *As
 		width = int32(result.Width)
 		height = int32(result.Height)
 		animatedGIF = contentType == "image/gif" && assets.IsAnimatedGIF(content)
-		// Animated GIFs keep their original bytes: the video pipeline
-		// converts them to MP4/HLS, so encoding a static AVIF would drop
-		// the animation.
+		// 【本地改动 32e1f566】动画 GIF 保留原字节:视频管线会把它们转成
+		// MP4/HLS,若在此重编码成静态 AVIF 会丢掉动画。
 		if !animatedGIF {
+			// 【本地改动 32e1f566】best-effort 重编码为 AVIF:成功就换
+			// content,失败时 ErrAVIFUnavailable(没 ffmpeg/没编码器/
+			// avif_enabled=false)静默存原图;其他瞬时错误记日志但也不
+			// 阻塞上传。
 			if encoded, encErr := assets.EncodeAVIF(ctx, content, assetsCfg); encErr == nil {
 				content = encoded
 				contentType = "image/avif"

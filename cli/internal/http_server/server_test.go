@@ -161,7 +161,7 @@ func TestGetContentType(t *testing.T) {
 		{"jpg extension", "photo.jpg", "image/jpeg"},
 		{"jpeg extension", "photo.jpeg", "image/jpeg"},
 		{"gif extension", "animation.gif", "image/gif"},
-		{"avif extension", "photo.avif", "image/avif"},
+		{"avif extension", "photo.avif", "image/avif"}, // 【本地改动 32e1f566】AVIF 是上传附件可能的新内容类型
 		{"unknown extension", "file.xyz", "application/octet-stream"},
 		{"no extension", "file", "application/octet-stream"},
 		{"path with directory", "/some/path/image.png", "image/png"},
@@ -189,7 +189,7 @@ func TestIsImageContentType(t *testing.T) {
 		{"png", "image/png", true},
 		{"gif", "image/gif", true},
 		{"webp", "image/webp", true},
-		{"avif", "image/avif", true},
+		{"avif", "image/avif", true}, // 【本地改动 32e1f566】AVIF 附件必须能走图片处理路径(渲染/下载)
 		{"text plain", "text/plain", false},
 		{"application json", "application/json", false},
 		{"video mp4", "video/mp4", false},

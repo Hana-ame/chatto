@@ -47,9 +47,14 @@ func (c *TLSConfig) HTTPPortOrDefault() int {
 }
 
 type WebserverConfig struct {
-	URL                    string        `toml:"url" env:"CHATTO_WEBSERVER_URL" comment:"Public URL where the webserver is accessible. Used for generating absolute URLs."`
-	Port                   int           `toml:"port" env:"CHATTO_WEBSERVER_PORT" comment:"Port for the webserver to listen on."`
-BindAddress            string        `toml:"bind_address,commented" env:"CHATTO_WEBSERVER_BIND_ADDRESS" comment:"Address to bind the webserver. Default: all interfaces (0.0.0.0). Set to 127.0.0.1 to restrict access to localhost only."`
+	URL  string `toml:"url" env:"CHATTO_WEBSERVER_URL" comment:"Public URL where the webserver is accessible. Used for generating absolute URLs."`
+	Port int    `toml:"port" env:"CHATTO_WEBSERVER_PORT" comment:"Port for the webserver to listen on."`
+	// 【本地改动 92d33bff】webserver 监听地址。上游只有 :port(绑定所有
+	// 接口);本地加此字段是为了 cloudcone 部署:nginx 反代 + chatto 只
+	// 监听 127.0.0.1,避免端口直接暴露公网。merge upstream 时保留本地
+	// 字段,同时跟随上游删除 AllowedOrigins/OAuthRedirectOrigins(上游
+	// 改用 CIMD 客户端机制,那两个字段已废弃)。
+	BindAddress            string        `toml:"bind_address,commented" env:"CHATTO_WEBSERVER_BIND_ADDRESS" comment:"Address to bind the webserver. Default: all interfaces (0.0.0.0). Set to 127.0.0.1 to restrict access to localhost only."`
 	TrustedProxies         []string      `toml:"trusted_proxies,commented" env:"CHATTO_WEBSERVER_TRUSTED_PROXIES" comment:"IP addresses or CIDR ranges of reverse proxies allowed to supply forwarded host and client-IP headers. Default: none."`
 	APICompression         *bool         `toml:"api_compression" env:"CHATTO_WEBSERVER_API_COMPRESSION" comment:"Compress eligible ConnectRPC API responses with gzip. Disable to reduce compressor memory and CPU at the cost of higher network usage. Default: true."`
 	APICompressionMinBytes *int          `toml:"api_compression_min_bytes" env:"CHATTO_WEBSERVER_API_COMPRESSION_MIN_BYTES" comment:"Minimum uncompressed ConnectRPC response size eligible for gzip compression. Default: 1024."`
@@ -380,7 +385,9 @@ func (c *WebserverConfig) EffectivePort() int {
 	return c.Port
 }
 
-// BindAddressOrDefault returns the bind address, or ":" (all interfaces) if not set.
+// BindAddressOrDefault 返回监听地址;未配置时返回 ":"(监听所有接口,
+// 与上游原行为一致)。
+// 【本地改动 92d33bff】见 WebserverConfig.BindAddress 注释。
 func (c *WebserverConfig) BindAddressOrDefault() string {
 	if c.BindAddress == "" {
 		return ":"

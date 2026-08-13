@@ -32,6 +32,7 @@ func (c *ChattoCore) AssetsConfig() assets.Config {
 	return assets.Config{
 		MaxUploadSize: maxUploadSize,
 		FFmpegPath:    c.FFmpegPath,
+		AVIFEnabled:   c.AVIFEnabled,
 	}
 }
 

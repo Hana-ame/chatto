@@ -20,7 +20,7 @@ func testFFmpegPath(t *testing.T) string {
 func TestEncodeAVIFProducesAVIF(t *testing.T) {
 	ffmpegPath := testFFmpegPath(t)
 
-	out, err := EncodeAVIF(context.Background(), createTestImage(400, 300), ffmpegPath)
+	out, err := EncodeAVIF(context.Background(), createTestImage(400, 300), Config{FFmpegPath: ffmpegPath, AVIFEnabled: true})
 	if err != nil {
 		t.Fatalf("EncodeAVIF: %v", err)
 	}
@@ -32,7 +32,7 @@ func TestEncodeAVIFProducesAVIF(t *testing.T) {
 func TestEncodeAVIFKeepsTransparency(t *testing.T) {
 	ffmpegPath := testFFmpegPath(t)
 
-	out, err := EncodeAVIF(context.Background(), createTransparentTestImage(64, 64), ffmpegPath)
+	out, err := EncodeAVIF(context.Background(), createTransparentTestImage(64, 64), Config{FFmpegPath: ffmpegPath, AVIFEnabled: true})
 	if err != nil {
 		t.Fatalf("EncodeAVIF: %v", err)
 	}
@@ -46,7 +46,7 @@ func TestEncodeAVIFResolvesFFmpegFromPath(t *testing.T) {
 		t.Skip("ffmpeg is not installed")
 	}
 
-	out, err := EncodeAVIF(context.Background(), createTestImage(100, 100), "")
+	out, err := EncodeAVIF(context.Background(), createTestImage(100, 100), Config{AVIFEnabled: true})
 	if err != nil {
 		t.Fatalf("EncodeAVIF with empty path: %v", err)
 	}
@@ -56,7 +56,19 @@ func TestEncodeAVIFResolvesFFmpegFromPath(t *testing.T) {
 }
 
 func TestEncodeAVIFUnavailableWithoutFFmpeg(t *testing.T) {
-	_, err := EncodeAVIF(context.Background(), createTestImage(10, 10), "/nonexistent/ffmpeg")
+	_, err := EncodeAVIF(context.Background(), createTestImage(10, 10), Config{FFmpegPath: "/nonexistent/ffmpeg", AVIFEnabled: true})
+	if !errors.Is(err, ErrAVIFUnavailable) {
+		t.Fatalf("error = %v, want ErrAVIFUnavailable", err)
+	}
+}
+
+// TestEncodeAVIFDisabled guards the avif_enabled config toggle: with
+// AVIFEnabled false the encoder must report unavailable (storing original
+// bytes) without ever probing or spawning ffmpeg. Added 2026-08-14 when the
+// explicit disable switch was introduced; before that, disabling AVIF on a
+// server with ffmpeg installed was impossible.
+func TestEncodeAVIFDisabled(t *testing.T) {
+	_, err := EncodeAVIF(context.Background(), createTestImage(10, 10), Config{FFmpegPath: "/definitely/not/ffmpeg", AVIFEnabled: false})
 	if !errors.Is(err, ErrAVIFUnavailable) {
 		t.Fatalf("error = %v, want ErrAVIFUnavailable", err)
 	}
@@ -65,7 +77,7 @@ func TestEncodeAVIFUnavailableWithoutFFmpeg(t *testing.T) {
 func TestEncodeAVIFRejectsInvalidInput(t *testing.T) {
 	ffmpegPath := testFFmpegPath(t)
 
-	_, err := EncodeAVIF(context.Background(), []byte("not an image at all"), ffmpegPath)
+	_, err := EncodeAVIF(context.Background(), []byte("not an image at all"), Config{FFmpegPath: ffmpegPath, AVIFEnabled: true})
 	if err == nil {
 		t.Fatal("EncodeAVIF accepted invalid image data")
 	}
@@ -77,7 +89,7 @@ func TestEncodeAVIFRejectsInvalidInput(t *testing.T) {
 func TestTransformImageWithFFmpegScalesAVIF(t *testing.T) {
 	ffmpegPath := testFFmpegPath(t)
 
-	avif, err := EncodeAVIF(context.Background(), createTestImage(400, 300), ffmpegPath)
+	avif, err := EncodeAVIF(context.Background(), createTestImage(400, 300), Config{FFmpegPath: ffmpegPath, AVIFEnabled: true})
 	if err != nil {
 		t.Fatalf("EncodeAVIF fixture: %v", err)
 	}

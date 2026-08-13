@@ -198,6 +198,9 @@ func runServer(configPath string) {
 	// ffmpeg keeps original image bytes.
 	// 2026-08-14: upstream moved ffmpeg config to AssetProcessingConfig.
 	chattoCore.FFmpegPath = cfg.AssetProcessing.FFmpegPath
+	// avif_enabled = false keeps original bytes without ever probing or
+	// spawning ffmpeg. Only room attachments are affected.
+	chattoCore.AVIFEnabled = cfg.AssetProcessing.AVIFEnabledOrDefault()
 
 	if err := chattoCore.EnableLiveKitCallReconciliation(cfg.LiveKit); err != nil {
 		log.Error("Failed to configure LiveKit call-state reconciliation", "error", err)

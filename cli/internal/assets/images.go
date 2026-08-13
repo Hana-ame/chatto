@@ -49,12 +49,20 @@ type Config struct {
 	// FFmpegPath is the ffmpeg binary used to re-encode uploaded attachment
 	// images to AVIF. When empty, ffmpeg is resolved from PATH.
 	FFmpegPath string
+	// AVIFEnabled controls whether eligible room attachment images are
+	// re-encoded to AVIF on upload. Disabled keeps original bytes and never
+	// probes or spawns ffmpeg. Avatars, branding, and link previews are
+	// WebP-only and unaffected by this flag.
+	AVIFEnabled bool
 }
 
 // DefaultConfig returns a Config with default values.
 func DefaultConfig() Config {
 	return Config{
 		MaxUploadSize: DefaultMaxUploadSize,
+		// AVIF is best-effort by default; an explicit config toggle can
+		// disable it (see AssetProcessingConfig.AVIFEnabled).
+		AVIFEnabled: true,
 	}
 }
 
@@ -252,6 +260,8 @@ func ProcessAvatarImage(input io.Reader) (io.Reader, error) {
 // ProcessAvatarImageWithConfig reads an image from the input reader, resizes it to fit
 // within MaxAvatarDim x MaxAvatarDim while maintaining aspect ratio, and
 // encodes it as WebP. Returns an error if the input exceeds cfg.MaxUploadSize.
+// This path is intentionally AVIF-free: AVIF re-encoding applies only to room
+// attachment images (see EncodeAVIF), never to avatars.
 func ProcessAvatarImageWithConfig(input io.Reader, cfg Config) (io.Reader, error) {
 	// Limit input size to prevent memory exhaustion
 	img, err := decodeBoundedImage(input, cfg)
@@ -281,6 +291,8 @@ func ProcessLogoImage(input io.Reader) (io.Reader, error) {
 // ProcessLogoImageWithConfig reads an image from the input reader, resizes it to fit
 // within MaxLogoDim x MaxLogoDim while maintaining aspect ratio, and
 // encodes it as WebP. Returns an error if the input exceeds cfg.MaxUploadSize.
+// This path is intentionally AVIF-free: AVIF re-encoding applies only to room
+// attachment images (see EncodeAVIF), never to server branding logos.
 func ProcessLogoImageWithConfig(input io.Reader, cfg Config) (io.Reader, error) {
 	// Limit input size to prevent memory exhaustion
 	img, err := decodeBoundedImage(input, cfg)
@@ -339,6 +351,8 @@ const MaxLinkPreviewHeight = 630
 // ProcessLinkPreviewImageWithConfig reads an image from the input reader, resizes it to fit
 // within MaxLinkPreviewWidth x MaxLinkPreviewHeight while maintaining aspect ratio, and
 // encodes it as WebP. Returns an error if the input exceeds cfg.MaxUploadSize.
+// This path is intentionally AVIF-free: AVIF re-encoding applies only to room
+// attachment images (see EncodeAVIF), never to link-preview images.
 func ProcessLinkPreviewImageWithConfig(input io.Reader, cfg Config) (io.Reader, error) {
 	// Limit input size to prevent memory exhaustion
 	img, err := decodeBoundedImage(input, cfg)
@@ -380,6 +394,10 @@ func ProcessAttachmentImage(input io.Reader) (*AttachmentImageResult, error) {
 // The original image is returned as-is (not re-encoded).
 // Thumbnails are generated on-the-fly via the transform system.
 // Returns an error if the input exceeds cfg.MaxUploadSize or cannot be decoded.
+// This is the only upload path eligible for AVIF re-encoding: callers (room
+// attachment uploads) invoke EncodeAVIF on the result when enabled and an
+// ffmpeg AV1 encoder is available. Avatars, server branding, and link
+// previews never go through AVIF.
 func ProcessAttachmentImageWithConfig(input io.Reader, cfg Config) (*AttachmentImageResult, error) {
 	// Read all input into memory (limited to MaxUploadSize)
 	originalBytes, err := readAndValidateImage(input, cfg.MaxUploadSize)

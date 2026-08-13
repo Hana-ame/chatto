@@ -71,10 +71,24 @@ type VideoConfig struct {
 // asset-processing command runs explicitly but uses the remaining settings.
 type AssetProcessingConfig struct {
 	Enabled           bool   `toml:"enabled" env:"CHATTO_ASSET_PROCESSING_ENABLED" comment:"Start the built-in asset-processing worker inside chatto run."`
+	AVIFEnabled       *bool  `toml:"avif_enabled,commented" env:"CHATTO_ASSET_PROCESSING_AVIF_ENABLED" comment:"Re-encode eligible room attachment images to AVIF on upload. Requires an ffmpeg binary with an AV1 encoder (auto-detected from PATH when ffmpeg_path is empty). When disabled, original image bytes are stored unchanged. Affects room attachments only; avatars, server branding, and link previews stay WebP regardless. Default: true."`
 	FFmpegPath        string `toml:"ffmpeg_path,commented" env:"CHATTO_ASSET_PROCESSING_FFMPEG_PATH" comment:"Path to ffmpeg binary. Auto-detected from PATH if empty."`
 	FFprobePath       string `toml:"ffprobe_path,commented" env:"CHATTO_ASSET_PROCESSING_FFPROBE_PATH" comment:"Path to ffprobe binary. Auto-detected from PATH if empty."`
 	MaxConcurrentJobs int    `toml:"max_concurrent_jobs,commented" env:"CHATTO_ASSET_PROCESSING_MAX_CONCURRENT_JOBS" comment:"Maximum number of asset-processing jobs to run simultaneously in this process. Default: 2."`
 	TempDir           string `toml:"temp_dir,commented" env:"CHATTO_ASSET_PROCESSING_TEMP_DIR" comment:"Temporary directory for asset processing. Default: system temp directory."`
+}
+
+// AVIFEnabledOrDefault reports whether AVIF re-encoding of room attachment
+// images is on, defaulting to true (best-effort AVIF is the historical
+// behavior; a server without ffmpeg silently stores originals anyway). The
+// asset-processing worker's Enabled flag is deliberately NOT consulted here:
+// AVIF re-encoding runs on the upload path with plain ffmpeg, independent of
+// the durable worker.
+func (c *AssetProcessingConfig) AVIFEnabledOrDefault() bool {
+	if c.AVIFEnabled == nil {
+		return true
+	}
+	return *c.AVIFEnabled
 }
 
 // DefaultVideoMaxUploadSize is the default maximum size for video uploads (100 MB).

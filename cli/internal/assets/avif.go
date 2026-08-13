@@ -57,12 +57,18 @@ var (
 )
 
 // EncodeAVIF re-encodes image bytes to an AVIF still image using ffmpeg.
-// ffmpegPath is used verbatim; when empty, ffmpeg is resolved from PATH.
+// cfg.FFmpegPath is used verbatim; when empty, ffmpeg is resolved from PATH.
+// When cfg.AVIFEnabled is false the function reports ErrAVIFUnavailable so
+// callers store original bytes unchanged, exactly like a missing ffmpeg.
 //
 // The fastest available encoder is preferred (libsvtav1, falling back to
 // libaom-av1), both at avifCRF. Returns ErrAVIFUnavailable when ffmpeg or an
 // AV1 encoder cannot be found; other errors are transient encode failures.
-func EncodeAVIF(ctx context.Context, data []byte, ffmpegPath string) ([]byte, error) {
+func EncodeAVIF(ctx context.Context, data []byte, cfg Config) ([]byte, error) {
+	if !cfg.AVIFEnabled {
+		return nil, ErrAVIFUnavailable
+	}
+	ffmpegPath := cfg.FFmpegPath
 	// Resolve an empty path here as well as in selectAVIFEncoder: the probe
 	// resolves internally but the encode below needs the concrete binary.
 	// Broken on 2026-08-14 when TestEncodeAVIFResolvesFFmpegFromPath failed
@@ -192,6 +198,8 @@ func selectAVIFEncoder(ctx context.Context, ffmpegPath string) (avifEncoder, err
 //
 // ffmpegPath is used verbatim; when empty, ffmpeg is resolved from PATH. A
 // missing ffmpeg is a hard error for AVIF input — there is no other decoder.
+// This decodes previously stored AVIF attachment images at render time; it
+// never re-encodes avatars, branding, or link previews (those are WebP-only).
 func TransformImageWithFFmpeg(data []byte, width, height int, fit FitMode, options TransformOptions, ffmpegPath string) (*TransformResult, error) {
 	if !isAVIFBytes(data) {
 		return TransformImageWithOptions(data, width, height, fit, options)

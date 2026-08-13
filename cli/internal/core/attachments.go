@@ -145,7 +145,7 @@ func (c *MediaModel) uploadAttachmentBinary(
 		// converts them to MP4/HLS, so encoding a static AVIF would drop
 		// the animation.
 		if !assets.IsAnimatedGIF(content) {
-			if encoded, encErr := assets.EncodeAVIF(ctx, content, assetsCfg.FFmpegPath); encErr == nil {
+			if encoded, encErr := assets.EncodeAVIF(ctx, content, assetsCfg); encErr == nil {
 				content = encoded
 				contentType = "image/avif"
 			} else if !errors.Is(encErr, assets.ErrAVIFUnavailable) {

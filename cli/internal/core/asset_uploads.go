@@ -530,7 +530,7 @@ func (m *AssetUploadModel) storeCompletedUpload(ctx context.Context, session *As
 		// converts them to MP4/HLS, so encoding a static AVIF would drop
 		// the animation.
 		if !animatedGIF {
-			if encoded, encErr := assets.EncodeAVIF(ctx, content, assetsCfg.FFmpegPath); encErr == nil {
+			if encoded, encErr := assets.EncodeAVIF(ctx, content, assetsCfg); encErr == nil {
 				content = encoded
 				contentType = "image/avif"
 			} else if !errors.Is(encErr, assets.ErrAVIFUnavailable) {

@@ -73,8 +73,14 @@ type ChattoCore struct {
 	// FFmpegPath is the ffmpeg binary used to re-encode uploaded attachment
 	// images to AVIF. When empty, ffmpeg is resolved from PATH. When ffmpeg
 	// is unavailable, image uploads are stored unchanged.
-	// Set this after ChattoCore is created, from VideoConfig.
+	// Set this after ChattoCore is created, from AssetProcessingConfig.
 	FFmpegPath string
+
+	// AVIFEnabled turns AVIF re-encoding of room attachment images on or
+	// off. Set this after ChattoCore is created, from
+	// AssetProcessingConfig.AVIFEnabledOrDefault(). It only affects room
+	// attachments; avatars, branding, and link previews stay WebP.
+	AVIFEnabled bool
 
 	// VideoUploadsEnabled makes message commits enqueue durable processing work
 	// for accepted video-shaped attachments. Worker placement is configured

@@ -87,6 +87,7 @@ enabled = true
 
 [asset_processing]
 enabled = true
+# avif_enabled = true   # re-encode room attachment images to AVIF (default: true; set false to store original bytes)
 
 # LiveKit voice calls. For local development, run `mise dev-livekit`.
 [livekit]

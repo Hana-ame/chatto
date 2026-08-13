@@ -46,6 +46,9 @@ const (
 type Config struct {
 	// MaxUploadSize is the maximum size for uploaded files in bytes.
 	MaxUploadSize int64
+	// FFmpegPath is the ffmpeg binary used to re-encode uploaded attachment
+	// images to AVIF. When empty, ffmpeg is resolved from PATH.
+	FFmpegPath string
 }
 
 // DefaultConfig returns a Config with default values.

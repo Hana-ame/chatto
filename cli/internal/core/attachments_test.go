@@ -6,6 +6,7 @@ import (
 	"image"
 	"image/png"
 	"io"
+	"os/exec"
 	"testing"
 	"time"
 
@@ -36,6 +37,14 @@ func createTestPNG(width, height int) []byte {
 // ============================================================================
 // Attachment Upload Tests
 // ============================================================================
+
+// ffmpegAvailable reports whether ffmpeg is installed. Uploaded attachment
+// images are re-encoded to AVIF when ffmpeg is available and stored unchanged
+// otherwise.
+func ffmpegAvailable() bool {
+	_, err := exec.LookPath("ffmpeg")
+	return err == nil
+}
 
 func TestChattoCore_UploadAttachment(t *testing.T) {
 	core, _ := setupTestCore(t)
@@ -76,8 +85,12 @@ func TestChattoCore_UploadAttachment(t *testing.T) {
 			t.Errorf("Expected filename 'test-image.png', got '%s'", attachment.Filename)
 		}
 
-		if attachment.ContentType != "image/png" {
-			t.Errorf("Expected content type 'image/png', got '%s'", attachment.ContentType)
+		wantContentType := "image/png"
+		if ffmpegAvailable() {
+			wantContentType = "image/avif"
+		}
+		if attachment.ContentType != wantContentType {
+			t.Errorf("Expected content type %q, got %q", wantContentType, attachment.ContentType)
 		}
 
 		if attachment.RoomId != room.Id {

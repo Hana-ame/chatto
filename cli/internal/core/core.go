@@ -63,6 +63,12 @@ type ChattoCore struct {
 	// Set this after ChattoCore is created, from VideoConfig.
 	VideoMaxUploadSize int64
 
+	// FFmpegPath is the ffmpeg binary used to re-encode uploaded attachment
+	// images to AVIF. When empty, ffmpeg is resolved from PATH. When ffmpeg
+	// is unavailable, image uploads are stored unchanged.
+	// Set this after ChattoCore is created, from VideoConfig.
+	FFmpegPath string
+
 	// OnNotificationCreated is called when a notification is created.
 	// Used by the push notification system to send Web Push notifications.
 	// Set this after ChattoCore is created.

@@ -131,17 +131,29 @@ func (c *MediaModel) uploadAttachmentBinary(
 	var size int64
 	var width, height int32
 
+	assetsCfg := c.AssetsConfig()
+
 	if isImage {
-		result, err := assets.ProcessAttachmentImageWithConfig(reader, c.AssetsConfig())
+		result, err := assets.ProcessAttachmentImageWithConfig(reader, assetsCfg)
 		if err != nil {
 			return nil, fmt.Errorf("failed to process image: %w", err)
 		}
 		content = result.Original
-		size = int64(len(result.Original))
 		width = int32(result.Width)
 		height = int32(result.Height)
+		// Animated GIFs keep their original bytes: the video pipeline
+		// converts them to MP4/HLS, so encoding a static AVIF would drop
+		// the animation.
+		if !assets.IsAnimatedGIF(content) {
+			if encoded, encErr := assets.EncodeAVIF(ctx, content, assetsCfg.FFmpegPath); encErr == nil {
+				content = encoded
+				contentType = "image/avif"
+			} else if !errors.Is(encErr, assets.ErrAVIFUnavailable) {
+				c.logger.Warn("Failed to re-encode attachment image to AVIF; storing original", "error", encErr, "attachment_id", attachmentID)
+			}
+		}
+		size = int64(len(content))
 	} else {
-		assetsCfg := c.AssetsConfig()
 		maxSize := assetsCfg.MaxUploadSize
 		if strings.HasPrefix(contentType, "video/") && c.VideoMaxUploadSize > 0 {
 			maxSize = c.VideoMaxUploadSize

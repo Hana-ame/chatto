@@ -227,6 +227,8 @@ jobs:
 
       - name: Setup environment
         uses: ./.github/actions/setup
+        with:
+          install-ffmpeg: "true"
 
       - name: Run Authling tests
         working-directory: authling

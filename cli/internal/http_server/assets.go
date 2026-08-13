@@ -645,14 +645,17 @@ func (s *HTTPServer) serveTransformedAssetWithParams(c *gin.Context, req transfo
 		return
 	}
 
-	// Transform the image
+	// Transform the image. AVIF input needs ffmpeg for decoding, which is
+	// the same binary used for upload-time AVIF re-encoding.
 	var result *assets.TransformResult
 	if req.JPEGQuality > 0 {
-		result, err = assets.TransformImageWithOptions(data, params.Width, params.Height, assets.FitMode(params.Fit), assets.TransformOptions{
+		result, err = assets.TransformImageWithFFmpeg(data, params.Width, params.Height, assets.FitMode(params.Fit), assets.TransformOptions{
 			JPEGQuality: req.JPEGQuality,
-		})
+		}, s.core.AssetsConfig().FFmpegPath)
 	} else {
-		result, err = assets.TransformImage(data, params.Width, params.Height, assets.FitMode(params.Fit))
+		result, err = assets.TransformImageWithFFmpeg(data, params.Width, params.Height, assets.FitMode(params.Fit), assets.TransformOptions{
+			JPEGQuality: assets.DefaultTransformJPEGQuality,
+		}, s.core.AssetsConfig().FFmpegPath)
 	}
 	if err != nil {
 		s.logger.Error("Failed to transform image", "error", err)
@@ -744,7 +747,8 @@ func isImageContentType(contentType string) bool {
 	return contentType == "image/jpeg" ||
 		contentType == "image/png" ||
 		contentType == "image/gif" ||
-		contentType == "image/webp"
+		contentType == "image/webp" ||
+		contentType == "image/avif"
 }
 
 // getContentType returns the MIME type based on file extension.
@@ -759,6 +763,8 @@ func getContentType(path string) string {
 		return "image/jpeg"
 	case ".gif":
 		return "image/gif"
+	case ".avif":
+		return "image/avif"
 	default:
 		return "application/octet-stream"
 	}

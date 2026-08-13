@@ -338,6 +338,36 @@ leave a dev stack running in a detached or yielded terminal session.
   `main`.
 - Do not rename the current branch unless explicitly asked.
 
+## Chatto 部署 (cloudcone) — 绝对禁止本地编译
+
+- **绝对禁止在本地编译 chatto 二进制再上传**。本地 `go build` 不带前端
+  (`.client` 为空，无 `200.html`)，部署后 SPA 全部 500 ("Failed to load app")。
+  2026-08-08 曾因此事故。
+- **永远不要用本地 `go build`/`go vet`/`mise test-cli` 等来验证编译或跑测试**：
+  本地构建产物不内嵌 bundled client (`clients/` 未编译进二进制)，编译通过 ≠
+  可用产物；本地测试也不能代表 CI 环境。验证直接靠 GitHub Actions：
+  改动完成后 push 到 `ci/deploy`，看 `build-release` workflow 结果。
+- 部署 chatto 的唯一正确来源：**GitHub Actions `build-release` workflow
+  (push 到 `ci/deploy` 分支触发) 的 rolling release**，产物内嵌前端。
+- 部署流程：
+  1. `git push origin ci/deploy`（可含提交改动）触发 `build-release`。
+  2. `gh run watch <run-id> -R Hana-ame/chatto --exit-status` 等构建成功。
+  3. **用 `curl -L` 下载 release 资产**（rolling release tag 固定为 `ci/dev`，
+     每次构建删除重建，永远指向最新）：
+     ```sh
+     curl -fL -o /tmp/chatto_Linux_x86_64.tar.gz https://github.com/Hana-ame/chatto/releases/download/ci/dev/chatto_Linux_x86_64.tar.gz
+     tar -xzf /tmp/chatto_Linux_x86_64.tar.gz -C /tmp/opencode chatto
+     ```
+  4. 经 `~/script/ssh/cloudcone.sh` 上传：先写 `/opt/chatto/chatto.new`，
+     再 `systemctl stop chatto && mv .new chatto && systemctl start chatto`。
+  5. 验证：`curl 127.0.0.1:4000` 与 `curl -k https://chatto.moonchan.xyz/`
+     均应 200，`journalctl -u chatto | grep -c 200.html` 为 0。
+- cloudcone 上 chatto：`/opt/chatto/chatto`，配置 `/opt/chatto/chatto.toml`
+  (`bind_address = '127.0.0.1'`)。入口：DNS `chatto.moonchan.xyz` → Cloudflare
+  → cloudcone nginx:443 (`/etc/nginx/sites-available/chatto.conf`) →
+  `proxy_pass http://127.0.0.1:4000`。**与 zen 8443 无关**。改配置先备份到
+  `chatto.toml.bak.*`。
+
 ## Testing Judgment
 
 - Pick the lowest test layer that exercises the change, but do not stop below

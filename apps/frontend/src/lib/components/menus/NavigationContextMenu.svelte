@@ -6,12 +6,13 @@ The parent owns membership, read, configuration, and leave behavior so this comp
 presentation-only.
 -->
 <script lang="ts">
-  import * as m from '$lib/i18n/messages';
+  import { m } from '$lib/i18n/messages';
 
   let {
     kind,
     isRoomMember = true,
     canJoin = false,
+    showMarkRead = true,
     canMarkRead,
     canConfigure = false,
     canLeave = true,
@@ -23,6 +24,7 @@ presentation-only.
     kind: 'server' | 'room';
     isRoomMember?: boolean;
     canJoin?: boolean;
+    showMarkRead?: boolean;
     canMarkRead: boolean;
     canConfigure?: boolean;
     canLeave?: boolean;
@@ -43,10 +45,10 @@ presentation-only.
         disabled={!canJoin}
         role="menuitem"
       >
-        <span class="sidebar-icon iconify uil--sign-in-alt" aria-hidden="true"></span>
-        {m['room.join.action']()}
+        <span class="iconify sidebar-icon icon-[uil--sign-in-alt]" aria-hidden="true"></span>
+        {m('room.join.action')}
       </button>
-    {:else}
+    {:else if showMarkRead}
       <button
         type="button"
         class="sidebar-item disabled:cursor-not-allowed disabled:opacity-50"
@@ -54,20 +56,22 @@ presentation-only.
         disabled={!canMarkRead}
         role="menuitem"
       >
-        <span class="sidebar-icon iconify uil--check-circle" aria-hidden="true"></span>
-        {m['room_list.mark_as_read']()}
+        <span class="iconify sidebar-icon icon-[uil--check-circle]" aria-hidden="true"></span>
+        {m('room_list.mark_as_read')}
       </button>
     {/if}
 
     {#if canConfigure && onConfigure}
       <button type="button" class="sidebar-item" onclick={onConfigure} role="menuitem">
-        <span class="sidebar-icon iconify uil--setting" aria-hidden="true"></span>
-        {m['room_list.room_settings']()}
+        <span class="iconify sidebar-icon icon-[uil--setting]" aria-hidden="true"></span>
+        {m('room_list.room_settings')}
       </button>
     {/if}
 
     {#if isRoomMember && canLeave}
-      <div role="separator" class="mx-2 my-1 border-t border-text/10"></div>
+      {#if showMarkRead || (canConfigure && onConfigure)}
+        <div role="separator" class="mx-2 my-1 border-t border-text/10"></div>
+      {/if}
       <button
         type="button"
         class="sidebar-item text-danger hover:text-danger"
@@ -76,12 +80,12 @@ presentation-only.
       >
         <span
           class={[
-            'sidebar-icon iconify',
-            kind === 'server' ? 'uil--minus-circle' : 'uil--sign-out-alt'
+            'iconify sidebar-icon',
+            kind === 'server' ? 'icon-[uil--minus-circle]' : 'icon-[uil--sign-out-alt]'
           ]}
           aria-hidden="true"
         ></span>
-        {kind === 'server' ? m['room_list.remove_server']() : m['room_list.leave_room']()}
+        {kind === 'server' ? m('room_list.remove_server') : m('room_list.leave_room')}
       </button>
     {/if}
   </nav>

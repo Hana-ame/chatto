@@ -107,7 +107,8 @@ describe('createRoomDirectoryAPI', () => {
       baseUrl: 'https://remote.example.com/api/connect',
       bearerToken: 'token'
     });
-    const rooms = await api.listRooms(RoomDirectoryScope.DMS);
+    const signal = new AbortController().signal;
+    const rooms = await api.listRooms(RoomDirectoryScope.DMS, { signal });
 
     expect(mocks.createConnectTransport).toHaveBeenCalledWith({
       baseUrl: 'https://remote.example.com/api/connect',
@@ -115,7 +116,7 @@ describe('createRoomDirectoryAPI', () => {
     });
     expect(mocks.listRooms).toHaveBeenCalledWith(
       { scope: RoomDirectoryScope.DMS },
-      { headers: { Authorization: 'Bearer token' } }
+      { headers: { Authorization: 'Bearer token' }, signal }
     );
     expect(rooms).toEqual([
       {
@@ -125,6 +126,8 @@ describe('createRoomDirectoryAPI', () => {
         kind: RoomKind.CHANNEL,
         archived: false,
         isUniversal: true,
+        slowModeSeconds: 0,
+        slowModeNextPostAt: null,
         isMember: true,
         hasUnread: true,
         canJoinRoom: false,
@@ -137,6 +140,8 @@ describe('createRoomDirectoryAPI', () => {
         kind: RoomKind.DM,
         archived: true,
         isUniversal: false,
+        slowModeSeconds: 0,
+        slowModeNextPostAt: null,
         isMember: true,
         hasUnread: false,
         canJoinRoom: true,
@@ -190,6 +195,8 @@ describe('createRoomDirectoryAPI', () => {
       kind: RoomKind.CHANNEL,
       archived: false,
       isUniversal: true,
+      slowModeSeconds: 0,
+      slowModeNextPostAt: null,
       isMember: true,
       hasUnread: true,
       canJoinRoom: false,

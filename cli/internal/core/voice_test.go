@@ -12,10 +12,12 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/livekit/protocol/livekit"
 	"github.com/twitchtv/twirp"
+	"hmans.de/chatto/internal/config"
 	"hmans.de/chatto/internal/evtstream"
 	"hmans.de/chatto/internal/kms"
 	"hmans.de/chatto/internal/lease"
 	corev1 "hmans.de/chatto/internal/pb/chatto/core/v1"
+	"hmans.de/chatto/internal/testutil"
 	"hmans.de/chatto/pkg/events"
 )
 
@@ -124,6 +126,7 @@ type recordingCallLogger struct {
 type fakeLiveKitRoomService struct {
 	rooms           []string
 	participants    map[string][]string
+	metadata        map[string]string
 	participantErrs map[string]error
 	removed         []livekit.RoomParticipantIdentity
 	removeErr       error
@@ -144,7 +147,7 @@ func (f fakeLiveKitRoomService) ListParticipants(_ context.Context, req *livekit
 	userIDs := f.participants[req.GetRoom()]
 	participants := make([]*livekit.ParticipantInfo, 0, len(userIDs))
 	for _, userID := range userIDs {
-		participants = append(participants, &livekit.ParticipantInfo{Identity: userID})
+		participants = append(participants, &livekit.ParticipantInfo{Identity: userID, Metadata: f.metadata[userID]})
 	}
 	return &livekit.ListParticipantsResponse{Participants: participants}, nil
 }
@@ -515,6 +518,59 @@ func TestGenerateVoiceCallToken_NoAvatar(t *testing.T) {
 	}
 }
 
+func TestGenerateCallMediaPublisherToken(t *testing.T) {
+	result, err := GenerateCallMediaPublisherToken(
+		"devkey",
+		"secret",
+		"space123_room456@call789",
+		"publisher123",
+		"user789",
+		"Test User",
+		"e2ee-test-key",
+		"call789",
+		ParticipantPublisherKindGameShare,
+	)
+	if err != nil {
+		t.Fatalf("GenerateCallMediaPublisherToken() error = %v", err)
+	}
+	if result.CallID != "call789" || result.E2EEKey != "e2ee-test-key" {
+		t.Fatalf("GenerateCallMediaPublisherToken() = %+v", result)
+	}
+
+	parser := jwt.NewParser(jwt.WithoutClaimsValidation())
+	token, _, err := parser.ParseUnverified(result.Token, jwt.MapClaims{})
+	if err != nil {
+		t.Fatalf("parse JWT: %v", err)
+	}
+	claims := token.Claims.(jwt.MapClaims)
+	if claims["sub"] != "publisher123" {
+		t.Fatalf("Token sub = %v, want publisher123", claims["sub"])
+	}
+	metadata, _ := claims["metadata"].(string)
+	if !strings.Contains(metadata, `"publisherKind":"game_share"`) || !strings.Contains(metadata, `"ownerIdentity":"user789"`) {
+		t.Fatalf("Token metadata = %q", metadata)
+	}
+	if !IsCallMediaPublisher(metadata) {
+		t.Fatal("IsCallMediaPublisher() = false")
+	}
+	video, ok := claims["video"].(map[string]interface{})
+	if !ok {
+		t.Fatal("Token missing video grant")
+	}
+	if video["canSubscribe"] != false || video["canPublishData"] != false {
+		t.Fatalf("Token video grant = %+v, want subscribe/data disabled", video)
+	}
+	sources, _ := video["canPublishSources"].([]interface{})
+	if fmt.Sprint(sources) != "[screen_share microphone]" {
+		t.Fatalf("Token publish sources = %v", sources)
+	}
+	exp, _ := claims["exp"].(float64)
+	nbf, _ := claims["nbf"].(float64)
+	if ttl := time.Duration(exp-nbf) * time.Second; ttl != CallMediaPublisherTokenTTL {
+		t.Fatalf("Token TTL = %s, want %s", ttl, CallMediaPublisherTokenTTL)
+	}
+}
+
 // ============================================================================
 // Call State Projection Tests (require embedded NATS)
 // ============================================================================
@@ -694,6 +750,90 @@ func TestCallModel_GetAccessMaterialRejectsCallGenerationTransition(t *testing.T
 	model.callKeys = &hookedCallKeyStore{keys: map[string]string{}}
 	if _, err := model.GetAccessMaterial(context.Background(), roomID); err == nil {
 		t.Fatal("GetAccessMaterial() without projected key error = nil, want key read error")
+	}
+}
+
+func TestCallModel_GetParticipantAccessMaterialRejectsCallGenerationTransition(t *testing.T) {
+	projection := NewCallStateProjection()
+	roomID := "room-publisher-access-generation"
+	userID := "user1"
+	oldCallID := "call-old"
+	newCallID := "call-new"
+	oldKeyRef := "key-ref-old"
+	newKeyRef := "key-ref-new"
+
+	if err := projection.Apply(newEvent(userID, &corev1.Event{
+		Event: &corev1.Event_VoiceCallStarted{
+			VoiceCallStarted: &corev1.CallStartedEvent{
+				RoomId:     roomID,
+				CallId:     oldCallID,
+				E2EeKeyRef: oldKeyRef,
+			},
+		},
+	}), 1); err != nil {
+		t.Fatalf("Apply old VoiceCallStarted: %v", err)
+	}
+	if err := projection.Apply(newEvent(userID, &corev1.Event{
+		Event: &corev1.Event_VoiceCallParticipantJoined{
+			VoiceCallParticipantJoined: &corev1.CallParticipantJoinedEvent{
+				RoomId: roomID,
+				CallId: oldCallID,
+			},
+		},
+	}), 2); err != nil {
+		t.Fatalf("Apply old VoiceCallParticipantJoined: %v", err)
+	}
+
+	keyStore := &hookedCallKeyStore{
+		keys: map[string]string{
+			oldKeyRef: "key-old",
+			newKeyRef: "key-new",
+		},
+	}
+	keyStore.beforeGet = func(keyRef string) error {
+		if keyRef != oldKeyRef {
+			return fmt.Errorf("GetCallKey key ref = %q, want captured old ref %q", keyRef, oldKeyRef)
+		}
+		if err := projection.Apply(newEvent(userID, &corev1.Event{
+			Event: &corev1.Event_VoiceCallEnded{
+				VoiceCallEnded: &corev1.CallEndedEvent{RoomId: roomID, CallId: oldCallID},
+			},
+		}), 3); err != nil {
+			return err
+		}
+		if err := projection.Apply(newEvent(userID, &corev1.Event{
+			Event: &corev1.Event_VoiceCallStarted{
+				VoiceCallStarted: &corev1.CallStartedEvent{
+					RoomId:     roomID,
+					CallId:     newCallID,
+					E2EeKeyRef: newKeyRef,
+				},
+			},
+		}), 4); err != nil {
+			return err
+		}
+		return projection.Apply(newEvent(userID, &corev1.Event{
+			Event: &corev1.Event_VoiceCallParticipantJoined{
+				VoiceCallParticipantJoined: &corev1.CallParticipantJoinedEvent{
+					RoomId: roomID,
+					CallId: newCallID,
+				},
+			},
+		}), 5)
+	}
+
+	model := &CallModel{
+		callState: detachedTestProjectionHandle(projection),
+		callKeys:  keyStore,
+	}
+	access, err := model.GetParticipantAccessMaterial(context.Background(), roomID, userID)
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("GetParticipantAccessMaterial() = %#v, %v; want call transition error", access, err)
+	}
+
+	keyStore.beforeGet = nil
+	if _, err := model.GetParticipantAccessMaterial(context.Background(), roomID, "not-participating"); !errors.Is(err, ErrCallParticipationRequired) {
+		t.Fatalf("GetParticipantAccessMaterial() non-participant error = %v, want ErrCallParticipationRequired", err)
 	}
 }
 
@@ -1447,7 +1587,7 @@ func TestCallState_LiveKitRemovalFailureDoesNotFailRoomLeave(t *testing.T) {
 	}
 }
 
-func TestCallState_RoomLeaveRetriesCommittedKeyCleanupDuringReconciliation(t *testing.T) {
+func TestCallState_RoomLeaveQueuesCommittedKeyCleanupAfterImmediateFailure(t *testing.T) {
 	core, _ := setupTestCore(t)
 	ctx := testContext(t)
 
@@ -1484,60 +1624,58 @@ func TestCallState_RoomLeaveRetriesCommittedKeyCleanupDuringReconciliation(t *te
 	}
 
 	core.callModel.callKeys = workingKeys
-	if err := core.callModel.reconcileBestEffort(ctx); err != nil {
-		t.Fatalf("reconcileBestEffort: %v", err)
+	info, err := core.callModel.keyCleanupConsumer.Info(ctx)
+	if err != nil {
+		t.Fatalf("call-key cleanup consumer: %v", err)
 	}
-	if exists, err := workingKeys.CallKeyExists(ctx, session.E2EEKeyRef); err != nil || exists {
-		t.Fatalf("CallKeyExists after retry = %v, %v; want false, nil", exists, err)
+	if info.NumPending+uint64(info.NumAckPending) == 0 {
+		t.Fatalf("call-key cleanup consumer = %+v; want durable retry work", info)
+	}
+	if exists, err := workingKeys.CallKeyExists(ctx, session.E2EEKeyRef); err != nil || !exists {
+		t.Fatalf("CallKeyExists before durable retry = %v, %v; want true, nil", exists, err)
 	}
 }
 
-func TestCallState_LeaseHolderDiscoversLaterReplicaKeyCleanup(t *testing.T) {
-	core, _ := setupTestCore(t)
+func TestCallState_DurableWorkerDiscoversLaterReplicaKeyCleanup(t *testing.T) {
+	_, nc := testutil.StartNATS(t)
 	ctx := testContext(t)
+	core, err := NewChattoCore(ctx, nc, config.CoreConfig{
+		SecretKey: "test-core-secret",
+		Assets:    config.AssetsConfig{SigningSecret: "test-signing-secret"},
+	})
+	if err != nil {
+		t.Fatalf("NewChattoCore: %v", err)
+	}
 	workingKeys := core.encryption.callKeys
-	holder := NewCallModel(
-		core.EventPublisher,
-		core.callModel.callState,
-		workingKeys,
-		nil,
-		nil,
-		core.callModel.memoryCacheKV,
-		core.callModel.logger,
-	)
-	if err := holder.cleanupEndedCallKeys(ctx); err != nil {
-		t.Fatalf("initial holder cleanup: %v", err)
-	}
-
-	user, err := core.CreateUser(ctx, SystemActorID, "call-holder-cursor-user", "Call Holder Cursor User", "password")
+	const callID = "C-later-replica"
+	keyRef, _, err := workingKeys.CreateCallKey(ctx, callID)
 	if err != nil {
-		t.Fatalf("CreateUser: %v", err)
+		t.Fatalf("CreateCallKey: %v", err)
 	}
-	room, err := core.CreateRoom(ctx, SystemActorID, KindChannel, "", "call-holder-cursor-room", "")
-	if err != nil {
-		t.Fatalf("CreateRoom: %v", err)
+	event := newEvent(SystemActorID, &corev1.Event{Event: &corev1.Event_VoiceCallEnded{VoiceCallEnded: &corev1.CallEndedEvent{
+		RoomId: "R-later-replica", CallId: callID,
+	}}})
+	if _, err := core.EventPublisher.AppendEventually(ctx, evtstream.RoomAggregate("R-later-replica").Subject(evtstream.EventCallEnded), event); err != nil {
+		t.Fatalf("append call-ended fact: %v", err)
 	}
-	if _, err := core.JoinRoom(ctx, user.Id, KindChannel, user.Id, room.Id); err != nil {
-		t.Fatalf("JoinRoom: %v", err)
-	}
-	if err := core.RecordCallParticipantJoined(ctx, room.Id, user.Id, corev1.CallParticipantEventSource_CALL_PARTICIPANT_EVENT_SOURCE_USER); err != nil {
-		t.Fatalf("RecordCallParticipantJoined: %v", err)
-	}
-	session, _ := core.callModel.activeCall(room.Id)
-	shredErr := errors.New("replica kms shred unavailable")
-	core.callModel.callKeys = failingShredCallKeyStore{delegate: workingKeys, err: shredErr}
-	if err := core.LeaveRoom(ctx, user.Id, KindChannel, user.Id, room.Id); !errors.Is(err, shredErr) {
-		t.Fatalf("LeaveRoom error = %v, want shred error", err)
-	}
-	if exists, err := workingKeys.CallKeyExists(ctx, session.E2EEKeyRef); err != nil || !exists {
+	if exists, err := workingKeys.CallKeyExists(ctx, keyRef); err != nil || !exists {
 		t.Fatalf("CallKeyExists after replica failure = %v, %v; want true, nil", exists, err)
 	}
-
-	if err := holder.cleanupEndedCallKeys(ctx); err != nil {
-		t.Fatalf("incremental holder cleanup: %v", err)
+	info, err := core.callModel.keyCleanupConsumer.Info(ctx)
+	if err != nil || info.NumPending == 0 {
+		t.Fatalf("call-key cleanup queue before worker = %+v, %v; want pending work", info, err)
 	}
-	if exists, err := workingKeys.CallKeyExists(ctx, session.E2EEKeyRef); err != nil || exists {
-		t.Fatalf("CallKeyExists after holder discovery = %v, %v; want false, nil", exists, err)
+
+	workerCtx, cancel := context.WithCancel(ctx)
+	done := make(chan error, 1)
+	go func() { done <- core.callModel.Run(workerCtx) }()
+	waitForRecoveryTest(t, 5*time.Second, func() bool {
+		exists, err := workingKeys.CallKeyExists(ctx, keyRef)
+		return err == nil && !exists
+	}, "durable call-key cleanup")
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("holder cleanup shutdown: %v", err)
 	}
 }
 
@@ -1604,20 +1742,13 @@ func TestCallState_ReconciliationCleansHistoricalMembershipOnlyLeave(t *testing.
 		t.Fatalf("durable call-ended recovery facts = %#v, want call %s", ended, session.CallID)
 	}
 
-	restarted := NewCallModel(
-		core.EventPublisher,
-		core.callModel.callState,
-		workingKeys,
-		&recordingLiveKitParticipantClient{},
-		nil,
-		core.callModel.memoryCacheKV,
-		core.callModel.logger,
-	)
-	if err := restarted.reconcileBestEffort(ctx); err != nil {
-		t.Fatalf("restarted reconcileBestEffort: %v", err)
+	core.callModel.callKeys = workingKeys
+	info, err := core.callModel.keyCleanupConsumer.Info(ctx)
+	if err != nil {
+		t.Fatalf("call-key cleanup consumer: %v", err)
 	}
-	if exists, err := workingKeys.CallKeyExists(ctx, session.E2EEKeyRef); err != nil || exists {
-		t.Fatalf("CallKeyExists after restart recovery = %v, %v; want false, nil", exists, err)
+	if info.NumPending+uint64(info.NumAckPending) == 0 {
+		t.Fatalf("call-key cleanup consumer = %+v; want durable retry work", info)
 	}
 }
 
@@ -1776,6 +1907,32 @@ func TestLiveKitRoomClientListCallParticipantsTreatsRoomNotFoundAsEmpty(t *testi
 	}
 	if snapshots[1].RoomID != "room2" || snapshots[1].CallID != "C2" || len(snapshots[1].UserIDs) != 1 || snapshots[1].UserIDs[0] != "user2" {
 		t.Fatalf("Second snapshot = %#v, want room2 C2 user2 snapshot", snapshots[1])
+	}
+}
+
+func TestLiveKitRoomClientExcludesCompanionPublishersFromCallMembership(t *testing.T) {
+	room := LiveKitRoomName("", KindChannel, "room1", "C1")
+	client := &liveKitRoomClient{
+		service: &fakeLiveKitRoomService{
+			rooms:        []string{room},
+			participants: map[string][]string{room: {"user1", "publisher1"}},
+			metadata: map[string]string{
+				"publisher1": `{"publisherKind":"game_share","ownerIdentity":"user1"}`,
+			},
+		},
+		apiKey:    "key",
+		apiSecret: "secret",
+	}
+
+	snapshots, err := client.ListCallParticipants(testContext(t))
+	if err != nil {
+		t.Fatalf("ListCallParticipants() error = %v", err)
+	}
+	if len(snapshots) != 1 || !slices.Equal(snapshots[0].UserIDs, []string{"user1"}) {
+		t.Fatalf("UserIDs = %#v, want only user1", snapshots)
+	}
+	if !slices.Equal(snapshots[0].ParticipantIdentities, []string{"publisher1", "user1"}) {
+		t.Fatalf("ParticipantIdentities = %#v, want publisher and user", snapshots[0].ParticipantIdentities)
 	}
 }
 

@@ -5,12 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 	"time"
 
+	"github.com/nats-io/nats.go/jetstream"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"hmans.de/chatto/internal/evtstream"
-	"hmans.de/chatto/internal/lease"
 	corev1 "hmans.de/chatto/internal/pb/chatto/core/v1"
 	"hmans.de/chatto/pkg/events"
 )
@@ -22,12 +21,14 @@ var (
 )
 
 const (
-	assetCleanupLeaseName       = "asset_cleanup"
-	assetCleanupLeaseTTL        = 45 * time.Second
-	assetCleanupLeaseRenewEvery = 15 * time.Second
-	assetCleanupLeaseRetryEvery = 5 * time.Second
-	assetCleanupPollEvery       = 30 * time.Second
-	assetCommitCheckTimeout     = 5 * time.Second
+	assetCleanupConsumerName = "chatto-asset-cleanup-v1"
+	assetCleanupMaxPending   = 16
+	assetCleanupAckWait      = 2 * time.Minute
+	assetCleanupRetryDelay   = 30 * time.Second
+	assetCleanupHeartbeat    = 30 * time.Second
+	assetCleanupAckTimeout   = 5 * time.Second
+	assetCommitCheckTimeout  = 5 * time.Second
+	maxAssetMutationAttempts = 5
 )
 
 // derivativeContext records that an upload is a derivative of another asset.
@@ -44,28 +45,13 @@ type derivativeContext struct {
 type AssetModel struct {
 	*ChattoCore
 	assets                events.ProjectionHandle[*AssetProjection]
-	cleanupLease          *lease.Lease
-	cleanupConsumer       *evtstream.IncrementalEffectConsumer
-	cleanupPollEvery      time.Duration
+	cleanupConsumer       jetstream.Consumer
+	cleanupWorker         *events.DurableWorker
 	waitForAssetsOverride func(context.Context, events.StreamPosition) error
-	cleanupStatusMu       sync.RWMutex
-	cleanupPass           assetCleanupPassStatus
 }
 
 func NewAssetModel(core *ChattoCore, assets events.ProjectionHandle[*AssetProjection]) *AssetModel {
-	model := &AssetModel{
-		ChattoCore:       core,
-		assets:           assets,
-		cleanupPollEvery: assetCleanupPollEvery,
-	}
-	if core != nil && core.EventPublisher != nil {
-		model.cleanupConsumer = evtstream.NewIncrementalEffectConsumerWithSubject(
-			core.EventPublisher,
-			evtstream.AssetEventTypeFilter(evtstream.EventAssetDeleted),
-			model.cleanupDeletedAsset,
-		)
-	}
-	return model
+	return &AssetModel{ChattoCore: core, assets: assets}
 }
 
 // RecordUploadedAsset writes the AssetCreatedEvent for a user-uploaded binary.
@@ -78,7 +64,7 @@ func (s *AssetModel) RecordUploadedAsset(ctx context.Context, actorID, roomID st
 
 // RecordUploadedPendingAttachmentAsset writes the AssetCreatedEvent for an
 // attachment produced by the public chunked upload flow. The pending expiry is
-// a cleanup hint until a MessageBody claims the asset ID.
+// a cleanup hint until a message attaches the asset.
 func (s *AssetModel) RecordUploadedPendingAttachmentAsset(ctx context.Context, actorID, roomID string, attachment *corev1.Attachment, sha256 string, pendingExpiresAt time.Time, needsVideoProcessing bool) error {
 	if actorID == "" {
 		return fmt.Errorf("asset creation missing actor id")
@@ -262,9 +248,9 @@ func (s *AssetModel) DeleteMessageOwnedAssetsForUser(ctx context.Context, actorI
 	return deleted
 }
 
-// ScheduleVideoProcessingForMessageAttachment enqueues async processing for a
-// message-owned video asset. It appends a durable AssetProcessingStartedEvent,
-// then calls the process-local video processing hook.
+// ScheduleVideoProcessingForMessageAttachment durably enqueues processing for
+// a message-owned video asset. Runtime-unit workers consume the resulting
+// AssetProcessingStartedEvent from a shared JetStream consumer.
 func (s *AssetModel) ScheduleVideoProcessingForMessageAttachment(ctx context.Context, actorID string, roomID, messageEventID string, attachment *corev1.Attachment) error {
 	if roomID == "" || messageEventID == "" || attachment == nil || attachment.GetId() == "" {
 		return fmt.Errorf("video processing missing room, message, or attachment")
@@ -274,22 +260,10 @@ func (s *AssetModel) ScheduleVideoProcessingForMessageAttachment(ctx context.Con
 			return nil
 		}
 	}
-	if s.OnVideoProcessingRequested == nil {
-		return nil
-	}
 	if s.attachmentBinaryStatus(ctx, attachment) == AttachmentBinaryMissing {
 		return s.RecordAssetProcessingFailed(ctx, actorID, roomID, messageEventID, attachment.GetId(), corev1.AssetProcessingFailureCode_ASSET_PROCESSING_FAILURE_CODE_SOURCE_MISSING)
 	}
-	if err := s.RecordAssetProcessingStarted(ctx, actorID, roomID, messageEventID, attachment.GetId()); err != nil {
-		return err
-	}
-	if err := s.OnVideoProcessingRequested(context.Background(), attachment.GetId(), messageEventID); err != nil {
-		s.logger.Warn("Failed to start local video processing",
-			"asset_id", attachment.GetId(),
-			"message_event_id", messageEventID,
-			"error", err)
-	}
-	return nil
+	return s.RecordAssetProcessingStarted(ctx, actorID, roomID, messageEventID, attachment.GetId())
 }
 
 // RecordAssetProcessingStarted appends a durable AssetProcessingStartedEvent.
@@ -308,13 +282,17 @@ func (s *AssetModel) RecordAssetProcessingStarted(ctx context.Context, actorID s
 	return s.PublishAssetProcessing(ctx, roomID, event)
 }
 
-// RecoverUnmanifestedVideoAttachments replays durable message attachments into
-// the in-process video processor when they have no completed/failed manifest
-// yet. If the original binary is already gone, it records a durable unavailable
-// state.
+// RecoverUnmanifestedVideoAttachments backfills durable queue markers for
+// message attachments committed by versions that scheduled processing only
+// after the message append. New message writes commit the marker atomically.
 func (s *AssetModel) RecoverUnmanifestedVideoAttachments(ctx context.Context) {
 	for _, req := range s.UnmanifestedVideoAttachments() {
 		if req.Attachment == nil {
+			continue
+		}
+		if manifest, ok := s.VideoAttachmentManifest(req.Attachment.GetId()); ok && manifest != nil && manifest.Started != nil {
+			// Existing Started facts are already visible to the durable consumer.
+			// Only backfill the pre-queue crash gap where no marker exists at all.
 			continue
 		}
 		if err := s.ScheduleVideoProcessingForMessageAttachment(ctx, SystemActorID, req.RoomID, req.MessageEventID, req.Attachment); err != nil {
@@ -558,10 +536,161 @@ func (s *AssetModel) RecordAssetDeleted(ctx context.Context, actorID string, roo
 			AssetDeleted: &corev1.AssetDeletedEvent{AssetId: assetID},
 		},
 	})
-	if err := s.appendAssetEventEventually(ctx, assetID, event); err != nil {
-		return fmt.Errorf("publish asset deletion event: %w", err)
+	for attempt := 1; attempt <= maxAssetMutationAttempts; attempt++ {
+		agg := evtstream.AssetAggregate(assetID)
+		filter := agg.AllEventsFilter()
+		tail, err := s.EventPublisher.LastSubjectPosition(ctx, filter)
+		if err != nil {
+			return fmt.Errorf("read asset deletion OCC tail: %w", err)
+		}
+		if !tail.IsZero() {
+			if err := s.waitForAssets(ctx, tail); err != nil {
+				return err
+			}
+		}
+		if s.AssetDeleted(assetID) {
+			return nil
+		}
+		seq, err := s.EventPublisher.AppendAtFilter(ctx, agg.SubjectFor(event), event, filter, tail.Seq)
+		if err == nil {
+			if err := s.waitForAssets(ctx, events.SubjectPosition(agg.SubjectFor(event), seq)); err != nil {
+				return errors.Join(errAssetEventCommitted, err)
+			}
+			return nil
+		}
+		if !errors.Is(err, events.ErrConflict) {
+			return fmt.Errorf("publish asset deletion event: %w", err)
+		}
 	}
-	return nil
+	return fmt.Errorf("publish asset deletion event after %d attempts: %w", maxAssetMutationAttempts, events.ErrConflict)
+}
+
+func (s *AssetModel) validateAssetAttachment(assetID, actorID, roomID, messageEventID string, now time.Time) error {
+	state := s.AssetState(assetID)
+	if state.Deleted || state.Creation == nil || state.Creation.GetAsset() == nil {
+		return ErrAssetNotAttachable
+	}
+	if state.Creation.GetRoomId() != roomID {
+		return ErrAssetNotAttachable
+	}
+	if state.Creation.GetUserId() != actorID {
+		return ErrAssetNotAttachable
+	}
+	if expiresAt := state.Creation.GetPendingExpiresAt(); expiresAt != nil && !expiresAt.AsTime().After(now) {
+		return ErrAssetNotAttachable
+	}
+	owner, attached := s.assetMessageAttachment(assetID)
+	if !attached {
+		return nil
+	}
+	if messageEventID != "" && owner.roomID == roomID && owner.messageEventID == messageEventID && owner.authorID == actorID {
+		return nil
+	}
+	return ErrAssetNotAttachable
+}
+
+func (s *AssetModel) assetMessageAttachment(assetID string) (assetMessageRef, bool) {
+	if s == nil || s.assets.Projection() == nil {
+		return assetMessageRef{}, false
+	}
+	return s.assets.Projection().assetMessageAttachment(assetID)
+}
+
+// MessageOwnsAsset waits for the complete asset aggregate and verifies the
+// durable attachment before a message path touches derivatives or backing storage.
+func (s *AssetModel) MessageOwnsAsset(ctx context.Context, roomID, messageEventID, assetID string) (bool, error) {
+	filter := evtstream.AssetAggregate(assetID).AllEventsFilter()
+	tail, err := s.EventPublisher.LastSubjectPosition(ctx, filter)
+	if err != nil {
+		return false, err
+	}
+	if !tail.IsZero() {
+		if err := s.waitForAssets(ctx, tail); err != nil {
+			return false, err
+		}
+	}
+	owner, ok := s.assetMessageAttachment(assetID)
+	return ok && owner.roomID == roomID && owner.messageEventID == messageEventID, nil
+}
+
+// RecordMessageAssetDeleted appends a tombstone only while the durable asset
+// attachment still names the supplied room and message.
+func (s *AssetModel) RecordMessageAssetDeleted(ctx context.Context, actorID, roomID, messageEventID, assetID string) (bool, error) {
+	event := newEvent(actorID, &corev1.Event{Event: &corev1.Event_AssetDeleted{
+		AssetDeleted: &corev1.AssetDeletedEvent{AssetId: assetID},
+	}})
+	for attempt := 1; attempt <= maxAssetMutationAttempts; attempt++ {
+		agg := evtstream.AssetAggregate(assetID)
+		filter := agg.AllEventsFilter()
+		tail, err := s.EventPublisher.LastSubjectPosition(ctx, filter)
+		if err != nil {
+			return false, err
+		}
+		if !tail.IsZero() {
+			if err := s.waitForAssets(ctx, tail); err != nil {
+				return false, err
+			}
+		}
+		owner, ok := s.assetMessageAttachment(assetID)
+		if !ok || owner.roomID != roomID || owner.messageEventID != messageEventID {
+			return false, nil
+		}
+		if s.AssetDeleted(assetID) {
+			return true, nil
+		}
+		seq, err := s.EventPublisher.AppendAtFilter(ctx, agg.SubjectFor(event), event, filter, tail.Seq)
+		if err == nil {
+			if err := s.waitForAssets(ctx, events.SubjectPosition(agg.SubjectFor(event), seq)); err != nil {
+				return true, errors.Join(errAssetEventCommitted, err)
+			}
+			return true, nil
+		}
+		if !errors.Is(err, events.ErrConflict) {
+			return false, err
+		}
+	}
+	return false, fmt.Errorf("delete message asset after %d attempts: %w", maxAssetMutationAttempts, events.ErrConflict)
+}
+
+// RecordExpiredPendingAssetDeleted atomically rechecks that an expired upload
+// remains unattached before tombstoning it.
+func (s *AssetModel) RecordExpiredPendingAssetDeleted(ctx context.Context, roomID, assetID string, now time.Time) (bool, error) {
+	event := newEvent(SystemActorID, &corev1.Event{Event: &corev1.Event_AssetDeleted{
+		AssetDeleted: &corev1.AssetDeletedEvent{AssetId: assetID},
+	}})
+	for attempt := 1; attempt <= maxAssetMutationAttempts; attempt++ {
+		agg := evtstream.AssetAggregate(assetID)
+		filter := agg.AllEventsFilter()
+		tail, err := s.EventPublisher.LastSubjectPosition(ctx, filter)
+		if err != nil {
+			return false, err
+		}
+		if !tail.IsZero() {
+			if err := s.waitForAssets(ctx, tail); err != nil {
+				return false, err
+			}
+		}
+		state := s.AssetState(assetID)
+		expiresAt := (*timestamppb.Timestamp)(nil)
+		if state.Creation != nil {
+			expiresAt = state.Creation.GetPendingExpiresAt()
+		}
+		_, attached := s.assetMessageAttachment(assetID)
+		if state.Deleted || state.Creation == nil || state.Creation.GetRoomId() != roomID || attached || expiresAt == nil || expiresAt.AsTime().After(now) {
+			return false, nil
+		}
+		seq, err := s.EventPublisher.AppendAtFilter(ctx, agg.SubjectFor(event), event, filter, tail.Seq)
+		if err == nil {
+			if err := s.waitForAssets(ctx, events.SubjectPosition(agg.SubjectFor(event), seq)); err != nil {
+				return true, errors.Join(errAssetEventCommitted, err)
+			}
+			return true, nil
+		}
+		if !errors.Is(err, events.ErrConflict) {
+			return false, err
+		}
+	}
+	return false, fmt.Errorf("delete expired pending asset after %d attempts: %w", maxAssetMutationAttempts, events.ErrConflict)
 }
 
 func (s *AssetModel) appendAssetEventEventually(ctx context.Context, assetID string, event *corev1.Event) error {
@@ -716,7 +845,7 @@ func (s *AssetModel) shouldAppendAssetProcessingEvent(assetID string, event *cor
 	manifest, hasManifest := s.VideoAttachmentManifest(assetID)
 	switch event.GetEvent().(type) {
 	case *corev1.Event_AssetProcessingStarted:
-		return !hasManifest || manifest == nil || (manifest.Succeeded == nil && manifest.Failed == nil)
+		return !hasManifest || manifest == nil || (manifest.Started == nil && manifest.Succeeded == nil && manifest.Failed == nil)
 	case *corev1.Event_AssetProcessingSucceeded, *corev1.Event_AssetProcessingFailed:
 		return !hasManifest || manifest == nil || (manifest.Succeeded == nil && manifest.Failed == nil)
 	default:

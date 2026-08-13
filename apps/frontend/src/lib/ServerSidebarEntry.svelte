@@ -9,7 +9,7 @@
   import { prepareUiForNotificationTarget } from '$lib/notifications/notificationNavigationUi';
   import { getAppUiState } from '$lib/state/appUi.svelte';
   import ServerIcon from './ServerIcon.svelte';
-  import * as m from '$lib/i18n/messages';
+  import { m } from '$lib/i18n/messages';
   import ContextMenu from '$lib/ui/ContextMenu.svelte';
   import NavigationContextMenu from '$lib/components/menus/NavigationContextMenu.svelte';
   import {
@@ -17,11 +17,11 @@
     type ContextMenuTriggerDetails
   } from '$lib/ui/contextMenuTrigger.svelte';
   import { markNavigationServerAsRead } from '$lib/navigation/readActions';
+  import { beginOriginReauthentication, startRemoteReauthentication } from '$lib/auth/reauth';
+  import { toast } from '$lib/ui/toast';
 
-  let {
-    serverId,
-    currentUserId: _currentUserId
-  }: { serverId: string; currentUserId?: string } = $props();
+  let { serverId, currentUserId: _currentUserId }: { serverId: string; currentUserId?: string } =
+    $props();
 
   const serverSegment = $derived(serverIdToSegment(serverId));
 
@@ -36,6 +36,14 @@
   // svelte-ignore state_referenced_locally - serverId is stable per component lifetime (keyed by server.id)
   const serverConnection = serverConnectionManager.getClient(serverId);
   const registeredServer = $derived(serverRegistry.getServer(serverId));
+  const serverHost = $derived.by(() => {
+    if (!registeredServer) return null;
+    try {
+      return new URL(registeredServer.url).host;
+    } catch {
+      return registeredServer.url;
+    }
+  });
 
   // After the URL collapse (ADR-027), the active context is the deployment-wide
   // server named in the current URL segment.
@@ -55,24 +63,34 @@
     };
   });
   const needsReauth = $derived(registeredServer?.reauthRequiredAt != null);
+  const needsSignIn = $derived(!stores.isAuthenticated);
   const compatibility = $derived(stores.serverInfo.compatibility);
   const compatibilityMessage = $derived.by(() => {
     switch (compatibility.reason) {
       case 'server-too-old':
-        return m['chat.server_gutter.compatibility_server_too_old']();
+        return m('chat.server_gutter.compatibility_server_too_old');
       case 'server-version-unknown':
-        return m['chat.server_gutter.compatibility_unknown']();
+        return m('chat.server_gutter.compatibility_unknown');
+      case 'unreachable':
+        return m('chat.server_gutter.unreachable');
       default:
         return null;
     }
   });
-  const compatibilityWarning = $derived(
-    compatibility.status === 'unsupported' || compatibility.status === 'unknown'
+  const compatibilityWarning = $derived(compatibility.status !== 'supported');
+  const serverUnavailable = $derived(compatibility.status === 'unreachable');
+  const serverActionsAvailable = $derived(
+    stores.isAuthenticated &&
+      privateDataLoaded &&
+      compatibility.status === 'supported' &&
+      !serverConnection.showConnectionLostIcon
   );
-  const iconDimmed = $derived(!loaded || serverConnection.showConnectionLostIcon || needsReauth);
+  const iconDimmed = $derived(
+    needsSignIn || !loaded || serverConnection.showConnectionLostIcon || needsReauth
+  );
   const iconTitle = $derived(
-    needsReauth
-      ? m['ui.auth_status.sidebar_reauth']({ server: iconServer.name })
+    needsSignIn || needsReauth
+      ? m('ui.auth_status.sidebar_reauth', { server: iconServer.name })
       : compatibilityWarning && compatibilityMessage
         ? `${iconServer.name} — ${compatibilityMessage}`
         : iconDimmed
@@ -80,6 +98,7 @@
           : iconServer.name
   );
   let contextMenu = $state<ContextMenuTriggerDetails | null>(null);
+  let signingIn = $state(false);
   const serverContextMenuTrigger = contextMenuTrigger((details) => {
     contextMenu = details;
   });
@@ -102,6 +121,25 @@
         spaceName: iconServer.name
       }
     });
+  }
+
+  async function handleServerClick(event: MouseEvent): Promise<void> {
+    if (!needsSignIn) return;
+    event.preventDefault();
+    if (signingIn || !registeredServer) return;
+
+    if (serverRegistry.isOriginServer(serverId)) {
+      beginOriginReauthentication();
+      return;
+    }
+
+    signingIn = true;
+    try {
+      await startRemoteReauthentication(registeredServer);
+    } catch {
+      signingIn = false;
+      toast.error(m('add_server.start_failed'));
+    }
   }
 
   // Single dispatcher for icon clicks — kind comes from serverIndicator()
@@ -159,6 +197,7 @@
   selected={isActiveServer}
   indicator={stores.serverIndicator()}
   notificationCount={notificationStore.unreadNotificationCount}
+  onclick={handleServerClick}
   onIndicatorClick={handleServerIndicatorClick}
   contextMenuTrigger={serverContextMenuTrigger}
   title={iconTitle}
@@ -170,7 +209,7 @@
   <ContextMenu
     position={contextMenu.position}
     presentation={contextMenu.presentation}
-    ariaLabel={m['room_list.server_actions']({ server: iconServer.name })}
+    ariaLabel={m('room_list.server_actions', { server: iconServer.name })}
     class="w-80 max-w-[calc(100vw-1rem)]"
     onclose={closeContextMenu}
   >
@@ -179,12 +218,31 @@
       role="presentation"
       data-testid="server-compatibility-section"
     >
-      <div class="text-muted">
-        {stores.serverInfo.version
-          ? m['chat.server_gutter.version']({ version: stores.serverInfo.version })
-          : m['chat.server_gutter.version_unknown']()}
+      <div class="truncate font-medium text-text" data-testid="server-name">
+        {iconServer.name}
       </div>
-      {#if compatibilityMessage}
+      {#if serverHost}
+        <div
+          class="mt-0.5 truncate text-muted"
+          title={registeredServer?.url}
+          data-testid="server-hostname"
+        >
+          {serverHost}
+        </div>
+      {/if}
+      <div class="mt-1 flex items-center gap-1.5 text-muted">
+        {#if serverUnavailable}
+          <span class="iconify icon-[uil--wifi-slash] shrink-0 text-warning" aria-hidden="true"></span>
+          <span class="text-warning">{m('chat.server_gutter.unreachable')}</span>
+        {:else}
+          <span>
+            {stores.serverInfo.version
+              ? m('chat.server_gutter.version', { version: stores.serverInfo.version })
+              : m('chat.server_gutter.version_unknown')}
+          </span>
+        {/if}
+      </div>
+      {#if compatibilityMessage && !serverUnavailable}
         <div
           class={[
             'mt-1 flex items-start gap-1.5 whitespace-normal',
@@ -193,7 +251,8 @@
           data-testid="server-compatibility-message"
         >
           {#if compatibilityWarning}
-            <span class="iconify mt-0.5 shrink-0 uil--exclamation-circle" aria-hidden="true"></span>
+            <span class="iconify mt-0.5 icon-[uil--exclamation-circle] shrink-0" aria-hidden="true"
+            ></span>
           {/if}
           <span>{compatibilityMessage}</span>
         </div>
@@ -201,6 +260,7 @@
     </div>
     <NavigationContextMenu
       kind="server"
+      showMarkRead={serverActionsAvailable}
       canMarkRead={roomUnreadStore.hasAnyUnread || notificationStore.unreadNotificationCount > 0}
       onMarkRead={handleMarkServerRead}
       onLeave={handleRemoveServer}

@@ -3,15 +3,18 @@
 Key files: [`cli/internal/evtstream/subjects.go`](../../cli/internal/evtstream/subjects.go),
 [`cli/internal/evtstream/publisher.go`](../../cli/internal/evtstream/publisher.go),
 [`pkg/events/encoded_event_log.go`](../../pkg/events/encoded_event_log.go),
+[`pkg/events/mutation.go`](../../pkg/events/mutation.go),
 [`cli/internal/search/contract.go`](../../cli/internal/search/contract.go),
 [`proto/chatto/core/v1/event.proto`](../../proto/chatto/core/v1/event.proto),
 [`proto/chatto/core/v1/live_events.proto`](../../proto/chatto/core/v1/live_events.proto),
 and [`proto/chatto/search/v1/search.proto`](../../proto/chatto/search/v1/search.proto)
 
 Related decisions: [ADR-033](../adr/ADR-033-event-sourced-state-with-projections.md),
-[ADR-034](../adr/ADR-034-single-event-stream.md), and
-[ADR-049](../adr/ADR-049-process-wide-realtime-event-hub.md), and
-[ADR-053](../adr/ADR-053-versioned-nats-service-namespaces.md).
+[ADR-034](../adr/ADR-034-single-event-stream.md),
+[ADR-040](../adr/ADR-040-permission-only-rbac-with-owner-override.md),
+[ADR-049](../adr/ADR-049-process-wide-realtime-event-hub.md),
+[ADR-053](../adr/ADR-053-versioned-nats-service-namespaces.md), and
+[ADR-068](../adr/ADR-068-selectable-event-mutation-consistency-boundaries.md).
 
 ## Event envelopes
 
@@ -37,7 +40,7 @@ Both files share `package chatto.core.v1` and generate into the same Go package.
 
 | Category                    | Storage    | Examples                                                    | Purpose                                                        |
 | --------------------------- | ---------- | ----------------------------------------------------------- | -------------------------------------------------------------- |
-| JetStream-stored (room) | Stream     | RoomCreated, RoomUniversalChanged, MessagePosted, MessageEdited, MessageRetracted, ReactionAdded, ReactionRemoved, UserJoinedRoom, CallStarted, CallParticipantJoined, CallParticipantLeft, CallEnded | Ordering guarantees, historical replay, projection source of truth |
+| JetStream-stored (room) | Stream     | RoomCreated, RoomUniversalChanged, RoomSlowModeChanged, MessagePosted, MessageEdited, MessageRetracted, ReactionAdded, ReactionRemoved, UserJoinedRoom, CallStarted, CallParticipantJoined, CallParticipantLeft, CallEnded | Ordering guarantees, historical replay, projection source of truth |
 | Room live-only              | NATS Core  | UserTyping | Ephemeral room notifications where another store/projection is source of truth |
 | Deployment live (user/config) | NATS Core  | UserCreated, ServerUpdated, MentionNotification, NotificationCreated, PresenceChanged | Cross-tab sync, notifications, server lifecycle |
 
@@ -67,6 +70,32 @@ OCC, and atomic-batch headers. This boundary does not change the stored
 protobuf bytes, subjects, headers, or sequence semantics; previous binaries can
 read new records and current binaries can replay existing `EVT` history.
 
+Authorization-changing batches atomically append an
+`AuthorizationFenceAdvancedEvent` on `evt.authorization.server.fence_advanced`.
+RBAC, relevant user lifecycle, and room-group/layout mutations advance this
+narrow OCC lane. User-facing message posts capture it as an OCC guard without
+advancing it. Authorized message edits capture both the authorization-fence and
+room tails, catch the room, group, RBAC, and actor projections up to their
+relevant tails, and rerun the complete decision. One atomic batch guards the
+replacement body against the room aggregate and the semantic edit against the
+authorization fence; any edit-driven echo change shares that batch. A change
+to either boundary forces a retry, while unrelated EVT facts do not contend.
+Internal linked-message propagation and message retractions remain room-scoped.
+
+User-facing reaction add/remove uses request-time authorization and a room
+aggregate boundary. Each attempt waits the relevant room, reaction, group,
+RBAC, and actor projections, reruns authorization and the reaction decision,
+then appends against the captured room tail. A concurrent room mutation forces
+a complete retry. A cross-aggregate authorization change does not
+retroactively cancel an already-authorized, conflict-free reaction attempt;
+subsequent requests observe the changed authorization state.
+
+Pinned-message add/remove captures both the authorization-fence and full room
+aggregate tails, waits the owning projections, and reruns `room.manage` plus
+message lifecycle checks before an OCC append. Concurrent authorization or
+room changes force a complete retry. Pins reference the canonical message ID;
+Room Timeline removes an active association when that message is retracted.
+
 `MyEventsModel` sits behind the `ChattoCore.StreamMyEvents` facade. Its
 process-wide `MyEventsHub` subscribes once to each of `live.sync.>` and
 `live.evt.>`.
@@ -78,16 +107,28 @@ RBAC projection and rebuild each connected user's shared effective-room cache
 before later events are considered. Role and permission changes can therefore
 revoke implicit universal-room visibility without reconnecting.
 
-Authorization-sensitive mutations use the singleton
+Message-post authorization uses the singleton
 `evt.authorization.server.fence_advanced` OCC lane. Every RBAC change,
 room-group/layout change, and user lifecycle change that can alter effective
 authority advances this lane atomically with its domain facts. Before evaluating
 bounded scoped authority, writers wait the relevant RBAC, room directory,
 room-group layout, and user projections through the captured EVT boundary. A
 concurrent authorization change then conflicts and retries the complete
-authorization decision, while unrelated messages and reactions do not contend.
+authorization decision, while unrelated messages and reactions do not contend
+with that fence lane. Authorized message edits use the same fence alongside
+their room guard. Reactions do not check or advance it.
 The fence event carries no policy state; the owning domain projections remain
 authoritative.
+
+User-facing message batches independently guard the room aggregate tail and
+check the captured authorization-fence tail. Successful message posts and
+authorized edits do not advance the fence.
+
+Slow Mode is checked during message preflight and again inside that guarded
+commit authorization. `RoomTimelineProjection` supplies the latest successful
+non-echo post for the room and author in O(1), so the full-room OCC conflict
+forces concurrent same-author posts on separate replicas to retry the complete
+decision. Effective `room.manage` or `message.manage` bypasses the check.
 
 Deliverable events are authorized per user and fanned as shared immutable
 pointers to independent session queues. Asset lifecycle events resolve room
@@ -124,7 +165,7 @@ and [ADR-051](../adr/ADR-051-server-scoped-resumable-client-projection.md).
 
 | Stream                       | Wrapper          | Scope      | Description                                      |
 | ---------------------------- | ---------------- | ---------- | ------------------------------------------------ |
-| `EVT`                        | `corev1.Event`   | Server     | Event-sourcing log ([ADR-033](../adr/ADR-033-event-sourced-state-with-projections.md) / [ADR-034](../adr/ADR-034-single-event-stream.md)). Subjects `evt.{aggregateType}.{aggregateId}.{eventType}`; republishes onto `live.evt.>` as the raw committed-event feed. Stores room membership/metadata, groups/layout, server config, users, messages/threads, reactions, assets, RBAC, and auth workflow audit facts. |
+| `EVT`                        | `corev1.Event`   | Server     | Event-sourcing log ([ADR-033](../adr/ADR-033-event-sourced-state-with-projections.md) / [ADR-034](../adr/ADR-034-single-event-stream.md)). Subjects `evt.{aggregateType}.{aggregateId}.{eventType}`; republishes onto `live.evt.>` as the raw committed-event feed. Stores room membership/metadata, groups/layout, server config, users, messages/threads, reactions, assets, RBAC, OAuth client authorization/policy, and auth workflow audit facts. |
 | Live Sync                    | `corev1.LiveEvent` | Transient  | Direct NATS Core pubsub on `live.sync.>` for ephemeral activity and latest-value invalidation signals. `StreamMyEvents` authorizes them; genuinely transient activity becomes public realtime events, while invalidations trigger authoritative projection operations. |
 
 The republished `live.evt.{aggregateType}.{aggregateId}.{eventType}` subject is an internal server-side feed; `StreamMyEvents` waits for projections and authorization before delivering anything to clients.
@@ -147,6 +188,8 @@ The republished `live.evt.{aggregateType}.{aggregateId}.{eventType}` subject is 
 | `evt.rbac.{server\|scopeId}.{eventType}`         | Server-level RBAC or scoped RBAC decision facts for a room/group ID             |
 | `evt.authorization.server.fence_advanced`        | Singleton OCC fence for changes that can alter mutation authority               |
 | `evt.auth.server.{eventType}`                    | Server-wide auth audit facts before a user aggregate exists                     |
+| `evt.invitation.{invitationId}.{eventType}`      | Invitation creation, redemption, and revocation facts                           |
+| `evt.oauth_client.{sha256(clientId)}.{eventType}` | Successful OAuth-client authorization and administrative policy facts; the aggregate ID is a lowercase SHA-256 digest, while the event payload retains the client ID |
 | `live.evt.>`                                     | JetStream republish of committed `EVT` facts                                    |
 
 The aggregate ID is intentionally part of the subject; actor/user and detailed context stay in the protobuf payload. Asset subjects are keyed by asset ID, while room scope lives in `AssetCreatedEvent` and is resolved by `AssetProjection`. Cross-event-type invariants use wildcard OCC filters such as `evt.room.>`, `evt.asset.>`, or `evt.rbac.>`.
@@ -179,6 +222,7 @@ cursors are trusted integration coordinates and are not public API cursors.
 | `evt.room.{roomId}.room_archived`                            | `RoomArchivedEvent`                                 |
 | `evt.room.{roomId}.room_unarchived`                          | `RoomUnarchivedEvent`                               |
 | `evt.room.{roomId}.room_universal_changed`                   | `RoomUniversalChangedEvent`                         |
+| `evt.room.{roomId}.room_slow_mode_changed`                   | `RoomSlowModeChangedEvent`                          |
 | `evt.room.{roomId}.room_deleted`                             | `RoomDeletedEvent`                                  |
 | `evt.room.{roomId}.user_joined`                              | `UserJoinedRoomEvent`                               |
 | `evt.room.{roomId}.user_left`                                | `UserLeftRoomEvent`                                 |
@@ -194,13 +238,16 @@ cursors are trusted integration coordinates and are not public API cursors.
 | `evt.room.{roomId}.message_posted`                           | `MessagePostedEvent`                                |
 | `evt.room.{roomId}.message_edited`                           | `MessageEditedEvent`                                |
 | `evt.room.{roomId}.message_retracted`                        | `MessageRetractedEvent`                             |
+| `evt.room.{roomId}.message_pinned`                           | `MessagePinnedEvent`                                |
+| `evt.room.{roomId}.message_unpinned`                         | `MessageUnpinnedEvent`                              |
 | `evt.room.{roomId}.thread_created`                           | `ThreadCreatedEvent`                                |
 | `evt.room.{roomId}.thread_followed`                          | `ThreadFollowedEvent`                               |
 | `evt.room.{roomId}.thread_unfollowed`                        | `ThreadUnfollowedEvent`                             |
 | `evt.room.{roomId}.reaction_added`                           | `ReactionAddedEvent`                                |
 | `evt.room.{roomId}.reaction_removed`                         | `ReactionRemovedEvent`                              |
 | `evt.asset.{assetId}.asset_created`                          | `AssetCreatedEvent`                                 |
-| `evt.asset.{assetId}.asset_processing_started`               | `AssetProcessingStartedEvent`                       |
+| `evt.asset.{assetId}.asset_attached`                         | `AssetAttachedEvent`; uploader-bound exclusive attachment to one room/message committed atomically with the message |
+| `evt.asset.{assetId}.asset_processing_started`               | `AssetProcessingStartedEvent`; PENDING fact and durable asset-processing queue item |
 | `evt.asset.{assetId}.asset_processing_succeeded`             | `AssetProcessingSucceededEvent`                     |
 | `evt.asset.{assetId}.asset_processing_failed`                | `AssetProcessingFailedEvent`                        |
 | `evt.asset.{assetId}.asset_deleted`                          | `AssetDeletedEvent`                                 |
@@ -249,6 +296,7 @@ cursors are trusted integration coordinates and are not public API cursors.
 | `evt.user.{userId}.login_cooldown_started`                  | `UserLoginCooldownStartedEvent`                     |
 | `evt.user.{userId}.login_cooldown_cleared`                  | `UserLoginCooldownClearedEvent`                     |
 | `evt.user.{userId}.account_deleted`                         | `UserAccountDeletedEvent`                           |
+| `evt.user.{userId}.user_key_shredding_requested`            | `UserKeyShreddingRequestedEvent`; logical privacy boundary and durable worker request |
 | `evt.user.{userId}.user_key_shredded`                       | `UserKeyShreddedEvent`                              |
 | `evt.user.{userId}.dek_generated`                           | `UserDEKGeneratedEvent`                             |
 | `evt.user.{userId}.email_verification_code_issued`          | `EmailVerificationCodeIssuedEvent`                  |
@@ -262,8 +310,8 @@ cursors are trusted integration coordinates and are not public API cursors.
 | `evt.user.{userId}.auth_code_exchange_failed`               | `AuthCodeExchangeFailedEvent`                       |
 | `evt.user.{userId}.bearer_token_issued`                     | `BearerTokenIssuedEvent`                            |
 | `evt.user.{userId}.bearer_token_revoked`                    | `BearerTokenRevokedEvent`                           |
-| `evt.user.{userId}.oauth_consent_granted`                   | `OAuthConsentGrantedEvent`                          |
-| `evt.user.{userId}.oauth_consent_denied`                    | `OAuthConsentDeniedEvent`                           |
+| `evt.user.{userId}.oauth_consent_granted`                   | `OAuthConsentGrantedEvent`; stable client ID plus validated display metadata and canonical callback origin/native scheme |
+| `evt.user.{userId}.oauth_consent_denied`                    | `OAuthConsentDeniedEvent`; audit-only client ID, validated display metadata, and canonical callback origin/native scheme |
 | `evt.rbac.{server\|scopeId}.role_created`                   | `RbacRoleCreatedEvent`                             |
 | `evt.rbac.{server\|scopeId}.role_display_name_changed`      | `RbacRoleDisplayNameChangedEvent`                  |
 | `evt.rbac.{server\|scopeId}.role_description_changed`       | `RbacRoleDescriptionChangedEvent`                  |
@@ -278,8 +326,19 @@ cursors are trusted integration coordinates and are not public API cursors.
 | `evt.authorization.server.fence_advanced`                    | `AuthorizationFenceAdvancedEvent`                  |
 | `evt.auth.server.registration_verification_code_issued`    | `RegistrationVerificationCodeIssuedEvent`           |
 | `evt.auth.server.login_failed`                             | `LoginFailedEvent`                                  |
+| `evt.invitation.{invitationId}.created`                    | `InvitationCreatedEvent`                            |
+| `evt.invitation.{invitationId}.redeemed`                   | `InvitationRedeemedEvent`                           |
+| `evt.invitation.{invitationId}.revoked`                    | `InvitationRevokedEvent`                            |
+| `evt.oauth_client.{sha256(clientId)}.authorization_recorded` | `OAuthClientAuthorizationRecordedEvent`          |
+| `evt.oauth_client.{sha256(clientId)}.policy_changed`       | `OAuthClientPolicyChangedEvent`                    |
 
 Notes: Subject suffixes are stable NATS event tokens defined in [`cli/internal/evtstream/subjects.go`](../../cli/internal/evtstream/subjects.go). Protobuf message types are the concrete `corev1.Event` oneof payloads defined in [`proto/chatto/core/v1/event.proto`](../../proto/chatto/core/v1/event.proto) and sibling `*_events.proto` files. The current asset write path uses `evt.asset.{assetId}.*`; `AssetProjection` also consumes beta-era `evt.room.{roomId}.asset_*` histories for replay compatibility.
+
+For every attachment message, its `AssetAttachedEvent` is committed in the same
+atomic OCC batch as the owning message body and posted fact. Video messages add
+the Started fact to that batch. The batch guards the room and authorization
+boundaries and the complete aggregate of every attached asset, so concurrent
+attachments, pending expiry, and deletion cannot commit conflicting transitions.
 
 Failed or losing processing attempts perform bounded prompt cleanup by
 appending ordinary derivative `AssetDeletedEvent` facts. If cleanup is
@@ -319,11 +378,18 @@ Patterns: `live.sync.>` for transient `LiveEvent` pubsub and `live.evt.>` for ra
 | `live.sync.member.deleted`                                | Server-level membership invalidation after account deletion |
 | `live.sync.room.{kind}.{roomId}.user_typing`             | User typing in a room        |
 
+Cross-group room and sidebar-link moves publish
+`live.sync.config.room_groups_updated` only after the local
+`RoomGroupLayoutProjection` has applied the final domain fact in the committed
+atomic batch. The command path owns this barrier and the best-effort
+invalidation; projection replay does not publish transient signals.
+
 Voice call lifecycle and participant transitions are durable room EVT facts:
 `evt.room.{roomId}.call_started`, `evt.room.{roomId}.call_joined`,
 `evt.room.{roomId}.call_left`, and `evt.room.{roomId}.call_ended`. JetStream
 republishes them to `live.evt.>` for realtime delivery. They drive active-call
-state and indicators but remain hidden from normal room history timelines.
+state and indicators. Call-started and call-ended facts are also visible room
+timeline entries; participant join/leave facts remain hidden from room history.
 
 LiveKit room names include the active Chatto call ID suffix. Participant and
 room-finished observations therefore apply only to the matching call session.
@@ -345,9 +411,12 @@ Listing failures increment the shared
 end projected calls only after three consecutive failed elected reconciliation
 cycles. A successful elected pass deletes the counter.
 
-`VoiceCallService.GetActiveCall`, `BatchGetActiveCalls`, `GetCallToken`, and
-`ListCallParticipants` expose the active call ID to integrations and command
-flows. The bundled frontend receives complete authorized active-call state in
+`VoiceCallService.GetActiveCall`, `BatchGetActiveCalls`, `GetCallToken`,
+`CreateCallMediaPublisherToken`, and `ListCallParticipants` expose the active
+call ID to integrations and command flows. The publisher-token operation mints
+a short-lived, publish-only LiveKit credential for a caller who is already in
+the active call; its companion identity is excluded from durable call
+membership. The bundled frontend receives complete authorized active-call state in
 `active_calls_replace` projection operations and infers one-shot join/leave/end
 presentation effects by comparing replacements. Room membership remains the
 authorization boundary for live delivery.

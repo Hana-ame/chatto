@@ -49,6 +49,11 @@ describe('server compatibility evaluation', () => {
     });
   });
 
+  it('gates author-created threads to 0.5 servers', () => {
+    expect(supportsServerFeature('0.5.0', 'threadCreation')).toBe(true);
+    expect(supportsServerFeature('0.4.9', 'threadCreation')).toBe(false);
+  });
+
   it('rejects pre-0.5 servers and preserves unknown custom versions', () => {
     expect(
       evaluateServerCompatibility({
@@ -76,6 +81,7 @@ describe('server compatibility evaluation', () => {
     expect(supportsServerFeature('0.5.0-beta.1', 'realtimeProjection')).toBe(true);
     expect(supportsServerFeature('0.5.0', 'messageSearch')).toBe(true);
     expect(supportsServerFeature('0.5.0', 'roomManagement')).toBe(true);
+    expect(supportsServerFeature('0.5.0', 'serverInvitations')).toBe(true);
     expect(supportsServerFeature('0.4.19', 'messageSearch')).toBe(false);
     expect(supportsServerFeature('custom-build', 'adminApi')).toBe(false);
   });

@@ -8,9 +8,17 @@
   import UserAvatar from '$lib/components/UserAvatar.svelte';
   import { getLiveDisplayName } from '$lib/state/userProfiles.svelte';
   import DeletedUserLabel from '$lib/components/DeletedUserLabel.svelte';
-  import * as m from '$lib/i18n/messages';
+  import { m } from '$lib/i18n/messages';
 
-  let { event }: { event: TimelineEventView } = $props();
+  let {
+    event,
+    activeCallId = null,
+    onOpenCall
+  }: {
+    event: TimelineEventView;
+    activeCallId?: string | null;
+    onOpenCall?: () => void;
+  } = $props();
 
   type Subject = {
     id: string;
@@ -36,13 +44,15 @@
   const action = $derived.by(() => {
     switch (eventKind) {
       case TimelineEventKind.UserJoinedRoom:
-        return m['room.system_events.joined']({ count: 1 });
+        return m('room.system_events.joined_count', { count: 1 });
       case TimelineEventKind.UserLeftRoom:
-        return m['room.system_events.left']({ count: 1 });
+        return m('room.system_events.left_count', { count: 1 });
       case TimelineEventKind.RoomArchived:
-        return m['room.system_events.archived']();
+        return m('room.system_events.archived');
       case TimelineEventKind.RoomUnarchived:
-        return m['room.system_events.unarchived']();
+        return m('room.system_events.unarchived');
+      case TimelineEventKind.CallStarted:
+        return m('room.system_events.call_started');
       default:
         return null;
     }
@@ -53,9 +63,22 @@
       (eventKind === TimelineEventKind.UserJoinedRoom ||
         eventKind === TimelineEventKind.UserLeftRoom)
   );
+
+  const isActiveCallStart = $derived(
+    event.event.kind === TimelineEventKind.CallStarted &&
+      event.event.callId === activeCallId &&
+      onOpenCall !== undefined
+  );
 </script>
 
-{#if action && !isDeletedJoinLeave}
+{#if eventKind === TimelineEventKind.CallEnded}
+  <div class="mt-4 flex items-center gap-4 px-2 md:px-4" data-event-id={event.id}>
+    <div class="flex w-11 shrink-0 items-center justify-center text-muted">
+      <span class="iconify icon-[uil--phone-slash] text-base"></span>
+    </div>
+    <span class="text-sm text-muted">{m('room.system_events.call_ended')}</span>
+  </div>
+{:else if action && !isDeletedJoinLeave}
   <div class="mt-4 flex items-center gap-4 px-2 md:px-4" data-event-id={event.id}>
     <!-- Avatar column (w-11 matches MessageEvent avatar width) -->
     <div class="flex w-11 shrink-0 items-center justify-center">
@@ -66,7 +89,7 @@
         <div
           class="flex h-5 w-5 items-center justify-center rounded-full bg-surface-emphasized text-muted"
         >
-          <span class="iconify text-xs uil--user-times"></span>
+          <span class="iconify icon-[uil--user-times] text-xs"></span>
         </div>
       {/if}
     </div>
@@ -78,6 +101,16 @@
         <DeletedUserLabel />
       {/if}
       {action}
+      {#if isActiveCallStart}
+        <span aria-hidden="true" class="mx-1">·</span>
+        <button
+          type="button"
+          class="cursor-pointer underline decoration-dotted underline-offset-2 hover:text-text"
+          onclick={onOpenCall}
+        >
+          {m('voice.join_call')}
+        </button>
+      {/if}
     </span>
   </div>
 {/if}

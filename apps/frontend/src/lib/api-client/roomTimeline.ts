@@ -295,6 +295,18 @@ function timelinePayload(
   users: Record<string, User>
 ): TimelineEventPayload | null {
   switch (event.event.case) {
+    case 'callStarted':
+      return {
+        kind: TimelineEventKind.CallStarted,
+        roomId: event.event.value.roomId,
+        callId: event.event.value.callId
+      };
+    case 'callEnded':
+      return {
+        kind: TimelineEventKind.CallEnded,
+        roomId: event.event.value.roomId,
+        callId: event.event.value.callId
+      };
     case 'messagePosted':
       if (!event.event.value.message) return null;
       return messagePostedPayload(event.event.value.message, users);
@@ -356,6 +368,8 @@ export function messagePostedPayload(
     echoFromThreadRootEventId: message.echoFromThreadRootEventId || null,
     channelEchoEventId: message.channelEchoEventId || null,
     deletedAt: timestampToISOOrNull(message.deletedAt),
+    pinned: message.pinned,
+    threadExists: thread !== undefined,
     replyCount: thread?.replyCount ?? 0,
     lastReplyAt: timestampToISOOrNull(thread?.lastReplyAt),
     threadParticipantCount: thread?.participantCount ?? 0,

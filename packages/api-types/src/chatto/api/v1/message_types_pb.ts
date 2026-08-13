@@ -738,7 +738,8 @@ export class Message extends Message$1<Message> {
   reactions: MessageReaction[] = [];
 
   /**
-   * Aggregated thread state, when known for a thread root message.
+   * Aggregated thread state. Present only when a durable thread has been
+   * established for this root message, including an empty thread.
    *
    * @generated from field: chatto.api.v1.ThreadSummary thread = 20;
    */
@@ -751,6 +752,14 @@ export class Message extends Message$1<Message> {
    * @generated from field: google.protobuf.Timestamp deleted_at = 21;
    */
   deletedAt?: Timestamp;
+
+  /**
+   * True when this message's canonical message is currently pinned in its
+   * channel room. Always false for direct-message rooms.
+   *
+   * @generated from field: bool pinned = 22;
+   */
+  pinned = false;
 
   constructor(data?: PartialMessage<Message>) {
     super();
@@ -776,6 +785,7 @@ export class Message extends Message$1<Message> {
     { no: 19, name: "reactions", kind: "message", T: MessageReaction, repeated: true },
     { no: 20, name: "thread", kind: "message", T: ThreadSummary },
     { no: 21, name: "deleted_at", kind: "message", T: Timestamp },
+    { no: 22, name: "pinned", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): Message {

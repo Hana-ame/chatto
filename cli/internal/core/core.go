@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"github.com/charmbracelet/log"
@@ -46,17 +47,23 @@ type ChattoCore struct {
 	userModel                *UserModel
 	rbacModel                *RBACModel
 	mentionables             *MentionablesModel
+	invitationModel          *InvitationModel
+	oauthClientModel         *OAuthClientModel
 	myEventsModel            *MyEventsModel
 	presenceModel            *PresenceModel
 	mediaModel               *MediaModel
 	callModel                *CallModel
 	assetModel               *AssetModel
 	assetUploadModel         *AssetUploadModel
+	keyShredding             *UserKeyShreddingModel
 	s3Client                 *S3Client            // Optional S3 client for S3-compatible storage
 	permissionResolver       *PermissionResolver  // Hierarchical permission resolver
 	linkPreviewCache         *linkpreview.Cache   // Cache for link preview metadata
 	linkPreviewFetcher       *linkpreview.Fetcher // Fetcher for link preview metadata
 	projectionSnapshotWorker *projectionSnapshotWorker
+	natsRecoveryState        atomic.Int32
+	natsRecoveryStartedAt    atomic.Int64
+	natsRecoveredReconnects  atomic.Uint64
 
 	// VideoMaxUploadSize is the maximum size for video uploads in bytes.
 	// When set (> 0), video attachments use this limit instead of the asset limit.
@@ -68,6 +75,11 @@ type ChattoCore struct {
 	// is unavailable, image uploads are stored unchanged.
 	// Set this after ChattoCore is created, from VideoConfig.
 	FFmpegPath string
+
+	// VideoUploadsEnabled makes message commits enqueue durable processing work
+	// for accepted video-shaped attachments. Worker placement is configured
+	// independently; the main process does not hand work to a local callback.
+	VideoUploadsEnabled bool
 
 	// OnNotificationCreated is called when a notification is created.
 	// Used by the push notification system to send Web Push notifications.
@@ -81,12 +93,6 @@ type ChattoCore struct {
 
 	// OnPushTestRequested sends a test notification to a user's push subscriptions.
 	OnPushTestRequested func(ctx context.Context, userID string) error
-
-	// OnVideoProcessingRequested starts best-effort local video processing for
-	// an already-declared message-owned asset. The video service registers this
-	// callback when enabled; a future durable task queue should replace this
-	// process-local handoff.
-	OnVideoProcessingRequested func(ctx context.Context, assetID, messageEventID string) error
 
 	// AssetBaseURL is prepended to all asset URLs to make them absolute.
 	// When empty, URLs are returned as relative paths (backward compatible).
@@ -130,6 +136,9 @@ type ChattoCore struct {
 // started automatically here without any additional wiring.
 func (c *ChattoCore) Run(ctx context.Context) error {
 	g, gctx := errgroup.WithContext(ctx)
+	natsStatus := c.nc.StatusChanged(nats.DISCONNECTED, nats.RECONNECTING, nats.CONNECTED, nats.CLOSED)
+	defer c.nc.RemoveStatusListener(natsStatus)
+	g.Go(func() error { return c.runNATSRecovery(gctx, natsStatus) })
 
 	for _, projection := range c.projections {
 		projection := projection
@@ -179,6 +188,10 @@ func (c *ChattoCore) Run(ctx context.Context) error {
 		if err := c.ensureChannelRoomsAreInAGroup(gctx); err != nil {
 			return fmt.Errorf("ensure channel rooms in a group: %w", err)
 		}
+		if c.nc.IsConnected() {
+			c.natsRecoveredReconnects.Store(c.nc.Stats().Reconnects)
+			c.natsRecoveryState.CompareAndSwap(natsRecoveryStarting, natsRecoveryReady)
+		}
 		close(c.bootDone)
 		return nil
 	})
@@ -189,6 +202,7 @@ func (c *ChattoCore) Run(ctx context.Context) error {
 	g.Go(func() error { return c.callModel.Run(gctx) })
 	g.Go(func() error { return c.assetModel.Run(gctx) })
 	g.Go(func() error { return c.assetUploadModel.RunCleanup(gctx) })
+	g.Go(func() error { return c.keyShredding.Run(gctx) })
 	if c.projectionSnapshotWorker != nil {
 		g.Go(func() error {
 			err := c.projectionSnapshotWorker.Run(gctx, c.bootDone)
@@ -304,6 +318,15 @@ func (c *ChattoCore) PermResolver() *PermissionResolver {
 // Returns nil if ready, or an error describing what's not ready.
 // Used by the /readyz endpoint to verify the server can handle requests.
 func (c *ChattoCore) Ready(ctx context.Context) error {
+	if c.nc == nil || !c.nc.IsConnected() {
+		return fmt.Errorf("NATS not connected")
+	}
+	if c.natsRecoveryState.Load() != natsRecoveryReady {
+		return fmt.Errorf("NATS recovery is not complete")
+	}
+	if c.natsRecoveredReconnects.Load() != c.nc.Stats().Reconnects {
+		return fmt.Errorf("NATS reconnect has not been recovered")
+	}
 	if _, err := c.storage.runtimeStateKV.Status(ctx); err != nil {
 		return fmt.Errorf("RUNTIME_STATE not ready: %w", err)
 	}

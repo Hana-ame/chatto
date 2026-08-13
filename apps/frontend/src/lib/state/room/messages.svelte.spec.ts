@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { flushSync } from 'svelte';
 import type { ServerConnection } from '$lib/state/server/serverConnection.svelte';
-import type { RoomTimelineAPI } from '$lib/api-client/roomTimeline';
+import type { EventConnectionPage, RoomTimelineAPI } from '$lib/api-client/roomTimeline';
 import { Timestamp } from '@bufbuild/protobuf';
 import {
   RoomMessagePosted,
@@ -10,7 +10,6 @@ import {
 } from '@chatto/api-types/api/v1/room_timeline_pb';
 import { Message } from '@chatto/api-types/api/v1/message_types_pb';
 import { TimelineEventKind } from '$lib/render/timelineEvents';
-import type { EventConnectionPage } from './messages/helpers';
 import { MessagesStore } from './messages.svelte';
 import { JumpToMessageState } from './composerContext.svelte';
 
@@ -176,7 +175,9 @@ function roomSystemEvent(
     | typeof TimelineEventKind.UserLeftRoom
     | typeof TimelineEventKind.RoomUpdated
     | typeof TimelineEventKind.RoomArchived
-    | typeof TimelineEventKind.RoomUnarchived,
+    | typeof TimelineEventKind.RoomUnarchived
+    | typeof TimelineEventKind.CallStarted
+    | typeof TimelineEventKind.CallEnded,
   actor: unknown = null
 ) {
   return {
@@ -186,7 +187,11 @@ function roomSystemEvent(
     actor,
     event: {
       kind,
-      roomId: 'room-1'
+      roomId: 'room-1',
+      callId:
+        kind === TimelineEventKind.CallStarted || kind === TimelineEventKind.CallEnded
+          ? 'call-1'
+          : undefined
     }
   };
 }
@@ -1470,7 +1475,9 @@ describe('MessagesStore — room lifecycle ownership', () => {
     expect(store.getEventById('preview')).toBeUndefined();
     expect(store.ensureEvent('preview')).toBe(replacement);
 
-    replacementRead.resolve(pageFromEvent({ ...threadMessageEvent('preview'), actorId: 'current' }));
+    replacementRead.resolve(
+      pageFromEvent({ ...threadMessageEvent('preview'), actorId: 'current' })
+    );
     await replacement;
     expect(store.getEventById('preview')).toMatchObject({ id: 'preview', actorId: 'current' });
     expect(getRoomEventsAround).toHaveBeenCalledTimes(2);
@@ -1480,8 +1487,8 @@ describe('MessagesStore — room lifecycle ownership', () => {
   it('rejects an in-flight preview after access revocation and blocks new preview reads', async () => {
     type AroundPage = Awaited<ReturnType<RoomTimelineAPI['getRoomEventsAround']>>;
     const revokedRead = deferred<AroundPage>();
-    const getRoomEventsAround = vi.fn<RoomTimelineAPI['getRoomEventsAround']>(() =>
-      revokedRead.promise
+    const getRoomEventsAround = vi.fn<RoomTimelineAPI['getRoomEventsAround']>(
+      () => revokedRead.promise
     );
     const timeline = fakeTimelineAPI({ getRoomEventsAround });
     const store = new MessagesStore(
@@ -1849,6 +1856,37 @@ describe('MessagesStore — room lifecycle ownership', () => {
       actor: { id: 'u1', displayName: 'Alice' },
       event: { kind: TimelineEventKind.RoomArchived, roomId: 'room-1' }
     });
+    store.dispose();
+  });
+
+  it('inserts already-renderable call lifecycle events without refetching', async () => {
+    const fake = new FakeQueryClient(
+      roomEventsResult({
+        events: [],
+        startCursor: null,
+        endCursor: null,
+        hasOlder: false,
+        hasNewer: false
+      })
+    );
+    const store = new MessagesStore(
+      fake as unknown as ServerConnection,
+      () => null,
+      timelineFromFixtures(fake)
+    );
+
+    store.setRoom('room-1');
+    await settle();
+    fake.queryMock.mockClear();
+
+    store.ingestEvent(roomSystemEvent('call-started-1', TimelineEventKind.CallStarted) as never);
+    store.ingestEvent(roomSystemEvent('call-ended-1', TimelineEventKind.CallEnded) as never);
+
+    expect(fake.queryMock).not.toHaveBeenCalled();
+    expect(store.rootEvents.map((event) => event.event.kind)).toEqual([
+      TimelineEventKind.CallStarted,
+      TimelineEventKind.CallEnded
+    ]);
     store.dispose();
   });
 

@@ -1,11 +1,14 @@
 {
-  "$schema": "https://inlang.com/schema/inlang-message-format",
   "composer": {
     "attach_file": "Bestand bijvoegen",
     "send": "Bericht verzenden",
+    "send_label": "Verzenden",
     "send_enter": "Bericht verzenden (Enter)",
     "send_ctrl_enter": "Bericht verzenden (Ctrl/Cmd+Enter)",
     "also_send_to_channel": "Stuur ook naar kanaal",
+    "post_as_thread": "Als thread plaatsen",
+    "thread_label": "Discussie",
+    "echo_label": "Echo",
     "replying_to": "Beantwoordt aan",
     "esc_to_cancel": "om te annuleren",
     "editing": "Bericht bewerken",
@@ -21,6 +24,10 @@
     "drop_files_title": "Zet bestanden hier neer",
     "drop_files_subtitle": "Afbeeldingen en video's worden aan je bericht toegevoegd",
     "send_failed": "Kan bericht niet verzenden",
+    "slow_mode_ready": "Langzame modus: één bericht per {interval}.",
+    "slow_mode_waiting": "Langzame modus: opnieuw verzenden over {countdown}.",
+    "slow_mode_bypassed": "Langzame modus: {interval} (je bent vrijgesteld).",
+    "slow_mode_rejected": "De langzame modus is actief. Wacht voordat je nog een bericht verzendt.",
     "edit_failed": "Kan bericht niet bewerken",
     "upload": {
       "preparing": "Voorbereiden…",

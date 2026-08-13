@@ -1,5 +1,4 @@
 {
-  "$schema": "https://inlang.com/schema/inlang-message-format",
   "rbac": {
     "delete_role": {
       "title": "Slett rolle",
@@ -107,6 +106,7 @@
       "admin_view_audit": "Se revisjonslogg på admin",
       "user_delete_any": "Slett en annen brukers konto",
       "user_delete_self": "Slett din egen konto",
+      "user_invite": "Opprett og administrer invitasjonslenker",
       "user_manage_accounts": "Opprett brukere, rediger kontoidentitet, tilbakestill passord, legg ved bekreftede e-poster og fjern påloggingsavkjølinger",
       "user_manage_permissions": "Rediger direkte overstyringer av tillatelser per bruker"
     }

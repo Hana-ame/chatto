@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/nats-io/nats.go/jetstream"
@@ -50,6 +51,70 @@ func TestEncodedEventLogPreservesOpaqueRecord(t *testing.T) {
 	}
 	if !bytes.Equal(storedAgain.Data, data) {
 		t.Fatal("mutating returned record changed durable data")
+	}
+}
+
+func TestSubjectRecordsAfterPageBoundsRecordsAndBytes(t *testing.T) {
+	js, stream := setupTestStream(t)
+	eventLog := NewEncodedEventLog(js, stream, testLogger())
+	ctx := testContext(t)
+	subject := "evt.compatibility.page.created"
+	for i := 0; i < 5; i++ {
+		if _, err := eventLog.AppendEventually(ctx, subject, EncodedRecord{
+			ID:   "page-" + strconv.Itoa(i),
+			Data: []byte("data"),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	first, err := eventLog.SubjectRecordsAfterPage(ctx, subject, 0, 2, 100)
+	if err != nil {
+		t.Fatalf("first page: %v", err)
+	}
+	if len(first.Records) != 2 || !first.More || first.LastSequence == 0 {
+		t.Fatalf("first page = %+v, want two records and more", first)
+	}
+	second, err := eventLog.SubjectRecordsAfterPage(ctx, subject, first.LastSequence, 2, 100)
+	if err != nil {
+		t.Fatalf("second page: %v", err)
+	}
+	if len(second.Records) != 2 || !second.More || second.LastSequence <= first.LastSequence {
+		t.Fatalf("second page = %+v, want two records and more", second)
+	}
+	third, err := eventLog.SubjectRecordsAfterPage(ctx, subject, second.LastSequence, 2, 100)
+	if err != nil {
+		t.Fatalf("third page: %v", err)
+	}
+	if len(third.Records) != 1 || third.More || third.LastSequence <= second.LastSequence {
+		t.Fatalf("third page = %+v, want final record", third)
+	}
+
+	if _, err := eventLog.SubjectRecordsAfterPage(ctx, subject, 0, 2, 5); !errors.Is(err, ErrInvalidSubjectReadLimit) {
+		t.Fatalf("byte-bounded page error = %v, want ErrInvalidSubjectReadLimit", err)
+	}
+	bytePage, err := eventLog.SubjectRecordsAfterPage(ctx, subject, 0, 1, 4)
+	if err != nil {
+		t.Fatalf("single-record byte page: %v", err)
+	}
+	if len(bytePage.Records) != 1 || !bytePage.More {
+		t.Fatalf("byte page = %+v, want one record and more", bytePage)
+	}
+}
+
+func TestSubjectRecordsAfterPageRejectsUnboundedLimits(t *testing.T) {
+	js, stream := setupTestStream(t)
+	eventLog := NewEncodedEventLog(js, stream, testLogger())
+	ctx := testContext(t)
+	for name, limits := range map[string][2]int{
+		"zero records":   {0, 1},
+		"negative bytes": {1, -1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := eventLog.SubjectRecordsAfterPage(ctx, "evt.compatibility.page.invalid", 0, limits[0], limits[1]); !errors.Is(err, ErrInvalidSubjectReadLimit) {
+				t.Fatalf("error = %v, want ErrInvalidSubjectReadLimit", err)
+			}
+		})
 	}
 }
 
@@ -151,5 +216,85 @@ func TestEncodedEventLogRejectsMissingRecordIDAndUnguardedBatch(t *testing.T) {
 		Record:  EncodedRecord{ID: "unguarded", Data: []byte("data")},
 	}}); !errors.Is(err, ErrMissingOCC) {
 		t.Fatalf("unguarded batch error = %v, want ErrMissingOCC", err)
+	}
+	if _, err := eventLog.AppendBatch(ctx, []EncodedBatchEntry{
+		{
+			Subject: "evt.compatibility.first",
+			Record:  EncodedRecord{ID: "first", Data: []byte("first")},
+		},
+		{
+			Subject:           "evt.compatibility.second",
+			Record:            EncodedRecord{ID: "second", Data: []byte("second")},
+			HasStreamOCC:      true,
+			ExpectedStreamSeq: 0,
+		},
+	}); !errors.Is(err, ErrInvalidBatchOCC) {
+		t.Fatalf("misplaced stream OCC error = %v, want ErrInvalidBatchOCC", err)
+	}
+}
+
+func TestEncodedEventLogReportsAmbiguousMultiGuardConflict(t *testing.T) {
+	js, stream := setupTestStream(t)
+	eventLog := NewEncodedEventLog(js, stream, testLogger())
+	ctx := testContext(t)
+
+	if _, err := eventLog.AppendAt(ctx, "evt.compatibility.guarded.second", EncodedRecord{ID: "seed-second", Data: []byte("seed")}, 0); err != nil {
+		t.Fatalf("seed second subject: %v", err)
+	}
+	_, err := eventLog.AppendBatch(ctx, []EncodedBatchEntry{
+		{
+			Subject:     "evt.compatibility.guarded.first",
+			Record:      EncodedRecord{ID: "guarded-first", Data: []byte("first")},
+			HasOCC:      true,
+			ExpectedSeq: 0,
+		},
+		{
+			Subject:     "evt.compatibility.guarded.second",
+			Record:      EncodedRecord{ID: "guarded-second", Data: []byte("second")},
+			HasOCC:      true,
+			ExpectedSeq: 0,
+		},
+	})
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("AppendBatch error = %v, want ErrConflict", err)
+	}
+	if !strings.Contains(err.Error(), "atomic batch OCC guards") {
+		t.Fatalf("AppendBatch error = %q, want ambiguous batch guard context", err)
+	}
+}
+
+func TestEncodedEventLogReportsAmbiguousDualGuardConflict(t *testing.T) {
+	js, stream := setupTestStream(t)
+	eventLog := NewEncodedEventLog(js, stream, testLogger())
+	ctx := testContext(t)
+	subject := "evt.compatibility.dual-guard"
+
+	streamSeq, err := eventLog.AppendAt(ctx, subject, EncodedRecord{ID: "dual-guard-seed", Data: []byte("seed")}, 0)
+	if err != nil {
+		t.Fatalf("seed guarded subject: %v", err)
+	}
+
+	_, err = eventLog.AppendBatch(ctx, []EncodedBatchEntry{
+		{
+			Subject:           subject,
+			Record:            EncodedRecord{ID: "dual-guard-first", Data: []byte("first")},
+			HasOCC:            true,
+			ExpectedSeq:       0,
+			HasStreamOCC:      true,
+			ExpectedStreamSeq: streamSeq,
+		},
+		{
+			Subject: "evt.compatibility.dual-guard.second",
+			Record:  EncodedRecord{ID: "dual-guard-second", Data: []byte("second")},
+		},
+	})
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("AppendBatch error = %v, want ErrConflict", err)
+	}
+	if strings.Contains(err.Error(), "stream at expected seq") {
+		t.Fatalf("AppendBatch error = %q, falsely reports the current stream guard", err)
+	}
+	if !strings.Contains(err.Error(), "OCC guards") {
+		t.Fatalf("AppendBatch error = %q, want ambiguous guard context", err)
 	}
 }

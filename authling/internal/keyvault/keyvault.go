@@ -3,6 +3,11 @@ package keyvault
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +22,8 @@ const (
 	systemWorkflowKey        = "system.workflow.v1"
 	systemDummyUserKey       = "system.authentication-dummy-user.v1"
 	systemDummyCredentialKey = "system.authentication-dummy-credential.v1"
+	systemOIDCSigningKey     = "system.oidc-signing.v1"
+	credentialKeyPurpose     = "credentials"
 )
 
 type rawKeyRecord struct {
@@ -31,12 +38,28 @@ type wrappedKeyRecord struct {
 	Nonce      []byte    `json:"nonce"`
 	Ciphertext []byte    `json:"ciphertext"`
 	CreatedAt  time.Time `json:"created_at"`
+	Purpose    string    `json:"purpose,omitempty"`
 }
 
 type provisioningRecord struct {
 	Version                int       `json:"version"`
 	CreatedAt              time.Time `json:"created_at"`
 	UserKeyRef, DataKeyRef string
+}
+
+type signingKeyRecord struct {
+	Version    int       `json:"version"`
+	Algorithm  string    `json:"algorithm"`
+	PrivateDER []byte    `json:"private_der"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+// SigningKey is Authling's current OpenID Connect signing identity. Ref and ID
+// are safe to persist and publish; Private must remain inside the key boundary.
+type SigningKey struct {
+	Ref     string
+	ID      string
+	Private *rsa.PrivateKey
 }
 
 // Vault stores user keys and wrapped data keys outside ordinary event/runtime
@@ -74,6 +97,43 @@ func (v *Vault) WorkflowKey(ctx context.Context) ([]byte, error) {
 		return decodeRaw(entry.Value())
 	}
 	return key, nil
+}
+
+// OIDCSigningKey returns the deployment's stable RS256 signing key, creating
+// it with JetStream Create semantics when the deployment has none yet.
+func (v *Vault) OIDCSigningKey(ctx context.Context) (SigningKey, error) {
+	entry, err := v.kv.Get(ctx, systemOIDCSigningKey)
+	if err == nil {
+		return decodeSigningKey(entry.Value())
+	}
+	if !errors.Is(err, jetstream.ErrKeyNotFound) {
+		return SigningKey{}, fmt.Errorf("read OIDC signing key: %w", err)
+	}
+	private, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return SigningKey{}, fmt.Errorf("generate OIDC signing key: %w", err)
+	}
+	privateDER, err := x509.MarshalPKCS8PrivateKey(private)
+	if err != nil {
+		return SigningKey{}, fmt.Errorf("encode OIDC signing key: %w", err)
+	}
+	data, err := json.Marshal(signingKeyRecord{
+		Version: 1, Algorithm: "RS256", PrivateDER: privateDER, CreatedAt: time.Now().UTC(),
+	})
+	if err != nil {
+		return SigningKey{}, fmt.Errorf("encode OIDC signing-key record: %w", err)
+	}
+	if _, err := v.kv.Create(ctx, systemOIDCSigningKey, data); err != nil {
+		if !errors.Is(err, jetstream.ErrKeyExists) {
+			return SigningKey{}, fmt.Errorf("create OIDC signing key: %w", err)
+		}
+		entry, err = v.kv.Get(ctx, systemOIDCSigningKey)
+		if err != nil {
+			return SigningKey{}, fmt.Errorf("read raced OIDC signing key: %w", err)
+		}
+		return decodeSigningKey(entry.Value())
+	}
+	return signingKey(private)
 }
 
 // AuthenticationDummyKey returns a persistent synthetic credential key pair.
@@ -246,16 +306,76 @@ func (v *Vault) CompleteProvisioning(ctx context.Context, operationRef string) e
 // ResolveDataKey unwraps one credential data key and fails closed if either
 // key record is absent or malformed.
 func (v *Vault) ResolveDataKey(ctx context.Context, dataRef, expectedUserRef string) ([]byte, error) {
+	return v.ResolveDataKeyForPurpose(ctx, dataRef, expectedUserRef, credentialKeyPurpose)
+}
+
+// EnsureDataKey returns a stable purpose-scoped data key. Create semantics
+// make concurrent Authling replicas converge on one wrapped key record.
+func (v *Vault) EnsureDataKey(ctx context.Context, dataRef, userRef, purpose string) ([]byte, error) {
+	if dataRef == "" || userRef == "" || purpose == "" || purpose == credentialKeyPurpose {
+		return nil, fmt.Errorf("invalid purpose-scoped data-key identity")
+	}
+	if _, err := v.kv.Get(ctx, dataRef); err == nil {
+		return v.ResolveDataKeyForPurpose(ctx, dataRef, userRef, purpose)
+	} else if !errors.Is(err, jetstream.ErrKeyNotFound) {
+		return nil, fmt.Errorf("read purpose-scoped data key: %w", err)
+	}
+	userEntry, err := v.kv.Get(ctx, userRef)
+	if err != nil {
+		return nil, fmt.Errorf("read user key: %w", err)
+	}
+	userKey, err := decodeRaw(userEntry.Value())
+	if err != nil {
+		return nil, err
+	}
+	defer clear(userKey)
+	dataKey, err := datacrypto.GenerateKey()
+	if err != nil {
+		return nil, err
+	}
+	wrapped, err := datacrypto.WrapKey(userKey, dataKey, wrapAADForPurpose(userRef, dataRef, purpose))
+	if err != nil {
+		clear(dataKey)
+		return nil, err
+	}
+	encoded, err := json.Marshal(wrappedKeyRecord{
+		Version: 2, UserKeyRef: userRef, Nonce: wrapped.Nonce,
+		Ciphertext: wrapped.Ciphertext, CreatedAt: time.Now().UTC(), Purpose: purpose,
+	})
+	if err != nil {
+		clear(dataKey)
+		return nil, err
+	}
+	if _, err := v.kv.Create(ctx, dataRef, encoded); err != nil {
+		clear(dataKey)
+		if !errors.Is(err, jetstream.ErrKeyExists) {
+			return nil, fmt.Errorf("store purpose-scoped data key: %w", err)
+		}
+		return v.ResolveDataKeyForPurpose(ctx, dataRef, userRef, purpose)
+	}
+	return dataKey, nil
+}
+
+// ResolveDataKeyForPurpose unwraps a data key only when its user and purpose
+// match the caller's expected storage context.
+func (v *Vault) ResolveDataKeyForPurpose(ctx context.Context, dataRef, expectedUserRef, purpose string) ([]byte, error) {
 	entry, err := v.kv.Get(ctx, dataRef)
 	if err != nil {
 		return nil, fmt.Errorf("read wrapped data key: %w", err)
 	}
 	var wrapped wrappedKeyRecord
-	if err := json.Unmarshal(entry.Value(), &wrapped); err != nil || wrapped.Version != 1 {
+	if err := json.Unmarshal(entry.Value(), &wrapped); err != nil || (wrapped.Version != 1 && wrapped.Version != 2) {
 		return nil, fmt.Errorf("decode wrapped data key")
 	}
 	if wrapped.UserKeyRef != expectedUserRef {
 		return nil, fmt.Errorf("wrapped data key user reference mismatch")
+	}
+	if wrapped.Version == 1 {
+		if purpose != credentialKeyPurpose || wrapped.Purpose != "" {
+			return nil, fmt.Errorf("wrapped data key purpose mismatch")
+		}
+	} else if wrapped.Purpose != purpose || purpose == "" {
+		return nil, fmt.Errorf("wrapped data key purpose mismatch")
 	}
 	userEntry, err := v.kv.Get(ctx, wrapped.UserKeyRef)
 	if err != nil {
@@ -266,7 +386,7 @@ func (v *Vault) ResolveDataKey(ctx context.Context, dataRef, expectedUserRef str
 		return nil, err
 	}
 	defer clear(userKey)
-	return datacrypto.UnwrapKey(userKey, wrapped.Ciphertext, wrapped.Nonce, wrapAAD(wrapped.UserKeyRef, dataRef))
+	return datacrypto.UnwrapKey(userKey, wrapped.Ciphertext, wrapped.Nonce, wrapAADForPurpose(wrapped.UserKeyRef, dataRef, purpose))
 }
 
 func decodeRaw(data []byte) ([]byte, error) {
@@ -277,6 +397,40 @@ func decodeRaw(data []byte) ([]byte, error) {
 	return record.Key, nil
 }
 
+func decodeSigningKey(data []byte) (SigningKey, error) {
+	var record signingKeyRecord
+	if err := json.Unmarshal(data, &record); err != nil || record.Version != 1 || record.Algorithm != "RS256" || len(record.PrivateDER) == 0 {
+		return SigningKey{}, fmt.Errorf("decode OIDC signing-key record")
+	}
+	decoded, err := x509.ParsePKCS8PrivateKey(record.PrivateDER)
+	if err != nil {
+		return SigningKey{}, fmt.Errorf("parse OIDC signing key: %w", err)
+	}
+	private, ok := decoded.(*rsa.PrivateKey)
+	if !ok || private.N.BitLen() < 2048 || private.Validate() != nil {
+		return SigningKey{}, fmt.Errorf("invalid OIDC signing key")
+	}
+	return signingKey(private)
+}
+
+func signingKey(private *rsa.PrivateKey) (SigningKey, error) {
+	publicDER, err := x509.MarshalPKIXPublicKey(&private.PublicKey)
+	if err != nil {
+		return SigningKey{}, fmt.Errorf("encode OIDC public key: %w", err)
+	}
+	digest := sha256.Sum256(publicDER)
+	return SigningKey{
+		Ref: systemOIDCSigningKey, ID: "sig_" + base64.RawURLEncoding.EncodeToString(digest[:]), Private: private,
+	}, nil
+}
+
 func wrapAAD(userRef, dataRef string) []byte {
-	return []byte("authling:key-wrap:v1\x00" + userRef + "\x00" + dataRef + "\x00credentials")
+	return wrapAADForPurpose(userRef, dataRef, credentialKeyPurpose)
+}
+
+func wrapAADForPurpose(userRef, dataRef, purpose string) []byte {
+	if purpose == credentialKeyPurpose {
+		return []byte("authling:key-wrap:v1\x00" + userRef + "\x00" + dataRef + "\x00credentials")
+	}
+	return []byte("authling:key-wrap:v2\x00" + userRef + "\x00" + dataRef + "\x00" + purpose)
 }

@@ -1,7 +1,7 @@
 # FDR-005: Reactions
 
 **Status:** Active
-**Last reviewed:** 2026-07-03
+**Last reviewed:** 2026-08-10
 
 ## Overview
 
@@ -12,6 +12,7 @@ Users can react to a message with emoji. Reactions are aggregated into pills sho
 - Each pill shows: the emoji, how many users reacted with it, and a highlight when the current user has reacted.
 - Hovering a pill shows a tooltip with up to 5 reactor names plus an overflow count.
 - Clicking a pill toggles the current user's reaction.
+- A user can add up to 20 distinct emoji reactions to one message. Reaching the limit rolls back the attempted reaction and shows a specific explanation; removing a reaction frees a slot.
 - On desktop, hovering a message reveals a quick-reaction bar with the user's most recently used emojis (falling back to a default set if none have been used yet).
 - Recent emoji selections persist in localStorage so the quick-bar stays personal across sessions.
 
@@ -63,11 +64,37 @@ sync without requiring clients to infer echo linkage from a reaction signal.
 **Why:** Reaction clicks should feel instant without changing the durable event model or public API.
 **Tradeoff:** Reactor-name tooltips are best-effort during the optimistic window and become exact after the projected row refresh.
 
+### 8. Each user can add at most 20 reactions per message
+
+**Decision:** One user may have at most 20 distinct emoji reactions on one canonical message. The cap applies equally to members, moderators, administrators, and owners. Historical messages that already exceed the cap keep all their reactions, but affected users cannot add another until removals bring them below the limit.
+**Why:** A fixed upper bound prevents one account from creating an unbounded number of reaction facts or overwhelming the message UI while remaining generous for ordinary use. Applying the rule to the canonical message also prevents thread-reply echoes from becoming a second allowance.
+**Tradeoff:** Operators cannot tune or bypass the limit. A future tier-aware configuration system can revisit that choice if communities demonstrate materially different needs.
+
+### 9. Reaction authorization is request-time and room-scoped
+
+**Decision:** Every user-facing add/remove attempt captures the room aggregate
+tail, waits the projections used by membership, `message.react`, room state,
+message aliasing, and reaction-limit decisions, and evaluates the complete
+operation-level gate. A concurrent room change rejects the append and reruns
+the decision. A cross-aggregate authorization change does not retroactively
+cancel an already-authorized, otherwise conflict-free attempt.
+
+**Why:** Reactions are low-risk, high-frequency room mutations. Request-time
+authorization matches normal command semantics and avoids serializing reaction
+traffic with every unrelated EVT fact. Room OCC still protects message
+identity, archive state, duplicate state, and the per-user limit from stale
+decisions.
+
+**Tradeoff:** A revocation can commit immediately before a previously
+authorized reaction commits. Subsequent attempts observe the new authorization
+state. Operations that require revocation to win this in-flight race must opt
+into a narrow commit-time authorization fence instead.
+
 ## Permissions
 
 - `message.react` — add or remove a reaction on a message. Scoped at server, group, and room.
 
 ## Related
 
-- **ADRs:** ADR-026 (event identity via NanoID), ADR-033 (event-sourced state with projections), ADR-034 (single event stream), ADR-035 (per-aggregate migration), ADR-042 (protobuf-first public API), ADR-044 (ConnectRPC service conventions), ADR-048 (frontend optimistic UI), ADR-051 (server-scoped resumable client projection)
+- **ADRs:** ADR-026 (event identity via NanoID), ADR-033 (event-sourced state with projections), ADR-034 (single event stream), ADR-035 (per-aggregate migration), ADR-042 (protobuf-first public API), ADR-044 (ConnectRPC service conventions), ADR-048 (frontend optimistic UI), ADR-051 (server-scoped resumable client projection), ADR-068 (selectable event mutation consistency boundaries)
 - **FDRs:** FDR-003 (Thread Reply Echo)

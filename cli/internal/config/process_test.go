@@ -99,6 +99,121 @@ func TestSearchProviderLanguagesDefaultAndExplicitEmpty(t *testing.T) {
 	}
 }
 
+func TestAssetProcessingEnabledIsIndependentFromVideoUploads(t *testing.T) {
+	tests := []struct {
+		name                string
+		toml                string
+		wantVideoUploads    bool
+		wantAssetProcessing bool
+	}{
+		{
+			name:                "uploads only",
+			toml:                "[video]\nenabled = true\n",
+			wantVideoUploads:    true,
+			wantAssetProcessing: false,
+		},
+		{
+			name:                "worker only",
+			toml:                "[asset_processing]\nenabled = true\n",
+			wantVideoUploads:    false,
+			wantAssetProcessing: true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var cfg ChattoConfig
+			if err := toml.Unmarshal([]byte(test.toml), &cfg); err != nil {
+				t.Fatalf("Unmarshal() error = %v", err)
+			}
+			if cfg.Video.Enabled != test.wantVideoUploads {
+				t.Fatalf("video.enabled = %v, want %v", cfg.Video.Enabled, test.wantVideoUploads)
+			}
+			if cfg.AssetProcessing.Enabled != test.wantAssetProcessing {
+				t.Fatalf("asset_processing.enabled = %v, want %v", cfg.AssetProcessing.Enabled, test.wantAssetProcessing)
+			}
+		})
+	}
+}
+
+func TestAssetProcessingSettingsAreIndependentFromVideoUploads(t *testing.T) {
+	if got := (&AssetProcessingConfig{}).MaxConcurrentJobsOrDefault(); got != 2 {
+		t.Fatalf("default asset_processing.max_concurrent_jobs = %d, want 2", got)
+	}
+
+	var cfg ChattoConfig
+	configTOML := `[video]
+enabled = true
+max_upload_size = "250 MB"
+
+[asset_processing]
+enabled = true
+ffmpeg_path = "/opt/bin/ffmpeg"
+ffprobe_path = "/opt/bin/ffprobe"
+max_concurrent_jobs = 4
+temp_dir = "/var/tmp/chatto-assets"
+`
+	if err := toml.Unmarshal([]byte(configTOML), &cfg); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if got := cfg.Video.MaxUploadSize.String(); got != "250MB" {
+		t.Fatalf("video.max_upload_size = %q, want 250MB", got)
+	}
+	if got := cfg.AssetProcessing.FFmpegPath; got != "/opt/bin/ffmpeg" {
+		t.Fatalf("asset_processing.ffmpeg_path = %q", got)
+	}
+	if got := cfg.AssetProcessing.FFprobePath; got != "/opt/bin/ffprobe" {
+		t.Fatalf("asset_processing.ffprobe_path = %q", got)
+	}
+	if got := cfg.AssetProcessing.MaxConcurrentJobsOrDefault(); got != 4 {
+		t.Fatalf("asset_processing.max_concurrent_jobs = %d, want 4", got)
+	}
+	if got := cfg.AssetProcessing.TempDir; got != "/var/tmp/chatto-assets" {
+		t.Fatalf("asset_processing.temp_dir = %q", got)
+	}
+}
+
+func TestReadConfig_AssetProcessingSettingsFromEnv(t *testing.T) {
+	tmpDir := t.TempDir()
+	originalDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("failed to change to temp directory: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(originalDir) })
+
+	t.Setenv("CHATTO_WEBSERVER_PORT", "4000")
+	t.Setenv("CHATTO_WEBSERVER_COOKIE_SIGNING_SECRET", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	t.Setenv("CHATTO_CORE_SECRET_KEY", "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789")
+	t.Setenv("CHATTO_CORE_ASSETS_SIGNING_SECRET", "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff")
+	t.Setenv("CHATTO_ASSET_PROCESSING_ENABLED", "true")
+	t.Setenv("CHATTO_ASSET_PROCESSING_FFMPEG_PATH", "/opt/bin/ffmpeg")
+	t.Setenv("CHATTO_ASSET_PROCESSING_FFPROBE_PATH", "/opt/bin/ffprobe")
+	t.Setenv("CHATTO_ASSET_PROCESSING_MAX_CONCURRENT_JOBS", "6")
+	t.Setenv("CHATTO_ASSET_PROCESSING_TEMP_DIR", "/var/tmp/chatto-assets")
+
+	cfg, err := ReadConfig("")
+	if err != nil {
+		t.Fatalf("ReadConfig() failed: %v", err)
+	}
+	if !cfg.AssetProcessing.Enabled {
+		t.Fatal("asset_processing.enabled = false, want true")
+	}
+	if got := cfg.AssetProcessing.FFmpegPath; got != "/opt/bin/ffmpeg" {
+		t.Fatalf("asset_processing.ffmpeg_path = %q", got)
+	}
+	if got := cfg.AssetProcessing.FFprobePath; got != "/opt/bin/ffprobe" {
+		t.Fatalf("asset_processing.ffprobe_path = %q", got)
+	}
+	if got := cfg.AssetProcessing.MaxConcurrentJobsOrDefault(); got != 6 {
+		t.Fatalf("asset_processing.max_concurrent_jobs = %d, want 6", got)
+	}
+	if got := cfg.AssetProcessing.TempDir; got != "/var/tmp/chatto-assets" {
+		t.Fatalf("asset_processing.temp_dir = %q", got)
+	}
+}
+
 func TestSearchProviderExplicitEmptyLanguagesSurvivesTOMLParsing(t *testing.T) {
 	var cfg ChattoConfig
 	if err := toml.Unmarshal([]byte("[search_provider]\nlanguages = []\n"), &cfg); err != nil {
@@ -209,7 +324,7 @@ signing_secret = "00112233445566778899aabbccddeeff00112233445566778899aabbccddee
 	}
 }
 
-func TestReadConfig_OAuthRedirectOriginsFromTOMLAndEnv(t *testing.T) {
+func TestReadConfig_TrustedProxiesFromTOMLAndEnv(t *testing.T) {
 	tmpDir := t.TempDir()
 	originalDir, err := os.Getwd()
 	if err != nil {
@@ -224,7 +339,6 @@ func TestReadConfig_OAuthRedirectOriginsFromTOMLAndEnv(t *testing.T) {
 [webserver]
 port = 5000
 cookie_signing_secret = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-oauth_redirect_origins = ["https://client.example"]
 trusted_proxies = ["127.0.0.1", "10.0.0.0/8"]
 
 [core]
@@ -241,21 +355,14 @@ signing_secret = "00112233445566778899aabbccddeeff00112233445566778899aabbccddee
 	if err != nil {
 		t.Fatalf("ReadConfig() failed: %v", err)
 	}
-	if got, want := strings.Join(cfg.Webserver.OAuthRedirectOrigins, ","), "https://client.example"; got != want {
-		t.Fatalf("expected TOML oauth_redirect_origins %q, got %q", want, got)
-	}
 	if got, want := strings.Join(cfg.Webserver.TrustedProxies, ","), "127.0.0.1,10.0.0.0/8"; got != want {
 		t.Fatalf("expected TOML trusted_proxies %q, got %q", want, got)
 	}
 
-	t.Setenv("CHATTO_WEBSERVER_OAUTH_REDIRECT_ORIGINS", "*")
 	t.Setenv("CHATTO_WEBSERVER_TRUSTED_PROXIES", "192.0.2.10,2001:db8::/32")
 	cfg, err = ReadConfig("")
 	if err != nil {
 		t.Fatalf("ReadConfig() with env override failed: %v", err)
-	}
-	if got, want := strings.Join(cfg.Webserver.OAuthRedirectOrigins, ","), "*"; got != want {
-		t.Fatalf("expected env oauth_redirect_origins %q, got %q", want, got)
 	}
 	if got, want := strings.Join(cfg.Webserver.TrustedProxies, ","), "192.0.2.10,2001:db8::/32"; got != want {
 		t.Fatalf("expected env trusted_proxies %q, got %q", want, got)
@@ -853,11 +960,9 @@ func TestChattoConfig_Validate_URLsAndOrigins(t *testing.T) {
 		wantError string
 	}{
 		{
-			name: "valid webserver URL and origins",
+			name: "valid webserver URL and trusted proxies",
 			modify: func(c *ChattoConfig) {
 				c.Webserver.URL = "https://chat.example"
-				c.Webserver.AllowedOrigins = []string{"https://client.example", "http://localhost:5173", "*"}
-				c.Webserver.OAuthRedirectOrigins = []string{"https://client.example", "http://localhost:5173", "*"}
 				c.Webserver.TrustedProxies = []string{"127.0.0.1", "10.0.0.0/8", "2001:db8::/32"}
 			},
 		},
@@ -876,18 +981,25 @@ func TestChattoConfig_Validate_URLsAndOrigins(t *testing.T) {
 			wantError: "webserver.url must use http or https",
 		},
 		{
-			name: "allowed origin rejects paths",
+			name: "webserver URL rejects legacy IPv4 spelling",
 			modify: func(c *ChattoConfig) {
-				c.Webserver.AllowedOrigins = []string{"https://client.example/path"}
+				c.Webserver.URL = "http://127.1:5173"
 			},
-			wantError: "webserver.allowed_origins contains invalid origin",
+			wantError: "webserver.url must use canonical dotted IPv4 syntax",
 		},
 		{
-			name: "OAuth origin requires https outside loopback",
+			name: "webserver URL rejects out of range port",
 			modify: func(c *ChattoConfig) {
-				c.Webserver.OAuthRedirectOrigins = []string{"http://client.example"}
+				c.Webserver.URL = "https://chat.example:65536"
 			},
-			wantError: "non-loopback OAuth redirect origins must use https",
+			wantError: "webserver.url port must be between 0 and 65535",
+		},
+		{
+			name: "webserver URL rejects invalid IDNA hostname",
+			modify: func(c *ChattoConfig) {
+				c.Webserver.URL = "https://\u200d.example"
+			},
+			wantError: "webserver.url host must be a valid IDNA hostname",
 		},
 	}
 

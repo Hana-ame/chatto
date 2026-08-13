@@ -11,7 +11,7 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
   import { resolve } from '$app/paths';
   import { page } from '$app/state';
   import { serverIdToSegment } from '$lib/navigation';
-  import * as m from '$lib/i18n/messages';
+  import { m } from '$lib/i18n/messages';
   import {
     sidebarLinkAnchorAttributes,
     sidebarLinkTarget
@@ -19,6 +19,7 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
   import { serverRegistry } from '$lib/state/server/registry.svelte';
   import { useServerScope } from '$lib/state/server/scope.svelte';
   import CollapsibleGroup from '$lib/ui/CollapsibleGroup.svelte';
+  import RoomGroupSection from '$lib/components/chat/RoomGroupSection.svelte';
   import EmptyState from '$lib/ui/EmptyState.svelte';
   import { serverStorageKey } from '$lib/storage/serverStorage';
   import { buildDirectMessagePresentation, type UserAvatarUserView } from '$lib/render/users';
@@ -125,11 +126,11 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
     const result = await stores.roomDirectory.joinRoom(room.id);
     if (!serverScope.isCurrent()) return;
     if (result.ok) {
-      toast.success(m['room.join.success']({ room: room.name }));
+      toast.success(m('room.join.success', { room: room.name }));
       return;
     }
 
-    toast.error(m['room.join.failed']());
+    toast.error(m('room.join.failed'));
     console.error('Error joining room:', result.error);
   }
 
@@ -174,7 +175,7 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
     return buildDirectMessagePresentation(
       room.members,
       navigation.currentUserId,
-      m['common.you'](),
+      m('common.you'),
       getLiveDisplayName
     );
   }
@@ -264,16 +265,16 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
 {#snippet activeCallIcon()}
   <span
     class="relative sidebar-icon text-action"
-    aria-label={m['room_list.active_call']()}
+    aria-label={m('room_list.active_call')}
     data-testid="room-call-icon"
   >
     <span class="relative inline-flex">
       <span
-        class="absolute inset-0 pane-header-icon-glyph animate-ping opacity-45 uil--phone"
+        class="absolute inset-0 icon-[uil--phone] pane-header-icon-glyph animate-ping opacity-45"
         aria-hidden="true"
         data-testid="active-call-pulse-icon"
       ></span>
-      <span class="relative pane-header-icon-glyph text-action uil--phone" aria-hidden="true"
+      <span class="relative icon-[uil--phone] pane-header-icon-glyph text-action" aria-hidden="true"
       ></span>
     </span>
   </span>
@@ -284,7 +285,7 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
   {#if participants.length > 0}
     <div
       class="hidden shrink-0 items-center -space-x-1 @min-[220px]:flex"
-      aria-label={m['room_list.call_participants']({ count: participants.length })}
+      aria-label={m('room_list.call_participants', { count: participants.length })}
       data-testid="room-call-participants"
     >
       {#each participants.slice(0, 4) as participant, i (participant.userId)}
@@ -342,16 +343,28 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
       <span class="flex-1 truncate">{presentation.label}</span>
     {:else}
       {#if isJoined}
-        <span
-          class={[
-            'sidebar-icon',
-            showUnread && room.id !== activeRoomId ? 'text-text-top' : 'text-muted'
-          ]}>#</span
-        >
+        {#if room.isUniversal}
+          <span
+            class={[
+              'iconify sidebar-icon icon-[uil--globe]',
+              showUnread && room.id !== activeRoomId ? 'text-text-top' : 'text-muted'
+            ]}
+            role="img"
+            aria-label={m('room.directory.universal')}
+            title={m('room.directory.universal_title')}
+          ></span>
+        {:else}
+          <span
+            class={[
+              'sidebar-icon',
+              showUnread && room.id !== activeRoomId ? 'text-text-top' : 'text-muted'
+            ]}>#</span
+          >
+        {/if}
       {:else if room.viewerCanJoinRoom}
         <span class="sidebar-icon text-muted">+</span>
       {:else}
-        <span class="sidebar-icon iconify text-muted uil--lock"></span>
+        <span class="iconify sidebar-icon icon-[uil--lock] text-muted"></span>
       {/if}
       <span class="flex-1 truncate">{room.name}</span>
     {/if}
@@ -366,8 +379,8 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
         onclick={(e) => handleNotificationBadgeClick(e, room.id, isDM)}
         class="flex h-6 min-w-6 cursor-pointer items-center justify-center notification-dot"
         aria-label={isDM
-          ? m['room_list.go_to_dm_notifications']({ count: room.viewerNotificationCount })
-          : m['room_list.go_to_notifications']({ count: room.viewerNotificationCount })}
+          ? m('room_list.go_to_dm_notifications', { count: room.viewerNotificationCount })
+          : m('room_list.go_to_notifications', { count: room.viewerNotificationCount })}
       >
         <NotificationBadge
           count={room.viewerNotificationCount}
@@ -376,12 +389,12 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
       </button>
       <span class="sr-only">
         {isDM
-          ? m['room_list.new_direct_messages']({ count: room.viewerNotificationCount })
-          : m['room_list.notifications']({ count: room.viewerNotificationCount })}
+          ? m('room_list.new_direct_messages', { count: room.viewerNotificationCount })
+          : m('room_list.notifications', { count: room.viewerNotificationCount })}
       </span>
     {:else if showUnread}
       <UnreadDot color="neutral" testid={isDM ? 'dm-unread-dot' : 'room-unread-dot'} />
-      <span class="sr-only">{m['room_list.unread_messages']()}</span>
+      <span class="sr-only">{m('room_list.unread_messages')}</span>
     {/if}
   </a>
 {/snippet}
@@ -402,56 +415,58 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
         if (!target.valid) event.preventDefault();
       }}
     >
-      <span class="sidebar-icon iconify text-muted uil--external-link-alt"></span>
+      <span class="iconify sidebar-icon icon-[uil--external-link-alt] text-muted"></span>
       <span class="flex-1 truncate">{item.link.label}</span>
     </a>
   {/if}
 {/snippet}
 
 {#if channels.length === 0 && dmRooms.length === 0 && visibleSets.length === 0 && !navigation.isInitialLoading}
-  <EmptyState icon="uil--comments" title={m['room_list.empty_title']()}>
-    {m['room_list.empty_prefix']()}
+  <EmptyState icon="icon-[uil--comments]" title={m('room_list.empty_title')}>
+    {m('room_list.empty_prefix')}
     <a href={resolve('/chat/[serverId]/overview', { serverId: serverSegment })} class="link"
-      >{m['room_list.empty_overview']()}</a
+      >{m('room_list.empty_overview')}</a
     >
-    {m['room_list.empty_suffix']()}
+    {m('room_list.empty_suffix')}
   </EmptyState>
 {:else}
-  <nav class="room-list sidebar-nav p-2 md:w-full">
+  <nav class="room-list md:w-full">
     {#if navigation.roomGroups.length > 0}
-      <!-- Room-set layout -->
       {#each visibleSets as set, i (set.id)}
-        <CollapsibleGroup
+        <RoomGroupSection
           label={set.name}
           items={getSetItems(set)}
           item={sidebarLink}
           persistKey={serverStorageKey(activeServerId, `collapsible:set:${set.id}`)}
           keepVisibleWhenCollapsed={isGroupItemHighlighted}
-          class={i === 0 ? 'mt-4 first:mt-0' : 'mt-4'}
           contextMenuTrigger={groupMenuTrigger(set)}
+          separated={i > 0}
         />
       {/each}
     {:else if sortedRooms.length > 0}
       <!-- No layout configured yet — alphabetical fallback. -->
-      <CollapsibleGroup
-        label={m['common.rooms']()}
-        items={sortedRooms}
-        item={navigationRoomLink}
-        persistKey={serverStorageKey(activeServerId, 'collapsible:rooms')}
-        keepVisibleWhenCollapsed={isHighlighted}
-        class="mt-4 first:mt-0"
-      />
+      <div class="p-2">
+        <CollapsibleGroup
+          label={m('common.rooms')}
+          items={sortedRooms}
+          item={navigationRoomLink}
+          persistKey={serverStorageKey(activeServerId, 'collapsible:rooms')}
+          keepVisibleWhenCollapsed={isHighlighted}
+        />
+      </div>
     {/if}
 
     {#if dmRooms.length > 0}
-      <CollapsibleGroup
-        label={m['room_list.direct_messages']()}
-        items={dmRooms}
-        item={navigationRoomLink}
-        persistKey={serverStorageKey(activeServerId, 'collapsible:dms')}
-        keepVisibleWhenCollapsed={isHighlighted}
-        class="mt-4"
-      />
+      <div class="px-2 pb-2">
+        <CollapsibleGroup
+          label={m('room_list.direct_messages')}
+          items={dmRooms}
+          item={navigationRoomLink}
+          persistKey={serverStorageKey(activeServerId, 'collapsible:dms')}
+          keepVisibleWhenCollapsed={isHighlighted}
+          class={visibleSets.length > 0 || sortedRooms.length > 0 ? 'mt-4' : ''}
+        />
+      </div>
     {/if}
   </nav>
 {/if}
@@ -461,7 +476,7 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
   <ContextMenu
     position={groupContextMenu.position}
     presentation={groupContextMenu.presentation}
-    ariaLabel={m['room_list.group_settings']({ group: contextGroup.name })}
+    ariaLabel={m('room_list.group_settings', { group: contextGroup.name })}
     onclose={() => (groupContextMenu = null)}
   >
     <div class="menu-section">
@@ -472,8 +487,8 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
           onclick={() => handleConfigureGroup(contextGroup)}
           role="menuitem"
         >
-          <span class="sidebar-icon iconify uil--setting" aria-hidden="true"></span>
-          {m['room_list.group_settings']({ group: contextGroup.name })}
+          <span class="iconify sidebar-icon icon-[uil--setting]" aria-hidden="true"></span>
+          {m('room_list.group_settings', { group: contextGroup.name })}
         </button>
       </nav>
     </div>
@@ -485,7 +500,7 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
   <ContextMenu
     position={roomContextMenu.position}
     presentation={roomContextMenu.presentation}
-    ariaLabel={m['room_list.room_actions']({ room: contextRoom.name })}
+    ariaLabel={m('room_list.room_actions', { room: contextRoom.name })}
     onclose={() => (roomContextMenu = null)}
   >
     <NavigationContextMenu

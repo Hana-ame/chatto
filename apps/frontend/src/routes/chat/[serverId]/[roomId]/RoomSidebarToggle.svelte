@@ -10,7 +10,8 @@ Room header affordance for opening or hiding room extras panels.
 - `mode` - Responsive visibility for the toggle group.
 -->
 <script lang="ts">
-  import * as m from '$lib/i18n/messages';
+  import { m } from '$lib/i18n/messages';
+  import UnreadDot from '$lib/ui/UnreadDot.svelte';
   import type { RoomSidebarPanel } from './RoomSidebar.svelte';
 
   let {
@@ -18,13 +19,15 @@ Room header affordance for opening or hiding room extras panels.
     panels,
     onToggle,
     mode = 'desktop',
-    hasActiveCall = false
+    hasActiveCall = false,
+    hasUnseenPins = false
   }: {
     activePanel: RoomSidebarPanel | null;
     panels?: RoomSidebarPanel[];
     onToggle: (panel: RoomSidebarPanel) => void;
     mode?: 'desktop' | 'mobile' | 'always';
     hasActiveCall?: boolean;
+    hasUnseenPins?: boolean;
   } = $props();
 
   const panelDefinitions = $derived<
@@ -36,26 +39,32 @@ Room header affordance for opening or hiding room extras panels.
     }[]
   >([
     {
+      id: 'pins',
+      icon: 'icon-[mdi--pin-outline]',
+      showLabel: m('room.pins.show'),
+      hideLabel: m('room.pins.hide')
+    },
+    {
       id: 'members',
-      icon: 'uil--users-alt',
+      icon: 'icon-[uil--users-alt]',
       showLabel: 'Show members',
       hideLabel: 'Hide members'
     },
     {
       id: 'search',
-      icon: 'uil--search',
-      showLabel: m['search.in_room'](),
-      hideLabel: m['room.sidebar.hide']()
+      icon: 'icon-[uil--search]',
+      showLabel: m('search.in_room'),
+      hideLabel: m('room.sidebar.hide')
     },
     {
       id: 'files',
-      icon: 'uil--paperclip',
+      icon: 'icon-[uil--paperclip]',
       showLabel: 'Show files',
       hideLabel: 'Hide files'
     },
     {
       id: 'call',
-      icon: 'uil--phone',
+      icon: 'icon-[uil--phone]',
       showLabel: 'Show call',
       hideLabel: 'Hide call'
     }
@@ -85,6 +94,7 @@ Room header affordance for opening or hiding room extras panels.
     {@const isActive = activePanel === panel.id}
     {@const isActiveCallPanel = panel.id === 'call' && hasActiveCall}
     {@const shouldPulseCallIcon = isActiveCallPanel && !isActive}
+    {@const showUnseenPin = panel.id === 'pins' && hasUnseenPins && !isActive}
     <button
       type="button"
       class={[
@@ -94,7 +104,11 @@ Room header affordance for opening or hiding room extras panels.
       ]}
       onclick={() => onToggle(panel.id)}
       title={isActive ? panel.hideLabel : panel.showLabel}
-      aria-label={isActive ? panel.hideLabel : panel.showLabel}
+      aria-label={showUnseenPin
+        ? `${panel.showLabel}. ${m('room.pins.unseen')}`
+        : isActive
+          ? panel.hideLabel
+          : panel.showLabel}
       aria-pressed={isActive}
     >
       <span class="relative inline-flex">
@@ -113,6 +127,9 @@ Room header affordance for opening or hiding room extras panels.
           ]}
           aria-hidden="true"
         ></span>
+        {#if showUnseenPin}
+          <UnreadDot class="absolute -end-1 -top-1 ring-2 ring-surface" testid="unseen-pin-dot" />
+        {/if}
       </span>
     </button>
   {/each}

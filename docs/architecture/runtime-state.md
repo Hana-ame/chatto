@@ -14,7 +14,7 @@ Related decision: [ADR-036](../adr/ADR-036-runtime-state-kv-boundary.md).
 | Bucket                        | Storage | Backup   | Description                                     |
 | ----------------------------- | ------- | -------- | ----------------------------------------------- |
 | `RUNTIME_STATE`               | File    | Yes      | Persisted latest-value runtime/user state, including pending notifications, push subscriptions, auth/workflow tokens, wrapped app DEK records, and encrypted snapshot pointers |
-| `MEMORY_CACHE`                | Memory  | No       | Volatile cache state: presence, worker leases and cooldowns, reconciliation counters, and worker health heartbeats |
+| `MEMORY_CACHE`                | Memory  | No       | Volatile cache state: presence, worker leases and cooldowns, and reconciliation counters |
 | `ENCRYPTION_KEYS`             | File    | **No**   | KMS KEKs and LiveKit per-call E2EE keys (excluded for security); app-owned wrapped DEKs live in `RUNTIME_STATE` |
 
 **ENCRYPTION_KEYS keys:**
@@ -61,18 +61,20 @@ survives restart but is not content/domain history. See
 | `notification.{userId}.{notificationId}` | Pending notification record (protobuf `Notification`) for DM messages, @mentions, replies, and all-message subscriptions. Uses per-key 90-day TTL. Internal `NotificationCreatedEvent` / `NotificationDismissedEvent` signals on `live.sync.user.{userId}.*` trigger authoritative notification projection replacements; DND keeps the record but marks the live creation transition silent and skips push delivery. |
 | `push_subscription.{userId}.{endpointHash}` | Web Push subscription record (protobuf `PushSubscription`) for a user's browser/device. The endpoint hash keeps multiple devices per user while deduplicating the same browser subscription. A record is deliverable only while its revision matches the endpoint's active owner claim. |
 | `push_endpoint_owner.{sha256(endpoint)}` | JSON Web Push endpoint owner claim containing the active user ID and exact `push_subscription` KV revision. Saves transfer the claim with KV OCC; revision-matched deletes prevent stale logout, expiry cleanup, and subscription rotation races from releasing a newer claim. Legacy subscription records without a claim remain inert until the browser re-registers. |
-| `asset_upload.{uploadId}` | JSON room-scoped attachment upload session with actor, declared size/SHA-256, committed offset, chunk keys, status, and expiry. Open sessions use a 15-minute TTL; completed sessions expire with the 24-hour pending-attachment claim window. |
+| `push_test_notification_throttle.{userId}` | One-byte per-account admission marker owned by [`core/push.go`](../../cli/internal/core/push.go). Atomic creation with a 10-second per-key TTL rate-limits test push attempts across replicas; the marker contains no endpoint or delivery result. |
+| `asset_upload.{uploadId}` | JSON room-scoped attachment upload session with actor, declared size/SHA-256, committed offset, chunk keys, status, and expiry. Open sessions use a 15-minute TTL; completed sessions expire with the 24-hour pending-attachment window. |
 | `projection_snapshot_pointer.{opaqueLocator}` | Encrypted current/previous generation IDs for one projection and snapshot contract. The opaque locator is derived from both, so different contracts cannot read or overwrite each other. Uses KV revision OCC so stale writers cannot regress newer history within one contract. |
-| `email_otp.{hmac(subject)}.{hmac(code)}` | Shared registration and email-verification OTP code JSON. Registration values carry normalized email; authenticated email-verification values carry user ID and email. The subject hash scopes registration by email and authenticated verification by user/email, the code hash verifies the submitted six-digit code, and the raw code is never stored. Uses per-key 15-minute TTL. |
+| `email_otp.{hmac(subject)}.{hmac(code)}` | Shared registration and email-verification OTP code JSON. Registration values carry normalized email and, when applicable, the validated invitation ID; authenticated email-verification values carry user ID and email. The subject hash scopes registration by email and authenticated verification by user/email, the code hash verifies the submitted six-digit code, and the raw code is never stored. Uses per-key 15-minute TTL. |
 | `email_otp.{hmac(subject)}.challenge` | Shared OTP challenge JSON with failed-attempt and issued-code counters. Wrong-code attempts update this record revision-safely, five wrong guesses exhaust the challenge until TTL, and at most ten codes can be issued for one challenge window. Uses per-key 15-minute TTL. |
-| `registration_completion.{hmac}` | Registration completion token JSON created after code verification. Uses per-key 15-minute TTL. |
+| `registration_completion.{hmac}` | Registration completion token JSON created after code verification, carrying the invitation ID from an invite-only registration when applicable. Uses per-key 15-minute TTL. |
 | `password_reset.{hmac}` | Password reset token JSON. Uses per-key 1-hour TTL and is claimed with a revision-matched delete before the password-change event is appended. |
 | `password_reset_request.{hmac(userId)}` | Per-account password-reset delivery reservation containing only the matching HMAC-derived reset-token key. Atomic KV creation permits one prepared link per five-minute window across replicas; failed delivery conditionally deletes the matching reservation before its token so transient cleanup failures remain retryable and do not normally consume the window. Cleanup uses a bounded context detached from request cancellation. |
 | `account_deletion_token.{hmac}` | Account deletion confirmation token JSON. Uses per-key 15-minute TTL. |
-| `session.{hmac}` | Typed runtime credential JSON with user ID, credential kind (`first_party_session` or `oauth_access_token`), presentation (`bearer` or `cookie`), source/request metadata, fresh-auth metadata, and the user auth generation it was issued against. Uses per-key `auth.token_ttl` (default 90 days); successful validation refreshes the key with a new per-key TTL for sliding-window expiry. Password resets, password changes, external identity disconnects, and account deletion revoke older credentials by advancing the user's auth generation through durable user events; scans of `session.*` delete matching records as cleanup. |
+| `session.{hmac}` | Typed runtime credential JSON with user ID, optional issuing OAuth client ID, credential kind (`first_party_session` or `oauth_access_token`), presentation (`bearer` or `cookie`), source/request metadata, fresh-auth metadata, and the user auth generation it was issued against. Uses per-key `auth.token_ttl` (default 90 days); successful validation refreshes the key with a new per-key TTL for sliding-window expiry. Password resets, password changes, external identity disconnects, and account deletion revoke older credentials by advancing the user's auth generation through durable user events; scans of `session.*` delete matching records as cleanup. OAuth client blocking independently rejects matching `oauth_access_token` records during validation and scans this namespace to delete them. |
 | `cookie_session.{userId}.{sessionHmac}` | Deprecated legacy cookie-session protobuf (`CookieSession`) retained for validation and cleanup of sessions created before typed runtime credentials. Current login flows write cookie-presentation credentials to `session.{hmac}` instead. Remove this compatibility path after existing sessions age out or after a documented pre-1.0 cutoff. |
-| `grant.{hmac}` | OAuth authorization code JSON with the user auth generation it was issued against. Uses per-key 5-minute TTL and is claimed with a revision-matched delete before exchange validation and token issuance. |
-| `external_identity_create.{hmac}` | Pending account-creation confirmation JSON containing provider identity and optional verified-email/profile hints. The KV key is HMAC-derived from the raw capability token, which is never stored; the record uses a 15-minute TTL. |
+| `oauth_authorize.{hmac}` | Validated pending OAuth authorization request containing the exact callback, PKCE challenge, state, client ID, and privacy-safe client display metadata. The signed browser session carries only the opaque raw handle; the HMAC-derived key and JSON value use a 15-minute per-key TTL. Approval, denial, or already-consented completion claims the record with a revision-matched delete. |
+| `grant.{hmac}` | OAuth authorization code JSON bound to user ID, optional client ID, exact redirect URI, PKCE challenge, and the user auth generation it was issued against. Uses per-key 5-minute TTL and is claimed with a revision-matched delete before exchange validation and token issuance. |
+| `external_identity_create.{hmac}` | Pending account-creation confirmation JSON containing provider identity, optional verified-email/profile hints, and the invitation ID bound by an invite-only browser flow. The KV key is HMAC-derived from the raw capability token, which is never stored; the record uses a 15-minute TTL. |
 | `external_identity_link.{hmac}` | Pending link confirmation JSON containing provider identity and optional verified-email/profile hints, bound to the authenticated user. The KV key is HMAC-derived from the raw capability token, which is never stored; the record uses a 15-minute TTL. |
 | `external_identity_link_start.{hmac}` | One-time browser handoff JSON containing the provider ID, redirect path, and bound user ID. The KV key is HMAC-derived from the raw capability token, which is never stored; the record uses a 15-minute TTL and is deleted when consumed. |
 | `link_preview.{urlHash}` | Versioned cached link preview metadata (protobuf `CachedLinkPreview`) keyed by SHA-256 of the normalized URL. Successful previews use per-key 24-hour TTL; failed fetches use per-key 1-hour TTL. Pre-v1 negative entries refresh once after validated multi-address dialing was added; pre-v1 Mastodon-shaped generic entries also refresh for federated proxy discovery. Current failures and generic fallbacks retain their normal TTL. |
@@ -96,11 +98,12 @@ Token HMAC keys are derived with `[core].secret_key` and the token family as a d
 | Key                                        | Description                                      |
 | ------------------------------------------ | ------------------------------------------------ |
 | `presence.{userId}`                        | Serialized `UserPresence` proto for the user's live status and manual-selection flag; per-key 60s TTL |
-| `lease.{name}`                             | Ephemeral coordination record. Current names are `livekit_reconciler`, `asset_cleanup`, `projection-snapshot-threads`, and `projection-snapshot-expiry`. The expiry record is retained as a 24-hour cooldown after successful S3 cleanup; the others identify active worker ownership. |
+| `lease.{name}`                             | Ephemeral coordination record. Current names are `livekit_reconciler`, `projection-snapshot-threads`, and `projection-snapshot-expiry`. The expiry record is retained as a 24-hour cooldown after successful S3 cleanup; the others identify active worker ownership. |
 | `livekit.reconciliation.list_failures`      | Shared consecutive LiveKit listing failure counter reset by any successful elected reconciliation pass |
-| `asset_cleanup.status`                     | Privacy-safe JSON heartbeat from the elected physical asset-deletion worker. Records worker ownership, initial-scan/pass state, pending retry count and age, last pass/success times, and the last inspected EVT sequence. |
 
-`MEMORY_CACHE` uses memory storage and is neither persisted nor backed up.
+`MEMORY_CACHE` uses memory storage and is neither persisted nor backed up. The
+NATS recovery gate recreates the bucket after a full server restart before the
+replica returns to readiness.
 
 Presence uses per-key TTL with a 30-second client refresh and `LimitMarkerTTL`,
 so NATS emits delete markers on expiry. A single per-process **PresenceHub**
@@ -155,7 +158,7 @@ Notes: Only created when `[core.assets.cache]` is enabled in config. Uses TTL fo
 | `attachments/{assetId}` | Message attachment originals and derivative binaries         |
 | `instance/{assetId}`    | Server-scoped assets: user avatars, server branding images, and link-preview images |
 
-Attachment upload storage: chunked uploads first store temporary `asset-upload.*` chunks in `SERVER_ASSETS`. Completion verifies the full SHA-256, stores the final attachment in NATS or S3, records SHA-256/uploader/pending-expiry/video hints in `AssetCreatedEvent`, and deletes temporary chunks. Completed but unclaimed pending attachment assets expire after 24 hours unless a message body claims them.
+Attachment upload storage: chunked uploads first store temporary `asset-upload.*` chunks in `SERVER_ASSETS`. Completion verifies the full SHA-256, stores the final asset in NATS or S3, records SHA-256/uploader/pending-expiry/video hints in `AssetCreatedEvent`, and deletes temporary chunks. Completed but unattached pending assets expire after 24 hours unless a message attaches them.
 
 ### Asset storage and ownership
 
@@ -166,8 +169,8 @@ any configured `path_prefix` applied only at the S3 boundary. Object headers
 hold Content-Type and the original filename where available.
 
 S2 compression is enabled for `SERVER_ASSETS`. `MediaModel` owns binary storage
-and serving helpers. `AssetModel` owns durable lifecycle facts and elected
-message-asset deletion recovery.
+and serving helpers. `AssetModel` owns durable lifecycle facts and shared
+durable message-asset deletion recovery.
 
 Asset metadata is created in `AssetCreatedEvent` on
 `evt.asset.{assetId}.asset_created`. Room scope and ownership context live on
@@ -184,9 +187,9 @@ the outer and quoted posts shares one fetch budget. Each record identifies wheth
 
 ### Asset lifecycle and compatibility
 
-The `asset_cleanup` lease holder incrementally replays canonical
-`AssetDeletedEvent` facts. It locates creation metadata by asset ID and
-idempotently deletes source and derivative bytes plus transform-cache entries.
+The shared `chatto-asset-cleanup-v1` consumer delivers canonical
+`AssetDeletedEvent` facts across replicas. Handlers locate creation metadata by asset ID and
+idempotently delete source and derivative bytes plus transform-cache entries.
 Beta room-scoped histories without a canonical asset aggregate remain readable
 by projections but are not guessed at by the cleanup worker.
 
@@ -195,7 +198,7 @@ projection also reads beta-era `evt.room.{roomId}.asset_*` facts, allowing 0.1.0
 histories to replay without a stream rewrite.
 
 After appending creation and processing-started events, message posting asks
-the process-local video service to start video or animated-GIF processing.
+the durable asset-processing queue to start video or animated-GIF processing.
 There is no transient NATS Core worker subject or `video_processed` live
 signal. Boot recovery derives missed work from EVT projections and calls the
 same local path.

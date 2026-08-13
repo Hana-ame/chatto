@@ -1,11 +1,14 @@
 {
-  "$schema": "https://inlang.com/schema/inlang-message-format",
   "composer": {
     "attach_file": "ファイルを添付",
     "send": "メッセージを送信",
+    "send_label": "送信",
     "send_enter": "メッセージを送信（Enter）",
     "send_ctrl_enter": "メッセージを送信 (Ctrl/Cmd+Enter)",
     "also_send_to_channel": "チャンネルにも送信します",
+    "post_as_thread": "スレッドとして投稿",
+    "thread_label": "スレッド",
+    "echo_label": "エコー",
     "replying_to": "返信中",
     "esc_to_cancel": "キャンセルします",
     "editing": "メッセージを編集中",
@@ -21,6 +24,10 @@
     "drop_files_title": "ここにファイルをドロップします",
     "drop_files_subtitle": "画像と動画がメッセージに追加されます",
     "send_failed": "メッセージの送信に失敗しました",
+    "slow_mode_ready": "低速モード：{interval}ごとに1件のメッセージ。",
+    "slow_mode_waiting": "低速モード：あと{countdown}で再送信できます。",
+    "slow_mode_bypassed": "低速モード：{interval}（あなたは対象外です）。",
+    "slow_mode_rejected": "低速モードが有効です。次のメッセージを送信するまでお待ちください。",
     "edit_failed": "メッセージの編集に失敗しました",
     "upload": {
       "preparing": "準備中…",

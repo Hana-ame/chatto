@@ -17,7 +17,7 @@
     createTypingIndicator
   } from '$lib/hooks';
   import { appState } from '$lib/state/globals.svelte';
-  import * as m from '$lib/i18n/messages';
+  import { m } from '$lib/i18n/messages';
   import {
     createComposerContext,
     createMentionRoles,
@@ -28,9 +28,10 @@
     DEFAULT_ROOM_PERMISSIONS
   } from '$lib/state/room';
   import { onRoomMessageMutated } from '$lib/state/room/messageMutationEvents';
-  import { getAppUiState } from '$lib/state/appUi.svelte';
+  import { getAppUiState, getRoomSidebarPresentation } from '$lib/state/appUi.svelte';
   import { useServerScope } from '$lib/state/server/scope.svelte';
   import { MessageSearchState } from '$lib/state/server/messageSearch.svelte';
+  import { threadPaneWidth } from '$lib/state/threadPaneWidth.svelte';
   import { getLiveDisplayName } from '$lib/state/userProfiles.svelte';
   import { resolve } from '$app/paths';
   import { serverIdToSegment } from '$lib/navigation';
@@ -81,6 +82,26 @@
   const serverInfo = $derived(stores.serverInfo);
   const appUi = getAppUiState();
   const desktopRoomLayout = new MediaQuery('(min-width: 1024px)', false);
+  const THREAD_PANE_SPLIT_MIN_WIDTH = 768;
+  let splitThreadLayout = $state(false);
+
+  const observeThreadLayout: Attachment<HTMLElement> = (element) => {
+    const update = (width: number) => {
+      splitThreadLayout = width >= THREAD_PANE_SPLIT_MIN_WIDTH;
+    };
+    update(element.getBoundingClientRect().width);
+
+    let frame = 0;
+    const observer = new ResizeObserver(([entry]) => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => update(entry.contentRect.width));
+    });
+    observer.observe(element);
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
+  };
 
   const navigation = new RoomNavigationState();
 
@@ -136,6 +157,10 @@
 
   // --- Extracted hooks ---
   const room = useRoomData(() => ({ roomId }));
+  const supportsPinnedMessages = $derived(serverInfo.supportsFeature('pinnedMessages'));
+  const roomPinsStore = $derived(
+    room.roomData && !room.isDM && supportsPinnedMessages ? stores.pinsForRoom(roomId) : null
+  );
 
   $effect(() => {
     const currentRoomId = roomId;
@@ -155,8 +180,23 @@
   const unread = useRoomUnread(() => ({ roomId, events: roomMessageStore.rootEvents }));
 
   // Room permissions — derived reactively, no $effect needed
-  let permissions = $derived(room.roomData ?? DEFAULT_ROOM_PERMISSIONS);
+  let permissions = $derived({
+    ...(room.roomData ?? DEFAULT_ROOM_PERMISSIONS),
+    canViewPinnedMessages: Boolean(roomPinsStore),
+    canPinMessages:
+      Boolean(room.roomData) &&
+      !room.isDM &&
+      !room.roomData?.room.archived &&
+      Boolean(roomPinsStore) &&
+      Boolean(room.roomData?.canManageRoom)
+  });
   let composerCanAttach = $derived(room.roomData === undefined ? true : permissions.canAttach);
+  let composerCanCreateThread = $derived(
+    !room.isDM &&
+      permissions.canPostMessage &&
+      permissions.canPostInThread &&
+      serverInfo.supportsFeature('threadCreation')
+  );
 
   createRoomPermissions(() => permissions);
 
@@ -176,8 +216,8 @@
       roomData: room.roomData,
       isDM: room.isDM,
       dmData: room.dmData,
-      directMessageLabel: m['room.title.direct_message'](),
-      currentUserLabel: m['common.you'](),
+      directMessageLabel: m('room.title.direct_message'),
+      currentUserLabel: m('common.you'),
       getDisplayName: getLiveDisplayName
     })
   );
@@ -246,7 +286,7 @@
       const jumped = await jumpState.jumpToMessage(eventId);
       if (!serverScope.isCurrent() || targetRoomId !== roomId) return;
       if (!jumped && navigation.failMainHighlight(requestId, eventId)) {
-        toast.error(m['room.jump_failed']());
+        toast.error(m('room.jump_failed'));
       }
     });
   }
@@ -297,7 +337,8 @@
       room.isDM,
       appUi.activeDesktopRoomSidebarPanel,
       showVoiceCall,
-      messageSearchAvailable
+      messageSearchAvailable,
+      supportsPinnedMessages
     )
   );
   const mobileRoomSidebarPanel = $derived(
@@ -305,7 +346,8 @@
       room.isDM,
       appUi.mobileRoomSidebarPanel,
       showVoiceCall,
-      messageSearchAvailable
+      messageSearchAvailable,
+      supportsPinnedMessages
     )
   );
   const roomFilesPanelActive = $derived(
@@ -315,8 +357,20 @@
       mobileRoomSidebarPanel
     ) === 'files'
   );
+  const roomPinsPanelActive = $derived(
+    visibleRoomSidebarPanel(
+      desktopRoomLayout.current,
+      activeRoomSidebarPanel,
+      mobileRoomSidebarPanel
+    ) === 'pins'
+  );
   const roomSidebarTogglePanels = $derived(
-    roomSidebarPanelsForRoom(room.isDM, showVoiceCall, messageSearchAvailable)
+    roomSidebarPanelsForRoom(
+      room.isDM,
+      showVoiceCall,
+      messageSearchAvailable,
+      supportsPinnedMessages
+    )
   );
   const hasActiveRoomCall = $derived(
     stores.activeCallRooms.has(roomId) || stores.voiceCall.isInCall(roomId)
@@ -332,6 +386,7 @@
     loading: room.isRoomLoading,
     searchStore: roomMessageSearchStore,
     filesStore: roomFilesStore,
+    pinsStore: roomPinsStore ?? undefined,
     livekitUrl: serverInfo.livekitUrl ?? undefined,
     canBanRoomMembers: canBanMembersFromRoomSidebar(room.isDM, room.roomData?.canBanRoomMembers),
     currentUserId: currentUser.user?.id ?? null,
@@ -360,6 +415,16 @@
     if (active) return untrack(() => store.retain());
   };
 
+  const syncRoomPins: Attachment = () => {
+    const store = roomPinsStore;
+    if (!store) return;
+    return untrack(() => store.retain());
+  };
+
+  $effect(() => {
+    if (roomPinsPanelActive) roomPinsStore?.markSeen();
+  });
+
   const syncRoomCallWide: Attachment = () => {
     const active = hasActiveRoomCall;
     const serverId = activeServerId;
@@ -373,6 +438,10 @@
 
   function toggleDesktopRoomSidebarPanel(panel: RoomSidebarPanel): void {
     appUi.toggleDesktopRoomSidebarPanel(panel);
+  }
+
+  function openRoomCall(): void {
+    appUi.requestRoomSidebarPanel(activeServerId, roomId, 'call', getRoomSidebarPresentation());
   }
 
   function closeDesktopRoomSidebarPanel(): void {
@@ -432,6 +501,14 @@
     if (closeMobile) appUi.closeMobileRoomSidebarPanel();
   }
 
+  function openPinnedMessage(
+    messageEventId: string,
+    threadRootEventId: string | null,
+    closeMobile = false
+  ): void {
+    openFileMessage(messageEventId, threadRootEventId, closeMobile);
+  }
+
   // Drop zone state for drag-and-drop image uploads
   let isDraggingFiles = $state(false);
   let composerApi = $state<MessageComposerApi | null>(null);
@@ -485,7 +562,7 @@
       return;
     }
 
-    if (!threadId || e.button !== 0) return;
+    if (!threadId || splitThreadLayout || e.button !== 0) return;
     const target = e.target as HTMLElement;
     if (target.closest('[data-testid="thread-pane"], dialog')) return;
     // A thread is an overlay over the room view, so only the dimmed room
@@ -515,23 +592,27 @@
     class="flex min-h-0 min-w-0 flex-1"
     {@attach syncRoomMembers}
     {@attach syncRoomFiles}
+    {@attach syncRoomPins}
     {@attach syncRoomCallWide}
   >
     <div
       class={[
-        'relative flex min-h-0 min-w-0 flex-1 overflow-hidden',
+        '@container relative flex min-h-0 min-w-0 flex-1 overflow-hidden',
         isDesktopCallMaximized ? 'lg:hidden' : ''
       ]}
       data-testid="room-view-region"
+      data-thread-presentation={splitThreadLayout ? 'split' : 'overlay'}
       data-thread-dismiss-surface
+      {@attach observeThreadLayout}
     >
       <div
         class={[
           'relative flex min-h-0 min-w-0 flex-1 flex-col transition-opacity duration-200',
-          threadId ? 'opacity-30' : '',
+          threadId ? 'opacity-30 @min-[768px]:opacity-100' : '',
           mobileRoomSidebarPanel ? 'max-lg:opacity-30' : ''
         ]}
-        inert={threadId || mobileRoomSidebarPanel ? true : undefined}
+        data-testid="room-main-pane"
+        inert={(threadId && !splitThreadLayout) || mobileRoomSidebarPanel ? true : undefined}
         {@attach roomDropZone}
       >
         <DropZoneOverlay visible={isDraggingFiles} />
@@ -547,6 +628,7 @@
               activePanel={mobileRoomSidebarPanel}
               panels={roomSidebarTogglePanels}
               hasActiveCall={hasActiveRoomCall}
+              hasUnseenPins={roomPinsStore?.hasUnseen ?? false}
               onToggle={(panel) => appUi.toggleMobileRoomSidebarPanel(panel)}
             />
             <RoomSidebarToggle
@@ -554,6 +636,7 @@
               activePanel={activeRoomSidebarPanel}
               panels={roomSidebarTogglePanels}
               hasActiveCall={hasActiveRoomCall}
+              hasUnseenPins={roomPinsStore?.hasUnseen ?? false}
               onToggle={toggleDesktopRoomSidebarPanel}
             />
             {#if showLeaveRoom}
@@ -569,9 +652,10 @@
                     }
                   })}
                 disabled={leavingRoom}
-                title={m['room.leave.title']()}
+                title={m('room.leave.title')}
               >
-                <span class="pane-header-icon-glyph uil--sign-out-alt" aria-hidden="true"></span>
+                <span class="icon-[uil--sign-out-alt] pane-header-icon-glyph" aria-hidden="true"
+                ></span>
               </button>
             {/if}
           {/snippet}
@@ -583,6 +667,7 @@
           unreadMarkerEventId={unread.unreadMarkerEventId}
           onUnreadMarkerCleared={() => unread.clearUnreadMarker()}
           onOpenThread={openThread}
+          onOpenCall={openRoomCall}
           pendingHighlightId={navigation.pendingMainHighlightId}
           onHighlightComplete={() => navigation.clearMainHighlight()}
           typingUserIds={typingIndicator.userIds}
@@ -593,6 +678,10 @@
           {roomId}
           canPost={permissions.canPostMessage}
           canAttach={composerCanAttach}
+          slowModeSeconds={room.roomData?.room.slowModeSeconds ?? 0}
+          slowModeNextPostAt={room.roomData?.slowModeNextPostAt ?? null}
+          slowModeBypassed={permissions.canManageRoom || permissions.canManageOthersMessage}
+          showCreateThread={composerCanCreateThread}
           inReplyTo={replyState.messageEventId ?? undefined}
           replyDisplayName={replyState.actorDisplayName || undefined}
           replyExcerpt={replyState.excerpt || undefined}
@@ -614,11 +703,12 @@
       {#if threadId && room.roomData}
         {#await loadThreadPane(threadPaneLoadAttempt)}
           <div
-            class="absolute inset-y-0 right-0 z-10 flex min-h-0 w-full min-w-0 flex-col items-center justify-center overflow-hidden border-l border-border bg-background p-4 text-sm text-muted shadow-[-4px_0_12px_rgba(0,0,0,0.15)] sm:w-[90%]"
+            class="absolute inset-y-0 end-0 z-10 flex min-h-0 w-full min-w-0 flex-col items-center justify-center overflow-hidden border-s border-border bg-background p-4 text-sm text-muted inline-end-overlay-shadow sm:w-[90%] @min-[768px]:relative @min-[768px]:inset-auto @min-[768px]:z-auto @min-[768px]:w-[var(--thread-pane-width)] @min-[768px]:shrink-0 @min-[768px]:shadow-none"
             data-testid="thread-pane"
             aria-busy="true"
+            style:--thread-pane-width={`${threadPaneWidth.value}px`}
           >
-            {m['common.loading']()}
+            {m('common.loading')}
           </div>
         {:then { default: ThreadPane }}
           <ThreadPane
@@ -629,6 +719,9 @@
             canPostInThread={room.roomData.canPostInThread}
             canAttach={room.roomData.canAttach}
             canEchoMessage={room.roomData.canEchoMessage && room.roomData.canPostMessage}
+            slowModeSeconds={room.roomData.room.slowModeSeconds}
+            slowModeNextPostAt={room.roomData.slowModeNextPostAt}
+            slowModeBypassed={room.roomData.canManageRoom || room.roomData.canManageOthersMessage}
             highlightEventId={navigation.pendingThreadHighlight}
             pendingQuote={navigation.pendingThreadQuote}
             pendingReply={navigation.pendingThreadReply}
@@ -638,17 +731,23 @@
           />
         {:catch}
           <div
-            class="absolute inset-y-0 right-0 z-10 flex min-h-0 w-full min-w-0 flex-col items-center justify-center gap-3 overflow-hidden border-l border-border bg-background p-4 text-center shadow-[-4px_0_12px_rgba(0,0,0,0.15)] sm:w-[90%]"
+            class="absolute inset-y-0 end-0 z-10 flex min-h-0 w-full min-w-0 flex-col items-center justify-center gap-3 overflow-hidden border-s border-border bg-background p-4 text-center inline-end-overlay-shadow sm:w-[90%] @min-[768px]:relative @min-[768px]:inset-auto @min-[768px]:z-auto @min-[768px]:w-[var(--thread-pane-width)] @min-[768px]:shrink-0 @min-[768px]:shadow-none"
             data-testid="thread-pane"
+            style:--thread-pane-width={`${threadPaneWidth.value}px`}
           >
-            <p class="text-sm text-muted">{m['common.error.network']()}</p>
-            <button
-              type="button"
-              class="btn-secondary"
-              onclick={() => (threadPaneLoadAttempt += 1)}
-            >
-              {m['common.retry']()}
-            </button>
+            <p class="text-sm text-muted">{m('common.error.network')}</p>
+            <div class="flex gap-2">
+              <button
+                type="button"
+                class="btn-secondary"
+                onclick={() => (threadPaneLoadAttempt += 1)}
+              >
+                {m('common.retry')}
+              </button>
+              <button type="button" class="btn-secondary" onclick={closeThread}>
+                {m('room.thread.close')}
+              </button>
+            </div>
           </div>
         {/await}
       {/if}
@@ -663,6 +762,8 @@
                 openFileMessage(messageEventId, threadRootEventId, true),
               onOpenSearchResult: (messageEventId, threadRootEventId) =>
                 openSearchResult(messageEventId, threadRootEventId, true),
+              onOpenPin: (messageEventId, threadRootEventId) =>
+                openPinnedMessage(messageEventId, threadRootEventId, true),
               onClose: () => appUi.closeMobileRoomSidebarPanel()
             }
           : null}
@@ -678,6 +779,7 @@
           maximized: isDesktopCallMaximized,
           onOpenFile: openFileMessage,
           onOpenSearchResult: openSearchResult,
+          onOpenPin: openPinnedMessage,
           onToggleMaximized: toggleDesktopCallWide,
           onClose: closeDesktopRoomSidebarPanel
         }}

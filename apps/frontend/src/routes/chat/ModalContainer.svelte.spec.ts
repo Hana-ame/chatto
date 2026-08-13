@@ -36,7 +36,11 @@ const { mocks } = vi.hoisted(() => ({
     clearLastRoom: vi.fn(),
     removeServer: vi.fn(),
     removeAll: vi.fn(),
-    clearServerAuthentication: vi.fn()
+    clearServerAuthentication: vi.fn(),
+    resetToOrigin: vi.fn(),
+    signOutAuthling: vi.fn(),
+    signOutCurrentAccount: vi.fn(),
+    signOutAllAccount: vi.fn()
   }
 }));
 
@@ -93,9 +97,17 @@ vi.mock('$lib/state/server/registry.svelte', () => ({
     getServer: vi.fn((id: string) => mocks.servers.find((server) => server.id === id)),
     isOriginServer: vi.fn((id: string) => mocks.originServer?.id === id),
     isAuthenticated: vi.fn((id: string) => mocks.authenticated[id] === true),
+    firstAuthenticatedServerId: vi.fn((excludedId: string) => {
+      const originId = mocks.originServer?.id;
+      if (originId && originId !== excludedId && mocks.authenticated[originId]) return originId;
+      return mocks.servers.find(
+        (server) => server.id !== excludedId && mocks.authenticated[server.id]
+      )?.id;
+    }),
     clearServerAuthentication: mocks.clearServerAuthentication,
     removeServer: mocks.removeServer,
     removeAll: mocks.removeAll,
+    resetToOrigin: mocks.resetToOrigin,
     get servers() {
       return mocks.servers;
     },
@@ -142,6 +154,17 @@ vi.mock('$lib/auth/signOut', () => ({
   signOutServer: mocks.signOutServer,
   signOutServers: mocks.signOutServers,
   hardRedirectAfterSignOut: mocks.hardRedirectAfterSignOut
+}));
+
+vi.mock('$lib/accountData/signOut', () => ({
+  signOutAccountData: mocks.signOutAuthling
+}));
+
+vi.mock('$lib/state/clientAccount', () => ({
+  clientAccount: {
+    signOutCurrentServer: mocks.signOutCurrentAccount,
+    signOutAllServers: mocks.signOutAllAccount
+  }
 }));
 
 vi.mock('$lib/attachments/attachmentUrls', () => ({
@@ -220,6 +243,39 @@ beforeEach(() => {
   });
   mocks.signOutServer.mockResolvedValue(new Response('{}', { status: 200 }));
   mocks.signOutServers.mockResolvedValue(undefined);
+  mocks.signOutAuthling.mockResolvedValue(undefined);
+  mocks.signOutCurrentAccount.mockImplementation(async (serverId: string) => {
+    const server = mocks.servers.find((candidate) => candidate.id === serverId);
+    if (!server) return null;
+    const origin = mocks.originServer?.id === serverId;
+    if (origin) mocks.beginExplicitSignOutRedirect();
+    await mocks.signOutServer(server, origin).catch(() => undefined);
+    mocks.clearLastRoom(serverId);
+    if (origin) {
+      mocks.clearServerAuthentication(serverId);
+      mocks.notifyLogout();
+      const next = mocks.servers.find(
+        (candidate) => candidate.id !== serverId && mocks.authenticated[candidate.id]
+      );
+      return { kind: 'hard' as const, serverId: next?.id };
+    }
+    mocks.clearServerAuthentication(serverId);
+    const next =
+      mocks.originServer && mocks.authenticated[mocks.originServer.id]
+        ? mocks.originServer
+        : mocks.servers.find(
+            (candidate) => candidate.id !== serverId && mocks.authenticated[candidate.id]
+          );
+    return { kind: 'soft' as const, serverId: next?.id };
+  });
+  mocks.signOutAllAccount.mockImplementation(async () => {
+    mocks.beginExplicitSignOutRedirect();
+    await mocks.signOutServers(mocks.servers, () => false);
+    await mocks.signOutAuthling().catch(() => undefined);
+    mocks.resetToOrigin();
+    mocks.notifyLogout();
+    return { kind: 'hard' as const };
+  });
   mocks.activeServer = 'origin';
   mocks.serverIdParam = '-';
   mocks.originServer = {
@@ -429,7 +485,8 @@ describe('ModalContainer sign out modal', () => {
     await vi.waitFor(() => {
       expect(mocks.signOutServer).toHaveBeenCalledWith(remote, false);
       expect(mocks.clearLastRoom).toHaveBeenCalledWith(remote.id);
-      expect(mocks.removeServer).toHaveBeenCalledWith(remote.id);
+      expect(mocks.clearServerAuthentication).toHaveBeenCalledWith(remote.id);
+      expect(mocks.removeServer).not.toHaveBeenCalled();
       expect(mocks.removeAll).not.toHaveBeenCalled();
       expect(mocks.notifyLogout).not.toHaveBeenCalled();
       expect(mocks.goto).toHaveBeenCalledWith('/chat/-');
@@ -477,10 +534,29 @@ describe('ModalContainer sign out modal', () => {
     await vi.waitFor(() => {
       expect(mocks.beginExplicitSignOutRedirect).toHaveBeenCalledOnce();
       expect(mocks.signOutServers).toHaveBeenCalledWith(mocks.servers, expect.any(Function));
-      expect(mocks.removeAll).toHaveBeenCalledOnce();
+      expect(mocks.signOutAuthling).toHaveBeenCalledOnce();
+      expect(mocks.resetToOrigin).toHaveBeenCalledOnce();
       expect(mocks.notifyLogout).toHaveBeenCalledOnce();
       expect(mocks.hardRedirectAfterSignOut).toHaveBeenCalledWith('/');
       expect(mocks.removeServer).not.toHaveBeenCalled();
+    });
+    expect(mocks.signOutAuthling.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.resetToOrigin.mock.invocationCallOrder[0]
+    );
+  });
+
+  it('finishes all-server sign-out when Authling cleanup fails', async () => {
+    mocks.modal = { type: 'logout' };
+    mocks.signOutAuthling.mockRejectedValueOnce(new Error('Authling is unavailable'));
+
+    const { container } = render(ModalContainer);
+    clickButton(container, 'All Servers');
+
+    await vi.waitFor(() => {
+      expect(mocks.signOutAuthling).toHaveBeenCalledOnce();
+      expect(mocks.resetToOrigin).toHaveBeenCalledOnce();
+      expect(mocks.notifyLogout).toHaveBeenCalledOnce();
+      expect(mocks.hardRedirectAfterSignOut).toHaveBeenCalledWith('/');
     });
   });
 
@@ -502,7 +578,8 @@ describe('ModalContainer sign out modal', () => {
     await vi.waitFor(() => {
       expect(mocks.beginExplicitSignOutRedirect).toHaveBeenCalledOnce();
       expect(mocks.signOutServers).toHaveBeenCalledWith([], expect.any(Function));
-      expect(mocks.removeAll).toHaveBeenCalledOnce();
+      expect(mocks.signOutAuthling).toHaveBeenCalledOnce();
+      expect(mocks.resetToOrigin).toHaveBeenCalledOnce();
       expect(mocks.hardRedirectAfterSignOut).toHaveBeenCalledWith('/');
     });
   });
@@ -525,7 +602,8 @@ describe('ModalContainer sign out modal', () => {
     await vi.waitFor(() => {
       expect(mocks.beginExplicitSignOutRedirect).toHaveBeenCalledOnce();
       expect(mocks.signOutServers).toHaveBeenCalledWith(mocks.servers, expect.any(Function));
-      expect(mocks.removeAll).toHaveBeenCalledOnce();
+      expect(mocks.signOutAuthling).toHaveBeenCalledOnce();
+      expect(mocks.resetToOrigin).toHaveBeenCalledOnce();
       expect(mocks.hardRedirectAfterSignOut).toHaveBeenCalledWith('/');
     });
   });
@@ -608,6 +686,26 @@ describe('ModalContainer remove server modal', () => {
       expect(window.history.back).toHaveBeenCalledOnce();
     });
     expect(mocks.goto).not.toHaveBeenCalled();
+  });
+
+  it('navigates to the origin after removing the active remote server', async () => {
+    const remote = {
+      id: 'remote',
+      url: 'https://remote.example.test',
+      name: 'Remote',
+      token: 'token'
+    };
+    mocks.servers = [mocks.originServer!, remote];
+    mocks.activeServer = 'remote';
+    mocks.modal = { type: 'removeServer', serverId: 'remote', spaceName: 'Remote' };
+
+    const { container } = render(ModalContainer);
+    clickButton(container, 'Remove Server');
+
+    await vi.waitFor(() => {
+      expect(mocks.removeServer).toHaveBeenCalledWith('remote');
+      expect(mocks.goto).toHaveBeenCalledWith('/chat/-');
+    });
   });
 });
 

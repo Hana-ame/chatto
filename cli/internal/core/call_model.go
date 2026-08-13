@@ -15,6 +15,7 @@ import (
 	"github.com/livekit/protocol/livekit"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/twitchtv/twirp"
+	"golang.org/x/sync/errgroup"
 
 	"hmans.de/chatto/internal/config"
 	"hmans.de/chatto/internal/evtstream"
@@ -35,13 +36,20 @@ const (
 	callReconcileLeaseRenewEvery      = 15 * time.Second
 	callReconcileLeaseRetryEvery      = 5 * time.Second
 	liveKitReconcileFailureKey        = "livekit.reconciliation.list_failures"
+	callKeyCleanupConsumerName        = "chatto-call-key-cleanup-v1"
+	callKeyCleanupMaxPending          = 16
+	callKeyCleanupAckWait             = 2 * time.Minute
+	callKeyCleanupRetryDelay          = 30 * time.Second
+	callKeyCleanupHeartbeat           = 30 * time.Second
+	callKeyCleanupAckTimeout          = 5 * time.Second
 )
 
 type liveKitParticipantSnapshot struct {
-	LegacySpaceID string
-	RoomID        string
-	CallID        string
-	UserIDs       []string
+	LegacySpaceID         string
+	RoomID                string
+	CallID                string
+	UserIDs               []string
+	ParticipantIdentities []string
 }
 
 type liveKitParticipantLister interface {
@@ -53,14 +61,15 @@ type liveKitParticipantRemover interface {
 }
 
 type CallModel struct {
-	publisher      *evtstream.Publisher
-	callState      events.ProjectionHandle[*CallStateProjection]
-	callKeys       kms.CallKeyStore
-	livekit        liveKitParticipantLister
-	reconcileLease *lease.Lease
-	memoryCacheKV  jetstream.KeyValue
-	logger         events.Logger
-	keyCleanup     *evtstream.IncrementalEffectConsumer
+	publisher          *evtstream.Publisher
+	callState          events.ProjectionHandle[*CallStateProjection]
+	callKeys           kms.CallKeyStore
+	livekit            liveKitParticipantLister
+	reconcileLease     *lease.Lease
+	memoryCacheKV      jetstream.KeyValue
+	logger             events.Logger
+	keyCleanupConsumer jetstream.Consumer
+	keyCleanupWorker   *events.DurableWorker
 }
 
 type liveKitFailureCleanupSummary struct {
@@ -124,12 +133,39 @@ func NewCallModel(
 		memoryCacheKV:  memoryCacheKV,
 		logger:         logger,
 	}
-	model.keyCleanup = evtstream.NewIncrementalEffectConsumer(
-		publisher,
-		evtstream.RoomEventTypeFilter(evtstream.EventCallEnded),
-		model.cleanupEndedCallKey,
-	)
 	return model
+}
+
+func (s *CallModel) configureKeyCleanup(ctx context.Context, stream jetstream.Stream) error {
+	consumer, err := stream.CreateOrUpdateConsumer(ctx, jetstream.ConsumerConfig{
+		Name:            callKeyCleanupConsumerName,
+		Durable:         callKeyCleanupConsumerName,
+		Description:     "Shared durable queue for ended Chatto call-key deletion",
+		DeliverPolicy:   jetstream.DeliverAllPolicy,
+		AckPolicy:       jetstream.AckExplicitPolicy,
+		AckWait:         callKeyCleanupAckWait,
+		MaxDeliver:      -1,
+		FilterSubject:   evtstream.RoomEventTypeFilter(evtstream.EventCallEnded),
+		ReplayPolicy:    jetstream.ReplayInstantPolicy,
+		MaxAckPending:   callKeyCleanupMaxPending,
+		MaxRequestBatch: callKeyCleanupMaxPending,
+	})
+	if err != nil {
+		return fmt.Errorf("create call-key cleanup consumer: %w", err)
+	}
+	worker, err := events.NewDurableWorker(consumer, s.processKeyCleanupDelivery, events.DurableWorkerOptions{
+		MaxConcurrent:     callKeyCleanupMaxPending,
+		RetryDelay:        callKeyCleanupRetryDelay,
+		AckTimeout:        callKeyCleanupAckTimeout,
+		HeartbeatInterval: callKeyCleanupHeartbeat,
+		Logger:            s.logger,
+	})
+	if err != nil {
+		return fmt.Errorf("configure call-key cleanup worker: %w", err)
+	}
+	s.keyCleanupConsumer = consumer
+	s.keyCleanupWorker = worker
+	return nil
 }
 
 func (s *CallModel) waitFor(ctx context.Context, pos events.StreamPosition) error {
@@ -240,13 +276,26 @@ func (c *liveKitRoomClient) ListCallParticipants(ctx context.Context) ([]liveKit
 			return nil, err
 		}
 		userIDs := make([]string, 0, len(participantsResp.GetParticipants()))
+		participantIdentities := make([]string, 0, len(participantsResp.GetParticipants()))
 		for _, participant := range participantsResp.GetParticipants() {
-			if participant.GetIdentity() != "" {
-				userIDs = append(userIDs, participant.GetIdentity())
+			identity := participant.GetIdentity()
+			if identity == "" {
+				continue
+			}
+			participantIdentities = append(participantIdentities, identity)
+			if !IsCallMediaPublisher(participant.GetMetadata()) {
+				userIDs = append(userIDs, identity)
 			}
 		}
 		sort.Strings(userIDs)
-		out = append(out, liveKitParticipantSnapshot{LegacySpaceID: legacySpaceID, RoomID: roomID, CallID: callID, UserIDs: userIDs})
+		sort.Strings(participantIdentities)
+		out = append(out, liveKitParticipantSnapshot{
+			LegacySpaceID:         legacySpaceID,
+			RoomID:                roomID,
+			CallID:                callID,
+			UserIDs:               userIDs,
+			ParticipantIdentities: participantIdentities,
+		})
 	}
 	return out, nil
 }
@@ -304,25 +353,51 @@ type CallAccessMaterial struct {
 }
 
 func (s *CallModel) GetAccessMaterial(ctx context.Context, roomID string) (CallAccessMaterial, error) {
+	return s.getAccessMaterial(ctx, roomID, "")
+}
+
+// GetParticipantAccessMaterial resolves access for the active call only when
+// userID participates in that same generation before and after the key read.
+func (s *CallModel) GetParticipantAccessMaterial(ctx context.Context, roomID, userID string) (CallAccessMaterial, error) {
+	return s.getAccessMaterial(ctx, roomID, userID)
+}
+
+func (s *CallModel) getAccessMaterial(ctx context.Context, roomID, requiredParticipantID string) (CallAccessMaterial, error) {
 	if s.callKeys == nil {
 		return CallAccessMaterial{}, fmt.Errorf("call key store is not initialized")
 	}
-	call, ok := s.callState.Projection().ActiveCall(roomID)
-	if !ok || call.CallID == "" || call.E2EEKeyRef == "" {
+	snapshot := s.callState.Projection().RoomSnapshot(roomID)
+	call := snapshot.Call
+	if call.CallID == "" || call.E2EEKeyRef == "" {
 		return CallAccessMaterial{}, fmt.Errorf("no active voice call for room %s: %w", roomID, ErrNotFound)
+	}
+	if requiredParticipantID != "" && !callSnapshotHasParticipant(snapshot, requiredParticipantID) {
+		return CallAccessMaterial{}, fmt.Errorf("user does not participate in active voice call for room %s: %w", roomID, ErrCallParticipationRequired)
 	}
 	key, err := s.callKeys.GetCallKey(ctx, call.E2EEKeyRef)
 	if err != nil {
 		return CallAccessMaterial{}, fmt.Errorf("read call E2EE key: %w", err)
 	}
-	current, ok := s.callState.Projection().ActiveCall(roomID)
-	if !ok || current.CallID != call.CallID || current.E2EEKeyRef != call.E2EEKeyRef {
+	current := s.callState.Projection().RoomSnapshot(roomID)
+	if current.Call.CallID != call.CallID || current.Call.E2EEKeyRef != call.E2EEKeyRef {
 		return CallAccessMaterial{}, fmt.Errorf("active voice call changed while resolving access for room %s: %w", roomID, ErrNotFound)
+	}
+	if requiredParticipantID != "" && !callSnapshotHasParticipant(current, requiredParticipantID) {
+		return CallAccessMaterial{}, fmt.Errorf("user left active voice call while resolving access for room %s: %w", roomID, ErrCallParticipationRequired)
 	}
 	return CallAccessMaterial{
 		CallID:  call.CallID,
 		E2EEKey: key,
 	}, nil
+}
+
+func callSnapshotHasParticipant(snapshot CallRoomSnapshot, userID string) bool {
+	for _, participant := range snapshot.Participants {
+		if participant.UserID == userID && participant.CallID == snapshot.Call.CallID {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *CallModel) GetE2EEKey(ctx context.Context, roomID string) (string, error) {
@@ -357,20 +432,35 @@ func (s *CallModel) cleanupQueuedCallKey(ctx context.Context, keyRef string) err
 	return nil
 }
 
-func (s *CallModel) cleanupEndedCallKeys(ctx context.Context) error {
-	return s.keyCleanup.Consume(ctx)
-}
-
 func (s *CallModel) cleanupEndedCallKey(ctx context.Context, event *corev1.Event) error {
 	callID := event.GetVoiceCallEnded().GetCallId()
 	if callID == "" {
 		return nil
 	}
+	if s.callKeys == nil {
+		return fmt.Errorf("call key store is not initialized")
+	}
 	keyRef := kms.CallKeyRef(callID)
-	if err := s.cleanupQueuedCallKey(ctx, keyRef); err != nil {
+	// Durable handlers must retain the worker context so shutdown can hand the
+	// delivery to another replica promptly. Request-path cleanup deliberately
+	// uses cleanupQueuedCallKey's detached context instead.
+	if err := s.callKeys.ShredCallKey(ctx, keyRef); err != nil {
 		return fmt.Errorf("shred ended call key %s: %w", keyRef, err)
 	}
 	return nil
+}
+
+func (s *CallModel) processKeyCleanupDelivery(ctx context.Context, delivery events.DurableDelivery) error {
+	event, err := decodeDurableCoreDelivery(delivery)
+	if err != nil {
+		return err
+	}
+	ended := event.GetVoiceCallEnded()
+	roomID, ok := evtstream.ParseRoomSubject(delivery.Subject)
+	if !ok || ended == nil || ended.GetCallId() == "" || ended.GetRoomId() != roomID {
+		return events.TerminateDelivery("invalid ended-call key cleanup request", errors.New("call-ended subject and payload do not match"))
+	}
+	return s.cleanupEndedCallKey(ctx, event)
 }
 
 func (s *CallModel) AppendJoined(ctx context.Context, roomID, userID string, source corev1.CallParticipantEventSource) error {
@@ -667,7 +757,6 @@ func (s *CallModel) reconcileWithLiveKit(ctx context.Context, cleanupContext fun
 	if err := s.resetLiveKitListFailures(ctx); err != nil {
 		return fmt.Errorf("reset LiveKit listing failures: %w", err)
 	}
-	s.cleanupEndedCallKeysBestEffort(ctx)
 	observedRooms := make(map[string]struct{}, len(snapshots))
 	for _, snapshot := range snapshots {
 		if !s.liveKitSnapshotMatchesActiveCall(snapshot) {
@@ -730,11 +819,15 @@ func (s *CallModel) cleanupUnmatchedLiveKitSnapshot(ctx context.Context, snapsho
 		return err
 	}
 	keyRef := kms.CallKeyRef(snapshot.CallID)
-	for _, userID := range snapshot.UserIDs {
-		if userID == "" {
+	identities := snapshot.ParticipantIdentities
+	if identities == nil {
+		identities = snapshot.UserIDs
+	}
+	for _, identity := range identities {
+		if identity == "" {
 			continue
 		}
-		if err := remover.RemoveCallParticipant(ctx, snapshot.LegacySpaceID, snapshot.RoomID, snapshot.CallID, userID); err != nil {
+		if err := remover.RemoveCallParticipant(ctx, snapshot.LegacySpaceID, snapshot.RoomID, snapshot.CallID, identity); err != nil {
 			return fmt.Errorf("remove participant from unmatched LiveKit call: %w", err)
 		}
 	}
@@ -854,36 +947,19 @@ func (s *CallModel) endActiveCallsAfterLiveKitFailure(ctx context.Context) liveK
 }
 
 func (s *CallModel) Run(ctx context.Context) error {
-	if s.livekit == nil {
+	if s == nil || s.keyCleanupWorker == nil {
+		return fmt.Errorf("call-key cleanup worker is not configured")
+	}
+	g, gctx := errgroup.WithContext(ctx)
+	g.Go(func() error { return s.keyCleanupWorker.Run(gctx) })
+	if s.livekit != nil {
 		if s.reconcileLease != nil {
-			return s.reconcileLease.Run(ctx, s.runCallKeyCleanupLoop)
-		}
-		return s.runCallKeyCleanupLoop(ctx)
-	}
-	if s.reconcileLease != nil {
-		return s.reconcileLease.Run(ctx, s.runReconciliationLoop)
-	}
-	return s.runReconciliationLoop(ctx)
-}
-
-func (s *CallModel) runCallKeyCleanupLoop(ctx context.Context) error {
-	s.cleanupEndedCallKeysBestEffort(ctx)
-	ticker := time.NewTicker(callReconcileInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
-			s.cleanupEndedCallKeysBestEffort(ctx)
+			g.Go(func() error { return s.reconcileLease.Run(gctx, s.runReconciliationLoop) })
+		} else {
+			g.Go(func() error { return s.runReconciliationLoop(gctx) })
 		}
 	}
-}
-
-func (s *CallModel) cleanupEndedCallKeysBestEffort(ctx context.Context) {
-	if err := s.cleanupEndedCallKeys(ctx); err != nil && s.logger != nil {
-		s.logger.Warn("Failed to clean up ended call keys; will retry", "error", err)
-	}
+	return g.Wait()
 }
 
 func (s *CallModel) runReconciliationLoop(ctx context.Context) error {

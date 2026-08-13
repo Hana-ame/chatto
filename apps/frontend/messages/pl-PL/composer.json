@@ -1,11 +1,14 @@
 {
-  "$schema": "https://inlang.com/schema/inlang-message-format",
   "composer": {
     "attach_file": "Załącz plik",
     "send": "Wyślij wiadomość",
+    "send_label": "Wyślij",
     "send_enter": "Wyślij wiadomość (Enter)",
     "send_ctrl_enter": "Wyślij wiadomość (Ctrl/Cmd+Enter)",
     "also_send_to_channel": "Wyślij także do kanału",
+    "post_as_thread": "Opublikuj jako wątek",
+    "thread_label": "Wątek",
+    "echo_label": "Echo",
     "replying_to": "Odpowiadanie na",
     "esc_to_cancel": ", aby anulować",
     "editing": "Edytowanie wiadomości",
@@ -21,6 +24,10 @@
     "drop_files_title": "Upuść pliki tutaj",
     "drop_files_subtitle": "Zdjęcia i filmy zostaną dodane do Twojej wiadomości",
     "send_failed": "Nie udało się wysłać wiadomości",
+    "slow_mode_ready": "Tryb powolny: jedna wiadomość co {interval}.",
+    "slow_mode_waiting": "Tryb powolny: wyślij ponownie za {countdown}.",
+    "slow_mode_bypassed": "Tryb powolny: {interval} (ograniczenie Cię nie dotyczy).",
+    "slow_mode_rejected": "Tryb powolny jest aktywny. Zaczekaj przed wysłaniem kolejnej wiadomości.",
     "edit_failed": "Nie udało się edytować wiadomości",
     "upload": {
       "preparing": "Przygotowywanie…",

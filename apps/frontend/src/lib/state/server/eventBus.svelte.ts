@@ -33,6 +33,7 @@ const INACTIVE_POLL_INTERVAL_MS = 60_000;
 const INACTIVE_POLL_JITTER_MS = 10_000;
 const INACTIVE_POLL_TIMEOUT_MS = 30_000;
 const HYDRATION_RETRY_FALLBACK_MS = 1_000;
+const FATAL_REALTIME_CLOSE_CODE = 4000;
 
 type RealtimeMessageEvent = { data: ArrayBuffer | Blob | Uint8Array };
 type RealtimeCloseEvent = { code?: number; reason?: string };
@@ -54,6 +55,8 @@ export type RealtimeServerRegistration = {
   connection: ServerConnection;
   projectionSupported: boolean;
   sync: RealtimeProjectionSyncState;
+  /** Canonical store reducer that must be present before transport startup. */
+  projectionHandler?: ProjectionHandler;
 };
 
 type TransportController = {
@@ -159,16 +162,19 @@ class EventBusManager {
     serverId: string,
     serverConnection: ServerConnection,
     realtimeProjectionSupported = true,
-    sync = new RealtimeProjectionSyncState()
+    sync = new RealtimeProjectionSyncState(),
+    projectionHandler?: ProjectionHandler
   ): TransportController {
     const existing = this.#controllers.get(serverId);
     if (existing) {
+      if (projectionHandler) this.#buses.get(serverId)?.projectionHandlers.add(projectionHandler);
       existing.update(realtimeProjectionSupported);
       return existing;
     }
 
     const handlers = new SvelteSet<EventHandler>();
     const projectionHandlers = new SvelteSet<ProjectionHandler>();
+    if (projectionHandler) projectionHandlers.add(projectionHandler);
     const bus: EventBus = { handlers, projectionHandlers };
     let projectionSupported = realtimeProjectionSupported;
     let mode: TransportMode = 'dormant';
@@ -399,7 +405,7 @@ class EventBusManager {
                 dispatchProjectionEvent(frame.frame.value);
               } catch (error) {
                 console.error(`[eventBus:${serverId}] projection reducer failed`, error);
-                nextSocket.close(1011, 'projection reducer failed');
+                nextSocket.close(FATAL_REALTIME_CLOSE_CODE, 'projection reducer failed');
                 return;
               }
               sync.acceptProjectionEvent(
@@ -458,7 +464,7 @@ class EventBusManager {
                 return;
               }
               if (frame.frame.value.fatal) {
-                nextSocket.close(1011, frame.frame.value.code || 'fatal realtime error');
+                nextSocket.close(FATAL_REALTIME_CLOSE_CODE, 'fatal realtime error');
               }
               return;
             case 'close':
@@ -648,7 +654,8 @@ class EventBusManager {
         registration.serverId,
         registration.connection,
         registration.projectionSupported,
-        registration.sync
+        registration.sync,
+        registration.projectionHandler
       );
     }
     // Close the previous live transport before opening the next one so a

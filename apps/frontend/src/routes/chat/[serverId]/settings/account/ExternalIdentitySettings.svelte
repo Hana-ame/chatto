@@ -1,5 +1,7 @@
 <script lang="ts">
   import { Code, ConnectError } from '@connectrpc/connect';
+  import { createMutation, createQuery } from '@tanstack/svelte-query';
+  import { onDestroy } from 'svelte';
   import {
     beginExplicitSignOutRedirect,
     cancelExplicitSignOutRedirect,
@@ -13,9 +15,13 @@
     type ExternalIdentityProviderInfo,
     type LinkedExternalIdentityInfo
   } from '$lib/api-client/externalIdentities';
-  import * as m from '$lib/i18n/messages';
+  import { m } from '$lib/i18n/messages';
+  import { registerServerQueryCacheRemovalListener } from '$lib/query/cacheRegistry';
+  import { queryClient } from '$lib/query/client';
+  import { settingsQueryKeys } from '$lib/query/settings';
   import { serverRegistry } from '$lib/state/server/registry.svelte';
   import { useServerScope } from '$lib/state/server/scope.svelte';
+  import type { ServerConnection } from '$lib/state/server/serverConnection.svelte';
   import { ConfirmDialog, Dialog, FormSection, Hint } from '$lib/ui';
   import { Button, FormError, TextInput } from '$lib/ui/form';
 
@@ -28,19 +34,55 @@
   } = $props();
 
   const serverScope = useServerScope();
-  const serverId = $derived(serverScope.serverId);
-  const connection = $derived(serverScope.connection);
+  let componentActive = true;
+  let privacyGeneration = 0;
+  const removeCacheRemovalListener = registerServerQueryCacheRemovalListener((removedServerId) => {
+    if (removedServerId === serverScope.serverId) privacyGeneration += 1;
+  });
 
-  let loadSerial = 0;
-  let providers = $state.raw<ExternalIdentityProviderInfo[]>([]);
-  let linkedIdentities = $state.raw<LinkedExternalIdentityInfo[]>([]);
-  let loading = $state(true);
-  let error = $state('');
-  let linkingProviderId = $state('');
+  onDestroy(() => {
+    componentActive = false;
+    privacyGeneration += 1;
+    removeCacheRemovalListener();
+  });
+
+  type IdentityMutationScope = {
+    serverId: string;
+    connection: ServerConnection;
+    privacyGeneration: number;
+  };
+  type LinkVariables = IdentityMutationScope & {
+    provider: ExternalIdentityProviderInfo;
+    currentPassword?: string;
+  };
+  type DisconnectVariables = IdentityMutationScope & {
+    subjectHash: string;
+    providerLabel: string;
+    currentPassword?: string;
+  };
+
+  const identitiesQuery = createQuery(
+    () => {
+      const activeServerId = serverScope.serverId;
+      const activeConnection = serverScope.connection;
+      return {
+        queryKey: settingsQueryKeys.externalIdentities(activeServerId, activeConnection),
+        queryFn: ({ signal }) =>
+          activeConnection.getAPI(createExternalIdentityAPI).list({ signal }),
+        // A provider callback returns to this route and must not reuse the pre-link snapshot.
+        refetchOnMount: 'always' as const
+      };
+    },
+    () => queryClient
+  );
+
+  const providers = $derived(identitiesQuery.data?.providers ?? []);
+  const linkedIdentities = $derived(identitiesQuery.data?.linkedIdentities ?? []);
+  const loading = $derived(identitiesQuery.isPending && !identitiesQuery.data);
+  let actionError = $state('');
   let linkFreshAuthProvider = $state<ExternalIdentityProviderInfo | null>(null);
   let linkCurrentPassword = $state('');
   let linkFreshAuthError = $state('');
-  let disconnectingSubjectHash = $state('');
   let disconnectTarget = $state<{ subjectHash: string; providerLabel: string } | null>(null);
   let disconnectFreshAuthTarget = $state<{
     subjectHash: string;
@@ -50,6 +92,76 @@
   let disconnectFreshAuthError = $state('');
   let blockedDisconnectProviderLabel = $state('');
   let showDisconnectBlockedModal = $state(false);
+
+  function mutationScope(): IdentityMutationScope {
+    return {
+      serverId: serverScope.serverId,
+      connection: serverScope.connection,
+      privacyGeneration
+    };
+  }
+
+  function isCurrentConnection(
+    variables: IdentityMutationScope | undefined
+  ): variables is IdentityMutationScope {
+    return (
+      variables !== undefined &&
+      componentActive &&
+      serverScope.isCurrent() &&
+      variables.serverId === serverScope.serverId &&
+      variables.connection.queryScope === serverScope.connection.queryScope
+    );
+  }
+
+  function isCurrentSession(
+    variables: IdentityMutationScope | undefined
+  ): variables is IdentityMutationScope {
+    return isCurrentConnection(variables) && variables.privacyGeneration === privacyGeneration;
+  }
+
+  const linkMutation = createMutation(
+    () => ({
+      mutationFn: ({ connection: activeConnection, provider, currentPassword }: LinkVariables) =>
+        activeConnection.getAPI(createExternalIdentityAPI).startLink({
+          providerId: provider.id,
+          redirectPath: accountSettingsPath,
+          currentPassword
+        })
+    }),
+    () => queryClient
+  );
+
+  const disconnectMutation = createMutation(
+    () => ({
+      mutationFn: ({
+        connection: activeConnection,
+        subjectHash,
+        currentPassword
+      }: DisconnectVariables) =>
+        activeConnection.getAPI(createExternalIdentityAPI).disconnect(subjectHash, currentPassword)
+    }),
+    () => queryClient
+  );
+
+  const linkingProviderId = $derived(
+    linkMutation.isPending && isCurrentSession(linkMutation.variables)
+      ? linkMutation.variables.provider.id
+      : ''
+  );
+  const disconnectingSubjectHash = $derived(
+    disconnectMutation.isPending && isCurrentSession(disconnectMutation.variables)
+      ? disconnectMutation.variables.subjectHash
+      : ''
+  );
+  const error = $derived.by(() => {
+    if (actionError) return actionError;
+    const queryError = identitiesQuery.error;
+    return queryError
+      ? queryError instanceof Error
+        ? queryError.message
+        : m('settings.account.sso.load_failed')
+      : '';
+  });
 
   const hasPassword = $derived(currentUser.user?.hasPassword ?? false);
   const unconfiguredLinkedIdentities = $derived(
@@ -61,62 +173,18 @@
   const hasRows = $derived(providers.length > 0 || unconfiguredLinkedIdentities.length > 0);
   const disconnectWouldRemoveLastMethod = $derived(!hasPassword && linkedIdentities.length <= 1);
 
-  $effect(() => {
-    void refresh();
-  });
-
-  async function refresh() {
-    const activeServerId = serverId;
-    const currentLoadSerial = ++loadSerial;
-    await load(currentLoadSerial, activeServerId);
-  }
-
-  async function load(currentLoadSerial: number, activeServerId: string) {
-    loading = true;
-    error = '';
-    try {
-      const result = await connection.getAPI(createExternalIdentityAPI).list();
-      if (
-        !serverScope.isCurrent() ||
-        currentLoadSerial !== loadSerial ||
-        activeServerId !== serverId
-      ) {
-        return;
-      }
-      providers = result.providers;
-      linkedIdentities = result.linkedIdentities;
-    } catch (err) {
-      if (
-        !serverScope.isCurrent() ||
-        currentLoadSerial !== loadSerial ||
-        activeServerId !== serverId
-      ) {
-        return;
-      }
-      error = err instanceof Error ? err.message : m['settings.account.sso.load_failed']();
-    } finally {
-      if (
-        serverScope.isCurrent() &&
-        currentLoadSerial === loadSerial &&
-        activeServerId === serverId
-      ) {
-        loading = false;
-      }
-    }
-  }
-
   function providerIcon(type: string): string {
     switch (type) {
       case 'github':
-        return 'mdi--github';
+        return 'icon-[mdi--github]';
       case 'gitlab':
-        return 'mdi--gitlab';
+        return 'icon-[mdi--gitlab]';
       case 'google':
-        return 'mdi--google';
+        return 'icon-[mdi--google]';
       case 'discord':
-        return 'mdi--discord';
+        return 'icon-[mdi--discord]';
       default:
-        return 'mdi--shield-account';
+        return 'icon-[mdi--shield-account]';
     }
   }
 
@@ -124,32 +192,26 @@
     provider: ExternalIdentityProviderInfo,
     currentPassword?: string
   ) {
-    const client = connection;
-    linkingProviderId = provider.id;
-    error = '';
+    const variables: LinkVariables = { ...mutationScope(), provider, currentPassword };
+    actionError = '';
     try {
-      const startUrl = await client.getAPI(createExternalIdentityAPI).startLink({
-        providerId: provider.id,
-        redirectPath: accountSettingsPath,
-        currentPassword
-      });
-      if (!serverScope.isCurrent()) return;
+      const startUrl = await linkMutation.mutateAsync(variables);
+      if (!isCurrentSession(variables)) return;
       window.location.href = startUrl;
     } catch (err) {
-      if (!serverScope.isCurrent()) return;
+      if (!isCurrentSession(variables)) return;
       if (err instanceof ConnectError && err.code === Code.FailedPrecondition && hasPassword) {
         linkFreshAuthProvider = provider;
         linkCurrentPassword = '';
         linkFreshAuthError = '';
       } else if (err instanceof ConnectError && err.code === Code.FailedPrecondition) {
-        error = m['settings.account.sso.fresh_auth_required']();
+        actionError = m('settings.account.sso.fresh_auth_required');
       } else if (currentPassword !== undefined) {
         linkFreshAuthError =
-          err instanceof Error ? err.message : m['settings.account.sso.link_failed']();
+          err instanceof Error ? err.message : m('settings.account.sso.link_failed');
       } else {
-        error = err instanceof Error ? err.message : m['settings.account.sso.link_failed']();
+        actionError = err instanceof Error ? err.message : m('settings.account.sso.link_failed');
       }
-      linkingProviderId = '';
     }
   }
 
@@ -163,7 +225,7 @@
   async function confirmLinkFreshAuth(e: Event) {
     e.preventDefault();
     if (!linkFreshAuthProvider || !linkCurrentPassword) {
-      linkFreshAuthError = m['settings.account.password.current_required']();
+      linkFreshAuthError = m('settings.account.password.current_required');
       return;
     }
     const provider = linkFreshAuthProvider;
@@ -181,7 +243,7 @@
   }
 
   function openDisconnectDialog(subjectHash: string, providerLabel: string) {
-    error = '';
+    actionError = '';
     if (disconnectWouldRemoveLastMethod) {
       blockedDisconnectProviderLabel = providerLabel;
       showDisconnectBlockedModal = true;
@@ -228,14 +290,18 @@
     currentPassword?: string
   ) {
     const { subjectHash, providerLabel } = target;
-    const client = connection;
-    disconnectingSubjectHash = subjectHash;
-    error = '';
+    const variables: DisconnectVariables = {
+      ...mutationScope(),
+      subjectHash,
+      providerLabel,
+      currentPassword
+    };
+    actionError = '';
     try {
       beginExplicitSignOutRedirect();
-      await client.getAPI(createExternalIdentityAPI).disconnect(subjectHash, currentPassword);
-      const signedOutServerId = client.serverId ?? serverId;
-      if (!serverScope.isCurrent()) {
+      await disconnectMutation.mutateAsync(variables);
+      const signedOutServerId = variables.connection.serverId ?? variables.serverId;
+      if (!isCurrentSession(variables)) {
         cancelExplicitSignOutRedirect();
         return;
       }
@@ -245,7 +311,15 @@
       disconnectFreshAuthError = '';
       finishDisconnectedSession(signedOutServerId);
     } catch (err) {
-      if (!serverScope.isCurrent()) {
+      if (
+        err instanceof ConnectError &&
+        err.code === Code.Unauthenticated &&
+        isCurrentConnection(variables)
+      ) {
+        finishDisconnectedSession(variables.connection.serverId ?? variables.serverId);
+        return;
+      }
+      if (!isCurrentSession(variables)) {
         cancelExplicitSignOutRedirect();
         return;
       }
@@ -257,28 +331,25 @@
           disconnectCurrentPassword = '';
           disconnectFreshAuthError = '';
         } else {
-          error = m['settings.account.sso.disconnect_fresh_auth_required']();
+          actionError = m('settings.account.sso.disconnect_fresh_auth_required');
         }
-      } else if (err instanceof ConnectError && err.code === Code.Unauthenticated) {
-        finishDisconnectedSession(client.serverId ?? serverId);
       } else if (currentPassword !== undefined) {
         cancelExplicitSignOutRedirect();
         disconnectFreshAuthError =
-          err instanceof Error ? err.message : m['settings.account.sso.disconnect_failed']();
+          err instanceof Error ? err.message : m('settings.account.sso.disconnect_failed');
       } else {
         cancelExplicitSignOutRedirect();
-        error = err instanceof Error ? err.message : m['settings.account.sso.disconnect_failed']();
+        actionError =
+          err instanceof Error ? err.message : m('settings.account.sso.disconnect_failed');
         disconnectTarget = null;
       }
-    } finally {
-      disconnectingSubjectHash = '';
     }
   }
 
   async function confirmDisconnectFreshAuth(e: Event) {
     e.preventDefault();
     if (!disconnectFreshAuthTarget || !disconnectCurrentPassword) {
-      disconnectFreshAuthError = m['settings.account.password.current_required']();
+      disconnectFreshAuthError = m('settings.account.password.current_required');
       return;
     }
     disconnectFreshAuthError = '';
@@ -287,21 +358,21 @@
 
   function disconnectButtonLabel(subjectHash: string) {
     return disconnectingSubjectHash === subjectHash
-      ? m['settings.account.sso.disconnecting']()
-      : m['settings.account.sso.disconnect_button']();
+      ? m('settings.account.sso.disconnecting')
+      : m('settings.account.sso.disconnect_button');
   }
 </script>
 
-<FormSection title={m['settings.account.sso.title']()} maxWidth="max-w-md">
+<FormSection title={m('settings.account.sso.title')} maxWidth="max-w-md">
   <div class="flex flex-col gap-4">
     {#if loading}
-      <p class="text-sm text-muted">{m['settings.account.sso.loading']()}</p>
+      <p class="text-sm text-muted">{m('settings.account.sso.loading')}</p>
     {:else}
       {#if error}
         <Hint tone="danger">{error}</Hint>
       {/if}
       {#if !hasRows}
-        <p class="text-sm text-muted">{m['settings.account.sso.none_configured']()}</p>
+        <p class="text-sm text-muted">{m('settings.account.sso.none_configured')}</p>
       {:else}
         <div class="flex flex-col gap-3">
           {#each providers as provider (provider.id)}
@@ -312,9 +383,9 @@
                   <div class="truncate text-sm font-medium">{provider.label}</div>
                   <div class="text-xs text-muted">
                     {#if provider.linked}
-                      {m['settings.account.sso.linked']()}
+                      {m('settings.account.sso.linked')}
                     {:else}
-                      {m['settings.account.sso.not_linked']()}
+                      {m('settings.account.sso.not_linked')}
                     {/if}
                   </div>
                 </div>
@@ -328,11 +399,11 @@
                     disabled={linkingProviderId !== '' || disconnectingSubjectHash !== ''}
                     onclick={() => openDisconnectProvider(provider)}
                   >
-                    <span class="iconify uil--link-broken"></span>
+                    <span class="iconify icon-[uil--link-broken]"></span>
                     {disconnectButtonLabel(provider.linkedIdentitySubjectHash)}
                   </Button>
                 {:else}
-                  <span class="text-sm text-muted">{m['settings.account.sso.linked']()}</span>
+                  <span class="text-sm text-muted">{m('settings.account.sso.linked')}</span>
                 {/if}
               {:else}
                 <Button
@@ -342,8 +413,8 @@
                   disabled={linkingProviderId !== '' || disconnectingSubjectHash !== ''}
                   onclick={() => startProviderLink(provider)}
                 >
-                  <span class="iconify uil--link"></span>
-                  {m['settings.account.sso.link_button']()}
+                  <span class="iconify icon-[uil--link]"></span>
+                  {m('settings.account.sso.link_button')}
                 </Button>
               {/if}
             </div>
@@ -357,7 +428,7 @@
                 <div class="min-w-0">
                   <div class="truncate text-sm font-medium">{identity.providerLabel}</div>
                   <div class="text-xs text-muted">
-                    {m['settings.account.sso.provider_unconfigured']()}
+                    {m('settings.account.sso.provider_unconfigured')}
                   </div>
                 </div>
               </div>
@@ -368,7 +439,7 @@
                 disabled={linkingProviderId !== '' || disconnectingSubjectHash !== ''}
                 onclick={() => openDisconnectIdentity(identity)}
               >
-                <span class="iconify uil--link-broken"></span>
+                <span class="iconify icon-[uil--link-broken]"></span>
                 {disconnectButtonLabel(identity.subjectHash)}
               </Button>
             </div>
@@ -382,14 +453,14 @@
 {#if disconnectTarget}
   <ConfirmDialog
     visible
-    title={m['settings.account.sso.disconnect_modal.title']()}
-    actionLabel={m['settings.account.sso.disconnect_modal.action']()}
-    actionIcon="iconify uil--link-broken"
+    title={m('settings.account.sso.disconnect_modal.title')}
+    actionLabel={m('settings.account.sso.disconnect_modal.action')}
+    actionIcon="iconify icon-[uil--link-broken]"
     loading={disconnectingSubjectHash === disconnectTarget.subjectHash}
     onconfirm={confirmDisconnectIdentity}
     onclose={closeDisconnectDialog}
   >
-    {m['settings.account.sso.disconnect_modal.body']({
+    {m('settings.account.sso.disconnect_modal.body', {
       provider: disconnectTarget.providerLabel
     })}
   </ConfirmDialog>
@@ -398,19 +469,19 @@
 {#if disconnectFreshAuthTarget}
   <Dialog
     visible
-    title={m['settings.account.sso.disconnect_fresh_auth_modal.title']()}
+    title={m('settings.account.sso.disconnect_fresh_auth_modal.title')}
     size="sm"
     onclose={closeDisconnectFreshAuthDialog}
   >
     <form class="flex flex-col gap-4" onsubmit={confirmDisconnectFreshAuth}>
       <p class="text-sm text-muted">
-        {m['settings.account.sso.disconnect_fresh_auth_modal.body']({
+        {m('settings.account.sso.disconnect_fresh_auth_modal.body', {
           provider: disconnectFreshAuthTarget.providerLabel
         })}
       </p>
       <TextInput
         id="sso-disconnect-current-password"
-        label={m['settings.account.password.current_label']()}
+        label={m('settings.account.password.current_label')}
         type="password"
         bind:value={disconnectCurrentPassword}
         disabled={disconnectingSubjectHash !== ''}
@@ -426,15 +497,15 @@
           onclick={closeDisconnectFreshAuthDialog}
           disabled={disconnectingSubjectHash !== ''}
         >
-          {m['common.cancel']()}
+          {m('common.cancel')}
         </Button>
         <Button
           type="submit"
           loading={disconnectingSubjectHash === disconnectFreshAuthTarget.subjectHash}
           disabled={!disconnectCurrentPassword || disconnectingSubjectHash !== ''}
         >
-          <span class="iconify uil--link-broken"></span>
-          {m['settings.account.sso.disconnect_fresh_auth_modal.action']()}
+          <span class="iconify icon-[uil--link-broken]"></span>
+          {m('settings.account.sso.disconnect_fresh_auth_modal.action')}
         </Button>
       </div>
     </form>
@@ -443,19 +514,19 @@
 
 <Dialog
   visible={showDisconnectBlockedModal}
-  title={m['settings.account.sso.disconnect_blocked_modal.title']()}
+  title={m('settings.account.sso.disconnect_blocked_modal.title')}
   size="sm"
   onclose={closeDisconnectBlockedModal}
 >
   <div class="flex flex-col gap-4">
     <Hint tone="warning">
-      {m['settings.account.sso.disconnect_blocked_modal.body']({
+      {m('settings.account.sso.disconnect_blocked_modal.body', {
         provider: blockedDisconnectProviderLabel
       })}
     </Hint>
     <div class="flex justify-end">
       <Button variant="secondary" onclick={closeDisconnectBlockedModal}>
-        {m['ui.close']()}
+        {m('ui.close')}
       </Button>
     </div>
   </div>
@@ -464,19 +535,19 @@
 {#if linkFreshAuthProvider}
   <Dialog
     visible
-    title={m['settings.account.sso.fresh_auth_modal.title']()}
+    title={m('settings.account.sso.fresh_auth_modal.title')}
     size="sm"
     onclose={closeLinkFreshAuthDialog}
   >
     <form class="flex flex-col gap-4" onsubmit={confirmLinkFreshAuth}>
       <p class="text-sm text-muted">
-        {m['settings.account.sso.fresh_auth_modal.body']({
+        {m('settings.account.sso.fresh_auth_modal.body', {
           provider: linkFreshAuthProvider.label
         })}
       </p>
       <TextInput
         id="sso-link-current-password"
-        label={m['settings.account.password.current_label']()}
+        label={m('settings.account.password.current_label')}
         type="password"
         bind:value={linkCurrentPassword}
         disabled={linkingProviderId !== ''}
@@ -492,15 +563,15 @@
           onclick={closeLinkFreshAuthDialog}
           disabled={linkingProviderId !== ''}
         >
-          {m['common.cancel']()}
+          {m('common.cancel')}
         </Button>
         <Button
           type="submit"
           loading={linkingProviderId === linkFreshAuthProvider.id}
           disabled={!linkCurrentPassword || linkingProviderId !== ''}
         >
-          <span class="iconify uil--link"></span>
-          {m['settings.account.sso.fresh_auth_modal.action']()}
+          <span class="iconify icon-[uil--link]"></span>
+          {m('settings.account.sso.fresh_auth_modal.action')}
         </Button>
       </div>
     </form>

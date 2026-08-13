@@ -8,6 +8,21 @@ import (
 	"time"
 )
 
+func TestAuthConfig_AccountCreationPolicy(t *testing.T) {
+	open := AuthConfig{}
+	if got := open.AccountCreationPolicyOrDefault(); got != AccountCreationPolicyOpen {
+		t.Fatalf("default policy = %q, want %q", got, AccountCreationPolicyOpen)
+	}
+	if open.InvitationRequired() {
+		t.Fatal("empty policy unexpectedly requires an invitation")
+	}
+
+	inviteOnly := AuthConfig{AccountCreationPolicy: AccountCreationPolicyInviteOnly}
+	if !inviteOnly.InvitationRequired() {
+		t.Fatal("invite_only policy does not require an invitation")
+	}
+}
+
 func TestEmailOTPConfig_Defaults(t *testing.T) {
 	c := &EmailOTPConfig{}
 	if got := c.ThrottlingEnabledOrDefault(); got != true {
@@ -88,6 +103,9 @@ max_wrong_attempts = 2
 	if got := cfg.Auth.EmailOTP.MaxWrongAttemptsOrDefault(); got != 2 {
 		t.Errorf("auth.email_otp.max_wrong_attempts from TOML = %d, want 2", got)
 	}
+	if got := cfg.Auth.AccountCreationPolicyOrDefault(); got != AccountCreationPolicyOpen {
+		t.Errorf("default account creation policy = %q, want open", got)
+	}
 }
 
 func TestReadConfig_EmailOTPFromEnv(t *testing.T) {
@@ -106,6 +124,7 @@ func TestReadConfig_EmailOTPFromEnv(t *testing.T) {
 	t.Setenv("CHATTO_AUTH_EMAIL_OTP_TTL", "45m")
 	t.Setenv("CHATTO_AUTH_EMAIL_OTP_MAX_DELIVERED_CODES", "6")
 	t.Setenv("CHATTO_AUTH_EMAIL_OTP_MAX_WRONG_ATTEMPTS", "3")
+	t.Setenv("CHATTO_AUTH_ACCOUNT_CREATION_POLICY", AccountCreationPolicyInviteOnly)
 
 	cfg, err := ReadConfig("")
 	if err != nil {
@@ -122,6 +141,9 @@ func TestReadConfig_EmailOTPFromEnv(t *testing.T) {
 	}
 	if got := cfg.Auth.EmailOTP.MaxWrongAttemptsOrDefault(); got != 3 {
 		t.Errorf("CHATTO_AUTH_EMAIL_OTP_MAX_WRONG_ATTEMPTS = %d, want 3", got)
+	}
+	if got := cfg.Auth.AccountCreationPolicyOrDefault(); got != AccountCreationPolicyInviteOnly {
+		t.Errorf("CHATTO_AUTH_ACCOUNT_CREATION_POLICY = %q, want invite_only", got)
 	}
 }
 
@@ -227,8 +249,9 @@ func TestAuthConfig_EnabledProviders(t *testing.T) {
 }
 
 func TestAuthConfig_PublicProviders(t *testing.T) {
+	autoProvision := true
 	auth := AuthConfig{Providers: []AuthProviderConfig{
-		{ID: "hub", Type: AuthProviderTypeOpenIDConnect, Label: "Chatto Hub", ClientID: "id", ClientSecret: "secret", IssuerURL: "https://issuer.example"},
+		{ID: "hub", Type: AuthProviderTypeOpenIDConnect, Label: "Chatto Hub", ClientID: "id", ClientSecret: "secret", IssuerURL: "https://issuer.example", AutoProvision: &autoProvision},
 		{ID: "github-main", Type: AuthProviderTypeGitHub, ClientID: "id", ClientSecret: "secret"},
 	}}
 
@@ -236,13 +259,16 @@ func TestAuthConfig_PublicProviders(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("PublicProviders() len = %d, want 2", len(got))
 	}
-	if got[0].ID != "hub" || got[0].Type != AuthProviderTypeOpenIDConnect || got[0].Label != "Chatto Hub" {
+	if got[0].ID != "hub" || got[0].Type != AuthProviderTypeOpenIDConnect || got[0].Label != "Chatto Hub" || got[0].IssuerURL != "https://issuer.example" {
 		t.Fatalf("PublicProviders()[0] = %+v", got[0])
+	}
+	if !got[0].AutoProvisionOrDefault() {
+		t.Fatalf("PublicProviders()[0].AutoProvision = %v, want true", got[0].AutoProvision)
 	}
 	if got[1].ID != "github-main" || got[1].Type != AuthProviderTypeGitHub || got[1].Label != "GitHub" {
 		t.Fatalf("PublicProviders()[1] = %+v", got[1])
 	}
-	if got[0].ClientID != "" || got[0].ClientSecret != "" || got[0].IssuerURL != "" {
+	if got[0].ClientID != "" || got[0].ClientSecret != "" {
 		t.Fatalf("PublicProviders leaked provider secrets/options: %+v", got[0])
 	}
 }
@@ -273,6 +299,26 @@ func TestChattoConfig_Validate_AuthProviders(t *testing.T) {
 		}
 		if err := cfg.Validate(); err != nil {
 			t.Fatalf("Validate() unexpected error = %v", err)
+		}
+	})
+
+	t.Run("accepts public oidc client without secret", func(t *testing.T) {
+		cfg := baseConfig()
+		cfg.Auth.Providers = []AuthProviderConfig{{
+			ID: "authling", Type: AuthProviderTypeOpenIDConnect,
+			ClientID: "https://chat.example/oauth/client-metadata.json", IssuerURL: "https://auth.example",
+		}}
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("Validate() unexpected error = %v", err)
+		}
+	})
+
+	t.Run("still requires secret for oauth-only provider", func(t *testing.T) {
+		cfg := baseConfig()
+		cfg.Auth.Providers = []AuthProviderConfig{{ID: "github", Type: AuthProviderTypeGitHub, ClientID: "id"}}
+		err := cfg.Validate()
+		if err == nil || !strings.Contains(err.Error(), "client_secret is required") {
+			t.Fatalf("Validate() error = %v, want client secret error", err)
 		}
 	})
 

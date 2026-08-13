@@ -1,6 +1,6 @@
 <script lang="ts">
   import { prefersTouchActions } from '$lib/utils/inputCapabilities';
-  import * as m from '$lib/i18n/messages';
+  import { m } from '$lib/i18n/messages';
   import ComposerTimestampPicker from './ComposerTimestampPicker.svelte';
   import type {
     ComposerFormattingCommand,
@@ -19,6 +19,12 @@
     nextEnterWillSend,
     fileInputElement,
     effectiveTimezone,
+    showCreateThread = false,
+    createThread = false,
+    onToggleCreateThread = () => {},
+    showAlsoSendToChannel = false,
+    alsoSendToChannel = false,
+    onToggleAlsoSendToChannel = () => {},
     onsubmit
   }: {
     formattingState: ComposerFormattingState;
@@ -31,6 +37,12 @@
     nextEnterWillSend: boolean;
     fileInputElement?: HTMLInputElement;
     effectiveTimezone?: string;
+    showCreateThread?: boolean;
+    createThread?: boolean;
+    onToggleCreateThread?: () => void;
+    showAlsoSendToChannel?: boolean;
+    alsoSendToChannel?: boolean;
+    onToggleAlsoSendToChannel?: () => void;
     onsubmit: () => void;
   } = $props();
 
@@ -38,14 +50,14 @@
     command: ComposerFormattingCommand;
     icon: string;
   }[] = [
-    { command: 'bold', icon: 'mdi--format-bold' },
-    { command: 'italic', icon: 'mdi--format-italic' },
-    { command: 'inlineCode', icon: 'mdi--code-tags' },
-    { command: 'heading', icon: 'mdi--format-header-2' },
-    { command: 'bulletList', icon: 'mdi--format-list-bulleted' },
-    { command: 'orderedList', icon: 'mdi--format-list-numbered' },
-    { command: 'blockquote', icon: 'mdi--format-quote-open' },
-    { command: 'codeBlock', icon: 'mdi--code-block-braces' }
+    { command: 'bold', icon: 'icon-[mdi--format-bold]' },
+    { command: 'italic', icon: 'icon-[mdi--format-italic]' },
+    { command: 'inlineCode', icon: 'icon-[mdi--code-tags]' },
+    { command: 'heading', icon: 'icon-[mdi--format-header-2]' },
+    { command: 'bulletList', icon: 'icon-[mdi--format-list-bulleted]' },
+    { command: 'orderedList', icon: 'icon-[mdi--format-list-numbered]' },
+    { command: 'blockquote', icon: 'icon-[mdi--format-quote-open]' },
+    { command: 'codeBlock', icon: 'icon-[mdi--code-block-braces]' }
   ];
   const shortcutHints = getShortcutHints();
   const submitHint = $derived(
@@ -73,21 +85,21 @@
   function formattingLabel(command: ComposerFormattingCommand): string {
     switch (command) {
       case 'bold':
-        return m['composer.format.bold']();
+        return m('composer.format.bold');
       case 'italic':
-        return m['composer.format.italic']();
+        return m('composer.format.italic');
       case 'inlineCode':
-        return m['composer.format.inline_code']();
+        return m('composer.format.inline_code');
       case 'heading':
-        return m['composer.format.heading']();
+        return m('composer.format.heading');
       case 'bulletList':
-        return m['composer.format.bullet_list']();
+        return m('composer.format.bullet_list');
       case 'orderedList':
-        return m['composer.format.ordered_list']();
+        return m('composer.format.ordered_list');
       case 'blockquote':
-        return m['composer.format.blockquote']();
+        return m('composer.format.blockquote');
       case 'codeBlock':
-        return m['composer.format.code_block']();
+        return m('composer.format.code_block');
     }
   }
 </script>
@@ -98,7 +110,7 @@
 >
   <div class="flex items-center gap-1">
     <div
-      class="flex min-w-0 flex-wrap items-center gap-0.5"
+      class="flex min-w-0 flex-nowrap items-center gap-0.5"
       data-testid="composer-formatting-toolbar"
     >
       {#each formattingControls as control (control.command)}
@@ -132,10 +144,10 @@
         onclick={() => fileInputElement?.click()}
         disabled={inputDisabled}
         class="flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded text-muted transition-[color,scale] duration-100 active:scale-[0.96] enabled:hover:bg-surface-emphasized enabled:hover:text-text disabled:cursor-not-allowed disabled:opacity-50"
-        aria-label={m['composer.attach_file']()}
-        title={m['composer.attach_file']()}
+        aria-label={m('composer.attach_file')}
+        title={m('composer.attach_file')}
       >
-        <span class="iconify text-[15px] uil--image-upload"></span>
+        <span class="iconify icon-[uil--image-upload] text-[15px]"></span>
       </button>
     {/if}
 
@@ -143,6 +155,50 @@
   </div>
 
   <div class="flex items-center gap-2">
+    <div class="flex items-center gap-0.5">
+      {#if showCreateThread}
+        <button
+          type="button"
+          onpointerdown={(event) => event.preventDefault()}
+          onclick={onToggleCreateThread}
+          disabled={inputDisabled}
+          aria-label={m('composer.post_as_thread')}
+          aria-pressed={createThread}
+          title={m('composer.post_as_thread')}
+          class={[
+            'flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded text-xs font-medium transition-[background-color,color] duration-100 @min-[560px]:w-auto @min-[560px]:gap-1 @min-[560px]:px-1.5 disabled:cursor-not-allowed disabled:opacity-50',
+            createThread
+              ? 'bg-action/10 text-action'
+              : 'text-muted enabled:hover:bg-surface-emphasized enabled:hover:text-text'
+          ]}
+        >
+          <span class="iconify icon-[uil--comment-alt-lines] text-[15px]"></span>
+          <span class="hidden @min-[560px]:inline">{m('composer.thread_label')}</span>
+        </button>
+      {/if}
+
+      {#if showAlsoSendToChannel}
+        <button
+          type="button"
+          onpointerdown={(event) => event.preventDefault()}
+          onclick={onToggleAlsoSendToChannel}
+          disabled={inputDisabled}
+          aria-label={m('composer.also_send_to_channel')}
+          aria-pressed={alsoSendToChannel}
+          title={m('composer.also_send_to_channel')}
+          class={[
+            'flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded text-xs font-medium transition-[background-color,color] duration-100 @min-[560px]:w-auto @min-[560px]:gap-1 @min-[560px]:px-1.5 disabled:cursor-not-allowed disabled:opacity-50',
+            alsoSendToChannel
+              ? 'bg-action/10 text-action'
+              : 'text-muted enabled:hover:bg-surface-emphasized enabled:hover:text-text'
+          ]}
+        >
+          <span class="iconify icon-[uil--megaphone] text-[15px]"></span>
+          <span class="hidden @min-[560px]:inline">{m('composer.echo_label')}</span>
+        </button>
+      {/if}
+    </div>
+
     {#if submitHint && canSubmit}
       <span
         aria-hidden="true"
@@ -158,11 +214,12 @@
       onpointerdown={(event) => event.preventDefault()}
       onclick={onsubmit}
       disabled={!canSubmit}
-      class="flex h-6 w-6 cursor-pointer items-center justify-center rounded text-muted transition-[background-color,color,scale] duration-100 active:scale-[0.96] enabled:hover:bg-surface-emphasized enabled:hover:text-text disabled:cursor-not-allowed disabled:opacity-50"
-      aria-label={m['composer.send']()}
-      title={isRichComposer ? m['composer.send_ctrl_enter']() : m['composer.send_enter']()}
+      class="flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded text-xs font-medium text-muted transition-[background-color,color,scale] duration-100 @min-[560px]:w-auto @min-[560px]:gap-1 @min-[560px]:px-1.5 active:scale-[0.96] enabled:hover:bg-surface-emphasized enabled:hover:text-text disabled:cursor-not-allowed disabled:opacity-50"
+      aria-label={m('composer.send')}
+      title={isRichComposer ? m('composer.send_ctrl_enter') : m('composer.send_enter')}
     >
-      <span class="iconify text-[15px] uil--telegram-alt"></span>
+      <span class="iconify icon-[uil--telegram-alt] text-[15px]"></span>
+      <span class="hidden @min-[560px]:inline">{m('composer.send_label')}</span>
     </button>
   </div>
 </div>

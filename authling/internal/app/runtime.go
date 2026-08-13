@@ -10,17 +10,22 @@ import (
 	"net/http"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+	"hmans.de/authling/internal/accountdata"
 	"hmans.de/authling/internal/accounts"
 	"hmans.de/authling/internal/authentication"
 	"hmans.de/authling/internal/config"
 	"hmans.de/authling/internal/email"
 	"hmans.de/authling/internal/evtstream"
+	"hmans.de/authling/internal/issuer"
 	"hmans.de/authling/internal/keyvault"
 	"hmans.de/authling/internal/logging"
 	"hmans.de/authling/internal/natsruntime"
+	"hmans.de/authling/internal/oidcprovider"
 	"hmans.de/authling/internal/registration"
 	"hmans.de/authling/internal/sessions"
 	"hmans.de/authling/internal/storage"
+	"hmans.de/authling/internal/tinybasesync"
 	"hmans.de/authling/internal/web"
 	"hmans.de/chatto/pkg/events"
 )
@@ -29,7 +34,8 @@ import (
 // domain services.
 type Runtime struct {
 	connection *natsruntime.Connection
-	projector  *events.Projector
+	projectors []*events.Projector
+	issuer     *issuer.Service
 
 	// Accounts is Authling's account command and read boundary.
 	Accounts *accounts.Service
@@ -39,6 +45,10 @@ type Runtime struct {
 	Authentication *authentication.Service
 	// Sessions owns first-party browser session runtime state.
 	Sessions *sessions.Service
+	// OIDC provides standards-based identity to configured and CIMD clients.
+	OIDC *oidcprovider.Service
+	// AccountSync synchronizes the authenticated account-owned data space.
+	AccountSync *tinybasesync.Hub
 }
 
 // New creates Authling's storage and model wiring without starting background
@@ -97,26 +107,53 @@ func newRuntime(ctx context.Context, cfg config.Config, logger events.Logger, se
 		return closeOnError(fmt.Errorf("open account service: %w", err))
 	}
 	sessionService := sessions.New(stores.RuntimeState, js, workflowKey)
+	issuerProjection := issuer.NewProjection()
+	issuerHandle := events.NewDecodedProjectionHandle(js, stream, issuerProjection, evtstream.Decode, logger)
+	issuerService := issuer.NewService(publisher, issuerHandle, vault, cfg.HTTP.PublicURLOrDefault())
+	cimd, err := oidcprovider.NewCIMDResolver(cfg.HTTP.PublicURLOrDefault(), nil, cfg.OIDC.TrustedPrivateCIMDHosts()...)
+	if err != nil {
+		return closeOnError(fmt.Errorf("construct CIMD resolver: %w", err))
+	}
+	clients := oidcprovider.NewResolver(cfg, cimd)
+	oidcStorage := oidcprovider.NewStorage(stores.RuntimeState, js, workflowKey, clients, issuerService)
+	oidcService := oidcprovider.New(cfg, issuerService, oidcStorage)
+	accountData := accountdata.New(stores.UserData, vault, accountService, workflowKey)
 	return &Runtime{
 		connection:     connection,
-		projector:      handle.Projector(),
+		projectors:     []*events.Projector{handle.Projector(), issuerHandle.Projector()},
+		issuer:         issuerService,
 		Accounts:       accountService,
 		Registration:   registration.New(stores.RuntimeState, js, workflowKey, sender, accountService),
 		Authentication: authentication.New(stores.RuntimeState, js, workflowKey, accountService),
 		Sessions:       sessionService,
+		OIDC:           oidcService,
+		AccountSync:    tinybasesync.NewHub(accountData),
 	}, nil
 }
 
 // Run starts Authling's required projection lifecycle and blocks until the
 // context ends or the projection fails.
 func (r *Runtime) Run(ctx context.Context) error {
-	return r.projector.Run(ctx)
+	group, groupContext := errgroup.WithContext(ctx)
+	for _, projector := range r.projectors {
+		projector := projector
+		group.Go(func() error { return projector.Run(groupContext) })
+	}
+	return group.Wait()
 }
 
 // WaitReady blocks until every required model has replayed its startup
 // history.
 func (r *Runtime) WaitReady(ctx context.Context) error {
-	return r.projector.WaitForStartup(ctx)
+	for _, projector := range r.projectors {
+		if err := projector.WaitForStartup(ctx); err != nil {
+			return err
+		}
+	}
+	if err := r.issuer.Initialize(ctx); err != nil {
+		return err
+	}
+	return r.OIDC.Initialize()
 }
 
 // Close releases Authling's NATS client and any embedded server. Run must have
@@ -163,14 +200,18 @@ func Serve(ctx context.Context, cfg config.Config, logger *slog.Logger) (serveEr
 			Authentication: runtime.Authentication,
 			Registration:   runtime.Registration,
 			Sessions:       runtime.Sessions,
+			OIDC:           runtime.OIDC,
+			AccountSync:    runtime.AccountSync,
 			SecureCookies:  cfg.HTTP.SecureCookies(),
 			PublicURL:      cfg.HTTP.PublicURLOrDefault(),
+			TrustedProxies: cfg.HTTP.TrustedProxies(),
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       time.Minute,
 	}
+	httpServer.RegisterOnShutdown(runtime.AccountSync.Close)
 	httpErrors := make(chan error, 1)
 	go func() {
 		httpErrors <- httpServer.Serve(listener)

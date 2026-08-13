@@ -7,6 +7,7 @@ const frontendRoot = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const clientRoot = resolve(frontendRoot, '.svelte-kit/output/client');
 const generatedNodesRoot = resolve(frontendRoot, '.svelte-kit/generated/client-optimized/nodes');
 const manifestPath = resolve(clientRoot, '.vite/manifest.json');
+const messagesRoot = resolve(frontendRoot, 'messages');
 
 const routes = [
   {
@@ -17,7 +18,6 @@ const routes = [
   {
     name: 'overview',
     budgetKiB: 325,
-    additionalEntries: ['src/routes/chat/AuthenticatedRoot.svelte'],
     components: [
       'src/routes/+layout.svelte',
       'src/routes/chat/+layout.svelte',
@@ -28,7 +28,6 @@ const routes = [
   {
     name: 'room',
     budgetKiB: 510,
-    additionalEntries: ['src/routes/chat/AuthenticatedRoot.svelte'],
     components: [
       'src/routes/+layout.svelte',
       'src/routes/chat/+layout.svelte',
@@ -39,7 +38,7 @@ const routes = [
   }
 ];
 
-const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+const manifest = await readFile(manifestPath, 'utf8').then(JSON.parse);
 const manifestByFile = new Map(
   Object.entries(manifest).map(([key, entry]) => [entry.file, { key, entry }])
 );
@@ -48,6 +47,12 @@ const sharedEntryKeys = [
   findManifestKey((entry) => entry.name === 'entry/start'),
   findManifestKey((entry) => entry.name === 'entry/app')
 ];
+const routeNodeEntryKeys = Object.entries(manifest)
+  .filter(([, entry]) =>
+    /^\.svelte-kit\/generated\/client-optimized\/nodes\/\d+\.js$/.test(entry.src ?? '')
+  )
+  .map(([key]) => key);
+const allRouteInitialFiles = collectInitialFiles([...sharedEntryKeys, ...routeNodeEntryKeys]);
 
 let failed = false;
 const routeResults = [];
@@ -71,6 +76,73 @@ for (const route of routes) {
   routeResults.push({ ...route, initialFiles: files, gzipBytes });
   if (gzipBytes > budgetBytes) failed = true;
 }
+
+const baseLocale = 'en-GB';
+const locales = (await readdir(messagesRoot, { withFileTypes: true }))
+  .filter((entry) => entry.isDirectory())
+  .map((entry) => entry.name);
+const nonBaseLocales = locales.filter((locale) => locale !== baseLocale);
+const baseCatalogCount = (await readdir(resolve(messagesRoot, baseLocale))).filter((file) =>
+  file.endsWith('.json')
+).length;
+const localePayloads = new Map();
+for (const [manifestKey, entry] of Object.entries(manifest)) {
+  const match = entry.name?.match(/^lingua-(.+)-(public|chat)$/);
+  if (!match) continue;
+
+  const [, locale, boundary] = match;
+  if (!nonBaseLocales.includes(locale)) {
+    throw new Error(`Unexpected locale payload ${entry.name}`);
+  }
+  if (allRouteInitialFiles.has(entry.file)) {
+    throw new Error(`Expected ${manifestKey} to stay outside every route's initial bundle`);
+  }
+
+  const payloads = localePayloads.get(locale) ?? new Map();
+  if (payloads.has(boundary)) {
+    throw new Error(`Expected one ${boundary} payload for ${locale}`);
+  }
+  payloads.set(boundary, entry.file);
+  localePayloads.set(locale, payloads);
+}
+
+const ungroupedCatalogEntries = Object.entries(manifest).filter(([key, entry]) =>
+  nonBaseLocales.some((locale) =>
+    [key, entry.src].some((source) => source?.includes(`messages/${locale}/`))
+  )
+);
+if (ungroupedCatalogEntries.length > 0) {
+  throw new Error(
+    `Expected non-base catalogs to be coalesced, found ${ungroupedCatalogEntries.length} section entries`
+  );
+}
+
+let lazyCatalogCount = 0;
+for (const locale of nonBaseLocales) {
+  const sections = (await readdir(resolve(messagesRoot, locale))).filter((file) =>
+    file.endsWith('.json')
+  );
+  const payloadCount = localePayloads.get(locale)?.size ?? 0;
+  if (payloadCount < 1 || payloadCount > 2) {
+    throw new Error(`Expected ${locale} catalogs in one or two payloads, found ${payloadCount}`);
+  }
+  const physicalPayloadCount = new Set(localePayloads.get(locale)?.values()).size;
+  if (physicalPayloadCount !== payloadCount) {
+    throw new Error(`Expected ${locale} loading boundaries to remain separate payloads`);
+  }
+  if (sections.length === baseCatalogCount && payloadCount !== 2) {
+    throw new Error(`Expected complete locale ${locale} to have public and chat payloads`);
+  }
+  lazyCatalogCount += sections.length;
+}
+const localePayloadCount = [...localePayloads.values()].reduce(
+  (total, payloads) => total + payloads.size,
+  0
+);
+console.log(
+  `locales  ${lazyCatalogCount} lazy catalogs in ${localePayloadCount} payloads ` +
+    `across ${nonBaseLocales.length} locales  PASS`
+);
 
 const liveKitEntry = Object.entries(manifest).find(([, entry]) =>
   entry.src?.includes('/livekit-client/dist/livekit-client.esm.mjs')

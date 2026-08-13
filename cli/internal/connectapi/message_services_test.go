@@ -326,6 +326,35 @@ func TestMessageServiceAddAndRemoveResponseSemantics(t *testing.T) {
 	}
 }
 
+func TestMessageServiceAddReactionMapsPerUserMessageLimit(t *testing.T) {
+	env := newConnectAPITestEnv(t)
+	room := env.createJoinedRoom("reaction-limit")
+	event := env.post(room.Id, env.viewer.Id, "react to me", "")
+	ctx := withCaller(env.ctx, env.viewer)
+	emojis := []string{
+		"100", "blush", "clap", "eyes", "fire", "heart", "heart_eyes", "kissing_heart", "laughing", "muscle",
+		"ok_hand", "pray", "raised_hands", "rocket", "smile", "star", "tada", "thinking", "thumbsup", "wave", "wink",
+	}
+
+	for _, emoji := range emojis[:core.MaxReactionsPerUserPerMessage] {
+		resp, err := env.messages.AddReaction(ctx, connect.NewRequest(&apiv1.AddReactionRequest{
+			RoomId: room.Id, MessageEventId: event.Id, Emoji: emoji,
+		}))
+		if err != nil {
+			t.Fatalf("AddReaction %q: %v", emoji, err)
+		}
+		if !resp.Msg.GetAdded() {
+			t.Fatalf("AddReaction %q added = false, want true", emoji)
+		}
+	}
+	_, err := env.messages.AddReaction(ctx, connect.NewRequest(&apiv1.AddReactionRequest{
+		RoomId: room.Id, MessageEventId: event.Id, Emoji: emojis[core.MaxReactionsPerUserPerMessage],
+	}))
+	if got := connect.CodeOf(err); got != connect.CodeResourceExhausted {
+		t.Fatalf("AddReaction above limit code = %v, want %v", got, connect.CodeResourceExhausted)
+	}
+}
+
 func TestMessageServiceReactionOnEchoCanonicalizesToOriginal(t *testing.T) {
 	env := newConnectAPITestEnv(t)
 	room := env.createJoinedRoom("reaction-echo")
@@ -449,6 +478,26 @@ func TestMessageServiceCreateMessageValidatesInput(t *testing.T) {
 			code: connect.CodeInvalidArgument,
 		},
 		{
+			name: "create thread for thread reply",
+			req: &apiv1.CreateMessageRequest{
+				RoomId:            room.Id,
+				Body:              "invalid",
+				ThreadRootEventId: root.Id,
+				CreateThread:      true,
+			},
+			code: connect.CodeInvalidArgument,
+		},
+		{
+			name: "create thread while implicitly inheriting a thread",
+			req: &apiv1.CreateMessageRequest{
+				RoomId:       room.Id,
+				Body:         "invalid",
+				InReplyTo:    reply.Id,
+				CreateThread: true,
+			},
+			code: connect.CodeInvalidArgument,
+		},
+		{
 			name: "missing thread root",
 			req: &apiv1.CreateMessageRequest{
 				RoomId:            room.Id,
@@ -507,7 +556,7 @@ func TestMessageServiceCreateMessageValidatesInput(t *testing.T) {
 func TestMessageServiceCreateMessageInfersVideoProcessingAssetIDs(t *testing.T) {
 	env := newConnectAPITestEnv(t)
 	env.api.config.Video.Enabled = true
-	env.core.OnVideoProcessingRequested = func(context.Context, string, string) error { return nil }
+	env.core.VideoUploadsEnabled = true
 	room := env.createJoinedRoom("message-post-video")
 	assetID := env.uploadAttachmentAsset(t, room.Id, "clip.mp4", "video/mp4", []byte("original video"))
 
@@ -542,6 +591,74 @@ func TestMessageServiceCreateMessageReturnsRenderableMessage(t *testing.T) {
 	if message.Body == nil || message.GetBody() != "hello over connect" {
 		t.Fatalf("message body = %q present=%v, want posted body", message.GetBody(), message.Body != nil)
 	}
+	if message.GetThread() != nil {
+		t.Fatalf("message thread = %+v, want nil for an ordinary root", message.GetThread())
+	}
+}
+
+func TestMessageServiceCreateMessageReturnsCreatedEmptyThread(t *testing.T) {
+	env := newConnectAPITestEnv(t)
+	room := env.createJoinedRoom("message-post-thread-root")
+	ctx := withCaller(env.ctx, env.viewer)
+
+	resp, err := env.messages.CreateMessage(ctx, connect.NewRequest(&apiv1.CreateMessageRequest{
+		RoomId:       room.Id,
+		Body:         "discuss in the thread",
+		CreateThread: true,
+	}))
+	if err != nil {
+		t.Fatalf("CreateMessage: %v", err)
+	}
+	thread := resp.Msg.GetMessage().GetThread()
+	if thread == nil {
+		t.Fatalf("thread = %+v, want existing empty thread", thread)
+	}
+	if thread.GetReplyCount() != 0 {
+		t.Fatalf("reply count = %d, want 0", thread.GetReplyCount())
+	}
+	if state := thread.GetViewerState(); state == nil || !state.GetIsFollowing() {
+		t.Fatalf("viewer state = %+v, want following", state)
+	}
+
+	followed, err := env.threads.ListFollowedThreads(ctx, connect.NewRequest(&apiv1.ListFollowedThreadsRequest{
+		Page: &apiv1.PageRequest{Limit: 20},
+	}))
+	if err != nil {
+		t.Fatalf("ListFollowedThreads: %v", err)
+	}
+	if len(followed.Msg.GetThreads()) != 1 {
+		t.Fatalf("followed threads = %d, want 1", len(followed.Msg.GetThreads()))
+	}
+	followedSummary := followed.Msg.GetThreads()[0].GetThread()
+	if followedSummary == nil || followedSummary.GetReplyCount() != 0 {
+		t.Fatalf("followed thread summary = %+v, want existing empty thread", followedSummary)
+	}
+}
+
+func TestMessageServiceCreateMessageRequiresThreadPostPermissionToCreateThread(t *testing.T) {
+	env := newConnectAPITestEnv(t)
+	room := env.createJoinedRoom("thread-root-permission")
+	ctx := withCaller(env.ctx, env.viewer)
+
+	if err := env.core.DenyRoomPermission(env.ctx, core.SystemActorID, room.Id, core.RoleEveryone, core.PermMessagePostInThread); err != nil {
+		t.Fatalf("DenyRoomPermission thread post: %v", err)
+	}
+
+	if _, err := env.messages.CreateMessage(ctx, connect.NewRequest(&apiv1.CreateMessageRequest{
+		RoomId: room.Id,
+		Body:   "ordinary roots remain allowed",
+	})); err != nil {
+		t.Fatalf("CreateMessage ordinary root: %v", err)
+	}
+
+	_, err := env.messages.CreateMessage(ctx, connect.NewRequest(&apiv1.CreateMessageRequest{
+		RoomId:       room.Id,
+		Body:         "thread creation must be denied",
+		CreateThread: true,
+	}))
+	if connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatalf("CreateMessage explicit thread code = %v, want %v", connect.CodeOf(err), connect.CodePermissionDenied)
+	}
 }
 
 func TestMessageServiceCreateMessageUploadsAttachments(t *testing.T) {
@@ -569,6 +686,31 @@ func TestMessageServiceCreateMessageUploadsAttachments(t *testing.T) {
 	}
 	if attachments[0].GetId() == "" {
 		t.Fatal("attachment id is empty")
+	}
+}
+
+func TestMessageServiceCreateMessageRejectsAnotherMembersAttachmentAsset(t *testing.T) {
+	env := newConnectAPITestEnv(t)
+	room := env.createJoinedRoom("message-asset-owner")
+	assetID := env.uploadAttachmentAsset(t, room.Id, "owned.txt", "text/plain", []byte("victim asset"))
+	if _, err := env.messages.CreateMessage(withCaller(env.ctx, env.viewer), connect.NewRequest(&apiv1.CreateMessageRequest{
+		RoomId: room.Id, Body: "victim", AttachmentAssetIds: []string{assetID},
+	})); err != nil {
+		t.Fatalf("victim CreateMessage: %v", err)
+	}
+
+	attacker, err := env.core.CreateUser(env.ctx, core.SystemActorID, "asset-alias-attacker", "Asset Alias Attacker", "password")
+	if err != nil {
+		t.Fatalf("CreateUser attacker: %v", err)
+	}
+	if _, err := env.core.JoinRoom(env.ctx, attacker.Id, core.KindChannel, attacker.Id, room.Id); err != nil {
+		t.Fatalf("JoinRoom attacker: %v", err)
+	}
+	_, err = env.messages.CreateMessage(withCaller(env.ctx, attacker), connect.NewRequest(&apiv1.CreateMessageRequest{
+		RoomId: room.Id, Body: "alias", AttachmentAssetIds: []string{assetID},
+	}))
+	if connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("attacker CreateMessage code = %v, want %v", connect.CodeOf(err), connect.CodeFailedPrecondition)
 	}
 }
 

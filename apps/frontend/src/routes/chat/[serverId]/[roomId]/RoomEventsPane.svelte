@@ -3,7 +3,7 @@
   import type { MessagesStore } from '$lib/state/room';
   import EventList from './EventList.svelte';
   import type { OpenThreadHandler } from './threadOpenOptions';
-  import * as m from '$lib/i18n/messages';
+  import { m } from '$lib/i18n/messages';
   import { toast } from '$lib/ui/toast';
 
   let {
@@ -12,6 +12,7 @@
     unreadMarkerEventId = null,
     onUnreadMarkerCleared,
     onOpenThread,
+    onOpenCall,
     pendingHighlightId = null,
     onHighlightComplete,
     typingUserIds = [],
@@ -22,6 +23,7 @@
     unreadMarkerEventId?: string | null;
     onUnreadMarkerCleared?: () => void;
     onOpenThread?: OpenThreadHandler;
+    onOpenCall?: () => void;
     pendingHighlightId?: string | null;
     onHighlightComplete?: () => void;
     typingUserIds?: string[];
@@ -84,6 +86,7 @@
   onLoadMore={() => store.loadMore()}
   {updateCounter}
   {onOpenThread}
+  {onOpenCall}
   enableLastEditableFinder={true}
   isLoading={store.isInitialLoading}
   unreadAfterEventId={unreadMarkerEventId}
@@ -93,7 +96,7 @@
   onScrollToEventComplete={(landed) => {
     if (jumpState) jumpState.scrollToEventId = null;
     onHighlightComplete?.();
-    if (!landed) toast.error(m['room.jump_failed']());
+    if (!landed) toast.error(m('room.jump_failed'));
   }}
   isJumpedMode={jumpState?.isJumpedMode ?? false}
   isLoadingNewer={jumpState?.isLoadingNewer ?? false}

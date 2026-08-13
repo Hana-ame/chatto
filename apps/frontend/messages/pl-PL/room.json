@@ -1,5 +1,4 @@
 {
-  "$schema": "https://inlang.com/schema/inlang-message-format",
   "room": {
     "create": {
       "title": "Utwórz nowy pokój",
@@ -23,13 +22,10 @@
       "inline_prompt": "Dołącz do tego pokoju, aby czytać i brać udział.",
       "group_label": "W {group}",
       "member_preview_label": "Członkowie pokoju",
-      "member_count": [
-        {
-          "declarations": ["input count", "local countPlural = count: plural"],
-          "selectors": ["countPlural"],
-          "match": { "countPlural=one": "{count} członek", "countPlural=other": "{count} członków" }
-        }
-      ],
+      "member_count": {
+        "one": "{count} członek",
+        "other": "{count} członków"
+      },
       "success": "Dołączył do #{room}",
       "success_generic": "Dołączył do pokoju",
       "failed": "Nie udało się dołączyć do pokoju",
@@ -82,6 +78,7 @@
       "delete_prompt": "Czy na pewno chcesz usunąć tę wiadomość? Tego nie można cofnąć.",
       "delete_failed": "Nie udało się usunąć wiadomości",
       "reaction_failed": "Nie udało się zaktualizować reakcji",
+      "reaction_limit_reached": "Możesz dodać maksymalnie 20 reakcji do jednej wiadomości.",
       "deleted": "Wiadomość usunięta",
       "actions": {
         "toolbar": "Działania w wiadomościach",
@@ -100,6 +97,7 @@
         "copy_link": "Skopiuj link"
       },
       "meta": {
+        "pinned": "Przypięta wiadomość",
         "thread": "Wątek",
         "reply_count_one": "1 odpowiedź",
         "reply_count_many": "Odpowiedzi {count}",
@@ -120,45 +118,29 @@
       }
     },
     "system_events": {
-      "joined": [
-        {
-          "declarations": ["input count", "local countPlural = count: plural"],
-          "selectors": ["countPlural"],
-          "match": {
-            "countPlural=one": "dołączył do pokoju",
-            "countPlural=few": "dołączyli do pokoju",
-            "countPlural=many": "dołączyli do pokoju",
-            "countPlural=other": "dołączyli do pokoju"
-          }
-        }
-      ],
-      "left": [
-        {
-          "declarations": ["input count", "local countPlural = count: plural"],
-          "selectors": ["countPlural"],
-          "match": {
-            "countPlural=one": "opuścił pokój",
-            "countPlural=few": "opuścili pokój",
-            "countPlural=many": "opuścili pokój",
-            "countPlural=other": "opuścili pokój"
-          }
-        }
-      ],
+      "joined_count": {
+        "one": "dołączył do pokoju",
+        "few": "dołączyli do pokoju",
+        "many": "dołączyli do pokoju",
+        "other": "dołączyli do pokoju"
+      },
+      "left_count": {
+        "one": "opuścił pokój",
+        "few": "opuścili pokój",
+        "many": "opuścili pokój",
+        "other": "opuścili pokój"
+      },
       "archived": "zarchiwizował pokój",
       "unarchived": "cofnął archiwizację pokoju",
+      "call_started": "rozpoczął rozmowę w tym pokoju",
+      "call_ended": "Aktywna rozmowa zakończyła się",
       "and": "i",
-      "other_people": [
-        {
-          "declarations": ["input count", "local countPlural = count: plural"],
-          "selectors": ["countPlural"],
-          "match": {
-            "countPlural=one": "inna osoba",
-            "countPlural=few": "inne osoby",
-            "countPlural=many": "innych osób",
-            "countPlural=other": "innych osób"
-          }
-        }
-      ],
+      "other_people_count": {
+        "one": "inna osoba",
+        "few": "inne osoby",
+        "many": "innych osób",
+        "other": "innych osób"
+      },
       "show_less": "pokazuj mniej"
     },
     "attachment": {
@@ -192,6 +174,7 @@
       "offline": "Offline ({count})",
       "no_files": "Nie ma jeszcze plików w tym pokoju.",
       "files": "Pliki",
+      "pins": "Przypięte wiadomości",
       "call": "Zadzwoń",
       "jump_to_file": "Skocz do {filename}",
       "loading_files": "Ładowanie plików...",
@@ -201,6 +184,20 @@
       "in_video_call": "Podczas rozmowy wideo",
       "ban_failed": "Nie udało się zablokować członka w pokoju",
       "ban_success": "Zablokowano {name} w pokoju"
+    },
+    "pins": {
+      "show": "Pokaż przypięte wiadomości",
+      "unseen": "Nowe przypięte wiadomości",
+      "hide": "Ukryj przypięte wiadomości",
+      "pin": "Przypnij wiadomość",
+      "unpin": "Odepnij wiadomość",
+      "unpin_prompt": "Czy na pewno chcesz usunąć przypięcie tej wiadomości?",
+      "loading": "Ładowanie przypiętych wiadomości...",
+      "empty_title": "Brak przypiętych wiadomości",
+      "empty_description": "Zarządzający pokojem mogą przypinać tutaj ważne wiadomości.",
+      "error_title": "Przypięte wiadomości są niedostępne",
+      "error_description": "Nie udało się załadować przypiętych wiadomości. Spróbuj ponownie za chwilę.",
+      "update_failed": "Nie udało się zaktualizować przypiętej wiadomości"
     },
     "title": {
       "direct_message": "Wiadomość bezpośrednia"

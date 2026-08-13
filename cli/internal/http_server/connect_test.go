@@ -282,7 +282,7 @@ func TestConnectServerDiscoveryServiceGetServer(t *testing.T) {
 	t.Run("returns public server metadata", func(t *testing.T) {
 		_, ts := setupConnectTestServer(t, config.AuthConfig{
 			Providers: []config.AuthProviderConfig{
-				{ID: "hub", Type: config.AuthProviderTypeOpenIDConnect, Label: "Chatto Hub"},
+				{ID: "hub", Type: config.AuthProviderTypeOpenIDConnect, Label: "Chatto Hub", IssuerURL: "https://id.example"},
 			},
 		})
 
@@ -302,6 +302,9 @@ func TestConnectServerDiscoveryServiceGetServer(t *testing.T) {
 		if !msg.GetLogin().GetDirectRegistrationEnabled() {
 			t.Fatal("DirectRegistrationEnabled = false, want true")
 		}
+		if msg.GetLogin().GetAccountCreationPolicy() != apiv1.AccountCreationPolicy_ACCOUNT_CREATION_POLICY_OPEN {
+			t.Fatalf("AccountCreationPolicy = %v, want OPEN", msg.GetLogin().GetAccountCreationPolicy())
+		}
 		if msg.GetLogin().GetAuthorizeUrl() != "/oauth/authorize" {
 			t.Fatalf("AuthorizeUrl = %q, want /oauth/authorize", msg.GetLogin().GetAuthorizeUrl())
 		}
@@ -311,6 +314,9 @@ func TestConnectServerDiscoveryServiceGetServer(t *testing.T) {
 		provider := msg.GetLogin().GetProviders()[0]
 		if provider.Id != "hub" || provider.Type != config.AuthProviderTypeOpenIDConnect || provider.Label != "Chatto Hub" || provider.LoginUrl != "/auth/providers/hub" {
 			t.Fatalf("AuthProviders[0] = %+v", provider)
+		}
+		if provider.GetIssuerUrl() != "https://id.example" {
+			t.Fatalf("AuthProviders[0].IssuerUrl = %q, want https://id.example", provider.GetIssuerUrl())
 		}
 	})
 
@@ -541,6 +547,7 @@ func TestConnectReflection(t *testing.T) {
 		protoreflect.FullName(discoveryv1connect.ServerDiscoveryServiceName),
 		protoreflect.FullName(apiv1connect.RoomServiceName),
 		protoreflect.FullName(adminv1connect.AdminDiagnosticsServiceName),
+		protoreflect.FullName(adminv1connect.AdminInviteLinkServiceName),
 	} {
 		if !nameSet[want] {
 			t.Fatalf("reflection services = %v, missing %s", names, want)
@@ -871,6 +878,34 @@ func TestConnectRequestBaseURLTrustModel(t *testing.T) {
 
 		if got, want := s.requestBaseURL(req), "https://configured.example.com"; got != want {
 			t.Fatalf("requestBaseURL = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("canonicalizes configured default port", func(t *testing.T) {
+		s := &HTTPServer{config: config.ChattoConfig{
+			Webserver: config.WebserverConfig{URL: "https://configured.example.com:443/path"},
+		}}
+		req := httptest.NewRequest(http.MethodGet, "http://request.example.com/api/connect", nil)
+
+		if got, want := s.requestBaseURL(req), "https://configured.example.com"; got != want {
+			t.Fatalf("requestBaseURL = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("matches browser serialization for configured origins", func(t *testing.T) {
+		tests := map[string]string{
+			"https://configured.example.com:0443": "https://configured.example.com",
+			"https://[2001:0db8::1]:443":          "https://[2001:db8::1]",
+			"https://münchen.example":             "https://xn--mnchen-3ya.example",
+		}
+		for configured, want := range tests {
+			s := &HTTPServer{config: config.ChattoConfig{
+				Webserver: config.WebserverConfig{URL: configured},
+			}}
+			req := httptest.NewRequest(http.MethodGet, "http://request.example.com/api/connect", nil)
+			if got := s.requestBaseURL(req); got != want {
+				t.Errorf("requestBaseURL for %q = %q, want %q", configured, got, want)
+			}
 		}
 	})
 

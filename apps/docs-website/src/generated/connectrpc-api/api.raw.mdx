@@ -1123,11 +1123,12 @@ Request to create a message in a room or thread.
 | --- | --- | --- |
 | `room_id` | `string` | Required. Room where the message should be created. |
 | `body` | `string` | Message body text. Required unless attachment_asset_ids is non-empty. |
-| `attachment_asset_ids` | `repeated string` | Existing room-scoped attachment asset IDs to include with the message. At most 10 IDs may be supplied. |
+| `attachment_asset_ids` | `repeated string` | Completed room-scoped asset IDs uploaded by the caller and not yet attached to a message. The server attaches them exclusively and atomically to this message. At most 10 IDs may be supplied. |
 | `thread_root_event_id` | `string` | Event ID of the thread root message when posting a thread reply. |
 | `in_reply_to` | `string` | Event ID this message replies to for attribution. |
 | `also_send_to_channel` | `bool` | True to also echo a thread reply into the main room timeline. |
 | `link_preview_token` | `string` | Short-lived token returned by FetchLinkPreview for the selected URL. The server resolves the token to cached, server-fetched metadata during post. |
+| `create_thread` | `bool` | True to establish the new root message as a thread immediately. Requires both message.post and message.post-in-thread. Channel rooms only; cannot be combined with thread_root_event_id. |
 
 
 <a id="chatto-api-v1-CreateMessageResponse"></a>
@@ -1285,7 +1286,7 @@ Result of removing a link preview from a message.
 ### GetMessage
 
 Reads one renderable message, including current body, attachment metadata,
-link preview, reactions, and thread metadata. Authentication and room
+link preview, reactions, thread metadata, and pin state. Authentication and room
 membership are required. Returns NOT_FOUND when the event does not exist,
 is not a message, has been retracted, or belongs to a different room.
 
@@ -1320,7 +1321,7 @@ Response containing one renderable message.
 
 ### BatchGetMessages
 
-Reads many renderable messages in one room. Authentication and room
+Reads many renderable messages and their current pin state in one room. Authentication and room
 membership are required. Missing, retracted, non-message, and wrong-room
 event IDs are omitted. Results preserve first-seen request order and
 repeated event IDs are de-duplicated.
@@ -1371,7 +1372,9 @@ Request to add the current user's reaction to a message.
 
 When `message_event_id` names a channel echo of a thread reply, the server
 treats it as an alias for the original thread reply and stores the reaction
-on that original event.
+on that original event. The server returns `RESOURCE_EXHAUSTED` when the
+current user already has 20 distinct emoji reactions on the canonical
+message; adding an emoji that already exists remains an idempotent success.
 
 | Field | Type | Description |
 | --- | --- | --- |
@@ -1463,7 +1466,7 @@ Request to create a channel room.
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `name` | `string` | Required. NFC-normalized name of the new channel room. Names accept Unicode letters, decimal digits, hyphens, and underscores. |
+| `name` | `string` | Required. Visible 1–30-code-point Unicode name of the new channel room. The server trims and stores it in NFC form. Control characters and Unicode line or paragraph separators are rejected. |
 | `description` | `string` | Optional room description. |
 | `group_id` | `string` | Required. Room group that should contain the new channel. |
 | `universal` | `bool` | Whether the new channel should grant effective membership to eligible server members. |
@@ -1500,9 +1503,10 @@ Request to update a room's editable metadata.
 | Field | Type | Description |
 | --- | --- | --- |
 | `room_id` | `string` | Required. Room to update. |
-| `name` | `optional string` | New NFC-normalized room name, when changing it. Names accept Unicode letters, decimal digits, hyphens, and underscores. |
+| `name` | `optional string` | New visible 1–30-code-point Unicode room name, when changing it. The server trims and stores it in NFC form. Control characters and Unicode line or paragraph separators are rejected. |
 | `description` | `optional string` | New room description, when changing it. Empty clears the description. |
 | `universal` | `optional bool` | New universal membership state, when changing it. Direct-message rooms cannot be universal. |
+| `slow_mode_seconds` | `optional uint32` | New per-user posting interval in seconds. Zero disables slow mode. The maximum supported interval is six hours. Direct-message rooms cannot use slow mode. |
 
 
 <a id="chatto-api-v1-UpdateRoomResponse"></a>
@@ -1959,6 +1963,110 @@ Room-scoped attachment list response.
 | --- | --- | --- |
 | `attachments` | repeated [`RoomAttachmentListItem`](#chatto-api-v1-RoomAttachmentListItem) | Current attachments in newest message order. |
 | `page` | [`PageInfo`](#chatto-api-v1-PageInfo) | Page metadata. |
+
+
+<a id="chatto-api-v1-RoomService-ListPinnedMessages"></a>
+
+### ListPinnedMessages
+
+Lists current pinned messages in a channel room. Room membership is
+required; direct-message rooms do not support pinned messages.
+
+```http
+POST /api/connect/chatto.api.v1.RoomService/ListPinnedMessages
+```
+
+<a id="chatto-api-v1-ListPinnedMessagesRequest"></a>
+
+#### Input: ListPinnedMessagesRequest
+
+Request to list a channel room's current pinned messages.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `room_id` | `string` | Required channel room ID. |
+| `page` | [`PageRequest`](#chatto-api-v1-PageRequest) | Page request. Defaults are applied when absent or limit is zero. |
+
+
+<a id="chatto-api-v1-ListPinnedMessagesResponse"></a>
+
+#### Result: ListPinnedMessagesResponse
+
+Current pinned messages in one channel room.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `pinned_messages` | repeated [`PinnedMessage`](#chatto-api-v1-PinnedMessage) | Pinned messages in newest-pin-first order. |
+| `page` | [`PageInfo`](#chatto-api-v1-PageInfo) | Page metadata. |
+| `latest_pin_marker` | `string` | Opaque marker for the latest pin fact observed for this room. The value remains stable when pins are removed so clients can detect new pins without comparing wall-clock timestamps. Clients must not interpret it. |
+
+
+<a id="chatto-api-v1-RoomService-CreatePinnedMessage"></a>
+
+### CreatePinnedMessage
+
+Pins a current message. The caller must have room.manage. Repeating an
+existing pin is idempotent. Direct-message rooms are rejected.
+
+```http
+POST /api/connect/chatto.api.v1.RoomService/CreatePinnedMessage
+```
+
+<a id="chatto-api-v1-CreatePinnedMessageRequest"></a>
+
+#### Input: CreatePinnedMessageRequest
+
+Request to pin a message in a channel room.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `room_id` | `string` | Required channel room ID. |
+| `message_event_id` | `string` | Required canonical message event ID. Thread replies are supported. |
+
+
+<a id="chatto-api-v1-CreatePinnedMessageResponse"></a>
+
+#### Result: CreatePinnedMessageResponse
+
+Result of pinning a message.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `pinned_message` | [`PinnedMessage`](#chatto-api-v1-PinnedMessage) | Current pinned-message resource. Repeating an existing pin returns it. |
+
+
+<a id="chatto-api-v1-RoomService-DeletePinnedMessage"></a>
+
+### DeletePinnedMessage
+
+Removes a current pin. The caller must have room.manage. Removing a
+missing pin is idempotent. Direct-message rooms are rejected.
+
+```http
+POST /api/connect/chatto.api.v1.RoomService/DeletePinnedMessage
+```
+
+<a id="chatto-api-v1-DeletePinnedMessageRequest"></a>
+
+#### Input: DeletePinnedMessageRequest
+
+Request to unpin a message from a channel room.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `room_id` | `string` | Required channel room ID. |
+| `message_event_id` | `string` | Required canonical message event ID. |
+
+
+<a id="chatto-api-v1-DeletePinnedMessageResponse"></a>
+
+#### Result: DeletePinnedMessageResponse
+
+Result of unpinning a message.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `deleted` | `bool` | True when the message is not pinned after this call. |
 
 
 <a id="chatto-api-v1-RoomService-UpdateTypingIndicator"></a>
@@ -2469,7 +2577,7 @@ Request to store a PushSubscription returned by the browser Push API.
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `endpoint` | `string` | Push service endpoint URL. |
+| `endpoint` | `string` | Absolute HTTPS push service endpoint URL. The server rejects redirects and destinations that resolve to private or other special-use addresses. |
 | `p256dh` | `string` | Client P-256 ECDH public key from PushSubscription.keys.p256dh. |
 | `auth` | `string` | Authentication secret from PushSubscription.keys.auth. |
 | `user_agent` | `optional string` | Optional browser user-agent string for device identification. |
@@ -2525,6 +2633,8 @@ Response from removing a browser push subscription.
 ### SendTestNotification
 
 Sends a test notification to the caller's registered browser subscriptions.
+Calls are rate-limited per account. Delivery failures return a generic
+unavailable error without exposing the push provider's response body.
 
 ```http
 POST /api/connect/chatto.api.v1.PushNotificationService/SendTestNotification
@@ -3370,6 +3480,47 @@ LiveKit token details for joining a room call.
 | `call_id` | `string` | Active call session ID. |
 
 
+<a id="chatto-api-v1-VoiceCallService-CreateCallMediaPublisherToken"></a>
+
+### CreateCallMediaPublisherToken
+
+Issues a short-lived LiveKit token for a native companion publisher owned
+by the caller. Companion publishers contribute media to the caller's
+logical participant without becoming call participants themselves.
+
+The caller must already participate in the active call. Returns
+FAILED_PRECONDITION when no call is active, the caller has not joined it,
+or voice and video calls are not configured.
+
+```http
+POST /api/connect/chatto.api.v1.VoiceCallService/CreateCallMediaPublisherToken
+```
+
+<a id="chatto-api-v1-CreateCallMediaPublisherTokenRequest"></a>
+
+#### Input: CreateCallMediaPublisherTokenRequest
+
+Request for a native companion publisher credential.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `room_id` | `string` | Required. Room whose active call receives the media. |
+| `kind` | [`CallMediaPublisherKind`](#chatto-api-v1-CallMediaPublisherKind) | Required. Kind of native media publisher being started. |
+
+
+<a id="chatto-api-v1-CreateCallMediaPublisherTokenResponse"></a>
+
+#### Result: CreateCallMediaPublisherTokenResponse
+
+Credential for one native companion publisher connection.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `token` | `string` | Short-lived LiveKit JWT token. |
+| `e2ee_key` | `string` | Shared E2EE key for this active call. |
+| `call_id` | `string` | Active call session ID. |
+
+
 <a id="chatto-api-v1-VoiceCallService-LeaveCall"></a>
 
 ### LeaveCall
@@ -3447,6 +3598,8 @@ Public login/provider metadata shared by discovery and account-linking APIs.
 | `type` | `string` | Provider type, such as "password", "oidc", "github", or "discord". |
 | `label` | `string` | Human-readable provider label. |
 | `login_url` | `string` | URL that starts login for this provider. |
+| `issuer_url` | `optional string` | OIDC issuer URL. Absent for providers that do not use OpenID Connect. Clients can compare this value with their own trusted issuer selection; the server does not select the client's identity provider. |
+| `auto_provision` | `optional bool` | Whether an unlinked identity may create a new account through this provider. |
 
 
 
@@ -3536,6 +3689,7 @@ Built-in keys currently include:
 - dm.start
 - admin.view-users
 - user.manage-accounts
+- user.invite
 - role.assign
 - role.view
 - role.manage
@@ -3763,8 +3917,9 @@ requests.
 | `echo_from_thread_root_event_id` | `string` | Thread root ID of the echoed event, when applicable. |
 | `channel_echo_event_id` | `string` | Channel timeline event ID for a thread echo, when applicable. |
 | `reactions` | repeated [`MessageReaction`](#chatto-api-v1-MessageReaction) | Reaction summaries for this message. |
-| `thread` | [`ThreadSummary`](#chatto-api-v1-ThreadSummary) | Aggregated thread state, when known for a thread root message. |
+| `thread` | [`ThreadSummary`](#chatto-api-v1-ThreadSummary) | Aggregated thread state. Present only when a durable thread has been established for this root message, including an empty thread. |
 | `deleted_at` | `google.protobuf.Timestamp` | Time when the message content was deleted through retraction or account crypto-shredding. Absent when unavailable body content is not a deletion. |
+| `pinned` | `bool` | True when this message's canonical message is currently pinned in its channel room. Always false for direct-message rooms. |
 
 
 
@@ -4028,6 +4183,19 @@ Payload for a message-posted timeline event.
 
 
 
+<a id="chatto-api-v1-RoomTimelineCallEvent"></a>
+
+### RoomTimelineCallEvent
+
+Payload for voice-call lifecycle timeline events.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `room_id` | `string` | Room containing the call. |
+| `call_id` | `string` | Stable identifier for this call session. |
+
+
+
 <a id="chatto-api-v1-RoomTimelineEvent"></a>
 
 ### RoomTimelineEvent
@@ -4049,6 +4217,8 @@ Clients should inspect the event oneof to choose the renderer for the event.
 | `event.room_unarchived` | [`RoomTimelineRoomEvent`](#chatto-api-v1-RoomTimelineRoomEvent) | The room was unarchived. |
 | `event.user_joined_room` | [`RoomTimelineRoomEvent`](#chatto-api-v1-RoomTimelineRoomEvent) | A user joined the room. |
 | `event.user_left_room` | [`RoomTimelineRoomEvent`](#chatto-api-v1-RoomTimelineRoomEvent) | A user left the room. |
+| `event.call_started` | [`RoomTimelineCallEvent`](#chatto-api-v1-RoomTimelineCallEvent) | A voice call started in the room. |
+| `event.call_ended` | [`RoomTimelineCallEvent`](#chatto-api-v1-RoomTimelineCallEvent) | The voice call ended in the room. |
 
 
 
@@ -4106,6 +4276,18 @@ Payload for room lifecycle and membership timeline events.
 
 
 
+<a id="chatto-api-v1-PinnedMessage"></a>
+
+### PinnedMessage
+
+One current pinned message in a channel room.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `message` | [`Message`](#chatto-api-v1-Message) | Current renderable message. Retracted messages are omitted from pin lists. |
+
+
+
 <a id="chatto-api-v1-Room"></a>
 
 ### Room
@@ -4121,6 +4303,7 @@ Public room metadata returned by room commands.
 | `archived` | `bool` | True when the room is archived and hidden from active room lists. |
 | `group_id` | `string` | Room group ID for channel rooms. Empty for direct-message rooms. |
 | `universal` | `bool` | True when a channel grants effective membership to eligible server members. |
+| `slow_mode_seconds` | `uint32` | Minimum number of seconds a non-exempt member must wait between message posts. Channel rooms only; zero means slow mode is disabled. |
 
 
 
@@ -4314,6 +4497,7 @@ Viewer-specific state and permission decisions for one room.
 | `is_member` | `bool` | True when the current user is an effective room member. |
 | `has_unread` | `bool` | True when the room has unread root messages for the current user. |
 | `permissions` | repeated [`PermissionGrant`](#chatto-api-v1-PermissionGrant) | Effective room-scoped permission decisions after room state constraints. |
+| `slow_mode_next_post_at` | `google.protobuf.Timestamp` | Earliest time the current user may create another message. Absent when slow mode is disabled, expired, or bypassed by moderation permissions. |
 
 
 
@@ -4356,6 +4540,7 @@ Login and registration options exposed before authentication.
 | `direct_registration_enabled` | `bool` | Whether users can create accounts through the public UI. |
 | `providers` | repeated [`ProviderMetadata`](#chatto-api-v1-ProviderMetadata) | Configured login providers. |
 | `authorize_url` | `string` | URL for the legacy authorization flow, when enabled. |
+| `account_creation_policy` | [`AccountCreationPolicy`](#chatto-api-v1-AccountCreationPolicy) | Admission policy for direct registration and provider auto-provisioning. |
 
 
 
@@ -4597,3 +4782,28 @@ Room kinds to include in directory responses.
 | `ROOM_DIRECTORY_SCOPE_ALL` | `1` | Include both visible channel rooms and the caller's active DM rooms. |
 | `ROOM_DIRECTORY_SCOPE_CHANNELS` | `2` | Include visible channel rooms only. |
 | `ROOM_DIRECTORY_SCOPE_DMS` | `3` | Include the caller's active DM rooms only. |
+
+
+<a id="chatto-api-v1-AccountCreationPolicy"></a>
+
+### AccountCreationPolicy
+
+Policy controlling whether self-service account creation requires an invitation.
+
+| Name | Number | Description |
+| --- | --- | --- |
+| `ACCOUNT_CREATION_POLICY_UNSPECIFIED` | `0` | Compatibility value used by older servers. Clients treat it as open. |
+| `ACCOUNT_CREATION_POLICY_OPEN` | `1` | Self-service account creation does not require an invitation. |
+| `ACCOUNT_CREATION_POLICY_INVITE_ONLY` | `2` | Every self-service account creation path requires a valid invitation. |
+
+
+<a id="chatto-api-v1-CallMediaPublisherKind"></a>
+
+### CallMediaPublisherKind
+
+Native companion publisher kind.
+
+| Name | Number | Description |
+| --- | --- | --- |
+| `CALL_MEDIA_PUBLISHER_KIND_UNSPECIFIED` | `0` | The publisher kind was not specified. |
+| `CALL_MEDIA_PUBLISHER_KIND_GAME_SHARE` | `1` | Native game-window video and application audio. |

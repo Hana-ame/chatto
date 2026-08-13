@@ -5,6 +5,7 @@ import { serverRegistry } from './registry.svelte';
 export type ConnectionStatus = 'connected' | 'connecting' | 'dormant' | 'disconnected';
 
 const HIDDEN_RECONNECT_AFTER_MS = 30_000;
+let nextQueryScope = 0;
 
 export interface ServerConnectionConfig {
   /** Server base URL (relative for origin, absolute for remote). */
@@ -58,6 +59,7 @@ export class ServerConnection {
   #serverId: string | undefined;
   #realtimeReconnect: ((reason: string) => void) | null = null;
   #apis = new WeakMap<object, unknown>();
+  readonly #queryScope = `connection-${++nextQueryScope}`;
 
   get isConnected() {
     return this.status === 'connected';
@@ -87,6 +89,11 @@ export class ServerConnection {
 
   get serverId(): string | undefined {
     return this.#serverId;
+  }
+
+  /** Opaque cache scope that changes whenever credentials or transport are replaced. */
+  get queryScope(): string {
+    return this.#queryScope;
   }
 
   /** ConnectRPC configuration for helpers that are not API factories. */

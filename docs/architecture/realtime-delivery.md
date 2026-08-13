@@ -11,6 +11,7 @@ Key files:
 - [`apps/frontend/src/lib/state/server/projection.svelte.ts`](../../apps/frontend/src/lib/state/server/projection.svelte.ts)
 - [`apps/frontend/src/lib/state/server/eventBus.svelte.ts`](../../apps/frontend/src/lib/state/server/eventBus.svelte.ts)
 - [`apps/frontend/src/lib/state/server/realtimeSync.svelte.ts`](../../apps/frontend/src/lib/state/server/realtimeSync.svelte.ts)
+- [`apps/frontend/src/lib/state/server/ServerRuntimeCoordinator.svelte`](../../apps/frontend/src/lib/state/server/ServerRuntimeCoordinator.svelte)
 - [`apps/frontend/src/lib/presenceTracking.ts`](../../apps/frontend/src/lib/presenceTracking.ts)
 
 Related decisions: [ADR-049](../adr/ADR-049-process-wide-realtime-event-hub.md) and [ADR-051](../adr/ADR-051-server-scoped-resumable-client-projection.md).
@@ -22,6 +23,17 @@ existing cookie session. The second client frame must be `subscribe_events`.
 It may name room timelines already retained with the projection. After
 subscription, `hydrate_room` materialises another joined room over the same
 ordered stream.
+
+OAuth access-token connections retain their validated client identity after the
+hello. Each connection registers a process-local watcher with the durable
+OAuth-client projection before continuing. When any replica commits a blocked
+or unsupported policy, every replica's projection closes only the watchers for
+that client; the handler first cancels authorized work, then best-effort sends
+the established terminal `authentication_required` close and tears down the socket.
+Registration and the projected-state check are atomic with projection
+application, so a block racing connection setup cannot leave an authorized
+socket behind. Cookie sessions, first-party bearer sessions, and OAuth sessions
+issued to other clients are unaffected.
 
 The `chatto.realtime.v1` package name is the protobuf namespace, not the
 behavioural protocol version. Protocol 2 is the server-scoped projection
@@ -45,6 +57,17 @@ same `/api/realtime` stream with that projection's cursor and closes as soon as
 run about once a minute with jitter and a 30-second client timeout. Switching
 servers closes the previous persistent socket without discarding its state and
 promotes the selected server to the sole persistent connection.
+
+The application-root `ServerRuntimeCoordinator` owns authenticated-server
+transport reconciliation before notification synchronization and routed
+content. It remains mounted on public and login routes, seeds the origin viewer
+before its first reconciliation, and reacts to restored sessions and late
+compatibility discovery. Consequently, a cold welcome-screen load hydrates
+inactive registered servers without selecting one or mounting chat-only
+presence, profile-cache, prompt, or notice coordination.
+Each registration carries its server store's stable projection reducer; the
+event-bus manager installs that reducer before opening a transport, so an
+initial reset or viewer snapshot cannot arrive before its canonical owner.
 
 The frontend keeps an authenticated server's realtime stream connected
 independently of the local presence mode. "Look offline" stops presence
@@ -179,16 +202,22 @@ materialising room timelines, while older projection-v1 clients safely reapply
 the familiar state and advance their cursor.
 
 Effective membership changes are authoritative timeline boundaries. When a
-universal room stops granting membership, live mapping pairs its current room
-state with an empty replacement for any retained timeline plus authoritative
-active-call and notification replacements; loss of room
-visibility uses `room_remove`, which has the same eviction effect. The browser
-also scrubs canonical rows, mounted room stores, open thread stores, optimistic
-state, call and notification mirrors, and in-flight reads as soon as projected
+viewer gains room access through a join, Universal membership, or unarchive,
+live mapping pairs the current room and any retained timeline with
+authoritative active-call and notification replacements. Newly visible calls
+therefore appear without a compacted reset or page reload.
+
+When a Universal room stops granting membership, live mapping pairs its
+current room state with an empty replacement for any retained timeline plus
+the same viewer-sensitive replacements; loss of room visibility uses
+`room_remove`, which has the same eviction effect. The browser scrubs
+canonical rows, mounted room stores, open thread stores, optimistic state,
+call and notification mirrors, and in-flight reads as soon as projected
 membership becomes false. It also disconnects local call media for that room
-without issuing a redundant leave command. The privacy fence stays closed until an explicit
-positive membership operation arrives, so delayed pagination, previews,
-read-your-writes responses, and timeline replacements cannot restore plaintext.
+without issuing a redundant leave command. The privacy fence stays closed
+until an explicit positive membership operation arrives, so delayed pagination,
+previews, read-your-writes responses, and timeline replacements cannot restore
+plaintext.
 
 The browser keeps only the non-plaintext retained-room intent. If membership
 later returns, the server rematerialises the current window only for that
@@ -213,11 +242,34 @@ compacted reset emits frames incrementally and materialises at most 64 retained
 windows (3,200 recent rows), bounding decryption and transient response memory.
 
 Every subscription emits one finite latest-value reconciliation before
-`caught_up`. It replaces the viewer resource; every visible room's read and
-permission state; the complete followed-thread viewer-state set, including
-RUNTIME_STATE unread markers; pending notifications and room counts; and the
-server directory's current presence. Missing followed-thread entries
-authoritatively clear follow/unread state on retained thread roots.
+`caught_up`. It replaces the viewer resource; the complete followed-thread
+viewer-state set, including RUNTIME_STATE unread markers; pending notifications
+and room counts; and the server directory's current presence. Missing
+followed-thread entries authoritatively clear follow/unread state on retained
+thread roots.
+
+For incremental replay, reconciliation also replaces every visible room's
+latest read and permission state because an EVT gap cannot reconstruct
+RUNTIME_STATE read markers. A compacted reset instead owns those rows in its
+incremental `room_upsert` snapshot frames, so its reconciliation neither
+rebuilds nor repeats the complete room viewer-state collection. The bounded
+snapshot phase owns server and directory resources, room summaries, membership,
+permissions, room read state, room groups, active calls, and retained timelines.
+It also seeds viewer data and notifications. Reconciliation authoritatively
+refreshes viewer data, followed-thread/read state, notifications and counts, and
+presence after either replay-plan branch. A reset captures the read-state
+index's bounded room-change fence before snapshot assembly and reconciles only
+room markers changed after that fence. This delta repairs concurrent or lost
+best-effort room-read invalidations with work proportional to concurrent
+changes; catch-up retries if the bounded change history is exceeded.
+
+Room Slow Mode configuration is embedded in every projected room. A
+`RoomSlowModeChangedEvent` produces an incremental `room_upsert`, immediately
+replacing the interval and the viewer's recalculated next-post timestamp.
+Every `MessagePostedEvent` already produces a `room_viewer_state_replace`; for
+the author this carries the new deadline to all sessions. The same fields are
+present in compacted room snapshots and finite reconciliation, so reconnects
+do not require a client-side timer record.
 
 Buffered live signals cover mutations concurrent with this reconciliation. Thread
 follow/unfollow and read-marker advances publish the same user-scoped
@@ -272,6 +324,14 @@ canonical reply and its echo row. A direct retraction that disables only the
 echo emits `room_timeline_event_remove`; ordinary deleted messages remain
 renderable tombstone upserts.
 
+Pinned-message facts use the existing `server_state_upsert` operation with an
+additive `pinned_message_change` containing the action, room ID, and canonical
+message event ID. Retractions that remove a projected pin emit the same
+idempotent deletion as explicit unpins so clients converge even without
+retaining the room timeline. Retained clients refresh the room's canonical pin
+page in event order. Older protocol-2 clients ignore the unknown nested field
+while continuing to process the known top-level operation.
+
 RBAC facts are fanned through the shared hub. The mapper responds with a
 reconnecting `projection_reset_required` close so the next subscription starts
 from current authorization.
@@ -283,6 +343,16 @@ from current authorization.
 for projections once, and fans immutable decoded events into count- and
 byte-bounded session queues. Sessions for one user share room-visibility state.
 There are no per-client NATS or JetStream consumers.
+
+A NATS connection continuity gap quarantines the hub and closes every current
+session, even when the client reconnects quickly to another cluster member.
+The Chatto replica remains unready after transport reconnection until its
+JetStream resources are accessible, its volatile `MEMORY_CACHE` bucket has
+been recreated when necessary, all registered projections are current, and the
+read-state and presence watchers have completed fresh snapshots. The hub then
+admits a fresh generation; clients reconnect with their retained cursor and
+recover through normal replay or compacted reset.
+
 Directory metadata facts for visible nonmember rooms are additionally fanned
 to sessions. The hub maintains a per-user cache of
 currently authorized directory rooms: facts for a room never seen by that user
@@ -336,13 +406,19 @@ termination continue as `RealtimeEventEnvelope` frames on the same WebSocket.
 Notification create/dismiss signals instead assemble an authoritative
 `notifications_replace`; a live replacement may carry transition metadata for
 one-shot presentation effects, while replay and finite reconciliation omit it.
+
 Viewer preferences, thread follow/read state, profile changes, server layout,
 and member removal likewise mutate the client only through projection
 operations. Active calls converge through `active_calls_replace` in the
-compacted prefix and after every durable call transition. Transient frames have
-no durable cursor; finite pending-notification and presence state are
-reconciled explicitly on every subscription. The process-wide PresenceHub
-retains current presence and fans out later transitions.
+compacted prefix, after every durable call transition, and when room access
+changes the set visible to the viewer. Call-started and call-ended facts pair
+that replacement with a timeline-event upsert for clients retaining the room,
+so the call state and lifecycle row advance under one projection cursor.
+
+Transient frames have no durable cursor. Finite pending-notification and
+presence state are reconciled explicitly on every subscription. The
+process-wide PresenceHub retains current presence and fans out later
+transitions.
 
 A `user_remove` operation purges copied profile fields from room membership,
 timeline includes, notification actors, active-call participants, retained

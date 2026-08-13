@@ -1,5 +1,4 @@
 {
-  "$schema": "https://inlang.com/schema/inlang-message-format",
   "chat": {
     "notifications": {
       "title": "Benachrichtigungen",
@@ -32,8 +31,14 @@
     },
     "server_gutter": {
       "add_server": "Server hinzufügen",
+      "account_data_connect": "Serverliste mit Authling synchronisieren",
+      "account_data_connecting": "Serverlisten-Synchronisierung wird verbunden…",
+      "account_data_connected": "Serverliste wird mit {provider} synchronisiert",
+      "account_data_connected_toast": "Deine Serverliste wird jetzt synchronisiert.",
+      "account_data_error": "Serverliste konnte nicht synchronisiert werden",
       "version": "Version {version}",
       "version_unknown": "Version unbekannt",
+      "unreachable": "Server nicht erreichbar",
       "compatibility_server_too_old": "Dieser Server muss auf Chatto 0.5 oder neuer aktualisiert werden, bevor sich diese App verbinden kann.",
       "compatibility_unknown": "Diese App kann die Kompatibilität anhand der Serverversion nicht bestimmen."
     },
@@ -47,7 +52,7 @@
       "empty_body": "Threads, denen du folgst, erscheinen hier. Du folgst automatisch Threads, an denen du teilnimmst.",
       "no_unread_loaded": "Keine ungelesenen Threads geladen",
       "all_caught_up": "Alles erledigt",
-      "loaded_count": "{loaded} von {total} gefolgten Threads geladen.",
+      "loaded_summary": "{loaded} von {total} gefolgten Threads geladen.",
       "load_more": "Mehr laden",
       "no_unread": "Derzeit keine ungelesenen Threads.",
       "message_missing": "Nachricht nicht mehr verfügbar",

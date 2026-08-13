@@ -18,6 +18,7 @@
   import { getActiveServer } from '$lib/state/activeServer.svelte';
   import { sidebarNav } from '$lib/state/globals.svelte';
   import { provideAppUiState } from '$lib/state/appUi.svelte';
+  import ServerRuntimeCoordinator from '$lib/state/server/ServerRuntimeCoordinator.svelte';
   import { useServerRegistry } from '$lib/state/server/useServerRegistry.svelte';
   import { ToastContainer } from '$lib/ui/toast';
   import AppHeader from '$lib/ui/AppHeader.svelte';
@@ -69,13 +70,15 @@
   afterNavigate(() => {
     if (sidebarNav.isMobile) sidebarNav.close();
   });
-
   const getFullTitle = usePageTitle();
   const fullTitle = $derived(getFullTitle());
 </script>
 
 <GlobalKeyboardShortcuts />
 <IdleTracker />
+{#key data.user?.id}
+  <ServerRuntimeCoordinator user={data.user} />
+{/key}
 <NotificationSync />
 <UpdateNotifier />
 

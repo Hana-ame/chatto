@@ -148,7 +148,8 @@ describe('getCurrentUserViaConnect', () => {
           { capability: 'role.manage', granted: false },
           { capability: 'admin.view-system', granted: true },
           { capability: 'admin.view-audit', granted: true },
-          { capability: 'user.manage-permissions', granted: true }
+          { capability: 'user.manage-permissions', granted: true },
+          { capability: 'user.invite', granted: true }
         ]
       },
       serverNotificationPreference: {
@@ -173,10 +174,19 @@ describe('getCurrentUserViaConnect', () => {
       ]
     });
 
-    const viewer = await getViewerStateViaConnect({
-      baseUrl: '/api/connect',
-      bearerToken: 'token'
-    });
+    const signal = new AbortController().signal;
+    const viewer = await getViewerStateViaConnect(
+      {
+        baseUrl: '/api/connect',
+        bearerToken: 'token'
+      },
+      { signal }
+    );
+
+    expect(mocks.getViewer).toHaveBeenCalledWith(
+      {},
+      { headers: { Authorization: 'Bearer token' }, signal }
+    );
 
     expect(viewer).toEqual(
       expect.objectContaining({
@@ -190,6 +200,7 @@ describe('getCurrentUserViaConnect', () => {
         canAdminViewSystem: true,
         canAdminViewAudit: true,
         canManageUserPermissions: true,
+        canManageInvites: true,
         serverNotificationPreference: {
           level: NotificationLevel.ALL_MESSAGES,
           effectiveLevel: NotificationLevel.ALL_MESSAGES

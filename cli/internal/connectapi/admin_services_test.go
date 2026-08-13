@@ -26,10 +26,11 @@ import (
 )
 
 func TestServerDiscoveryServiceGetServerPublicMetadata(t *testing.T) {
+	autoProvision := true
 	api := New(nil, config.ChattoConfig{
 		Auth: config.AuthConfig{
 			Providers: []config.AuthProviderConfig{
-				{ID: "hub provider", Type: config.AuthProviderTypeOpenIDConnect, Label: "Chatto Hub"},
+				{ID: "hub provider", Type: config.AuthProviderTypeOpenIDConnect, Label: "Chatto Hub", IssuerURL: "https://id.example", AutoProvision: &autoProvision},
 			},
 		},
 	}, "9.8.7")
@@ -56,6 +57,9 @@ func TestServerDiscoveryServiceGetServerPublicMetadata(t *testing.T) {
 	if !msg.GetLogin().GetDirectRegistrationEnabled() {
 		t.Fatal("DirectRegistrationEnabled = false, want true")
 	}
+	if msg.GetLogin().GetAccountCreationPolicy() != apiv1.AccountCreationPolicy_ACCOUNT_CREATION_POLICY_OPEN {
+		t.Fatalf("AccountCreationPolicy = %v, want OPEN", msg.GetLogin().GetAccountCreationPolicy())
+	}
 	if len(msg.GetLogin().GetProviders()) != 1 {
 		t.Fatalf("providers len = %d, want 1", len(msg.GetLogin().GetProviders()))
 	}
@@ -65,6 +69,68 @@ func TestServerDiscoveryServiceGetServerPublicMetadata(t *testing.T) {
 	}
 	if provider.LoginUrl != "/auth/providers/hub%20provider" {
 		t.Fatalf("provider LoginUrl = %q, want escaped provider path", provider.LoginUrl)
+	}
+	if provider.GetIssuerUrl() != "https://id.example" {
+		t.Fatalf("provider IssuerUrl = %q, want https://id.example", provider.GetIssuerUrl())
+	}
+	if !provider.GetAutoProvision() {
+		t.Fatal("provider AutoProvision = false, want true")
+	}
+}
+
+func TestExternalIdentityAccountCreationRechecksCurrentInvitationPolicy(t *testing.T) {
+	env := newConnectAPITestEnv(t)
+	createToken, err := env.core.CreatePendingExternalIdentityCreateFlow(env.ctx, core.PendingExternalIdentityFlow{
+		ProviderID:   "oidc-main",
+		ProviderType: config.AuthProviderTypeOpenIDConnect,
+		Issuer:       "https://id.example",
+		Subject:      "created-while-open",
+	})
+	if err != nil {
+		t.Fatalf("CreatePendingExternalIdentityCreateFlow: %v", err)
+	}
+	env.api.config.Auth.AccountCreationPolicy = config.AccountCreationPolicyInviteOnly
+	_, err = env.externalAuth.CreateExternalIdentityAccount(env.ctx, connect.NewRequest(&authv1.CreateExternalIdentityAccountRequest{
+		Token: createToken,
+		Login: "policy-change",
+	}))
+	requireConnectCode(t, err, connect.CodeInvalidArgument)
+}
+
+func TestOpenExternalIdentityAccountCreationDoesNotRedeemCapturedInvitation(t *testing.T) {
+	env := newConnectAPITestEnv(t)
+	if err := env.core.AssignAdminRole(env.ctx, env.viewer.Id); err != nil {
+		t.Fatalf("AssignAdminRole: %v", err)
+	}
+	maxUses := uint32(1)
+	invitation, err := env.core.CreateInvitation(env.ctx, env.viewer.Id, &maxUses, nil)
+	if err != nil {
+		t.Fatalf("CreateInvitation: %v", err)
+	}
+	createToken, err := env.core.CreatePendingExternalIdentityCreateFlow(env.ctx, core.PendingExternalIdentityFlow{
+		ProviderID:   "oidc-main",
+		ProviderType: config.AuthProviderTypeOpenIDConnect,
+		Issuer:       "https://id.example",
+		Subject:      "created-while-invited",
+		InvitationID: invitation.ID,
+	})
+	if err != nil {
+		t.Fatalf("CreatePendingExternalIdentityCreateFlow: %v", err)
+	}
+	env.api.config.Auth.AccountCreationPolicy = config.AccountCreationPolicyOpen
+	_, err = env.externalAuth.CreateExternalIdentityAccount(env.ctx, connect.NewRequest(&authv1.CreateExternalIdentityAccountRequest{
+		Token: createToken,
+		Login: "now-open",
+	}))
+	if err != nil {
+		t.Fatalf("CreateExternalIdentityAccount: %v", err)
+	}
+	state, err := env.core.GetInvitation(env.ctx, env.viewer.Id, invitation.ID)
+	if err != nil {
+		t.Fatalf("GetInvitation: %v", err)
+	}
+	if state.UseCount != 0 {
+		t.Fatalf("invitation use count = %d, want 0", state.UseCount)
 	}
 }
 
@@ -1199,8 +1265,42 @@ func TestAdminDiagnosticsServiceGetSystemInfoRequiresOwner(t *testing.T) {
 	if len(resp.Msg.GetProjections()) == 0 {
 		t.Fatal("Projections len = 0, want projection diagnostics")
 	}
+	if !resp.Msg.GetProjectionsAvailable() {
+		t.Fatal("ProjectionsAvailable = false, want true")
+	}
 	if resp.Msg.GetAssetCleanup() == nil {
 		t.Fatal("AssetCleanup = nil")
+	}
+	if len(resp.Msg.GetDurableWorkers()) != 4 {
+		t.Fatalf("DurableWorkers len = %d, want 4", len(resp.Msg.GetDurableWorkers()))
+	}
+}
+
+func TestAdminDurableWorkerStatusMapping(t *testing.T) {
+	mapped := adminDurableWorkerStatuses([]core.DurableWorkerAdminStatus{{
+		Key:                   "call_key_cleanup",
+		Health:                core.DurableWorkerHealthWorking,
+		PendingCount:          3,
+		AckPendingCount:       1,
+		WaitingCount:          1,
+		RedeliveredCount:      2,
+		LastDeliveredSequence: 44,
+		AckFloorSequence:      41,
+	}})
+	if len(mapped) != 1 {
+		t.Fatalf("mapped len = %d, want 1", len(mapped))
+	}
+	if mapped[0].GetHealth() != adminv1.AdminDurableWorkerHealth_ADMIN_DURABLE_WORKER_HEALTH_WORKING || mapped[0].GetPendingCount() != "3" {
+		t.Fatalf("mapped status = %+v", mapped[0])
+	}
+	if mapped[0].GetLastDeliveredSequence() != "44" || mapped[0].GetAckFloorSequence() != "41" {
+		t.Fatalf("mapped sequences = %+v", mapped[0])
+	}
+}
+
+func TestAdminNatsStatsPreservesUnavailablePresence(t *testing.T) {
+	if got := adminNatsStats(nil); got != nil {
+		t.Fatalf("adminNatsStats(nil) = %+v, want nil", got)
 	}
 }
 
@@ -1262,6 +1362,37 @@ func TestAdminEventLogServiceListsFiltersAndReadsEntries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateUser actor: %v", err)
 	}
+
+	passwordEvents, err := env.adminEventLog.ListEvents(ctx, connect.NewRequest(&adminv1.ListEventsRequest{
+		Limit: 10,
+		Filter: &adminv1.AdminEventLogFilter{
+			EventType: "UserPasswordHashChangedEvent",
+		},
+	}))
+	if err != nil {
+		t.Fatalf("ListEvents password changes: %v", err)
+	}
+	var passwordEntry *adminv1.AdminEventLogEntry
+	for _, candidate := range passwordEvents.Msg.GetEntries() {
+		if strings.Contains(candidate.GetPayloadJson(), actor.Id) {
+			passwordEntry = candidate
+			break
+		}
+	}
+	if passwordEntry == nil {
+		t.Fatalf("password-change event for user %q not found: %+v", actor.Id, passwordEvents.Msg.GetEntries())
+	}
+	if strings.Contains(passwordEntry.GetPayloadJson(), "passwordHash") {
+		t.Fatalf("ListEvents exposed passwordHash: %s", passwordEntry.GetPayloadJson())
+	}
+	passwordDetail, err := env.adminEventLog.GetEvent(ctx, connect.NewRequest(&adminv1.GetEventRequest{Sequence: passwordEntry.GetSequence()}))
+	if err != nil {
+		t.Fatalf("GetEvent password change: %v", err)
+	}
+	if strings.Contains(passwordDetail.Msg.GetEntry().GetPayloadJson(), "passwordHash") {
+		t.Fatalf("GetEvent exposed passwordHash: %s", passwordDetail.Msg.GetEntry().GetPayloadJson())
+	}
+
 	if _, err := env.core.JoinRoom(env.ctx, actor.Id, core.KindChannel, actor.Id, room.Id); err != nil {
 		t.Fatalf("JoinRoom actor: %v", err)
 	}

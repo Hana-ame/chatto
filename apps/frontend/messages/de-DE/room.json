@@ -1,5 +1,4 @@
 {
-  "$schema": "https://inlang.com/schema/inlang-message-format",
   "room": {
     "create": {
       "title": "Neuen Raum erstellen",
@@ -23,16 +22,10 @@
       "inline_prompt": "Tritt diesem Raum bei, um ihn zu lesen und daran teilzunehmen.",
       "group_label": "In {group}",
       "member_preview_label": "Raummitglieder",
-      "member_count": [
-        {
-          "declarations": ["input count", "local countPlural = count: plural"],
-          "selectors": ["countPlural"],
-          "match": {
-            "countPlural=one": "{count} Mitglied",
-            "countPlural=other": "{count} Mitglieder"
-          }
-        }
-      ],
+      "member_count": {
+        "one": "{count} Mitglied",
+        "other": "{count} Mitglieder"
+      },
       "success": "#{room} beigetreten",
       "success_generic": "Raum beigetreten",
       "failed": "Raum konnte nicht beigetreten werden",
@@ -85,6 +78,7 @@
       "delete_prompt": "Möchtest du diese Nachricht wirklich löschen? Dies kann nicht rückgängig gemacht werden.",
       "delete_failed": "Nachricht konnte nicht gelöscht werden",
       "reaction_failed": "Reaktion konnte nicht aktualisiert werden",
+      "reaction_limit_reached": "Du kannst einer Nachricht bis zu 20 Reaktionen hinzufügen.",
       "deleted": "Nachricht gelöscht",
       "actions": {
         "toolbar": "Nachrichtenaktionen",
@@ -103,6 +97,7 @@
         "copy_link": "Link kopieren"
       },
       "meta": {
+        "pinned": "Angepinnte Nachricht",
         "thread": "Thread",
         "reply_count_one": "1 Antwort",
         "reply_count_many": "{count} Antworten",
@@ -123,39 +118,23 @@
       }
     },
     "system_events": {
-      "joined": [
-        {
-          "declarations": ["input count", "local countPlural = count: plural"],
-          "selectors": ["countPlural"],
-          "match": {
-            "countPlural=one": "ist dem Raum beigetreten",
-            "countPlural=other": "sind dem Raum beigetreten"
-          }
-        }
-      ],
-      "left": [
-        {
-          "declarations": ["input count", "local countPlural = count: plural"],
-          "selectors": ["countPlural"],
-          "match": {
-            "countPlural=one": "hat den Raum verlassen",
-            "countPlural=other": "haben den Raum verlassen"
-          }
-        }
-      ],
+      "joined_count": {
+        "one": "ist dem Raum beigetreten",
+        "other": "sind dem Raum beigetreten"
+      },
+      "left_count": {
+        "one": "hat den Raum verlassen",
+        "other": "haben den Raum verlassen"
+      },
       "archived": "hat den Raum archiviert",
       "unarchived": "hat die Archivierung des Raums aufgehoben",
+      "call_started": "hat einen Anruf in diesem Raum gestartet",
+      "call_ended": "Der aktive Anruf wurde beendet",
       "and": "und",
-      "other_people": [
-        {
-          "declarations": ["input count", "local countPlural = count: plural"],
-          "selectors": ["countPlural"],
-          "match": {
-            "countPlural=one": "weitere Person",
-            "countPlural=other": "weitere"
-          }
-        }
-      ],
+      "other_people_count": {
+        "one": "weitere Person",
+        "other": "weitere"
+      },
       "show_less": "weniger anzeigen"
     },
     "attachment": {
@@ -189,6 +168,7 @@
       "offline": "Offline ({count})",
       "no_files": "Noch keine Dateien in diesem Raum.",
       "files": "Dateien",
+      "pins": "Angepinnte Nachrichten",
       "call": "Anruf",
       "jump_to_file": "Zu {filename} springen",
       "loading_files": "Dateien werden geladen...",
@@ -198,6 +178,20 @@
       "in_video_call": "In einem Videoanruf",
       "ban_failed": "Mitglied konnte nicht aus dem Raum gesperrt werden",
       "ban_success": "{name} wurde aus dem Raum gesperrt"
+    },
+    "pins": {
+      "show": "Angepinnte Nachrichten anzeigen",
+      "unseen": "Neue angepinnte Nachrichten",
+      "hide": "Angepinnte Nachrichten ausblenden",
+      "pin": "Nachricht anpinnen",
+      "unpin": "Pin entfernen",
+      "unpin_prompt": "Möchtest du den Pin dieser Nachricht wirklich entfernen?",
+      "loading": "Angepinnte Nachrichten werden geladen...",
+      "empty_title": "Keine angepinnten Nachrichten",
+      "empty_description": "Raumverwalter können hier wichtige Nachrichten anpinnen.",
+      "error_title": "Angepinnte Nachrichten nicht verfügbar",
+      "error_description": "Angepinnte Nachrichten konnten nicht geladen werden. Versuche es gleich noch einmal.",
+      "update_failed": "Angepinnte Nachricht konnte nicht aktualisiert werden"
     },
     "title": {
       "direct_message": "Direktnachricht"

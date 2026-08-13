@@ -12,6 +12,7 @@ import { TimelineEventKind } from '$lib/render/timelineEvents';
 import { renderMarkdown } from '$lib/markdown';
 import type { CreateMessageInput } from '$lib/api-client/messages';
 import { MentionRolesStore } from '$lib/state/server/mentionRoles.svelte';
+import { Code, ConnectError } from '$lib/api-client/connect';
 
 function postedMessageEvent(
   id = 'msg_123',
@@ -143,6 +144,7 @@ vi.mock('$lib/attachments/prepareFiles', () => ({
 vi.mock('$lib/state/room', () => ({
   MessagesStore: class {},
   RoomFilesStore: class {},
+  RoomPinsStore: class {},
   getRoomMembers: () => roomStateMock.members,
   getRoomMembersStore: () => ({
     searchMembers: vi.fn(async () => roomStateMock.members)
@@ -400,6 +402,7 @@ describe('MessageComposer', () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     window.getSelection()?.removeAllRanges();
     vi.restoreAllMocks();
   });
@@ -440,6 +443,17 @@ describe('MessageComposer', () => {
       expect(toolbar?.contains(q(container, 'button[aria-label="Send message"]'))).toBe(true);
     });
 
+    it('uses the composer width to control labels and keeps formatting controls on one row', async () => {
+      const { container } = renderMessageComposer({ roomId: 'room_456' });
+
+      await findEditor(container);
+
+      expect(q(container, '[data-testid="composer-input-surface"]')).toHaveClass('@container');
+      expect(q(container, '[data-testid="composer-formatting-toolbar"]')).toHaveClass(
+        'flex-nowrap'
+      );
+    });
+
     it('hides attachment controls when uploads are not allowed', async () => {
       const { container } = renderMessageComposer({ roomId: 'room_456', canAttach: false });
 
@@ -464,6 +478,134 @@ describe('MessageComposer', () => {
       await expect
         .element(q(container, 'p.is-editor-empty[data-placeholder="Type a message..."]'))
         .toBeInTheDocument();
+    });
+  });
+
+  describe('Slow Mode', () => {
+    it('shows ready, waiting, and bypassed status', async () => {
+      const ready = renderMessageComposer({ roomId: 'room-ready', slowModeSeconds: 30 });
+      await expect
+        .element(q(ready.container, '[data-testid="slow-mode-status"]'))
+        .toHaveTextContent('Slow Mode: one message every 30 seconds.');
+
+      const nextPostAt = new Date(Date.now() + 65_000).toISOString();
+      const waiting = renderMessageComposer({
+        roomId: 'room-waiting',
+        slowModeSeconds: 120,
+        slowModeNextPostAt: nextPostAt
+      });
+      await expect
+        .element(q(waiting.container, '[data-testid="slow-mode-status"]'))
+        .toHaveTextContent('Slow Mode: send again in 1:05.');
+
+      const bypassed = renderMessageComposer({
+        roomId: 'room-bypassed',
+        slowModeSeconds: 60,
+        slowModeNextPostAt: nextPostAt,
+        slowModeBypassed: true
+      });
+      await expect
+        .element(q(bypassed.container, '[data-testid="slow-mode-status"]'))
+        .toHaveTextContent("Slow Mode: 1 minute (you're exempt).");
+    });
+
+    it('keeps a waiting draft editable while blocking send and Enter', async () => {
+      const { container } = renderMessageComposer({
+        roomId: 'room-waiting-draft',
+        slowModeSeconds: 30,
+        slowModeNextPostAt: new Date(Date.now() + 30_000).toISOString()
+      });
+      const editor = await findEditor(container);
+      await typeInEditor(editor, 'preserve this draft');
+
+      await expect
+        .element(q(container, 'button[aria-label="Send message"]'))
+        .toBeDisabled();
+      const draftHtml = editor.innerHTML;
+      await pressEditorKey(editor, 'Enter');
+
+      expect(createMessageConnectMock).not.toHaveBeenCalled();
+      await expect.element(editor).toHaveTextContent('preserve this draft');
+      expect(editor.innerHTML).toBe(draftHtml);
+    });
+
+    it('starts an optimistic countdown from the successful event timestamp', async () => {
+      const createdAt = new Date(Date.now()).toISOString();
+      createMessageConnectMock.mockResolvedValueOnce({
+        event: { ...postedMessageEvent('slow-message'), createdAt }
+      });
+      const { container } = renderMessageComposer({
+        roomId: 'room-optimistic',
+        slowModeSeconds: 30
+      });
+      const editor = await findEditor(container);
+      await typeInEditor(editor, 'first message');
+      (q(container, 'button[aria-label="Send message"]') as HTMLButtonElement).click();
+
+      await vi.waitFor(() =>
+        expect(q(container, '[data-testid="slow-mode-status"]')?.textContent).toContain(
+          'Slow Mode: send again in 0:30.'
+        )
+      );
+    });
+
+    it('does not include the age of an idle composer in the optimistic countdown', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(new Date('2026-08-11T12:00:00.000Z'));
+      const onMessageSent = vi.fn();
+      const { container } = renderMessageComposer({
+        roomId: 'room-long-lived',
+        slowModeSeconds: 30,
+        onMessageSent
+      });
+      const editor = await findEditor(container);
+      await typeInEditor(editor, 'message after leaving the room open');
+
+      vi.setSystemTime(new Date('2026-08-11T12:05:00.000Z'));
+      const createdAt = new Date().toISOString();
+      createMessageConnectMock.mockResolvedValueOnce({
+        event: { ...postedMessageEvent('slow-message'), createdAt }
+      });
+      (q(container, 'button[aria-label="Send message"]') as HTMLButtonElement).click();
+
+      await vi.waitFor(() => expect(onMessageSent).toHaveBeenCalledOnce());
+      await tick();
+      expect(q(container, '[data-testid="slow-mode-status"]')?.textContent).toContain(
+        'Slow Mode: send again in 0:30.'
+      );
+    });
+
+    it('preserves the draft and shows a Slow Mode error after a server race', async () => {
+      createMessageConnectMock.mockRejectedValueOnce(
+        new ConnectError('slow mode active', Code.ResourceExhausted)
+      );
+      const { container } = renderMessageComposer({
+        roomId: 'room-race',
+        slowModeSeconds: 30
+      });
+      const editor = await findEditor(container);
+      await typeInEditor(editor, 'cross-tab draft');
+      (q(container, 'button[aria-label="Send message"]') as HTMLButtonElement).click();
+
+      await vi.waitFor(() =>
+        expect(getToasts().some((entry) => entry.message.includes('Slow Mode is active'))).toBe(true)
+      );
+      await expect.element(editor).toHaveTextContent('cross-tab draft');
+    });
+
+    it('allows editing an existing message during the cooldown', async () => {
+      roomStateMock.editState.eventId = 'message-to-edit';
+      roomStateMock.editState.originalBody = 'existing body';
+      const { container } = renderMessageComposer({
+        roomId: 'room-editing',
+        slowModeSeconds: 30,
+        slowModeNextPostAt: new Date(Date.now() + 30_000).toISOString()
+      });
+      await findEditor(container);
+
+      await expect
+        .element(q(container, 'button[aria-label="Send message"]'))
+        .not.toBeDisabled();
     });
   });
 
@@ -573,6 +715,16 @@ describe('MessageComposer', () => {
       await vi.waitFor(() => expect(secondReady).toHaveBeenCalledOnce());
     });
 
+    it('fulfils an API focus request made before the editor is ready', async () => {
+      const { container } = renderMessageComposer({
+        roomId: 'room-focus-on-ready',
+        autoFocus: false,
+        onReady: (api) => api.focus()
+      });
+
+      await expect.element(await findEditor(container)).toHaveFocus();
+    });
+
     it('editor is editable initially', async () => {
       const { container } = renderMessageComposer({ roomId: 'room_456' });
 
@@ -611,7 +763,7 @@ describe('MessageComposer', () => {
       const { container } = renderMessageComposer({ roomId: 'room_456' });
 
       const sendButton = q(container, 'button[aria-label="Send message"]');
-      const icon = sendButton?.querySelector('.uil--telegram-alt');
+      const icon = sendButton?.querySelector('[class~="icon-[uil--telegram-alt]"]');
       expect(icon).not.toBeNull();
     });
 
@@ -2529,8 +2681,29 @@ describe('MessageComposer', () => {
       const editor = await findEditor(container, 'thread-reply-input');
 
       await typeInEditor(editor, 'hello world');
-      (q(container, 'input[type="checkbox"]') as HTMLInputElement).click();
-      (q(container, 'button[aria-label="Send message"]') as HTMLButtonElement).click();
+      const echoToggle = q(
+        container,
+        'button[aria-label="Also send to channel"]'
+      ) as HTMLButtonElement;
+      expect(echoToggle.closest('[data-testid="composer-toolbar"]')).toBeTruthy();
+      expect(echoToggle).toHaveTextContent('Echo');
+      expect(echoToggle.querySelector('.iconify')).toHaveClass('icon-[uil--megaphone]');
+      expect(echoToggle.querySelector('span:not(.iconify)')).toHaveClass(
+        'hidden',
+        '@min-[560px]:inline'
+      );
+      expect(echoToggle).not.toHaveClass('active:scale-[0.96]');
+      echoToggle.click();
+      const sendButton = q(
+        container,
+        'button[aria-label="Send message"]'
+      ) as HTMLButtonElement;
+      expect(sendButton).toHaveTextContent('Send');
+      expect(sendButton.querySelector('span:not(.iconify)')).toHaveClass(
+        'hidden',
+        '@min-[560px]:inline'
+      );
+      sendButton.click();
 
       await vi.waitFor(() => expect(mutationMock).toHaveBeenCalledOnce());
       expect(mutationMock.mock.calls[0][1].input).toMatchObject({
@@ -2550,6 +2723,65 @@ describe('MessageComposer', () => {
       );
       expect(mockInstanceStores.roomUnread.setRoomUnread).toHaveBeenCalledWith(roomId, false);
       expect(roomStateMock.scrollState.requestScrollToBottom).toHaveBeenCalledOnce();
+    });
+
+    it('posts a root as a thread without a separate navigation callback', async () => {
+      const onMessageSent = vi.fn();
+      const { container, roomId } = renderMessageComposer({
+        roomId: 'room_456',
+        showCreateThread: true,
+        onMessageSent
+      });
+      const editor = await findEditor(container);
+      const threadToggle = q(container, 'button[aria-label="Post as thread"]') as HTMLButtonElement;
+
+      await expect.element(threadToggle).toHaveAttribute('aria-pressed', 'false');
+      expect(threadToggle.closest('[data-testid="composer-toolbar"]')).toBeTruthy();
+      expect(threadToggle).toHaveTextContent('Thread');
+      expect(threadToggle.querySelector('span:not(.iconify)')).toHaveClass(
+        'hidden',
+        '@min-[560px]:inline'
+      );
+      expect(threadToggle).not.toHaveClass('active:scale-[0.96]');
+      await typeInEditor(editor, 'discuss this');
+      await userEvent.click(threadToggle);
+      (q(container, 'button[aria-label="Send message"]') as HTMLButtonElement).click();
+
+      await vi.waitFor(() => expect(mutationMock).toHaveBeenCalledOnce());
+      expect(mutationMock.mock.calls[0][1].input).toMatchObject({
+        roomId,
+        body: 'discuss this',
+        createThread: true
+      });
+      await vi.waitFor(() => expect(onMessageSent).toHaveBeenCalledOnce());
+      expect(onMessageSent).toHaveBeenCalledWith(expect.objectContaining({ id: 'msg_123' }));
+      await expect.element(threadToggle).toHaveAttribute('aria-pressed', 'false');
+    });
+
+    it('clears hidden thread creation state when navigating to another room', async () => {
+      const rendered = renderMessageComposer(
+        { roomId: 'channel-room', showCreateThread: true },
+        { exactRoomId: true }
+      );
+      const editor = await findEditor(rendered.container);
+      const threadToggle = q(
+        rendered.container,
+        'button[aria-label="Post as thread"]'
+      ) as HTMLButtonElement;
+
+      threadToggle.click();
+      await rendered.rerender({ roomId: 'dm-room', showCreateThread: false });
+      expect(q(rendered.container, 'button[aria-label="Post as thread"]')).toBeNull();
+
+      await typeInEditor(editor, 'hello from the DM');
+      (q(rendered.container, 'button[aria-label="Send message"]') as HTMLButtonElement).click();
+
+      await vi.waitFor(() => expect(mutationMock).toHaveBeenCalledOnce());
+      expect(mutationMock.mock.calls[0][1].input).toMatchObject({
+        roomId: 'dm-room',
+        body: 'hello from the DM',
+        createThread: false
+      });
     });
 
     it('asks for confirmation before sending a virtual role mention', async () => {

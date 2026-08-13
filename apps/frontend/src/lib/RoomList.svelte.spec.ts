@@ -564,7 +564,7 @@ describe('RoomList', () => {
     const children = Array.from(dmRow?.children ?? []);
     expect(icon).not.toBeNull();
     expect(icon?.classList.contains('text-action')).toBe(true);
-    expect(icon?.querySelector('.uil--phone')).not.toBeNull();
+    expect(icon?.querySelector('[class~="icon-[uil--phone]"]')).not.toBeNull();
     expect(pulseIcon).not.toBeNull();
     expect(pulseIcon?.classList.contains('animate-ping')).toBe(true);
     expect(dmRow?.querySelector('[data-testid="room-call-participants"]')).not.toBeNull();
@@ -584,7 +584,7 @@ describe('RoomList', () => {
     const dmRow = q(container, '[href="/chat/-/dm-phone-only"]');
     const icon = dmRow?.querySelector('[data-testid="room-call-icon"]');
     expect(icon).not.toBeNull();
-    expect(icon?.querySelector('.uil--phone')).not.toBeNull();
+    expect(icon?.querySelector('[class~="icon-[uil--phone]"]')).not.toBeNull();
     expect(icon?.querySelector('[data-testid="active-call-pulse-icon"]')).not.toBeNull();
     expect(dmRow?.querySelector('[data-testid="room-call-participants"]')).toBeNull();
   });
@@ -609,7 +609,7 @@ describe('RoomList', () => {
     const leadingIcon = channelRow?.querySelector('.sidebar-icon');
     const children = Array.from(channelRow?.children ?? []);
     expect(icon).not.toBeNull();
-    expect(icon?.querySelector('.uil--phone')).not.toBeNull();
+    expect(icon?.querySelector('[class~="icon-[uil--phone]"]')).not.toBeNull();
     expect(pulseIcon).not.toBeNull();
     expect(pulseIcon?.classList.contains('animate-ping')).toBe(true);
     expect(leadingIcon?.textContent).toBe('#');
@@ -742,8 +742,8 @@ describe('RoomList', () => {
     await expect.element(row).toBeInTheDocument();
     expect(row.className).toContain('opacity-60');
     const icon = row.querySelector('.sidebar-icon');
-    expect(icon?.classList.contains('uil--lock')).toBe(true);
-    expect(row.querySelectorAll('.uil--lock')).toHaveLength(1);
+    expect(icon?.classList.contains('icon-[uil--lock]')).toBe(true);
+    expect(row.querySelectorAll('[class~="icon-[uil--lock]"]')).toHaveLength(1);
 
     const event = new MouseEvent('click', { bubbles: true, cancelable: true });
     const wasNotCanceled = row.dispatchEvent(event);
@@ -763,6 +763,43 @@ describe('RoomList', () => {
     expect(row.classList.contains('sidebar-item-attention')).toBe(true);
     expect(icon?.classList.contains('text-text-top')).toBe(true);
     expect(icon?.classList.contains('text-muted')).toBe(false);
+  });
+
+  it('uses the established globe icon for universal joined rooms', async () => {
+    const universal = mocks.store.navigation.rooms.find(
+      (room: { id: string }) => room.id === 'channel-1'
+    ) as unknown as { isUniversal: boolean };
+    universal.isUniversal = true;
+
+    const { container } = render(RoomList);
+
+    const row = q(container, '[href="/chat/-/channel-1"]') as HTMLAnchorElement;
+    await expect.element(row).toBeInTheDocument();
+    const icon = q(row, '[class~="icon-[uil--globe]"]');
+    await expect.element(icon).toHaveAttribute('aria-label', 'Universal');
+    expect(icon?.getAttribute('title')).toBeTruthy();
+  });
+
+  it('renders room groups as sections and keeps notification rooms visible while collapsed', async () => {
+    setRoomNotificationCount('channel-1', 1);
+    mocks.store.navigation.roomGroups = [
+      {
+        id: 'community',
+        name: 'Community',
+        viewerCanManageGroup: false,
+        roomIds: ['channel-1', 'joinable-channel']
+      }
+    ];
+    localStorage.setItem('chatto:i:origin:collapsible:set:community', '1');
+
+    const { container } = render(RoomList);
+
+    await expect.element(q(container, '[data-testid="room-group-section"]')).toBeInTheDocument();
+    await expect
+      .element(q(container, '[data-testid="room-group-section"] button'))
+      .toHaveAttribute('aria-expanded', 'false');
+    await expect.element(q(container, '[href="/chat/-/channel-1"]')).toBeInTheDocument();
+    expect(container.querySelector('[href="/chat/-/joinable-channel"]')).toBeNull();
   });
 
   it('renders server-local sidebar links as same-tab anchors resolved against the active server', async () => {
@@ -809,7 +846,7 @@ describe('RoomList', () => {
       button.textContent?.includes('Private Group')
     );
     await expect.element(groupHeader ?? null).toBeInTheDocument();
-    expect(container.querySelector('.uil--setting')).toBeNull();
+    expect(container.querySelector('[class~="icon-[uil--setting]"]')).toBeNull();
 
     groupHeader!.dispatchEvent(
       new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 40, clientY: 60 })

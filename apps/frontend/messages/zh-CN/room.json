@@ -1,5 +1,4 @@
 {
-  "$schema": "https://inlang.com/schema/inlang-message-format",
   "room": {
     "create": {
       "title": "创建新聊天室",
@@ -23,16 +22,10 @@
       "inline_prompt": "加入此聊天室即可阅读消息并参与讨论。",
       "group_label": "位于 {group}",
       "member_preview_label": "聊天室成员",
-      "member_count": [
-        {
-          "declarations": ["input count", "local countPlural = count: plural"],
-          "selectors": ["countPlural"],
-          "match": {
-            "countPlural=one": "{count} 位成员",
-            "countPlural=other": "{count} 位成员"
-          }
-        }
-      ],
+      "member_count": {
+        "one": "{count} 位成员",
+        "other": "{count} 位成员"
+      },
       "success": "已加入 #{room}",
       "success_generic": "已加入聊天室",
       "failed": "加入聊天室失败",
@@ -85,6 +78,7 @@
       "delete_prompt": "确定要删除此消息吗？此操作无法撤销。",
       "delete_failed": "删除消息失败",
       "reaction_failed": "更新回应失败",
+      "reaction_limit_reached": "你最多可以为一条消息添加 20 个回应。",
       "deleted": "消息已删除",
       "actions": {
         "toolbar": "消息操作",
@@ -103,6 +97,7 @@
         "copy_link": "复制链接"
       },
       "meta": {
+        "pinned": "已置顶消息",
         "thread": "话题串",
         "reply_count_one": "1 条回复",
         "reply_count_many": "{count} 条回复",
@@ -123,39 +118,23 @@
       }
     },
     "system_events": {
-      "joined": [
-        {
-          "declarations": ["input count", "local countPlural = count: plural"],
-          "selectors": ["countPlural"],
-          "match": {
-            "countPlural=one": "加入了聊天室",
-            "countPlural=other": "加入了聊天室"
-          }
-        }
-      ],
-      "left": [
-        {
-          "declarations": ["input count", "local countPlural = count: plural"],
-          "selectors": ["countPlural"],
-          "match": {
-            "countPlural=one": "退出了聊天室",
-            "countPlural=other": "退出了聊天室"
-          }
-        }
-      ],
+      "joined_count": {
+        "one": "加入了聊天室",
+        "other": "加入了聊天室"
+      },
+      "left_count": {
+        "one": "退出了聊天室",
+        "other": "退出了聊天室"
+      },
       "archived": "归档了聊天室",
       "unarchived": "取消归档了聊天室",
+      "call_started": "在此聊天室发起了通话",
+      "call_ended": "当前通话已结束",
       "and": "和",
-      "other_people": [
-        {
-          "declarations": ["input count", "local countPlural = count: plural"],
-          "selectors": ["countPlural"],
-          "match": {
-            "countPlural=one": "其他人",
-            "countPlural=other": "其他人"
-          }
-        }
-      ],
+      "other_people_count": {
+        "one": "其他人",
+        "other": "其他人"
+      },
       "show_less": "收起"
     },
     "attachment": {
@@ -189,6 +168,7 @@
       "offline": "离线（{count}）",
       "no_files": "此聊天室中还没有文件。",
       "files": "文件",
+      "pins": "置顶消息",
       "call": "通话",
       "jump_to_file": "跳转到 {filename}",
       "loading_files": "正在加载文件...",
@@ -198,6 +178,20 @@
       "in_video_call": "正在视频通话",
       "ban_failed": "禁止成员进入聊天室失败",
       "ban_success": "已禁止 {name} 进入聊天室"
+    },
+    "pins": {
+      "show": "显示置顶消息",
+      "unseen": "有新的置顶消息",
+      "hide": "隐藏置顶消息",
+      "pin": "置顶消息",
+      "unpin": "取消置顶",
+      "unpin_prompt": "确定要取消置顶这条消息吗？",
+      "loading": "正在加载置顶消息...",
+      "empty_title": "暂无置顶消息",
+      "empty_description": "房间管理员可以在这里置顶重要消息。",
+      "error_title": "无法使用置顶消息",
+      "error_description": "无法加载置顶消息，请稍后再试。",
+      "update_failed": "无法更新置顶消息"
     },
     "title": {
       "direct_message": "私信"

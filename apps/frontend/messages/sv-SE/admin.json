@@ -1,5 +1,4 @@
 {
-  "$schema": "https://inlang.com/schema/inlang-message-format",
   "admin": {
     "nav": {
       "general": "Allmänt",
@@ -10,7 +9,8 @@
       "security": "Säkerhet",
       "event_log": "Händelselogg",
       "system": "System",
-      "back_to_server": "Återgå till servern"
+      "back_to_server": "Återgå till servern",
+      "invitations": "Invite links"
     },
     "common": {
       "page_title": "{title} | Admin",
@@ -176,9 +176,13 @@
       "edit_room": "Redigera rum",
       "edit_room_action": "Redigera rum",
       "room_description_placeholder": "Valfri beskrivning för detta rum",
+      "slow_mode": "Långsamt läge",
+      "slow_mode_description": "Ange hur länge medlemmar måste vänta mellan meddelanden i det här rummet.",
+      "slow_mode_off": "Av",
+      "slow_mode_custom": "{interval} (aktuellt värde)",
       "room_name_empty": "Rumsnamnet får inte vara tomt",
       "room_name_trim": "Rumsnamnet kan inte ha inledande eller efterföljande blanksteg",
-      "room_name_charset": "Rumsnamn får bara innehålla bokstäver, siffror, bindestreck och understreck",
+      "room_name_invalid": "Rumsnamnet får inte innehålla radbrytningar eller kontrolltecken",
       "room_name_too_long": "Rumsnamnet får inte överstiga 30 tecken",
       "create_group": "Skapa grupp",
       "group_name": "Gruppnamn",
@@ -235,7 +239,22 @@
       "subtitle": "Registreringsbegränsningar och kontoskydd",
       "blocked_usernames": "Blockerade användarnamn",
       "blocked_usernames_description": "En per rad. Användare kan inte registrera sig med dessa namn.",
-      "settings_saved": "Inställningar sparade"
+      "settings_saved": "Inställningar sparade",
+      "oauth_clients": {
+        "title": "OAuth-klienter",
+        "description": "Appar visas här efter att en medlem har godkänt dem. Tillit är endast en administrativ etikett och hoppar aldrig över individuellt samtycke; blockering förhindrar ny åtkomst och återkallar befintliga åtkomsttoken.",
+        "empty": "Inga OAuth-klienter har godkänts",
+        "application": "App",
+        "origins": "Callback-ursprung",
+        "users": "Auktoriserade användare",
+        "last_authorization": "Senaste auktorisering",
+        "policy": "Policy",
+        "policy_for": "Policy för {client}",
+        "policy_default": "Standard",
+        "policy_trusted": "Betrodd",
+        "policy_blocked": "Blockerad",
+        "policy_saved": "OAuth-klientens policy har sparats"
+      }
     },
     "system": {
       "title": "System",
@@ -248,6 +267,7 @@
       "unlimited": "obegränsat",
       "all_subjects": "alla ämnen",
       "pending_state": "Väntar",
+      "worker_unconfirmed": "Obekräftad",
       "rtt": "RTT",
       "max_payload": "Max nyttolast",
       "server_id": "Server-ID",
@@ -387,6 +407,39 @@
       "email": "E-post",
       "id": "ID",
       "total": "{count} användare totalt"
+    },
+    "invitations": {
+      "title": "Invite links",
+      "subtitle": "Create and manage links that admit new accounts.",
+      "create_title": "Create invite link",
+      "max_uses": "Maximum uses",
+      "max_uses_error": "Enter a whole number of at least 1.",
+      "unlimited_uses": "Allow unlimited uses",
+      "expiry": "Expiry",
+      "expiry_1d": "1 day",
+      "expiry_7d": "7 days",
+      "expiry_30d": "30 days",
+      "expiry_never": "Never",
+      "create": "Create invite link",
+      "created": "Invite link created",
+      "list_title": "Invite links",
+      "empty": "No invite links yet.",
+      "uses": "Uses",
+      "created_at": "Created",
+      "actions": "Actions",
+      "never": "Never",
+      "copy": "Copy link",
+      "copied": "Invite link copied",
+      "revoke": "Revoke",
+      "revoked": "Invite link revoked",
+      "revoke_title": "Revoke invite link?",
+      "revoke_description": "This link will stop admitting new accounts immediately.",
+      "status": {
+        "active": "Active",
+        "expired": "Expired",
+        "exhausted": "Exhausted",
+        "revoked": "Revoked"
+      }
     }
   }
 }

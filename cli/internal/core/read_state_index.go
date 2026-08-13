@@ -3,8 +3,10 @@ package core
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/charmbracelet/log"
 	"github.com/nats-io/nats.go/jetstream"
@@ -13,7 +15,14 @@ import (
 const (
 	roomReadMarkerFilter   = "read.room.>"
 	threadReadMarkerFilter = "read.thread.>"
+	roomMarkerChangeLimit  = 4096
 )
+
+type roomMarkerChange struct {
+	generation uint64
+	userID     string
+	roomID     string
+}
 
 type threadReadMarkerKey struct {
 	roomID            string
@@ -41,67 +50,163 @@ type ReadStateIndex struct {
 	kv     jetstream.KeyValue
 	logger *log.Logger
 
-	mu            sync.RWMutex
-	roomMarkers   map[string]map[string]readStateIndexEntry
-	threadMarkers map[string]map[threadReadMarkerKey]readStateIndexEntry
-	changed       chan struct{}
-	ready         chan struct{}
-	readyOnce     sync.Once
+	mu                   sync.RWMutex
+	roomMarkers          map[string]map[string]readStateIndexEntry
+	threadMarkers        map[string]map[threadReadMarkerKey]readStateIndexEntry
+	roomChangeGeneration uint64
+	roomChangeFloor      uint64
+	roomChanges          []roomMarkerChange
+	changed              chan struct{}
+	ready                chan struct{}
+	readyOnce            sync.Once
+	resyncRequests       chan chan error
 }
 
 // NewReadStateIndex creates an empty index. Run must be started before reads.
 func NewReadStateIndex(kv jetstream.KeyValue, logger *log.Logger) *ReadStateIndex {
 	return &ReadStateIndex{
-		kv:            kv,
-		logger:        logger,
-		roomMarkers:   make(map[string]map[string]readStateIndexEntry),
-		threadMarkers: make(map[string]map[threadReadMarkerKey]readStateIndexEntry),
-		changed:       make(chan struct{}),
-		ready:         make(chan struct{}),
+		kv:             kv,
+		logger:         logger,
+		roomMarkers:    make(map[string]map[string]readStateIndexEntry),
+		threadMarkers:  make(map[string]map[threadReadMarkerKey]readStateIndexEntry),
+		changed:        make(chan struct{}),
+		ready:          make(chan struct{}),
+		resyncRequests: make(chan chan error),
 	}
 }
 
 // Run watches every read marker, applies the initial latest-value snapshot,
 // and then keeps the index current until ctx is cancelled.
 func (i *ReadStateIndex) Run(ctx context.Context) error {
-	watcher, err := i.kv.WatchFiltered(ctx, []string{
-		roomReadMarkerFilter,
-		threadReadMarkerFilter,
-	})
-	if err != nil {
-		return fmt.Errorf("read state index: create watcher: %w", err)
-	}
-	defer watcher.Stop()
-
 	if i.logger != nil {
 		i.logger.Debug("Read state index started")
 		defer i.logger.Debug("Read state index stopped")
 	}
 
+	var pendingResync chan error
 	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case entry, ok := <-watcher.Updates():
-			if !ok {
-				if err := ctx.Err(); err != nil {
-					return err
+		watcher, err := i.kv.WatchFiltered(ctx, []string{
+			roomReadMarkerFilter,
+			threadReadMarkerFilter,
+		})
+		if err != nil {
+			if pendingResync != nil {
+				select {
+				case <-ctx.Done():
+					pendingResync <- ctx.Err()
+					return ctx.Err()
+				case <-time.After(natsRecoveryRetryWait):
+					continue
 				}
-				return fmt.Errorf("read state index: watcher stopped")
 			}
-			if entry == nil {
-				i.readyOnce.Do(func() { close(i.ready) })
-				if i.logger != nil {
-					rooms, threads := i.entryCounts()
-					i.logger.Debug("Read state index initial sync complete",
-						"room_markers", rooms,
-						"thread_markers", threads,
-					)
-				}
-				continue
-			}
-			i.apply(entry)
+			return fmt.Errorf("read state index: create watcher: %w", err)
 		}
+
+		restart := false
+		for !restart {
+			var resyncRequests <-chan chan error
+			if pendingResync == nil {
+				resyncRequests = i.resyncRequests
+			}
+			select {
+			case <-ctx.Done():
+				watcher.Stop()
+				if pendingResync != nil {
+					pendingResync <- ctx.Err()
+				}
+				return ctx.Err()
+			case pendingResync = <-resyncRequests:
+				i.resetSnapshot()
+				restart = true
+			case entry, ok := <-watcher.Updates():
+				if !ok {
+					watcher.Stop()
+					if err := ctx.Err(); err != nil {
+						return err
+					}
+					return fmt.Errorf("read state index: watcher stopped")
+				}
+				if entry == nil {
+					i.readyOnce.Do(func() { close(i.ready) })
+					if pendingResync != nil {
+						pendingResync <- nil
+						pendingResync = nil
+					}
+					if i.logger != nil {
+						rooms, threads := i.entryCounts()
+						i.logger.Debug("Read state index sync complete",
+							"room_markers", rooms,
+							"thread_markers", threads,
+						)
+					}
+					continue
+				}
+				i.apply(entry)
+			}
+		}
+		watcher.Stop()
+	}
+}
+
+func (i *ReadStateIndex) resetSnapshot() {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.roomMarkers = make(map[string]map[string]readStateIndexEntry)
+	i.threadMarkers = make(map[string]map[threadReadMarkerKey]readStateIndexEntry)
+	i.roomChangeGeneration++
+	i.roomChangeFloor = i.roomChangeGeneration
+	i.roomChanges = nil
+	close(i.changed)
+	i.changed = make(chan struct{})
+}
+
+func (i *ReadStateIndex) roomMarkerFence(ctx context.Context) (uint64, error) {
+	if err := i.WaitReady(ctx); err != nil {
+		return 0, err
+	}
+	i.mu.RLock()
+	generation := i.roomChangeGeneration
+	i.mu.RUnlock()
+	return generation, nil
+}
+
+func (i *ReadStateIndex) roomMarkerIDsChangedAfter(ctx context.Context, userID string, fence uint64) ([]string, error) {
+	if err := i.WaitReady(ctx); err != nil {
+		return nil, err
+	}
+	i.mu.RLock()
+	if fence < i.roomChangeFloor {
+		i.mu.RUnlock()
+		return nil, fmt.Errorf("room marker change fence %d precedes retained generation %d", fence, i.roomChangeFloor)
+	}
+	changed := make(map[string]struct{})
+	for _, change := range i.roomChanges {
+		if change.generation > fence && change.userID == userID {
+			changed[change.roomID] = struct{}{}
+		}
+	}
+	i.mu.RUnlock()
+	roomIDs := make([]string, 0, len(changed))
+	for roomID := range changed {
+		roomIDs = append(roomIDs, roomID)
+	}
+	slices.Sort(roomIDs)
+	return roomIDs, nil
+}
+
+// Resync replaces the watcher and waits for its latest-value snapshot.
+func (i *ReadStateIndex) Resync(ctx context.Context) error {
+	done := make(chan error, 1)
+	select {
+	case i.resyncRequests <- done:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
@@ -243,6 +348,16 @@ func (i *ReadStateIndex) apply(entry jetstream.KeyValueEntry) {
 			value:    append([]byte(nil), entry.Value()...),
 			revision: revision,
 			deleted:  deleted,
+		}
+		i.roomChangeGeneration++
+		i.roomChanges = append(i.roomChanges, roomMarkerChange{
+			generation: i.roomChangeGeneration,
+			userID:     roomUserID,
+			roomID:     roomID,
+		})
+		if len(i.roomChanges) > roomMarkerChangeLimit {
+			i.roomChangeFloor = i.roomChanges[0].generation
+			i.roomChanges = i.roomChanges[1:]
 		}
 	case isThread:
 		if i.threadMarkers[threadUserID] == nil {

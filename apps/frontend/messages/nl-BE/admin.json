@@ -1,5 +1,4 @@
 {
-  "$schema": "https://inlang.com/schema/inlang-message-format",
   "admin": {
     "nav": {
       "general": "Algemeen",
@@ -10,7 +9,8 @@
       "security": "Beveiliging",
       "event_log": "Gebeurtenislogboek",
       "system": "Systeem",
-      "back_to_server": "Terug naar de server"
+      "back_to_server": "Terug naar de server",
+      "invitations": "Invite links"
     },
     "common": {
       "page_title": "{title} | Beheerder",
@@ -176,9 +176,13 @@
       "edit_room": "Kamer bewerken",
       "edit_room_action": "Kamer bewerken",
       "room_description_placeholder": "Optionele beschrijving voor deze kamer",
+      "slow_mode": "Langzame modus",
+      "slow_mode_description": "Stel in hoelang leden tussen berichten in deze ruimte moeten wachten.",
+      "slow_mode_off": "Uit",
+      "slow_mode_custom": "{interval} (huidige waarde)",
       "room_name_empty": "Kamernaam mag niet leeg zijn",
       "room_name_trim": "De naam van de ruimte mag geen witruimte vooraan of achteraan bevatten",
-      "room_name_charset": "De naam van de ruimte mag alleen letters, cijfers, koppeltekens en onderstrepingstekens bevatten",
+      "room_name_invalid": "De naam van de ruimte mag geen regeleinden of besturingstekens bevatten",
       "room_name_too_long": "De naam van de ruimte mag niet langer zijn dan 30 tekens",
       "create_group": "Groep maken",
       "group_name": "Groepsnaam",
@@ -235,7 +239,22 @@
       "subtitle": "Aanmeldingsbeperkingen en accountbescherming",
       "blocked_usernames": "Geblokkeerde gebruikersnamen",
       "blocked_usernames_description": "Eén per regel. Gebruikers kunnen zich niet registreren met deze namen.",
-      "settings_saved": "Instellingen opgeslagen"
+      "settings_saved": "Instellingen opgeslagen",
+      "oauth_clients": {
+        "title": "OAuth-clients",
+        "description": "Applicaties verschijnen hier nadat een lid ze heeft geautoriseerd. Vertrouwen is enkel een beheerderslabel en slaat individuele toestemming nooit over; blokkeren voorkomt nieuwe toegang en trekt bestaande toegangstokens in.",
+        "empty": "Er zijn geen OAuth-clients geautoriseerd",
+        "application": "Applicatie",
+        "origins": "Callback-origins",
+        "users": "Geautoriseerde gebruikers",
+        "last_authorization": "Laatste autorisatie",
+        "policy": "Beleid",
+        "policy_for": "Beleid voor {client}",
+        "policy_default": "Standaard",
+        "policy_trusted": "Vertrouwd",
+        "policy_blocked": "Geblokkeerd",
+        "policy_saved": "OAuth-clientbeleid opgeslagen"
+      }
     },
     "system": {
       "title": "Systeem",
@@ -248,6 +267,7 @@
       "unlimited": "onbeperkt",
       "all_subjects": "alle onderwerpen",
       "pending_state": "In behandeling",
+      "worker_unconfirmed": "Onbevestigd",
       "rtt": "RTT",
       "max_payload": "Maximale lading",
       "server_id": "Server-ID",
@@ -387,6 +407,39 @@
       "email": "E-mail",
       "id": "Identiteitskaart",
       "total": "{count} gebruiker(s) totaal"
+    },
+    "invitations": {
+      "title": "Invite links",
+      "subtitle": "Create and manage links that admit new accounts.",
+      "create_title": "Create invite link",
+      "max_uses": "Maximum uses",
+      "max_uses_error": "Enter a whole number of at least 1.",
+      "unlimited_uses": "Allow unlimited uses",
+      "expiry": "Expiry",
+      "expiry_1d": "1 day",
+      "expiry_7d": "7 days",
+      "expiry_30d": "30 days",
+      "expiry_never": "Never",
+      "create": "Create invite link",
+      "created": "Invite link created",
+      "list_title": "Invite links",
+      "empty": "No invite links yet.",
+      "uses": "Uses",
+      "created_at": "Created",
+      "actions": "Actions",
+      "never": "Never",
+      "copy": "Copy link",
+      "copied": "Invite link copied",
+      "revoke": "Revoke",
+      "revoked": "Invite link revoked",
+      "revoke_title": "Revoke invite link?",
+      "revoke_description": "This link will stop admitting new accounts immediately.",
+      "status": {
+        "active": "Active",
+        "expired": "Expired",
+        "exhausted": "Exhausted",
+        "revoked": "Revoked"
+      }
     }
   }
 }

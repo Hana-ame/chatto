@@ -1,5 +1,4 @@
 {
-  "$schema": "https://inlang.com/schema/inlang-message-format",
   "chat": {
     "notifications": {
       "title": "Notificações",
@@ -32,8 +31,14 @@
     },
     "server_gutter": {
       "add_server": "Adicionar servidor",
+      "account_data_connect": "Sincronizar a lista de servidores com o Authling",
+      "account_data_connecting": "A ligar a sincronização de servidores…",
+      "account_data_connected": "A lista de servidores está sincronizada com {provider}",
+      "account_data_connected_toast": "A sua lista de servidores está agora sincronizada.",
+      "account_data_error": "Não foi possível sincronizar a lista de servidores",
       "version": "Versão {version}",
       "version_unknown": "Versão desconhecida",
+      "unreachable": "Servidor inacessível",
       "compatibility_server_too_old": "Este servidor tem de ser atualizado para o Chatto 0.5 ou posterior antes de esta aplicação se poder ligar.",
       "compatibility_unknown": "Esta aplicação não consegue determinar a compatibilidade a partir da versão do servidor."
     },
@@ -47,7 +52,7 @@
       "empty_body": "Os tópicos que segue aparecerão aqui. Segue automaticamente os tópicos em que participa.",
       "no_unread_loaded": "Nenhum tópico não lido carregado",
       "all_caught_up": "Todos em dia",
-      "loaded_count": "{loaded} de {total} seguiu threads carregados.",
+      "loaded_summary": "{loaded} de {total} seguiu threads carregados.",
       "load_more": "Carregar mais",
       "no_unread": "Nenhum tópico não lido de momento.",
       "message_missing": "Mensagem já não está disponível",

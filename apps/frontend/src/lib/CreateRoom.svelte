@@ -1,8 +1,8 @@
 <script lang="ts">
   import { useServerScope } from '$lib/state/server/scope.svelte';
-  import * as m from '$lib/i18n/messages';
+  import { m } from '$lib/i18n/messages';
   import { createRoomCommandAPI } from '$lib/api-client/rooms';
-  import { normalizeRoomName } from '$lib/utils/roomName';
+  import { normalizeRoomName, roomNameValidationError } from '$lib/utils/roomName';
   import {
     TextInput,
     TextArea,
@@ -24,8 +24,20 @@
 
   const serverScope = useServerScope();
 
+  const roomNameSchema = z
+    .string()
+    .refine((name) => roomNameValidationError(name) !== 'empty', m('room.create.name_required'))
+    .refine(
+      (name) => roomNameValidationError(name) !== 'too_long',
+      m('admin.rooms_admin.room_name_too_long')
+    )
+    .refine(
+      (name) => roomNameValidationError(name) !== 'invalid',
+      m('admin.rooms_admin.room_name_invalid')
+    );
+
   const schema = z.object({
-    name: z.string().trim().min(1, m['room.create.name_required']()),
+    name: roomNameSchema,
     description: z.string(),
     isUniversal: z.boolean()
   });
@@ -40,6 +52,11 @@
     submitError = '';
   }
 
+  function handleNameInput() {
+    form.touch('name');
+    clearSubmitError();
+  }
+
   const handleSubmit = form.handleSubmit(async (values) => {
     isLoading = true;
     submitError = '';
@@ -47,7 +64,7 @@
     try {
       const targetGroupId = groupId;
       if (!targetGroupId) {
-        submitError = m['room.create.missing_group']();
+        submitError = m('room.create.missing_group');
         return;
       }
 
@@ -59,14 +76,14 @@
         universal: values.isUniversal
       });
       const roomId = created?.id;
-      if (!roomId) throw new Error(m['room.create.failed']());
+      if (!roomId) throw new Error(m('room.create.failed'));
 
       await api.joinRoom(roomId);
 
       if (!serverScope.isCurrent()) return;
       onroomcreated?.(roomId);
     } catch (err) {
-      submitError = err instanceof Error ? err.message : m['room.create.failed']();
+      submitError = err instanceof Error ? err.message : m('room.create.failed');
     } finally {
       isLoading = false;
     }
@@ -76,20 +93,19 @@
 <form onsubmit={handleSubmit} class="space-y-4">
   <TextInput
     id="room-name"
-    label={m['room.create.name_label']()}
+    label={m('room.create.name_label')}
     bind:value={form.values.name}
     error={form.fieldError('name')}
-    onkeydown={() => form.touch('name')}
-    oninput={clearSubmitError}
-    placeholder={m['room.create.name_placeholder']()}
+    oninput={handleNameInput}
+    placeholder={m('room.create.name_placeholder')}
     disabled={isLoading}
   />
 
   <TextArea
     id="room-description"
-    label={m['room.create.description_label']()}
+    label={m('room.create.description_label')}
     bind:value={form.values.description}
-    placeholder={m['room.create.description_placeholder']()}
+    placeholder={m('room.create.description_placeholder')}
     disabled={isLoading}
     oninput={clearSubmitError}
     rows={3}
@@ -100,8 +116,8 @@
     bind:checked={form.values.isUniversal}
     disabled={isLoading}
     onchange={clearSubmitError}
-    label={m['room.create.universal_label']()}
-    description={m['room.create.universal_description']()}
+    label={m('room.create.universal_label')}
+    description={m('room.create.universal_description')}
   />
 
   <FormError error={submitError} />
@@ -111,9 +127,9 @@
     size="lg"
     loading={isLoading}
     disabled={!form.isValid}
-    loadingText={m['room.create.creating']()}
+    loadingText={m('room.create.creating')}
   >
-    <span class="iconify uil--plus"></span>
-    {m['room.create.submit']()}
+    <span class="iconify icon-[uil--plus]"></span>
+    {m('room.create.submit')}
   </Button>
 </form>

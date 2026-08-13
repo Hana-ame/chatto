@@ -21,7 +21,7 @@ and exposes a typed API for text manipulation (mentions, emoji, drafts).
   import { Editor } from '@tiptap/core';
   import { Slice } from '@tiptap/pm/model';
   import { CODE_LANGUAGE_OPTIONS, ensureCodeLanguagesLoaded } from '$lib/codeHighlighting';
-  import * as m from '$lib/i18n/messages';
+  import { m } from '$lib/i18n/messages';
   import type { QuoteInsertionContent } from '$lib/state/room';
   import type {
     ComposerFormattingCommand,
@@ -53,7 +53,7 @@ and exposes a typed API for text manipulation (mentions, emoji, drafts).
   };
 
   let {
-    placeholder = m['composer.placeholder'](),
+    placeholder = m('composer.placeholder'),
     editable = true,
     autofocus = false,
     testid,
@@ -569,8 +569,8 @@ and exposes a typed API for text manipulation (mentions, emoji, drafts).
       <div class="flex min-w-0 items-center gap-1">
         <input
           name="composer-link-url"
-          aria-label={m['composer.link_url']()}
-          title={m['composer.link_url']()}
+          aria-label={m('composer.link_url')}
+          title={m('composer.link_url')}
           value={linkHrefDraft}
           disabled={!editable}
           oninput={(event) => (linkHrefDraft = event.currentTarget.value)}
@@ -585,23 +585,23 @@ and exposes a typed API for text manipulation (mentions, emoji, drafts).
         />
         <button
           type="button"
-          aria-label={m['composer.open_link']()}
-          title={m['composer.open_link']()}
+          aria-label={m('composer.open_link')}
+          title={m('composer.open_link')}
           disabled={!activeLinkHref}
           onclick={openActiveLink}
           class="flex h-10 w-10 cursor-pointer items-center justify-center rounded text-muted transition-[background-color,color,scale] hover:bg-surface-strong hover:text-text active:scale-[0.96]"
         >
-          <span class="iconify text-base uil--external-link-alt"></span>
+          <span class="iconify icon-[uil--external-link-alt] text-base"></span>
         </button>
         <button
           type="button"
-          aria-label={m['composer.remove_link']()}
-          title={m['composer.remove_link']()}
+          aria-label={m('composer.remove_link')}
+          title={m('composer.remove_link')}
           disabled={!editable}
           onclick={removeLink}
           class="flex h-10 w-10 cursor-pointer items-center justify-center rounded text-muted transition-[background-color,color,scale] hover:bg-surface-strong hover:text-text active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-50"
         >
-          <span class="iconify text-base uil--link-broken"></span>
+          <span class="iconify icon-[uil--link-broken] text-base"></span>
         </button>
       </div>
     </div>
@@ -622,11 +622,11 @@ and exposes a typed API for text manipulation (mentions, emoji, drafts).
         class="group relative inline-flex h-6 items-center gap-1 rounded-tl-md rounded-br-md bg-surface-emphasized pr-1.5 pl-2 font-mono text-xs tracking-wide text-muted uppercase focus-within:bg-surface-strong focus-within:text-text focus-within:ring-1 focus-within:ring-action hover:bg-surface-strong hover:text-text"
       >
         <span>{activeCodeBlockLanguageLabel}</span>
-        <span class="iconify size-3 uil--angle-down"></span>
+        <span class="iconify icon-[uil--angle-down] size-3"></span>
         <select
           name="composer-code-language"
-          aria-label={m['composer.code_language']()}
-          title={m['composer.code_language']()}
+          aria-label={m('composer.code_language')}
+          title={m('composer.code_language')}
           value={activeCodeBlockLanguage}
           disabled={!editable}
           onchange={(event) => setCodeBlockLanguage(event.currentTarget.value)}
@@ -649,6 +649,7 @@ and exposes a typed API for text manipulation (mentions, emoji, drafts).
     word-break: break-word;
     font-size: 16px; /* Prevent iOS Safari auto-zoom on focus */
     line-height: 1.5;
+    text-align: start;
   }
 
   :global(.tiptap-editor .ProseMirror p),
@@ -706,7 +707,7 @@ and exposes a typed API for text manipulation (mentions, emoji, drafts).
 
   :global(.tiptap-editor .ProseMirror ul),
   :global(.tiptap-editor .ProseMirror ol) {
-    padding-left: 1.5em;
+    padding-inline-start: 1.5em;
   }
 
   :global(.tiptap-editor .ProseMirror ul) {
@@ -714,15 +715,37 @@ and exposes a typed API for text manipulation (mentions, emoji, drafts).
   }
 
   :global(.tiptap-editor .ProseMirror ol) {
-    list-style-type: decimal;
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    column-gap: 0.4em;
+    padding-inline-start: 0;
+    list-style: none;
+  }
+
+  :global(.tiptap-editor .ProseMirror ol > li) {
+    counter-increment: list-item;
+    display: grid;
+    grid-column: 1 / -1;
+    grid-template-columns: subgrid;
+  }
+
+  :global(.tiptap-editor .ProseMirror ol > li::before) {
+    content: counter(list-item) '.';
+    grid-column: 1;
+    text-align: end;
+  }
+
+  :global(.tiptap-editor .ProseMirror ol > li > *) {
+    grid-column: 2;
   }
 
   :global(.tiptap-editor .ProseMirror blockquote) {
     --composer-quote-border: color-mix(in srgb, var(--color-muted), var(--color-action) 42%);
     --composer-quote-text: color-mix(in srgb, var(--color-text), var(--color-muted) 48%);
 
-    border-left: 3px solid var(--composer-quote-border);
-    padding: 0.35em 0 0.35em 0.9em;
+    border-inline-start: 3px solid var(--composer-quote-border);
+    padding-block: 0.35em;
+    padding-inline-start: 0.9em;
     color: var(--composer-quote-text);
     font-style: italic;
   }
@@ -741,6 +764,8 @@ and exposes a typed API for text manipulation (mentions, emoji, drafts).
     padding: 0.125rem 0.375rem;
     font-family: var(--font-mono);
     font-size: 0.9em;
+    direction: ltr;
+    unicode-bidi: isolate;
   }
 
   :global(.tiptap-editor .ProseMirror pre) {
@@ -755,6 +780,20 @@ and exposes a typed API for text manipulation (mentions, emoji, drafts).
     font-size: 0.875rem;
     line-height: 1.5;
     box-shadow: 0 1px 2px rgb(0 0 0 / 0.08);
+    direction: ltr;
+    unicode-bidi: isolate;
+  }
+
+  :global(.tiptap-editor .ProseMirror p),
+  :global(.tiptap-editor .ProseMirror li),
+  :global(.tiptap-editor .ProseMirror blockquote),
+  :global(.tiptap-editor .ProseMirror h1),
+  :global(.tiptap-editor .ProseMirror h2),
+  :global(.tiptap-editor .ProseMirror h3),
+  :global(.tiptap-editor .ProseMirror h4),
+  :global(.tiptap-editor .ProseMirror h5),
+  :global(.tiptap-editor .ProseMirror h6) {
+    unicode-bidi: plaintext;
   }
 
   :global(.tiptap-editor .ProseMirror > pre) {

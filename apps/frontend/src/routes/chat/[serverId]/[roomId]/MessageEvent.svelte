@@ -27,7 +27,6 @@
   import { formatMessageTime, timeFormatSettingsFor } from '$lib/utils/formatTime';
   import { getLocale } from '$lib/i18n/runtime';
   import { useMessageActions } from '$lib/hooks';
-  import { emojiToName } from '$lib/emoji';
   import { toast } from '$lib/ui/toast';
   import { copyMessageLinkToClipboard } from '$lib/messageLinks';
   import { serverIdToSegment } from '$lib/navigation';
@@ -37,7 +36,7 @@
   import { selectedQuoteTextForMessageBody } from './selectedReplyQuote';
   import type { OpenThreadHandler } from './threadOpenOptions';
   import { isMessagePostedEvent } from '$lib/render/timelineEvents';
-  import * as m from '$lib/i18n/messages';
+  import { m } from '$lib/i18n/messages';
   import MessageReplyAttribution from './MessageReplyAttribution.svelte';
   import MessageEventActionOverlays from './MessageEventActionOverlays.svelte';
   import { MessageEventInteractionState } from './messageEventInteractions.svelte';
@@ -51,6 +50,7 @@
     resolveMessageEventReferences
   } from './messageEventModel';
   import { ThreadFollowState } from './threadFollowState.svelte';
+  import { buildMessageActionModel } from './messageActionModel';
 
   let {
     event,
@@ -95,7 +95,7 @@
   const displayName = $derived(
     !deletedActor && actor
       ? getLiveDisplayName(actor.id, actor.displayName || actor.login)
-      : m['common.deleted_user']()
+      : m('common.deleted_user')
   );
   const actorCallPresence = $derived(
     !deletedActor && actor ? activeCallRooms.getParticipantCallPresence(roomId, actor.id) : null
@@ -122,23 +122,7 @@
   let messageBodySelectionRoot = $state<HTMLElement>();
   let selectedReplyQuoteSnapshot = $state<QuoteInsertionContent | null>(null);
 
-  const emojiActions = useMessageActions();
-
-  async function handleEmojiSelect(emoji: string) {
-    if (!msg) return;
-
-    const params = {
-      serverId: activeServerId,
-      roomId,
-      messageEventId: event.id,
-      eventId: isEcho ? messageEvent!.echoOfEventId! : event.id,
-      messageBody: msg.body ?? '',
-      messageStore
-    };
-    const name = emojiToName(emoji);
-    const alreadyReacted = msg.reactions.some((r) => r.emoji === name && r.hasReacted);
-    await emojiActions.toggleReaction(params, emoji, alreadyReacted);
-  }
+  const messageActions = useMessageActions();
 
   // Touch handlers for mobile
   function handleTouchStart() {
@@ -215,6 +199,13 @@
   const editThreadRootEventId = $derived(eventReferences?.editThreadRootEventId ?? null);
   const editChannelEchoEventId = $derived(eventReferences?.editChannelEchoEventId ?? null);
   const threadRootEventId = $derived(eventReferences?.threadRootEventId ?? null);
+  const pinsStore = $derived(
+    roomPermissions.canViewPinnedMessages ? stores.pinsForRoom(roomId) : null
+  );
+  const canPin = $derived(roomPermissions.canPinMessages && Boolean(pinsStore));
+  const isPinned = $derived(
+    pinsStore?.isPinned(editEventId, messageEvent?.pinned ?? false) ?? messageEvent?.pinned ?? false
+  );
   const canReconcileChannelEcho = $derived(
     isAuthor &&
       !!editThreadRootEventId &&
@@ -245,11 +236,14 @@
   // Uses threadRootEventId (thread membership), not inReplyTo (attribution)
   const isRootMessage = $derived(!isEcho && messageEvent?.threadRootEventId == null);
   const hasReplies = $derived(isRootMessage && (messageEvent?.replyCount ?? 0) > 0);
+  const hasThread = $derived(
+    isRootMessage && ((messageEvent?.threadExists ?? false) || (messageEvent?.replyCount ?? 0) > 0)
+  );
   const replyInRoomActionLabel = $derived(
-    isEcho ? m['room.message.actions.reply_thread']() : m['room.message.actions.reply']()
+    isEcho ? m('room.message.actions.reply_thread') : m('room.message.actions.reply')
   );
   const replyThreadActionLabel = $derived(
-    isEcho ? m['room.message.actions.open_thread']() : m['room.message.actions.reply_thread']()
+    isEcho ? m('room.message.actions.open_thread') : m('room.message.actions.reply_thread')
   );
   const canUseReplyAction = $derived(
     isEcho
@@ -262,6 +256,45 @@
     isEcho
       ? !!onOpenThread && !!messageEvent?.echoFromThreadRootEventId
       : roomPermissions.canPostInThread && !!onOpenThread
+  );
+  const actionModel = $derived(
+    buildMessageActionModel({
+      actions: messageActions,
+      params: {
+        serverId: activeServerId,
+        roomId,
+        messageEventId: event.id,
+        eventId: editEventId,
+        deleteEventId: event.id,
+        messageBody: msg?.body ?? '',
+        permalinkThreadRootEventId,
+        threadRootEventId: editThreadRootEventId,
+        channelEchoEventId: editChannelEchoEventId,
+        canAddChannelEcho: canReconcileChannelEcho,
+        messageStore
+      },
+      reactions: msg?.reactions ?? [],
+      canReact: roomPermissions.canReact,
+      canEdit,
+      canDelete,
+      canPin,
+      isPinned,
+      togglePin: async () => {
+        const pins = pinsStore;
+        if (!pins) return;
+        try {
+          if (pins.isPinned(editEventId, messageEvent?.pinned ?? false))
+            await pins.remove(editEventId);
+          else await pins.create(editEventId);
+        } catch {
+          toast.error(m('room.pins.update_failed'));
+        }
+      },
+      replyInRoomLabel: replyInRoomActionLabel,
+      replyThreadLabel: replyThreadActionLabel,
+      replyInRoom: canUseReplyAction ? handleReplyInRoom : undefined,
+      replyThread: canUseThreadAction ? handleOpenThread : undefined
+    })
   );
 
   const threadFollow = new ThreadFollowState({
@@ -315,7 +348,7 @@
     return buildMessageReplyPreview({
       target: replyTarget,
       missingName: 'a message',
-      deletedName: m['common.deleted_user'](),
+      deletedName: m('common.deleted_user'),
       getDisplayName: (member) => getLiveDisplayName(member.id, member.displayName || member.login)
     });
   });
@@ -326,8 +359,9 @@
   );
   const hasMessageFooter = $derived(
     (isEcho && !!onOpenThread) ||
-      (hasReplies && !!onOpenThread) ||
-      (msg?.reactions?.length ?? 0) > 0
+      (hasThread && !!onOpenThread) ||
+      (msg?.reactions?.length ?? 0) > 0 ||
+      isPinned
   );
 
   // Check if current user is mentioned (but not by themselves)
@@ -444,7 +478,7 @@
     <span
       class={[
         'iconify shrink-0 text-xs leading-none text-action',
-        kind === 'video' ? 'uil--video' : 'uil--phone'
+        kind === 'video' ? 'icon-[uil--video]' : 'icon-[uil--phone]'
       ]}
       title={kind === 'video' ? 'In a video call' : 'In a voice call'}
       aria-label={kind === 'video' ? 'In a video call' : 'In a voice call'}
@@ -501,7 +535,7 @@
         })}
         onclick={copyMessageLink}
         oncontextmenu={(e) => e.stopPropagation()}
-        title={m['room.message.meta.copy_link_title']()}
+        title={m('room.message.meta.copy_link_title')}
         class="text-xs whitespace-nowrap text-muted opacity-0 group-hover:opacity-100 hover:underline"
       >
         {timestamp}
@@ -535,7 +569,7 @@
         })}
         onclick={copyMessageLink}
         oncontextmenu={(e) => e.stopPropagation()}
-        title={m['room.message.meta.copy_link_title']()}
+        title={m('room.message.meta.copy_link_title')}
         class="shrink-0 text-xs leading-none text-muted hover:underline"
       >
         {timestamp}
@@ -573,18 +607,17 @@
       {#if hasMessageFooter}
         <MessageMetaBar
           {roomId}
-          messageEventId={event.id}
           serverSegment={serverIdToSegment(activeServerId)}
           {threadRootEventId}
           reactions={msg?.reactions ?? []}
+          action={actionModel}
           replyCount={messageEvent?.replyCount}
+          threadExists={messageEvent?.threadExists}
           threadParticipants={messageEvent?.threadParticipants}
           {hasThreadNotification}
-          canReact={roomPermissions.canReact}
-          {messageStore}
           isFollowingThread={threadFollow.following}
           isThreadFollowPending={threadFollow.pending}
-          onToggleThreadFollow={hasReplies ? toggleThreadFollow : undefined}
+          onToggleThreadFollow={hasThread ? toggleThreadFollow : undefined}
           onOpenThread={onOpenThread ? handleOpenThread : undefined}
           onOpenEmojiPicker={roomPermissions.canReact
             ? (event) => interactions.openEmojiPickerFromEvent(event)
@@ -597,24 +630,8 @@
     {#snippet actions()}
       {#if !isDeleted && canUseHoverActions}
         <MessageHoverBar
-          serverId={activeServerId}
-          {roomId}
-          messageEventId={event.id}
-          eventId={editEventId}
-          deleteEventId={event.id}
-          messageBody={msg.body ?? ''}
-          threadRootEventId={editThreadRootEventId}
-          channelEchoEventId={editChannelEchoEventId}
-          canAddChannelEcho={canReconcileChannelEcho}
-          {messageStore}
-          reactions={msg?.reactions ?? []}
-          canReact={roomPermissions.canReact}
-          {canEdit}
+          action={actionModel}
           forceVisible={interactions.forceHoverActionsVisible}
-          replyInRoomLabel={replyInRoomActionLabel}
-          replyThreadLabel={replyThreadActionLabel}
-          onReplyInRoom={canUseReplyAction ? handleReplyInRoom : undefined}
-          onReply={canUseThreadAction ? handleOpenThread : undefined}
           onOpenEmojiPicker={roomPermissions.canReact
             ? (event) => interactions.openEmojiPickerFromToolbar(event)
             : undefined}
@@ -636,26 +653,7 @@
   {#if !isDeleted}
     <MessageEventActionOverlays
       {interactions}
-      serverId={activeServerId}
-      {roomId}
-      messageEventId={event.id}
-      eventId={editEventId}
-      deleteEventId={event.id}
-      messageBody={msg.body ?? ''}
-      {permalinkThreadRootEventId}
-      threadRootEventId={editThreadRootEventId}
-      channelEchoEventId={editChannelEchoEventId}
-      canAddChannelEcho={canReconcileChannelEcho}
-      {messageStore}
-      reactions={msg.reactions}
-      canReact={roomPermissions.canReact}
-      {canEdit}
-      {canDelete}
-      replyInRoomLabel={replyInRoomActionLabel}
-      replyThreadLabel={replyThreadActionLabel}
-      onReplyInRoom={canUseReplyAction ? handleReplyInRoom : undefined}
-      onReply={canUseThreadAction ? handleOpenThread : undefined}
-      onEmojiSelect={handleEmojiSelect}
+      action={actionModel}
       onClose={discardSelectedReplyQuote}
     />
   {/if}

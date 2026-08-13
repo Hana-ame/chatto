@@ -6,7 +6,7 @@
   import { useServerScope } from '$lib/state/server/scope.svelte';
 
   import AccessDenied from '$lib/ui/AccessDenied.svelte';
-  import * as m from '$lib/i18n/messages';
+  import { m } from '$lib/i18n/messages';
 
   let { children } = $props();
 
@@ -24,6 +24,7 @@
     const manageBase = serverBase.slice(0, -'/server'.length);
     const generalBase = serverBase + '/general';
     const membersBase = serverBase + '/members';
+    const invitationsBase = serverBase + '/invite-links';
     const roomsBase = resolve('/chat/[serverId]/manage/rooms', params);
     const roomGroupsBase = manageBase + '/room-groups';
     const moderationBase = serverBase + '/moderation';
@@ -41,6 +42,10 @@
     // require admin.view-users.
     if (pathname.startsWith(membersBase)) {
       return () => serverPermissions.canAdminViewUsers;
+    }
+
+    if (pathname.startsWith(invitationsBase)) {
+      return () => serverPermissions.canManageInvites;
     }
 
     // The room collection is a server-wide layout editor. Individual room
@@ -96,10 +101,10 @@
   {@render children?.()}
 {:else}
   <AccessDenied
-    message={m['ui.access_denied.message']()}
+    message={m('ui.access_denied.message')}
     backHref={resolve('/chat/[serverId]', {
       serverId: serverSegment
     })}
-    backLabel={m['admin.nav.back_to_server']()}
+    backLabel={m('admin.nav.back_to_server')}
   />
 {/if}

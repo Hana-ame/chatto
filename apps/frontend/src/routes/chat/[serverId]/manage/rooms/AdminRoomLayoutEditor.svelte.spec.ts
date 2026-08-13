@@ -56,7 +56,8 @@ function room(id: string, overrides: Partial<AdminRoomInfo> = {}): AdminRoomInfo
     name: overrides.name ?? id,
     description: overrides.description ?? null,
     archived: overrides.archived ?? false,
-    isUniversal: overrides.isUniversal ?? false
+    isUniversal: overrides.isUniversal ?? false,
+    slowModeSeconds: overrides.slowModeSeconds ?? 0
   };
 }
 
@@ -158,7 +159,7 @@ describe('AdminRoomLayoutEditor', () => {
     const roomDragHandle = populatedRender.container.querySelector(
       '[aria-label="Drag to reorder room"]'
     ) as HTMLElement;
-    expect(roomDragHandle.className).toContain('uil--draggabledots');
+    expect(roomDragHandle.className).toContain('icon-[uil--draggabledots]');
     expect(roomDragHandle.className).toContain('cursor-grab');
   });
 

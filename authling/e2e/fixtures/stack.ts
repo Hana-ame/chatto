@@ -1,5 +1,14 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { createWriteStream, existsSync, mkdtempSync, rmSync, type WriteStream } from 'node:fs';
+import {
+  createWriteStream,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+  type WriteStream
+} from 'node:fs';
+import { createServer, type Server } from 'node:http';
 import { finished } from 'node:stream/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -9,10 +18,12 @@ import type { TestInfo } from '@playwright/test';
 const fixtureDirectory = path.dirname(fileURLToPath(import.meta.url));
 const authlingDirectory = path.resolve(fixtureDirectory, '..', '..');
 
-const portsPerTest = 3;
+const portsPerTest = 4;
+const maximumStartAttempts = 4;
 const suitePortRange = 300;
-const minimumPort = 30_000;
-const maximumPort = 50_000;
+// Avoid common ephemeral client-port ranges; retries still handle local services using a candidate.
+const minimumPort = 10_000;
+const maximumPort = 30_000;
 const slotCount = Math.floor((maximumPort - minimumPort) / suitePortRange);
 const randomSlot = Math.floor(Math.random() * slotCount);
 const basePort = process.env.AUTHLING_E2E_BASE_PORT
@@ -30,10 +41,13 @@ interface ManagedProcess {
 export interface TestStack {
   baseURL: string;
   mailpitURL: string;
+  callbackURL: string;
+  configPath: string;
   stateDirectory: string;
   authling: ManagedProcess;
   authlingProcesses: ManagedProcess[];
   mailpit: ManagedProcess;
+  callbackServer: Server;
   ports: TestPorts;
 }
 
@@ -41,22 +55,29 @@ interface TestPorts {
   http: number;
   smtp: number;
   mailpit: number;
+  callback: number;
 }
 
-function portsForTest(testInfo: TestInfo): TestPorts {
-  const offset = (testInfo.workerIndex * 10 + testInfo.parallelIndex) * portsPerTest;
+function portsForTest(testInfo: TestInfo, attempt: number): TestPorts {
+  const offset = (testInfo.workerIndex * 10 + testInfo.parallelIndex + attempt) * portsPerTest;
   return {
     http: basePort + offset,
     smtp: basePort + offset + 1,
-    mailpit: basePort + offset + 2
+    mailpit: basePort + offset + 2,
+    callback: basePort + offset + 3
   };
 }
 
-function startAuthling(ports: TestPorts, stateDirectory: string, logPath: string): ManagedProcess {
+function startAuthling(
+  ports: TestPorts,
+  stateDirectory: string,
+  configPath: string,
+  logPath: string
+): ManagedProcess {
   return startProcess(
     'Authling',
     process.env.AUTHLING_E2E_BINARY ?? path.join(authlingDirectory, 'bin', 'authling'),
-    ['run', '--config', path.join(authlingDirectory, 'authling.toml')],
+    ['run', '--config', configPath],
     {
       cwd: authlingDirectory,
       env: {
@@ -73,6 +94,28 @@ function startAuthling(ports: TestPorts, stateDirectory: string, logPath: string
       },
       logPath
     }
+  );
+}
+
+async function startCallbackServer(port: number): Promise<Server> {
+  const server = createServer((_request, response) => {
+    response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    response.end('<!doctype html><title>OIDC callback</title>');
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(port, '127.0.0.1', () => {
+      server.removeListener('error', reject);
+      resolve();
+    });
+  });
+  return server;
+}
+
+async function stopCallbackServer(server: Server | undefined): Promise<void> {
+  if (!server?.listening) return;
+  await new Promise<void>((resolve, reject) =>
+    server.close((error) => (error ? reject(error) : resolve()))
   );
 }
 
@@ -125,10 +168,29 @@ export async function startStack(testInfo: TestInfo): Promise<TestStack> {
   if (!Number.isInteger(basePort) || basePort < 1 || basePort + suitePortRange > 65_535) {
     throw new Error('AUTHLING_E2E_BASE_PORT must reserve 300 valid TCP ports');
   }
-  const ports = portsForTest(testInfo);
+  for (let attempt = 0; attempt < maximumStartAttempts; attempt += 1) {
+    try {
+      return await startStackAttempt(testInfo, portsForTest(testInfo, attempt));
+    } catch (error) {
+      if (attempt === maximumStartAttempts - 1 || !isAddressInUse(error, testInfo)) {
+        throw error;
+      }
+    }
+  }
+  throw new Error('Authling E2E stack exhausted its startup attempts');
+}
+
+async function startStackAttempt(testInfo: TestInfo, ports: TestPorts): Promise<TestStack> {
   const stateDirectory = mkdtempSync(path.join(os.tmpdir(), 'authling-e2e-'));
   const mailpitURL = `http://127.0.0.1:${ports.mailpit}`;
   const baseURL = `http://127.0.0.1:${ports.http}`;
+  const callbackURL = `http://127.0.0.1:${ports.callback}/callback`;
+  const configPath = path.join(stateDirectory, 'authling-e2e.toml');
+  writeFileSync(
+    configPath,
+    `[[oidc.clients]]\nid = 'authling-e2e'\nname = 'Authling E2E client'\nredirect_uris = ['${callbackURL}']\n`
+  );
+  let callbackServer: Server | undefined;
   const mailpit = startProcess(
     'Mailpit',
     process.env.AUTHLING_E2E_MAILPIT_PATH ?? 'mailpit',
@@ -151,29 +213,48 @@ export async function startStack(testInfo: TestInfo): Promise<TestStack> {
 
   let authling: ManagedProcess | undefined;
   try {
+    callbackServer = await startCallbackServer(ports.callback);
     await waitForReady(mailpit, `${mailpitURL}/readyz`);
-    authling = startAuthling(ports, stateDirectory, testInfo.outputPath('authling.log'));
+    authling = startAuthling(ports, stateDirectory, configPath, testInfo.outputPath('authling.log'));
     await waitForReady(authling, baseURL);
     return {
       baseURL,
       mailpitURL,
+      callbackURL,
+      configPath,
       stateDirectory,
       authling,
       authlingProcesses: [authling],
       mailpit,
+      callbackServer,
       ports
     };
   } catch (error) {
     await stopManagedProcess(authling);
     await stopManagedProcess(mailpit);
+    await stopCallbackServer(callbackServer);
     removeStateDirectory(stateDirectory);
     throw error;
   }
 }
 
+function isAddressInUse(error: unknown, testInfo: TestInfo): boolean {
+  if (
+    error instanceof Error &&
+    (error.message.includes('EADDRINUSE') || error.message.includes('address already in use'))
+  ) {
+    return true;
+  }
+  return ['mailpit.log', 'authling.log'].some((name) => {
+    const logPath = testInfo.outputPath(name);
+    return existsSync(logPath) && readFileSync(logPath, 'utf8').includes('address already in use');
+  });
+}
+
 export async function stopStack(stack: TestStack, testInfo: TestInfo): Promise<void> {
   await stopManagedProcess(stack.authling);
   await stopManagedProcess(stack.mailpit);
+  await stopCallbackServer(stack.callbackServer);
   if (testInfo.status !== testInfo.expectedStatus) {
     for (const [index, process] of stack.authlingProcesses.entries()) {
       await attachLog(testInfo, `authling log ${index + 1}`, process.logPath);
@@ -192,6 +273,7 @@ export async function restartAuthling(stack: TestStack, testInfo: TestInfo): Pro
   const restarted = startAuthling(
     stack.ports,
     stack.stateDirectory,
+    stack.configPath,
     testInfo.outputPath(`authling-restart-${stack.authlingProcesses.length}.log`)
   );
   stack.authling = restarted;

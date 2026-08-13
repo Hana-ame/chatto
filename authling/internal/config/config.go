@@ -4,6 +4,7 @@ package config
 import (
 	"fmt"
 	"net"
+	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
@@ -20,8 +21,40 @@ const (
 type Config struct {
 	HTTP           HTTPConfig           `toml:"http"`
 	Authentication AuthenticationConfig `toml:"authentication"`
+	OIDC           OIDCConfig           `toml:"oidc"`
 	NATS           NATSConfig           `toml:"nats"`
 	SMTP           SMTPConfig           `toml:"smtp"`
+}
+
+// OIDCConfig controls Authling's OpenID Provider and conventional clients.
+// URL-identified CIMD clients require no configuration.
+type OIDCConfig struct {
+	Clients                 []OIDCClientConfig `toml:"clients"`
+	CIMDTrustedPrivateHosts []string           `toml:"cimd_trusted_private_hosts" env:"AUTHLING_OIDC_CIMD_TRUSTED_PRIVATE_HOSTS"`
+}
+
+// OIDCClientConfig declares one conventional OpenID Connect client. An empty
+// secret creates a public client; a non-empty secret enables client_secret_basic.
+type OIDCClientConfig struct {
+	ID           string   `toml:"id"`
+	Name         string   `toml:"name"`
+	Secret       string   `toml:"secret"`
+	RedirectURIs []string `toml:"redirect_uris"`
+}
+
+// TrustedPrivateCIMDHosts returns normalized hostnames whose CIMD documents
+// may resolve to private addresses. Other special-use destinations remain
+// forbidden even for these explicitly trusted hosts.
+func (c OIDCConfig) TrustedPrivateCIMDHosts() []string {
+	hosts := make([]string, 0, len(c.CIMDTrustedPrivateHosts))
+	for _, host := range c.CIMDTrustedPrivateHosts {
+		hosts = append(hosts, normalizeCIMDHost(host))
+	}
+	return hosts
+}
+
+func normalizeCIMDHost(host string) string {
+	return strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
 }
 
 // AuthenticationConfig controls local authentication policy.
@@ -79,6 +112,21 @@ type HTTPConfig struct {
 	// PublicURL is the externally visible origin. It determines whether browser
 	// cookies require HTTPS and will become the basis of Authling's issuer URL.
 	PublicURL string `toml:"public_url" env:"AUTHLING_HTTP_PUBLIC_URL"`
+	// TrustedProxyCIDRs contains direct reverse-proxy peers whose sanitized,
+	// single-address X-Forwarded-For value Authling may trust.
+	TrustedProxyCIDRs []string `toml:"trusted_proxy_cidrs" env:"AUTHLING_HTTP_TRUSTED_PROXY_CIDRS"`
+}
+
+// TrustedProxies returns the validated network prefixes of direct proxies.
+func (c HTTPConfig) TrustedProxies() []netip.Prefix {
+	trusted := make([]netip.Prefix, 0, len(c.TrustedProxyCIDRs))
+	for _, raw := range c.TrustedProxyCIDRs {
+		prefix, err := netip.ParsePrefix(strings.TrimSpace(raw))
+		if err == nil {
+			trusted = append(trusted, prefix.Masked())
+		}
+	}
+	return trusted
 }
 
 // PublicURLOrDefault returns the configured browser origin. A loopback
@@ -190,6 +238,62 @@ func (c Config) Validate() error {
 			problems = append(problems, "http.public_url may use plain HTTP only when both the public URL and listener are loopback")
 		}
 	}
+	for _, raw := range c.HTTP.TrustedProxyCIDRs {
+		prefix, prefixErr := netip.ParsePrefix(strings.TrimSpace(raw))
+		if prefixErr != nil || !prefix.Addr().IsValid() {
+			problems = append(problems, "http.trusted_proxy_cidrs must contain valid IP network prefixes")
+		}
+	}
+	seenClients := make(map[string]struct{}, len(c.OIDC.Clients))
+	for index, client := range c.OIDC.Clients {
+		field := fmt.Sprintf("oidc.clients[%d]", index)
+		clientID := strings.TrimSpace(client.ID)
+		if !validConventionalClientID(client.ID) {
+			problems = append(problems, field+".id must be a non-URL identifier no longer than 256 characters")
+		} else if _, exists := seenClients[clientID]; exists {
+			problems = append(problems, field+".id is duplicated")
+		} else {
+			seenClients[clientID] = struct{}{}
+		}
+		if strings.TrimSpace(client.Name) == "" || len(client.Name) > 100 {
+			problems = append(problems, field+".name must contain between 1 and 100 characters")
+		}
+		if client.Secret != "" && len(client.Secret) < 32 {
+			problems = append(problems, field+".secret must contain at least 32 characters when configured")
+		}
+		if len(client.RedirectURIs) == 0 {
+			problems = append(problems, field+".redirect_uris must contain at least one URI")
+		}
+		seenRedirects := make(map[string]struct{}, len(client.RedirectURIs))
+		for _, redirect := range client.RedirectURIs {
+			if len(redirect) > 2048 {
+				problems = append(problems, field+".redirect_uris contains a URI longer than 2048 characters")
+				continue
+			}
+			if _, exists := seenRedirects[redirect]; exists {
+				problems = append(problems, field+".redirect_uris contains a duplicate URI")
+				continue
+			}
+			seenRedirects[redirect] = struct{}{}
+			if !validOIDCRedirectURI(redirect, publicURL) {
+				problems = append(problems, field+".redirect_uris must contain absolute HTTPS URIs, or loopback HTTP URIs for loopback development")
+			}
+		}
+	}
+	seenCIMDHosts := make(map[string]struct{}, len(c.OIDC.CIMDTrustedPrivateHosts))
+	for index, raw := range c.OIDC.CIMDTrustedPrivateHosts {
+		host := normalizeCIMDHost(raw)
+		field := fmt.Sprintf("oidc.cimd_trusted_private_hosts[%d]", index)
+		parsed, err := url.Parse("https://" + host)
+		if host == "" || err != nil || parsed.Host != host || parsed.Hostname() != host || parsed.Port() != "" {
+			problems = append(problems, field+" must be one hostname without a scheme, port, path, query, or fragment")
+			continue
+		}
+		if _, exists := seenCIMDHosts[host]; exists {
+			problems = append(problems, field+" is duplicated")
+		}
+		seenCIMDHosts[host] = struct{}{}
+	}
 	replicas := c.NATS.ReplicasOrDefault()
 	if replicas != 1 && replicas != 3 && replicas != 5 {
 		problems = append(problems, "nats.replicas must be 1, 3, or 5")
@@ -242,6 +346,29 @@ func (c Config) Validate() error {
 		return fmt.Errorf("config validation failed:\n  - %s", strings.Join(problems, "\n  - "))
 	}
 	return nil
+}
+
+func validOIDCRedirectURI(raw string, issuer *url.URL) bool {
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.Fragment != "" {
+		return false
+	}
+	if parsed.Scheme == "https" {
+		return true
+	}
+	return parsed.Scheme == "http" && issuer != nil && isLoopbackHost(issuer.Hostname()) && isLoopbackHost(parsed.Hostname())
+}
+
+func validConventionalClientID(value string) bool {
+	if value == "" || value != strings.TrimSpace(value) || len(value) > 256 || strings.HasPrefix(strings.ToLower(value), "https://") {
+		return false
+	}
+	for _, char := range value {
+		if char <= 0x20 || char == 0x7f {
+			return false
+		}
+	}
+	return true
 }
 
 func isLoopbackHost(host string) bool {

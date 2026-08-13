@@ -121,6 +121,22 @@ func TestValidateAllowsPlainHTTPPublicURLOnlyOnLoopback(t *testing.T) {
 	}
 }
 
+func TestValidateTrustedProxyCIDRs(t *testing.T) {
+	validNATS := NATSConfig{Embedded: EmbeddedNATSConfig{Enabled: true, DataDir: t.TempDir()}}
+	cfg := Config{HTTP: HTTPConfig{TrustedProxyCIDRs: []string{"192.0.2.10/24", "2001:db8::/32"}}, NATS: validNATS}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid trusted proxies: %v", err)
+	}
+	trusted := cfg.HTTP.TrustedProxies()
+	if len(trusted) != 2 || trusted[0].String() != "192.0.2.0/24" || trusted[1].String() != "2001:db8::/32" {
+		t.Fatalf("trusted proxies = %v", trusted)
+	}
+	cfg.HTTP.TrustedProxyCIDRs = []string{"192.0.2.1", "not-a-network"}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "http.trusted_proxy_cidrs") {
+		t.Fatalf("invalid trusted proxies error = %v", err)
+	}
+}
+
 func TestValidateSMTPRequiresSafeCompleteConfiguration(t *testing.T) {
 	cfg := Config{NATS: NATSConfig{Embedded: EmbeddedNATSConfig{Enabled: true, DataDir: t.TempDir()}}, SMTP: SMTPConfig{Enabled: true, TLS: "plaintext"}}
 	err := cfg.Validate()
@@ -163,5 +179,50 @@ func TestDevelopmentConfigIsValid(t *testing.T) {
 	}
 	if !cfg.SMTP.Enabled || cfg.SMTP.Host != "127.0.0.1" || cfg.SMTP.Port != 1025 || cfg.SMTP.TLSPolicyOrDefault() != SMTPTLSOpportunistic {
 		t.Fatalf("development SMTP config = %+v, want local Mailpit", cfg.SMTP)
+	}
+}
+
+func TestValidateOIDCConventionalClients(t *testing.T) {
+	validNATS := NATSConfig{Embedded: EmbeddedNATSConfig{Enabled: true, DataDir: t.TempDir()}}
+	base := Config{HTTP: HTTPConfig{PublicURL: "https://auth.example"}, NATS: validNATS, OIDC: OIDCConfig{Clients: []OIDCClientConfig{{ID: "client", Name: "Client", Secret: strings.Repeat("s", 32), RedirectURIs: []string{"https://client.example/callback"}}}}}
+	if err := base.Validate(); err != nil {
+		t.Fatalf("valid client: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		client OIDCClientConfig
+	}{
+		{"URL identifier reserved for CIMD", OIDCClientConfig{ID: "https://client.example/meta.json", Name: "Client", RedirectURIs: []string{"https://client.example/callback"}}},
+		{"short secret", OIDCClientConfig{ID: "client", Name: "Client", Secret: "short", RedirectURIs: []string{"https://client.example/callback"}}},
+		{"redirect fragment", OIDCClientConfig{ID: "client", Name: "Client", RedirectURIs: []string{"https://client.example/callback#fragment"}}},
+		{"production HTTP redirect", OIDCClientConfig{ID: "client", Name: "Client", RedirectURIs: []string{"http://localhost/callback"}}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := base
+			cfg.OIDC.Clients = []OIDCClientConfig{test.client}
+			if err := cfg.Validate(); err == nil {
+				t.Fatal("invalid client was accepted")
+			}
+		})
+	}
+}
+
+func TestValidateCIMDTrustedPrivateHosts(t *testing.T) {
+	validNATS := NATSConfig{Embedded: EmbeddedNATSConfig{Enabled: true, DataDir: t.TempDir()}}
+	cfg := Config{NATS: validNATS, OIDC: OIDCConfig{CIMDTrustedPrivateHosts: []string{"Chatto.Dev.Orb.Local."}}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid trusted private host: %v", err)
+	}
+	if got := cfg.OIDC.TrustedPrivateCIMDHosts(); len(got) != 1 || got[0] != "chatto.dev.orb.local" {
+		t.Fatalf("normalized trusted hosts = %#v", got)
+	}
+
+	for _, host := range []string{"https://chatto.example", "chatto.example:443", "chatto.example/path", ""} {
+		cfg.OIDC.CIMDTrustedPrivateHosts = []string{host}
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "cimd_trusted_private_hosts") {
+			t.Fatalf("trusted host %q validation error = %v", host, err)
+		}
 	}
 }

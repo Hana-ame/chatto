@@ -1,5 +1,4 @@
 {
-  "$schema": "https://inlang.com/schema/inlang-message-format",
   "admin": {
     "nav": {
       "general": "Général",
@@ -10,7 +9,8 @@
       "security": "Sécurité",
       "event_log": "Journal des événements",
       "system": "Système",
-      "back_to_server": "Retour au serveur"
+      "back_to_server": "Retour au serveur",
+      "invitations": "Invite links"
     },
     "common": {
       "page_title": "{title} | Administrateur",
@@ -176,9 +176,13 @@
       "edit_room": "Modifier la salle",
       "edit_room_action": "Modifier la salle",
       "room_description_placeholder": "Description facultative pour cette salle",
+      "slow_mode": "Mode lent",
+      "slow_mode_description": "Définissez le délai d’attente des membres entre les messages dans ce salon.",
+      "slow_mode_off": "Désactivé",
+      "slow_mode_custom": "{interval} (valeur actuelle)",
       "room_name_empty": "Le nom de la salle ne peut pas être vide",
       "room_name_trim": "Le nom de la salle ne peut pas comporter d'espaces de début ou de fin.",
-      "room_name_charset": "Le nom de la salle ne peut contenir que des lettres, des chiffres, des traits d'union et des traits de soulignement.",
+      "room_name_invalid": "Le nom de la salle ne peut pas contenir de sauts de ligne ni de caractères de contrôle",
       "room_name_too_long": "Le nom de la salle ne peut pas dépasser 30 caractères",
       "create_group": "Créer un groupe",
       "group_name": "Nom du groupe",
@@ -235,7 +239,22 @@
       "subtitle": "Restrictions d'inscription et protection du compte",
       "blocked_usernames": "Noms d'utilisateur bloqués",
       "blocked_usernames_description": "Un par ligne. Les utilisateurs ne peuvent pas s'inscrire avec ces noms.",
-      "settings_saved": "Paramètres enregistrés"
+      "settings_saved": "Paramètres enregistrés",
+      "oauth_clients": {
+        "title": "Clients OAuth",
+        "description": "Les applications apparaissent ici après leur autorisation par un membre. La confiance est seulement une étiquette administrative et ne remplace jamais le consentement individuel ; le blocage empêche les nouveaux accès et révoque les jetons existants.",
+        "empty": "Aucun client OAuth n’a été autorisé",
+        "application": "Application",
+        "origins": "Origines de rappel",
+        "users": "Utilisateurs autorisés",
+        "last_authorization": "Dernière autorisation",
+        "policy": "Politique",
+        "policy_for": "Politique pour {client}",
+        "policy_default": "Par défaut",
+        "policy_trusted": "Fiable",
+        "policy_blocked": "Bloqué",
+        "policy_saved": "Politique du client OAuth enregistrée"
+      }
     },
     "system": {
       "title": "Système",
@@ -248,6 +267,7 @@
       "unlimited": "illimité",
       "all_subjects": "tous les sujets",
       "pending_state": "En attente",
+      "worker_unconfirmed": "Non confirmé",
       "rtt": "RTT",
       "max_payload": "Charge utile maximale",
       "server_id": "ID du serveur",
@@ -387,6 +407,39 @@
       "email": "E-mail",
       "id": "ID",
       "total": "Nombre total d'utilisateurs {count}"
+    },
+    "invitations": {
+      "title": "Invite links",
+      "subtitle": "Create and manage links that admit new accounts.",
+      "create_title": "Create invite link",
+      "max_uses": "Maximum uses",
+      "max_uses_error": "Enter a whole number of at least 1.",
+      "unlimited_uses": "Allow unlimited uses",
+      "expiry": "Expiry",
+      "expiry_1d": "1 day",
+      "expiry_7d": "7 days",
+      "expiry_30d": "30 days",
+      "expiry_never": "Never",
+      "create": "Create invite link",
+      "created": "Invite link created",
+      "list_title": "Invite links",
+      "empty": "No invite links yet.",
+      "uses": "Uses",
+      "created_at": "Created",
+      "actions": "Actions",
+      "never": "Never",
+      "copy": "Copy link",
+      "copied": "Invite link copied",
+      "revoke": "Revoke",
+      "revoked": "Invite link revoked",
+      "revoke_title": "Revoke invite link?",
+      "revoke_description": "This link will stop admitting new accounts immediately.",
+      "status": {
+        "active": "Active",
+        "expired": "Expired",
+        "exhausted": "Exhausted",
+        "revoked": "Revoked"
+      }
     }
   }
 }

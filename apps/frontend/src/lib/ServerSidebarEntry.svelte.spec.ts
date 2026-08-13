@@ -16,6 +16,10 @@ const { mocks } = vi.hoisted(() => {
       goto: vi.fn(),
       pushState: vi.fn(),
       markNavigationServerAsRead: vi.fn().mockResolvedValue(true),
+      startRemoteReauthentication: vi.fn(),
+      beginOriginReauthentication: vi.fn(),
+      isOriginServer: vi.fn(() => false),
+      toastError: vi.fn(),
       appUi: {
         disableRoomCallWideFor: vi.fn()
       },
@@ -122,7 +126,7 @@ vi.mock('$lib/state/server/serverConnection.svelte', () => ({
 
 vi.mock('$lib/state/server/registry.svelte', () => ({
   serverRegistry: {
-    isOriginServer: vi.fn(() => false),
+    isOriginServer: mocks.isOriginServer,
     getServer: vi.fn(() => mocks.server),
     getStore: vi.fn(() => mocks.store)
   }
@@ -151,6 +155,15 @@ vi.mock('$lib/api-client/roomDirectory', () => ({
 
 vi.mock('$lib/navigation/readActions', () => ({
   markNavigationServerAsRead: mocks.markNavigationServerAsRead
+}));
+
+vi.mock('$lib/auth/reauth', () => ({
+  startRemoteReauthentication: mocks.startRemoteReauthentication,
+  beginOriginReauthentication: mocks.beginOriginReauthentication
+}));
+
+vi.mock('$lib/ui/toast', () => ({
+  toast: { error: mocks.toastError }
 }));
 
 import ServerSidebarEntry from './ServerSidebarEntry.svelte';
@@ -209,6 +222,12 @@ describe('ServerSidebarEntry', () => {
     mocks.pushState.mockClear();
     mocks.markNavigationServerAsRead.mockClear();
     mocks.markNavigationServerAsRead.mockResolvedValue(true);
+    mocks.startRemoteReauthentication.mockReset();
+    mocks.startRemoteReauthentication.mockResolvedValue(undefined);
+    mocks.beginOriginReauthentication.mockReset();
+    mocks.isOriginServer.mockReset();
+    mocks.isOriginServer.mockReturnValue(false);
+    mocks.toastError.mockReset();
     mocks.appUi.disableRoomCallWideFor.mockClear();
     mocks.getAuthenticatedServerState.mockResolvedValue(serverState());
     mocks.getViewerStateViaConnect.mockResolvedValue(viewerState());
@@ -260,6 +279,12 @@ describe('ServerSidebarEntry', () => {
       new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 24, clientY: 36 })
     );
     await vi.waitFor(() => expect(document.body.textContent).toContain('Mark as read'));
+    expect(q(document.body, '[data-testid="server-name"]')?.textContent?.trim()).toBe(
+      'Loaded Remote'
+    );
+    expect(q(document.body, '[data-testid="server-hostname"]')?.textContent?.trim()).toBe(
+      'remote.example.com'
+    );
 
     const markRead = Array.from(document.querySelectorAll('button')).find(
       (button) => button.textContent?.trim() === 'Mark as read'
@@ -396,6 +421,35 @@ describe('ServerSidebarEntry', () => {
     expect(document.body.textContent).toContain('Version custom-build');
   });
 
+  it('shows an unreachable status instead of an unknown version and hides read actions', async () => {
+    mocks.store.projection.viewer = null;
+    mocks.store.serverInfo.version = '';
+    mocks.store.serverInfo.compatibility = {
+      status: 'unreachable',
+      reason: 'unreachable'
+    };
+    mocks.showConnectionLostIcon = true;
+    const { container } = render(ServerSidebarEntry, {
+      props: { serverId: 'remote', currentUserId: 'user-1' }
+    });
+
+    const icon = q(container, '[data-testid="server-icon"]') as HTMLAnchorElement;
+    await expect.element(icon).toHaveAttribute('title', 'Loaded Remote — Server unreachable');
+    icon.dispatchEvent(
+      new MouseEvent('contextmenu', {
+        bubbles: true,
+        cancelable: true,
+        clientX: 24,
+        clientY: 36
+      })
+    );
+
+    await vi.waitFor(() => expect(document.body.textContent).toContain('Server unreachable'));
+    expect(document.body.textContent).not.toContain('Version unknown');
+    expect(document.body.textContent).not.toContain('Mark as read');
+    expect(q(document.body, '[role="separator"]')).toBeNull();
+  });
+
   it('renders an unauthenticated server without loading private sidebar state', async () => {
     mocks.store.isAuthenticated = false;
     mocks.store.serverInfo.iconUrl = 'https://remote.example.com/assets/server/logo.webp';
@@ -416,6 +470,74 @@ describe('ServerSidebarEntry', () => {
     expect(mocks.getAuthenticatedServerState).not.toHaveBeenCalled();
     expect(mocks.getViewerStateViaConnect).not.toHaveBeenCalled();
     expect(mocks.store.notifications.fetch).not.toHaveBeenCalled();
+  });
+
+  it('starts sign-in when an unauthenticated synchronized server is clicked', async () => {
+    mocks.store.isAuthenticated = false;
+
+    const { container } = render(ServerSidebarEntry, {
+      props: { serverId: 'remote' }
+    });
+    const icon = q(container, '[data-testid="server-icon"]') as HTMLAnchorElement;
+
+    await expect.element(icon).toHaveClass('opacity-40');
+    await expect.element(icon).toHaveAttribute('title', 'Loaded Remote needs sign-in');
+    icon.click();
+
+    await vi.waitFor(() => {
+      expect(mocks.startRemoteReauthentication).toHaveBeenCalledWith(mocks.server);
+      expect(mocks.goto).not.toHaveBeenCalled();
+    });
+  });
+
+  it('uses the origin sign-in flow for an unauthenticated origin server', async () => {
+    mocks.store.isAuthenticated = false;
+    mocks.isOriginServer.mockReturnValue(true);
+
+    const { container } = render(ServerSidebarEntry, {
+      props: { serverId: 'remote' }
+    });
+    q(container, '[data-testid="server-icon"]')?.click();
+
+    await vi.waitFor(() => {
+      expect(mocks.beginOriginReauthentication).toHaveBeenCalledOnce();
+      expect(mocks.startRemoteReauthentication).not.toHaveBeenCalled();
+    });
+  });
+
+  it('does not start a second sign-in while the first attempt is pending', async () => {
+    mocks.store.isAuthenticated = false;
+    mocks.startRemoteReauthentication.mockReturnValueOnce(new Promise(() => {}));
+
+    const { container } = render(ServerSidebarEntry, {
+      props: { serverId: 'remote' }
+    });
+    const icon = q(container, '[data-testid="server-icon"]');
+    icon?.click();
+    icon?.click();
+
+    await vi.waitFor(() => {
+      expect(mocks.startRemoteReauthentication).toHaveBeenCalledOnce();
+    });
+  });
+
+  it('shows an error and permits retry after sign-in fails', async () => {
+    mocks.store.isAuthenticated = false;
+    mocks.startRemoteReauthentication
+      .mockRejectedValueOnce(new Error('discovery failed'))
+      .mockResolvedValueOnce(undefined);
+
+    const { container } = render(ServerSidebarEntry, {
+      props: { serverId: 'remote' }
+    });
+    const icon = q(container, '[data-testid="server-icon"]');
+    icon?.click();
+    await vi.waitFor(() => expect(mocks.toastError).toHaveBeenCalledOnce());
+
+    icon?.click();
+    await vi.waitFor(() => {
+      expect(mocks.startRemoteReauthentication).toHaveBeenCalledTimes(2);
+    });
   });
 
   it('keeps a failed server in the gutter as a dimmed icon', async () => {

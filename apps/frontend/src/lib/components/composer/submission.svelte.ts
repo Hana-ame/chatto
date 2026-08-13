@@ -9,7 +9,7 @@ import type { TimelineEventView } from '$lib/render/timelineEvents';
 import type { MentionRolesStatus } from '$lib/state/server/mentionRoles.svelte';
 import { extractMentions, hasRoleOrVirtualMention } from '$lib/mentions';
 import { toast } from '$lib/ui/toast';
-import * as m from '$lib/i18n/messages';
+import { m } from '$lib/i18n/messages';
 
 export type AttachmentSubmissionStatus =
   | { phase: 'preparing' }
@@ -27,6 +27,7 @@ export type PreparedPost = {
   inReplyTo: string | null;
   linkPreviewToken: string | null;
   alsoSendToChannel: boolean;
+  createThread: boolean;
 };
 
 type MessageSubmissionAPI = {
@@ -40,6 +41,7 @@ type ComposerSubmissionDependencies = {
   loadMentionRoles: () => Promise<boolean>;
   getMentionRoleNames: () => string[];
   onPostSuccess: (post: PreparedPost, event: TimelineEventView | null) => void;
+  onPostError?: (error: unknown) => boolean;
   onEditSuccess: () => void;
 };
 
@@ -123,7 +125,7 @@ export class ComposerSubmissionState {
       await this.#dependencies.getAPI().updateMessage(input);
       this.#dependencies.onEditSuccess();
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : m['composer.edit_failed']());
+      toast.error(error instanceof Error ? error.message : m('composer.edit_failed'));
     } finally {
       this.loading = false;
     }
@@ -159,14 +161,17 @@ export class ComposerSubmissionState {
           threadRootEventId: post.threadRootEventId,
           inReplyTo: post.inReplyTo,
           linkPreviewToken: post.linkPreviewToken,
-          alsoSendToChannel: post.alsoSendToChannel
+          alsoSendToChannel: post.alsoSendToChannel,
+          createThread: post.createThread
         });
       } catch (error) {
         if (![...this.attachmentStatuses.values()].some((status) => status.phase === 'failed')) {
           this.attachmentStatuses.clear();
         }
-        toast.error(m['composer.send_failed']());
-        console.error('Error creating message:', error);
+        if (!this.#dependencies.onPostError?.(error)) {
+          toast.error(m('composer.send_failed'));
+          console.error('Error creating message:', error);
+        }
         return;
       }
 

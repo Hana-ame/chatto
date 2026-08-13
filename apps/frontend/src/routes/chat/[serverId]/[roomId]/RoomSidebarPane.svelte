@@ -2,7 +2,9 @@
   import type { ComponentProps } from 'svelte';
   import type RoomSidebar from './RoomSidebar.svelte';
   import { fly } from 'svelte/transition';
-  import * as m from '$lib/i18n/messages';
+  import { m } from '$lib/i18n/messages';
+  import { fromInlineEndOffset } from '$lib/i18n/direction';
+  import { expoOutTransition } from '$lib/ui/motion';
 
   let roomSidebarModule: Promise<typeof import('./RoomSidebar.svelte')> | null = null;
   let roomSidebarLoadAttempt = $state(0);
@@ -32,15 +34,15 @@
       class="flex min-h-0 flex-1 items-center justify-center p-4 text-sm text-muted"
       aria-busy="true"
     >
-      {m['common.loading']()}
+      {m('common.loading')}
     </div>
   {:then { default: RoomSidebar }}
     <RoomSidebar {...props} presentation={presentation === 'mobile' ? 'overlay' : 'desktop'} />
   {:catch}
     <div class="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-4 text-center">
-      <p class="text-sm text-muted">{m['common.error.network']()}</p>
+      <p class="text-sm text-muted">{m('common.error.network')}</p>
       <button type="button" class="btn-secondary" onclick={() => (roomSidebarLoadAttempt += 1)}>
-        {m['common.retry']()}
+        {m('common.retry')}
       </button>
     </div>
   {/await}
@@ -51,13 +53,13 @@
     <button
       type="button"
       class="absolute inset-0 z-10 bg-transparent lg:hidden"
-      aria-label={m['room.close_extras']()}
+      aria-label={m('room.close_extras')}
       onclick={sidebarProps.onClose}
     ></button>
     <div
-      class="absolute inset-y-0 right-0 z-20 flex min-h-0 w-full min-w-0 flex-col overflow-hidden border-l border-border bg-background shadow-[-4px_0_12px_rgba(0,0,0,0.15)] sm:w-[90%] lg:hidden"
+      class="absolute inset-y-0 end-0 z-20 flex min-h-0 w-full min-w-0 flex-col overflow-hidden border-s border-border bg-background inline-end-overlay-shadow sm:w-[90%] lg:hidden"
       data-testid="room-sidebar-mobile-pane"
-      transition:fly={{ x: 300, duration: 200 }}
+      transition:fly={{ x: fromInlineEndOffset(300), ...expoOutTransition() }}
     >
       {@render sidebar(sidebarProps)}
     </div>

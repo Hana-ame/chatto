@@ -532,6 +532,72 @@ describe('MessageContent component', () => {
     await expect.element(wrapper).toBeInTheDocument();
   });
 
+  it('sizes each ordered-list marker column to its widest marker', async () => {
+    const shortList = '1. Short item 1\n2. Short item 2';
+    const longList = Array.from(
+      { length: 12 },
+      (_, index) => `${index + 1}. Long item ${index + 1}`
+    ).join('\n');
+    const startedList = '9. Started item 9\n10. Started item 10';
+    const body = `${shortList}\n\nBetween lists\n\n${longList}\n\nAnother break\n\n${startedList}`;
+    const { container } = renderMessage(body);
+
+    await expect.poll(() => container.querySelectorAll('ol').length).toBe(3);
+    const [short, long, started] = Array.from(container.querySelectorAll('ol'));
+    const longItems = Array.from(long!.querySelectorAll(':scope > li'));
+    const startedItems = Array.from(started!.querySelectorAll(':scope > li'));
+
+    const textLeft = (element: Element) => {
+      const content = element.querySelector(':scope > .list-item-content, :scope > p');
+      if (!content) throw new Error('Expected content in the list item');
+      return content.getBoundingClientRect().left;
+    };
+
+    expect(textLeft(longItems[0]!)).toBeCloseTo(textLeft(longItems[9]!), 0);
+    expect(textLeft(longItems[0]!)).toBeGreaterThan(textLeft(short!.querySelector('li')!));
+    expect(textLeft(startedItems[0]!)).toBeCloseTo(textLeft(startedItems[1]!), 0);
+    expect(textLeft(startedItems[0]!)).toBeGreaterThan(textLeft(short!.querySelector('li')!));
+  });
+
+  it('aligns RTL ordered-list markers toward their content without start padding', async () => {
+    const { container } = renderMessage('1. العنصر الأول\n2. العنصر الثاني');
+
+    await expect.poll(() => q(container, 'ol')).toBeTruthy();
+    const list = q(container, 'ol')!;
+    const item = q(list, 'li')!;
+
+    expect(window.getComputedStyle(list).paddingInlineStart).toBe('0px');
+    expect(window.getComputedStyle(item, '::before').textAlign).toBe('end');
+  });
+
+  it('isolates inline code as LTR within RTL prose', async () => {
+    const { container } = renderMessage('مرحبا `const direction = "ltr";`');
+
+    await expect.poll(() => q(container, 'code')).toBeTruthy();
+    const styles = window.getComputedStyle(q(container, 'code')!);
+
+    expect(styles.direction).toBe('ltr');
+    expect(styles.unicodeBidi).toBe('isolate');
+  });
+
+  it('keeps inline code flowing with ordered-list item text', async () => {
+    const { container } = renderMessage(
+      '1. Connect to `/api/realtime` using `chatto.realtime.v1` protobuf frames for live updates.'
+    );
+
+    await expect.poll(() => container.querySelectorAll('ol code').length).toBe(2);
+    const content = q(container, 'ol > li > .list-item-content')!;
+    const codes = Array.from(content.querySelectorAll('code'));
+
+    expect(window.getComputedStyle(codes[0]!).display).toBe('inline');
+    expect(codes[0]!.getBoundingClientRect().width).toBeLessThan(
+      content.getBoundingClientRect().width
+    );
+    expect(codes[1]!.getBoundingClientRect().width).toBeLessThan(
+      content.getBoundingClientRect().width
+    );
+  });
+
   it('styles blockquotes as distinct quote blocks', async () => {
     const { container } = renderMessage('> quoted text\n>\n> second line');
 

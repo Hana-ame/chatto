@@ -26,6 +26,8 @@ export type DirectoryRoomSummary = {
   kind: RoomKind;
   archived: boolean;
   isUniversal: boolean;
+  slowModeSeconds: number;
+  slowModeNextPostAt: string | null;
   isMember: boolean;
   hasUnread: boolean;
   canJoinRoom: boolean;
@@ -91,9 +93,15 @@ export function createRoomDirectoryAPI(config: RoomDirectoryAPIConfig) {
   const headers = () => authHeaders(config);
 
   return {
-    async listRooms(scope: RoomDirectoryScope): Promise<DirectoryRoomSummary[]> {
+    async listRooms(
+      scope: RoomDirectoryScope,
+      options: { signal?: AbortSignal } = {}
+    ): Promise<DirectoryRoomSummary[]> {
       try {
-        const response = await directory.listRooms({ scope }, { headers: headers() });
+        const response = await directory.listRooms(
+          { scope },
+          { headers: headers(), ...(options.signal ? { signal: options.signal } : {}) }
+        );
         return response.rooms.flatMap((entry) => mapDirectoryRoom(entry) ?? []);
       } catch (err) {
         return handleAuthError(config, err);
@@ -188,6 +196,8 @@ export function mapDirectoryRoom(entry: RoomWithViewerState): DirectoryRoomSumma
     kind: entry.room.kind,
     archived: entry.room.archived,
     isUniversal: entry.room.universal,
+    slowModeSeconds: entry.room.slowModeSeconds ?? 0,
+    slowModeNextPostAt: entry.viewerState?.slowModeNextPostAt?.toDate().toISOString() ?? null,
     isMember: entry.viewerState?.isMember ?? false,
     hasUnread: entry.viewerState?.hasUnread ?? false,
     canJoinRoom: hasRoomPermission(entry.viewerState, RoomPermission.JoinRoom),

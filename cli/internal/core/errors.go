@@ -48,6 +48,10 @@ var (
 	// they are not a member of.
 	ErrNotRoomMember = errors.New("not a member of this room")
 
+	// ErrCallParticipationRequired is returned when an operation requires the
+	// user to be a participant in the active call generation.
+	ErrCallParticipationRequired = errors.New("active call participation required")
+
 	// ErrRoleNotFound is returned when attempting to access a role that doesn't exist.
 	ErrRoleNotFound = errors.New("role not found")
 
@@ -86,6 +90,11 @@ var (
 	// the requested attachment.
 	ErrMessageAttachmentNotFound = errors.New("message attachment not found")
 
+	// ErrAssetNotAttachable is returned when a message references an asset that
+	// is unavailable, belongs to another uploader, or is already attached to a
+	// message.
+	ErrAssetNotAttachable = errors.New("asset is not available to attach")
+
 	// ErrMessageLinkPreviewNotFound is returned when a message does not contain
 	// the requested link preview.
 	ErrMessageLinkPreviewNotFound = errors.New("message link preview not found")
@@ -96,6 +105,10 @@ var (
 
 	// ErrMessageTooLong is returned when a message body exceeds the maximum length.
 	ErrMessageTooLong = errors.New("message body exceeds maximum length")
+
+	// ErrSlowModeActive is returned when a user attempts to post before the
+	// room's per-user posting interval has elapsed.
+	ErrSlowModeActive = errors.New("slow mode is active")
 
 	// ErrDMThreadsUnsupported is returned when a caller tries to create or
 	// extend a thread in a direct-message room. DMs support flat reply
@@ -160,6 +173,10 @@ var (
 	// resource limit configured via [limits] (e.g. max_users).
 	ErrLimitExceeded = errors.New("instance limit reached")
 
+	// ErrReactionLimitExceeded is returned when a user already has the maximum
+	// number of distinct emoji reactions on one canonical message.
+	ErrReactionLimitExceeded = errors.New("reaction limit reached")
+
 	// ErrServerNotBootstrapped is returned by API-layer helpers that need
 	// the deployment's primary space ID before its bootstrap has run.
 	ErrServerNotBootstrapped = errors.New("instance not bootstrapped")
@@ -177,6 +194,18 @@ var (
 	// the entire user-provided password contributes to the hash and to bound work.
 	ErrPasswordTooLong = fmt.Errorf("password cannot exceed %d bytes", MaxPasswordLength)
 )
+
+// SlowModeActiveError reports the authoritative time at which a rejected
+// message post may be retried.
+type SlowModeActiveError struct {
+	NextPostAt time.Time
+}
+
+func (e *SlowModeActiveError) Error() string {
+	return fmt.Sprintf("slow mode is active until %s", e.NextPostAt.UTC().Format(time.RFC3339Nano))
+}
+
+func (e *SlowModeActiveError) Unwrap() error { return ErrSlowModeActive }
 
 // InvalidArgumentError carries a caller-safe validation message while still
 // matching ErrInvalidArgument through errors.Is.
@@ -207,6 +236,10 @@ const (
 
 	// MaxMessageBodyLength is the maximum length of a message body in bytes.
 	MaxMessageBodyLength = 10000
+
+	// MaxReactionsPerUserPerMessage is the maximum number of distinct emoji
+	// reactions one user may add to one canonical message.
+	MaxReactionsPerUserPerMessage = 20
 
 	// MaxDisplayNameLength is the maximum length of a user's display name in characters.
 	MaxDisplayNameLength = 32

@@ -14,7 +14,7 @@ identity, body rendering, and row geometry consistent.
   import UserAvatar from '$lib/components/UserAvatar.svelte';
   import DeletedUserLabel from '$lib/components/DeletedUserLabel.svelte';
   import MessageContent from '$lib/components/MessageContent.svelte';
-  import * as m from '$lib/i18n/messages';
+  import { m } from '$lib/i18n/messages';
 
   let {
     eventId,
@@ -125,7 +125,7 @@ identity, body rendering, and row geometry consistent.
         {#if actorInteractive}
           <button
             type="button"
-            class={['absolute left-2 z-10 cursor-pointer', avatarOffset ? 'top-8' : 'top-1']}
+            class={['absolute start-2 z-10 cursor-pointer', avatarOffset ? 'top-8' : 'top-1']}
             onclick={onActorClick}
             ontouchstart={onActorTouchStart}
             oncontextmenu={onActorContextMenu}
@@ -133,7 +133,7 @@ identity, body rendering, and row geometry consistent.
             <UserAvatar user={actor} size="message" class="shadow-md" />
           </button>
         {:else}
-          <div class={['absolute left-2 z-10', avatarOffset ? 'top-8' : 'top-1']}>
+          <div class={['absolute start-2 z-10', avatarOffset ? 'top-8' : 'top-1']}>
             <UserAvatar user={actor} size="message" class="shadow-md" />
           </div>
         {/if}
@@ -141,14 +141,17 @@ identity, body rendering, and row geometry consistent.
         {@const deletedActor = actor?.deleted || missingActorIsDeleted}
         <div
           class={[
-            'absolute left-2 z-10 flex h-11 w-11 items-center justify-center rounded-full bg-surface-emphasized text-muted shadow-md ring-1 ring-surface-emphasized/30',
+            'absolute start-2 z-10 flex h-11 w-11 items-center justify-center rounded-full bg-surface-emphasized text-muted shadow-md ring-1 ring-surface-emphasized/30',
             avatarOffset ? 'top-8' : 'top-1'
           ]}
           role="img"
-          aria-label={deletedActor ? m['common.deleted_user']() : displayName}
+          aria-label={deletedActor ? m('common.deleted_user') : displayName}
         >
           <span
-            class={['iconify text-xl', deletedActor ? 'uil--user-times' : 'uil--user']}
+            class={[
+              'iconify text-xl',
+              deletedActor ? 'icon-[uil--user-times]' : 'icon-[uil--user]'
+            ]}
             aria-hidden="true"
           ></span>
         </div>
@@ -169,12 +172,12 @@ identity, body rendering, and row geometry consistent.
                 ontouchstart={onActorTouchStart}
                 oncontextmenu={onActorContextMenu}
               >
-                <span>{displayName}</span>
+                <bdi>{displayName}</bdi>
                 {@render authorSuffix?.()}
               </button>
             {:else}
               <strong class="inline-flex shrink-0 items-center gap-1.5 leading-none font-semibold">
-                <span>{displayName}</span>
+                <bdi>{displayName}</bdi>
                 {@render authorSuffix?.()}
               </strong>
             {/if}
@@ -183,14 +186,16 @@ identity, body rendering, and row geometry consistent.
               <DeletedUserLabel />
             </strong>
           {:else}
-            <strong class="shrink-0 leading-none font-semibold text-muted">{displayName}</strong>
+            <strong class="shrink-0 leading-none font-semibold text-muted"
+              ><bdi>{displayName}</bdi></strong
+            >
           {/if}
           {@render headerMeta?.()}
         </div>
       {/if}
 
       {#if deleted}
-        <span class="text-muted italic">{m['room.message.meta.deleted']()}</span>
+        <span class="text-muted italic">{m('room.message.meta.deleted')}</span>
       {:else if body}
         <div bind:this={bodyElement} class="pointer-fine:select-text">
           <MessageContent

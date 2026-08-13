@@ -84,6 +84,18 @@ authorization, live events, backup/restore, and backend tests.
   external side effect, that fact must provide a durable recovery path. Verify
   crash recovery, multi-replica discovery, lease handover, and bounded
   request-path cost.
+- Treat a named durable consumer as a persisted, deployment-wide resource
+  contract. Required effect consumers must not use inactivity cleanup, delete
+  themselves on worker shutdown, or be deleted by one replica. Keep consumer
+  creation, versioned names, rollout, and retirement application-owned rather
+  than adding them to `events.DurableWorker`.
+- Removing or incompatibly changing a durable consumer requires ADR-069's
+  staged migration: stop its producers or overlap an idempotent replacement,
+  exclude old binaries that can recreate it, then prove a stable drain or
+  replacement cutoff before idempotent deletion. Treat skipped work as an
+  explicit abandonment decision and update the NATS inventory. Never
+  garbage-collect unknown `chatto-*` consumers merely because the current
+  binary does not declare them.
 - Match distributed lease ownership to the work lifecycle. Continuous polling
   workers may hold and renew a lease while running; periodic workers should
   attempt one lease acquisition per pass and wait outside the lease. Treat the
@@ -171,8 +183,8 @@ authorization, live events, backup/restore, and backend tests.
   contract-scoped generation, while an old binary retains its own schema and
   namespace. Bump the manual token when `Apply`, replay, cutoff, or restore
   semantics change without a schema change.
-- Most current snapshot contracts use semantic token `v1`; Assets, Room
-  Timeline, and user profile use `v2`. Keep password
+- Most current snapshot contracts use semantic token `v1`; Assets and user
+  profile use `v2`, while Room Timeline uses `v3`. Keep password
   verifiers, auth generations, external identity subjects, and OAuth consent in
   the independently cold-replayed `UserAuthProjection`; never add them to a
   profile snapshot schema or codec.
@@ -246,9 +258,13 @@ authorization, live events, backup/restore, and backend tests.
   every allow, revoking requires every allow and deny, and the `owner` role is
   owner-only.
 - Authorization-sensitive event writes must evaluate authorization inside the
-  OCC retry that commits the mutation. Fence every projection input that can
-  change the decision through the narrow authorization boundary; do not use
-  unrelated `evt.>` traffic as the concurrency boundary.
+  target aggregate's OCC retry. Request-time authorization is the default: a
+  conflict-free command may finish after a concurrent cross-aggregate
+  revocation. Commands that require strict commit-time revocation semantics
+  must also guard the narrow authorization fence and keep its writer
+  classification complete. Use ADR-068's whole-EVT boundary only for a genuine
+  stream-wide invariant whose cost is worth contention with unrelated `evt.>`
+  traffic, and record exceptional consistency choices in the relevant ADR/FDR.
 
 ## Admin Interface
 

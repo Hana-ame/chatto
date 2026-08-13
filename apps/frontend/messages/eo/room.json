@@ -1,5 +1,4 @@
 {
-  "$schema": "https://inlang.com/schema/inlang-message-format",
   "room": {
     "create": {
       "title": "Kreu Novan Ĉambron",
@@ -23,13 +22,10 @@
       "inline_prompt": "Aliĝu al ĉi tiu ĉambro por legi kaj partopreni.",
       "group_label": "En {group}",
       "member_preview_label": "Ĉambromembroj",
-      "member_count": [
-        {
-          "declarations": ["input count", "local countPlural = count: plural"],
-          "selectors": ["countPlural"],
-          "match": { "countPlural=one": "{count} membro", "countPlural=other": "{count} membroj" }
-        }
-      ],
+      "member_count": {
+        "one": "{count} membro",
+        "other": "{count} membroj"
+      },
       "success": "Aliĝis al #{room}",
       "success_generic": "Aliĝis al ĉambro",
       "failed": "Malsukcesis aliĝi al ĉambro",
@@ -82,6 +78,7 @@
       "delete_prompt": "Ĉu vi certas, ke vi volas forigi ĉi tiun mesaĝon? Ĉi tio ne povas esti malfarita.",
       "delete_failed": "Malsukcesis forigi mesaĝon",
       "reaction_failed": "Malsukcesis ĝisdatigi reagon",
+      "reaction_limit_reached": "Vi povas aldoni ĝis 20 reagojn al mesaĝo.",
       "deleted": "Mesaĝo forigita",
       "actions": {
         "toolbar": "Mesaĝaj agoj",
@@ -100,6 +97,7 @@
         "copy_link": "Kopiu ligilon"
       },
       "meta": {
+        "pinned": "Alpinglita mesaĝo",
         "thread": "Fadeno",
         "reply_count_one": "1 respondo",
         "reply_count_many": "{count} respondas",
@@ -120,39 +118,23 @@
       }
     },
     "system_events": {
-      "joined": [
-        {
-          "declarations": ["input count", "local countPlural = count: plural"],
-          "selectors": ["countPlural"],
-          "match": {
-            "countPlural=one": "aliĝis al la ĉambro",
-            "countPlural=other": "aliĝis al la ĉambro"
-          }
-        }
-      ],
-      "left": [
-        {
-          "declarations": ["input count", "local countPlural = count: plural"],
-          "selectors": ["countPlural"],
-          "match": {
-            "countPlural=one": "forlasis la ĉambron",
-            "countPlural=other": "forlasis la ĉambron"
-          }
-        }
-      ],
+      "joined_count": {
+        "one": "aliĝis al la ĉambro",
+        "other": "aliĝis al la ĉambro"
+      },
+      "left_count": {
+        "one": "forlasis la ĉambron",
+        "other": "forlasis la ĉambron"
+      },
       "archived": "arkivis la ĉambron",
       "unarchived": "malarkivigis la ĉambron",
+      "call_started": "komencis vokon en ĉi tiu ĉambro",
+      "call_ended": "La aktiva voko finiĝis",
       "and": "kaj",
-      "other_people": [
-        {
-          "declarations": ["input count", "local countPlural = count: plural"],
-          "selectors": ["countPlural"],
-          "match": {
-            "countPlural=one": "alia",
-            "countPlural=other": "aliaj"
-          }
-        }
-      ],
+      "other_people_count": {
+        "one": "alia",
+        "other": "aliaj"
+      },
       "show_less": "montri malpli"
     },
     "attachment": {
@@ -186,6 +168,7 @@
       "offline": "Senkonekta ({count})",
       "no_files": "Ankoraŭ neniuj dosieroj en ĉi tiu ĉambro.",
       "files": "Dosieroj",
+      "pins": "Alpinglitaj mesaĝoj",
       "call": "Voku",
       "jump_to_file": "Saltu al {filename}",
       "loading_files": "Ŝarĝante dosierojn...",
@@ -195,6 +178,20 @@
       "in_video_call": "En videovoko",
       "ban_failed": "Malsukcesis malpermesi membron de ĉambro",
       "ban_success": "Malpermesita {name} de ĉambro"
+    },
+    "pins": {
+      "show": "Montri alpinglitajn mesaĝojn",
+      "unseen": "Novaj alpinglitaj mesaĝoj",
+      "hide": "Kaŝi alpinglitajn mesaĝojn",
+      "pin": "Alpingli mesaĝon",
+      "unpin": "Malpingli mesaĝon",
+      "unpin_prompt": "Ĉu vi certas, ke vi volas forigi ĉi tiun alpinglon?",
+      "loading": "Ŝargante alpinglitajn mesaĝojn...",
+      "empty_title": "Neniuj alpinglitaj mesaĝoj",
+      "empty_description": "Ĉambroadministrantoj povas alpingli gravajn mesaĝojn ĉi tie.",
+      "error_title": "Alpinglitaj mesaĝoj ne disponeblas",
+      "error_description": "Ne eblis ŝargi alpinglitajn mesaĝojn. Provu denove post momento.",
+      "update_failed": "Ne eblis ĝisdatigi la alpinglitan mesaĝon"
     },
     "title": {
       "direct_message": "Rekta Mesaĝo"

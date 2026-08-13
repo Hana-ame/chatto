@@ -195,6 +195,10 @@ func (h *timelineHydrator) event(ctx context.Context, event *core.RoomEvent) (*a
 		apiEvent.Event = &apiv1.RoomTimelineEvent_UserJoinedRoom{UserJoinedRoom: roomEvent(payload.UserJoinedRoom.GetRoomId())}
 	case *corev1.Event_UserLeftRoom:
 		apiEvent.Event = &apiv1.RoomTimelineEvent_UserLeftRoom{UserLeftRoom: roomEvent(payload.UserLeftRoom.GetRoomId())}
+	case *corev1.Event_VoiceCallStarted:
+		apiEvent.Event = &apiv1.RoomTimelineEvent_CallStarted{CallStarted: callEvent(payload.VoiceCallStarted.GetRoomId(), payload.VoiceCallStarted.GetCallId())}
+	case *corev1.Event_VoiceCallEnded:
+		apiEvent.Event = &apiv1.RoomTimelineEvent_CallEnded{CallEnded: callEvent(payload.VoiceCallEnded.GetRoomId(), payload.VoiceCallEnded.GetCallId())}
 	default:
 		return nil, fmt.Errorf("unsupported room timeline event %T", payload)
 	}
@@ -218,6 +222,7 @@ func (h *timelineHydrator) messagePosted(ctx context.Context, event *core.RoomEv
 		EchoOfEventId:             payload.GetEchoOfEventId(),
 		EchoFromThreadRootEventId: payload.GetEchoFromThreadRootEventId(),
 		Reactions:                 h.reactions(event.Id),
+		Pinned:                    hydrationState.Pinned,
 	}
 	if hydrationState.HasDeletedAt {
 		message.DeletedAt = timestamppb.New(hydrationState.DeletedAt)
@@ -248,14 +253,14 @@ func (h *timelineHydrator) messagePosted(ctx context.Context, event *core.RoomEv
 	}
 
 	if payload.GetInThread() == "" {
-		thread := &apiv1.ThreadSummary{
-			ThreadRootEventId: event.Id,
-		}
 		metadata, err := h.api.core.GetThreadMetadata(ctx, h.kind, payload.GetRoomId(), event.Id)
 		if err != nil && !errors.Is(err, core.ErrNotFound) {
 			return nil, err
 		}
-		if metadata != nil {
+		if metadata != nil && metadata.Exists {
+			thread := &apiv1.ThreadSummary{
+				ThreadRootEventId: event.Id,
+			}
 			thread.ReplyCount = int32(metadata.ReplyCount)
 			if metadata.LastReplyAt != nil {
 				thread.LastReplyAt = timestamppb.New(*metadata.LastReplyAt)
@@ -263,13 +268,13 @@ func (h *timelineHydrator) messagePosted(ctx context.Context, event *core.RoomEv
 			thread.ParticipantPreviewUserIds = firstN(metadata.ParticipantIDs, 5)
 			thread.ParticipantCount = int32(len(metadata.ParticipantIDs))
 			h.addUserIDs(thread.ParticipantPreviewUserIds)
+			following, err := h.api.core.IsFollowingThread(ctx, h.kind, h.viewerID, payload.GetRoomId(), event.Id)
+			if err != nil {
+				return nil, err
+			}
+			thread.ViewerState = &apiv1.ThreadViewerState{IsFollowing: &following}
+			message.Thread = thread
 		}
-		following, err := h.api.core.IsFollowingThread(ctx, h.kind, h.viewerID, payload.GetRoomId(), event.Id)
-		if err != nil {
-			return nil, err
-		}
-		thread.ViewerState = &apiv1.ThreadViewerState{IsFollowing: &following}
-		message.Thread = thread
 	}
 
 	return message, nil
@@ -385,6 +390,10 @@ func (h *timelineHydrator) addUserIDs(userIDs []string) {
 
 func roomEvent(roomID string) *apiv1.RoomTimelineRoomEvent {
 	return &apiv1.RoomTimelineRoomEvent{RoomId: roomID}
+}
+
+func callEvent(roomID, callID string) *apiv1.RoomTimelineCallEvent {
+	return &apiv1.RoomTimelineCallEvent{RoomId: roomID, CallId: callID}
 }
 
 func assetURLView(assetURL core.StableAssetURL) *apiv1.MessageAssetUrl {

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -62,6 +63,15 @@ var (
 // libaom-av1), both at avifCRF. Returns ErrAVIFUnavailable when ffmpeg or an
 // AV1 encoder cannot be found; other errors are transient encode failures.
 func EncodeAVIF(ctx context.Context, data []byte, ffmpegPath string) ([]byte, error) {
+	// Resolve an empty path here as well as in selectAVIFEncoder: the probe
+	// resolves internally but the encode below needs the concrete binary.
+	// Broken on 2026-08-14 when TestEncodeAVIFResolvesFFmpegFromPath failed
+	// with "exec: no command" after the temp-file rework.
+	if ffmpegPath == "" {
+		if resolved, err := exec.LookPath("ffmpeg"); err == nil {
+			ffmpegPath = resolved
+		}
+	}
 	encoder, err := selectAVIFEncoder(ctx, ffmpegPath)
 	if err != nil {
 		return nil, err
@@ -76,14 +86,27 @@ func EncodeAVIF(ctx context.Context, data []byte, ffmpegPath string) ([]byte, er
 	default:
 		return nil, fmt.Errorf("unhandled AVIF encoder %q", encoder)
 	}
-	args = append(args, "-f", "avif", "pipe:1")
+
+	// Write the AVIF to a seekable temp file instead of pipe:1. libsvtav1
+	// (the preferred encoder) hangs when its AVIF muxer gets a non-seekable
+	// output: it neither errors nor exits nor writes data. Discovered on
+	// Ubuntu ffmpeg 6.1 (2026-08-14) while merging upstream main; a plain
+	// `-f avif pipe:1` run with libsvtav1 stuck until the context timeout.
+	outFile, err := os.CreateTemp("", "chatto-avif-*.avif")
+	if err != nil {
+		return nil, fmt.Errorf("create AVIF temp file: %w", err)
+	}
+	defer os.Remove(outFile.Name())
+	if err := outFile.Close(); err != nil {
+		return nil, fmt.Errorf("close AVIF temp file: %w", err)
+	}
+	args = append(args, "-f", "avif", outFile.Name())
 
 	encodeCtx, cancel := context.WithTimeout(ctx, avifEncodeTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(encodeCtx, ffmpegPath, args...)
 	cmd.Stdin = bytes.NewReader(data)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
+	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		if encodeCtx.Err() != nil {
@@ -95,7 +118,10 @@ func EncodeAVIF(ctx context.Context, data []byte, ffmpegPath string) ([]byte, er
 		}
 		return nil, fmt.Errorf("ffmpeg AVIF encode failed: %w: %s", err, detail)
 	}
-	out := stdout.Bytes()
+	out, err := os.ReadFile(outFile.Name())
+	if err != nil {
+		return nil, fmt.Errorf("read AVIF temp file: %w", err)
+	}
 	if !isAVIFBytes(out) {
 		return nil, fmt.Errorf("ffmpeg produced %d bytes that are not an AVIF file", len(out))
 	}

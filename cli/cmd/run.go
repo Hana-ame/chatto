@@ -196,7 +196,8 @@ func runServer(configPath string) {
 	// ffmpeg re-encodes uploaded attachment images to AVIF. The configured
 	// path is preferred; empty falls back to PATH lookup, and a missing
 	// ffmpeg keeps original image bytes.
-	chattoCore.FFmpegPath = cfg.Video.FFmpegPath
+	// 2026-08-14: upstream moved ffmpeg config to AssetProcessingConfig.
+	chattoCore.FFmpegPath = cfg.AssetProcessing.FFmpegPath
 
 	if err := chattoCore.EnableLiveKitCallReconciliation(cfg.LiveKit); err != nil {
 		log.Error("Failed to configure LiveKit call-state reconciliation", "error", err)

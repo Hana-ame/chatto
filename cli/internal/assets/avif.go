@@ -196,23 +196,32 @@ func selectAVIFEncoder(ctx context.Context, ffmpegPath string) (avifEncoder, err
 	return selected, nil
 }
 
-// TransformImageWithFFmpeg 和 TransformImageWithOptions 一样做图片变换,
-// 但当输入是 AVIF 时改用 ffmpeg 做解码+缩放——Go 标准库的 image 解码器
-// 不认识 AVIF。输出固定是有损 WebP(支持透明),质量走 JPEG-quality 选项,
-// 与现有 JPEG 衍生图的大小级别一致。
+// TransformImageWithFFmpeg 产出图片衍生图(缩略图/展示图)。
 //
-// 【目的】上传阶段把附件转成 AVIF 后,渲染时(缩放/裁剪)必须能读回 AVIF;
-// 这是唯一能解码已存 AVIF 的地方。
-// ffmpegPath 原样使用;为空时从 PATH 解析。AVIF 输入遇到缺失 ffmpeg 是
-// 硬错误——没有其他解码器。
-// 注意:这里只**解码**已存的 AVIF 附件,永远不会对头像/branding/链接
-// 预览做 AVIF 重编码(那些是 WebP-only)。
+// 【本地改动 2026-08-16】衍生图统一编码为有损 WebP:ffmpeg 存在时,所有
+// 非动画图片(JPEG/PNG/静态 GIF/AVIF 输入)都经 ffmpeg 解码+缩放,用
+// libwebp 有损编码(-q:v = JPEGQuality),输出固定 image/webp。
+// 目的:之前只有 AVIF 输入走 ffmpeg,不透明图走 Go JPEG、透明图走无损
+// WebP(见 TransformImageWithOptions),衍生图格式 webp/jpeg 混用,用户
+// 要求全部统一成有损 WebP(nativewebp v1.3.0 只支持无损 VP8L,CI 又是
+// CGO_ENABLED=0,有损 WebP 只能靠 ffmpeg)。
+//
+// ffmpeg 缺失或编码失败时回退 TransformImageWithOptions 的旧行为
+// (不透明→JPEG、透明→无损 WebP),保证无 ffmpeg 的部署行为完全不变。
+// AVIF 输入在 ffmpeg 不可用/失败时仍是硬错误——Go 标准库没有 AVIF
+// 解码器,没有别的路径可走。
+//
+// 注意:动画 GIF 永远走 nativewebp 动画管线(无损动画 WebP),不能交给
+// ffmpeg——动画必须保留,且视频管线会单独把动画 GIF 转成 MP4。
+// ffmpegPath 原样使用;为空时从 PATH 解析。
 func TransformImageWithFFmpeg(data []byte, width, height int, fit FitMode, options TransformOptions, ffmpegPath string) (*TransformResult, error) {
-	if !isAVIFBytes(data) {
-		return TransformImageWithOptions(data, width, height, fit, options)
-	}
 	if options.JPEGQuality < 1 || options.JPEGQuality > 100 {
 		return nil, fmt.Errorf("invalid JPEG quality: %d", options.JPEGQuality)
+	}
+	// 【本地改动 2026-08-16】动画 GIF 必须先于 ffmpeg 分支拦截:ffmpeg
+	// 单帧编码会丢掉动画,而衍生图应保留动画(原行为)。
+	if IsAnimatedGIF(data) {
+		return TransformImageWithOptions(data, width, height, fit, options)
 	}
 	if ffmpegPath == "" {
 		if resolved, err := exec.LookPath("ffmpeg"); err == nil {
@@ -220,9 +229,28 @@ func TransformImageWithFFmpeg(data []byte, width, height int, fit FitMode, optio
 		}
 	}
 	if ffmpegPath == "" {
-		return nil, ErrAVIFUnavailable
+		if isAVIFBytes(data) {
+			return nil, ErrAVIFUnavailable
+		}
+		return TransformImageWithOptions(data, width, height, fit, options)
 	}
+	result, err := encodeWebPWithFFmpeg(data, width, height, fit, options, ffmpegPath)
+	if err == nil {
+		return result, nil
+	}
+	if isAVIFBytes(data) {
+		return nil, err
+	}
+	// 【本地改动 2026-08-16】非 AVIF 输入 ffmpeg 编码失败时静默回退 Go
+	// 路径,与上传路径 EncodeAVIF 的 best-effort 语义一致:ffmpeg 只是
+	// 优化手段,不该让衍生图生成失败。
+	return TransformImageWithOptions(data, width, height, fit, options)
+}
 
+// encodeWebPWithFFmpeg 用 ffmpeg 解码+缩放输入图片并编码为有损 WebP。
+// 输出有损 WebP(带透明时保留 alpha),质量档位由 options.JPEGQuality
+// 映射到 libwebp 的 -q:v。只处理静态图;动画 GIF 由调用方拦截。
+func encodeWebPWithFFmpeg(data []byte, width, height int, fit FitMode, options TransformOptions, ffmpegPath string) (*TransformResult, error) {
 	var scale string
 	switch fit {
 	case FitContain:
@@ -257,7 +285,7 @@ func TransformImageWithFFmpeg(data []byte, width, height int, fit FitMode, optio
 		if len(detail) > 512 {
 			detail = detail[:512] + "..."
 		}
-		return nil, fmt.Errorf("ffmpeg AVIF transform failed: %w: %s", err, detail)
+		return nil, fmt.Errorf("ffmpeg webp transform failed: %w: %s", err, detail)
 	}
 	if stdout.Len() == 0 {
 		return nil, fmt.Errorf("ffmpeg produced no transformed image")

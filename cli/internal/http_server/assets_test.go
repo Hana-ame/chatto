@@ -453,9 +453,12 @@ func TestAsset_TransformedAttachmentUsesCompressedProfileAndVersionedCache(t *te
 		t.Fatalf("Failed to read transformed attachment: %v", err)
 	}
 
-	wantResult, err := assets.TransformImageWithOptions(imageData, 960, 400, assets.FitContain, assets.TransformOptions{
+	// 【本地改动 2026-08-16】期望值必须与服务器走同一条衍生图路径
+	// (TransformImageWithFFmpeg,带 ffmpeg 时输出有损 WebP),否则本地有
+	// ffmpeg 时字节对不上(服务器 WebP vs 旧期望 JPEG)。
+	wantResult, err := assets.TransformImageWithFFmpeg(imageData, 960, 400, assets.FitContain, assets.TransformOptions{
 		JPEGQuality: AttachmentDerivativeJPEGQuality,
-	})
+	}, env.core.AssetsConfig().FFmpegPath)
 	if err != nil {
 		t.Fatalf("Failed to build expected transform: %v", err)
 	}
@@ -1209,7 +1212,12 @@ func TestAsset_ServerAssetTransformKeepsDefaultQuality(t *testing.T) {
 		t.Fatalf("Failed to read transformed server asset: %v", err)
 	}
 
-	wantResult, err := assets.TransformImage(imageData, 200, 200, assets.FitContain)
+	// 【本地改动 2026-08-16】期望值走服务器同一条衍生图路径(见
+	// TestAsset_TransformedAttachmentUsesCompressedProfileAndVersionedCache
+	// 的同类注释):有 ffmpeg 时服务器输出有损 WebP,期望必须一致。
+	wantResult, err := assets.TransformImageWithFFmpeg(imageData, 200, 200, assets.FitContain, assets.TransformOptions{
+		JPEGQuality: assets.DefaultTransformJPEGQuality,
+	}, env.core.AssetsConfig().FFmpegPath)
 	if err != nil {
 		t.Fatalf("Failed to build expected server transform: %v", err)
 	}

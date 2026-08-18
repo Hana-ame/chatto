@@ -47,8 +47,9 @@ helper, and validates platform signatures. Ordinary local and pull-request macOS
 builds use ad-hoc signing; ordinary Windows and Linux builds remain unsigned.
 Release builds use Developer ID signing and Apple notarisation on macOS and
 Microsoft Artifact Signing on Windows. CI verifies every shipped Windows
-executable and library against ChattoCorp's expected publisher identity and
-requires an RFC 3161 timestamp before creating the release archive.
+executable and library has a valid RFC 3161-timestamped signature, and verifies
+`chatto-desktop.exe` against ChattoCorp's expected publisher identity before
+creating the release archive.
 
 ### Configure macOS release signing
 
@@ -115,15 +116,38 @@ An Azure administrator must complete the one-time service setup:
    Trust** certificate profile for ChattoCorp GmbH. Record the account endpoint,
    account name, profile name, and the complete certificate subject shown by the
    issued profile.
-2. Create a Microsoft Entra application and service principal for the release
+2. In the GitHub repository's Actions OIDC settings, enable immutable OIDC
+   subject claims. Do this before creating the Azure federated credential:
+   repositories created before 15 July 2026 otherwise
+   continue to issue name-based subjects that Azure will reject when configured
+   with the immutable subject below. Repository administrators can configure and
+   verify the setting with the GitHub CLI:
+
+   ```sh
+   gh api --method PUT \
+     -H "X-GitHub-Api-Version: 2026-03-10" \
+     repos/chattocorp/chatto/actions/oidc/customization/sub \
+     -F use_default=true \
+     -F use_immutable_subject=true
+   gh api \
+     -H "X-GitHub-Api-Version: 2026-03-10" \
+     repos/chattocorp/chatto/actions/oidc/customization/sub
+   ```
+
+   The response must report `"use_default": true`,
+   `"use_immutable_subject": true`, and the prefix
+   `repo:chattocorp@261891647/chatto@1205013299`. The prefix shown by this API
+   intentionally omits the job context; an OIDC token requested by the signing
+   job appends `:environment:desktop-windows-signing`.
+3. Create a Microsoft Entra application and service principal for the release
    workflow. Add a **GitHub Actions deploying Azure resources** federated
    credential for organization `chattocorp` (`261891647`), repository `chatto`
    (`1205013299`), and environment `desktop-windows-signing`, with audience
    `api://AzureADTokenExchange`. Azure generates the immutable-ID subject
    `repo:chattocorp@261891647/chatto@1205013299:environment:desktop-windows-signing`.
-3. Grant that service principal only the **Artifact Signing Certificate Profile
+4. Grant that service principal only the **Artifact Signing Certificate Profile
    Signer** role, scoped to the Chatto Desktop signing account.
-4. Create a protected `desktop-windows-signing` Actions environment and add the
+5. Create a protected `desktop-windows-signing` Actions environment and add the
    following secrets and variables to it. Keep the macOS credentials in the
    existing `desktop-signing` environment so the two platforms cannot access
    one another's signing credentials.
@@ -145,10 +169,13 @@ Windows runner can request an Azure token.
 Enable prevention of self-review when another authorised reviewer is available;
 do not enable it for a single-reviewer environment, because that would make
 releases impossible. The release workflow fails before building when any
-setting is missing. After building, it signs every `.exe`, `.dll`, and native
-`.node` module recursively with SHA-256 and an RFC 3161 timestamp, then rejects
-missing, invalid, untimestamped, or unexpectedly published signatures before
-packaging the ZIP.
+setting is missing or when the repository is not using the documented default
+immutable OIDC subject. After building, it signs every `.exe`, `.dll`, and
+native `.node` module recursively with SHA-256 and an RFC 3161 timestamp, then
+rejects missing, invalid, or untimestamped signatures before packaging the ZIP.
+The main `chatto-desktop.exe` must also report the expected ChattoCorp publisher;
+bundled third-party libraries may retain their original valid publisher, such
+as Microsoft.
 
 Before the first tagged release, manually run the `release` workflow with the
 `desktop` target on `main`, approve the protected environment, and inspect the

@@ -69,6 +69,8 @@ func TestProjectionSnapshotContractsIncludeCurrentSchema(t *testing.T) {
 		{configSnapshotContractID, "v1", &corev1.ConfigProjectionSnapshot{}},
 		{contentKeySnapshotContractID, "v1", &corev1.ContentKeyProjectionSnapshot{}},
 		{mentionablesSnapshotContractID, "v2", &corev1.MentionablesProjectionSnapshot{}},
+		{notificationDecisionSnapshotContractID, "v1", &corev1.NotificationDecisionProjectionSnapshot{}},
+		{notificationSnapshotContractID, "v2", &corev1.NotificationProjectionSnapshot{}},
 		{rbacSnapshotContractID, "v1", &corev1.RBACProjectionSnapshot{}},
 		{reactionSnapshotContractID, "v1", &corev1.ReactionProjectionSnapshot{}},
 		{roomDirectorySnapshotContractID, "v1", &corev1.RoomDirectoryProjectionSnapshot{}},
@@ -190,16 +192,48 @@ func TestProjectionSnapshotsRoundTripTransactionally(t *testing.T) {
 			blocked := "admin"
 			timezone := "Europe/Berlin"
 			format := corev1.TimeFormat_TIME_FORMAT_24H
-			level := corev1.NotificationLevel_NOTIFICATION_LEVEL_NORMAL
 			p.server.serverName = "Chatto"
 			p.server.blockedUsernames = &blocked
-			p.users["U1"] = &userConfigState{timezone: &timezone, timeFormat: &format, serverLevel: &level, roomLevelByRoom: map[string]corev1.NotificationLevel{"R1": corev1.NotificationLevel_NOTIFICATION_LEVEL_ALL_MESSAGES}}
+			p.users["U1"] = &userConfigState{
+				timezone: &timezone, timeFormat: &format,
+				serverModes: &corev1.NotificationDeliveryModes{Reactions: corev1.NotificationDeliveryMode_NOTIFICATION_DELIVERY_MODE_ALERT.Enum()},
+				roomModesByRoom: map[string]*corev1.NotificationDeliveryModes{
+					"R1": {DirectMentions: corev1.NotificationDeliveryMode_NOTIFICATION_DELIVERY_MODE_SILENT.Enum()},
+				},
+			}
 		}},
 		{"room_group_layout", func() snapshotProjection { return NewRoomGroupLayoutProjection() }, func(raw snapshotProjection) {
 			p := raw.(*RoomGroupLayoutProjection)
 			p.Groups.groups["G1"] = &roomGroupEntry{name: "Lobby", roomIDs: []string{"R1"}, entries: []*corev1.SidebarGroupEntry{{Kind: corev1.SidebarGroupEntry_ROOM, Id: "R1"}}, links: map[string]*corev1.SidebarLink{"L1": {Id: "L1", Label: "Docs", Url: "https://example.test"}}}
 			p.Groups.seq = 42
 			p.Layout.groupIDs = []string{"G1"}
+		}},
+		{"notification_decisions", func() snapshotProjection { return NewNotificationDecisionProjection() }, func(raw snapshotProjection) {
+			p := raw.(*NotificationDecisionProjection)
+			event := &corev1.Event{Id: "R1-created", Event: &corev1.Event_RoomCreated{RoomCreated: &corev1.RoomCreatedEvent{RoomId: "R1", Kind: corev1.RoomKind_ROOM_KIND_CHANNEL, Universal: true}}}
+			if err := p.Apply(event, 41); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"notifications", func() snapshotProjection {
+			p := NewNotificationProjection()
+			p.now = func() time.Time { return now }
+			return p
+		}, func(raw snapshotProjection) {
+			p := raw.(*NotificationProjection)
+			expiresAt := now.Add(time.Hour)
+			occurrence := &corev1.NotificationOccurrence{
+				Id:                         "N1",
+				RecipientId:                "U1",
+				SourceEventId:              "E1",
+				SourceCreatedAt:            timestamppb.New(now),
+				Signal:                     testNotificationSignal(notificationTestSignalReply, "R1", "E1"),
+				ExpiresAt:                  timestamppb.New(expiresAt),
+				NotificationStreamSequence: 41,
+			}
+			p.byID[occurrence.GetId()] = occurrence
+			p.idsByUser[occurrence.GetRecipientId()] = map[string]struct{}{occurrence.GetId(): {}}
+			p.tombstones["N2"] = notificationProjectionTombstone{recipientID: "U1", expiresAt: expiresAt, signalSequence: 42}
 		}},
 		{"room_timeline", func() snapshotProjection { return NewRoomTimelineProjection() }, func(raw snapshotProjection) {
 			p := raw.(*RoomTimelineProjection)
@@ -234,7 +268,7 @@ func TestProjectionSnapshotsRoundTripTransactionally(t *testing.T) {
 		}},
 		{"reactions", func() snapshotProjection { return NewReactionProjection() }, func(raw snapshotProjection) {
 			p := raw.(*ReactionProjection)
-			p.byMessage["M1"] = map[string]map[string]int64{"+1": {"U1": now.UnixNano()}}
+			p.byMessage["M1"] = map[string]map[string]reactionProjectionEntry{"+1": {"U1": {AddedAtNanos: now.UnixNano(), SourceEventID: "E-reaction"}}}
 			p.roomSeq["R1"] = 41
 			p.messageRoom["M1"] = "R1"
 			p.echoOriginal["M2"] = "M1"
@@ -270,6 +304,7 @@ func TestProjectionSnapshotsRoundTripTransactionally(t *testing.T) {
 
 	expectedContractPrefix := map[string]string{
 		"room_directory": "v1-", "server_config": "v1-", "room_group_layout": "v1-",
+		"notification_decisions": "v1-", "notifications": "v2-",
 		"room_timeline": "v6-", "call_state": "v1-", "assets": "v3-", "reactions": "v1-",
 		"content_keys": "v1-", "rbac": "v1-", "mentionables": "v2-", "users": "v3-",
 	}

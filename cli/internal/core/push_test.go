@@ -372,6 +372,19 @@ func TestGetUserPushSubscriptions(t *testing.T) {
 	})
 }
 
+func TestGetUserPushSubscriptionsPropagatesCorruptRecord(t *testing.T) {
+	core, _ := setupTestCore(t)
+	ctx := testContext(t)
+	userID := "U-corrupt-push-record"
+	key := pushSubscriptionKey(userID, "https://push.example.test/corrupt")
+	if _, err := core.storage.runtimeStateKV.Create(ctx, key, []byte("not protobuf")); err != nil {
+		t.Fatalf("create corrupt push record: %v", err)
+	}
+	if _, err := core.GetUserPushSubscriptions(ctx, userID); err == nil {
+		t.Fatal("GetUserPushSubscriptions accepted a corrupt record")
+	}
+}
+
 func TestPushSubscriptionEndpointOwnershipTransfer(t *testing.T) {
 	core, _ := setupTestCore(t)
 	ctx := context.Background()
@@ -698,6 +711,79 @@ func TestDeleteAllUserPushSubscriptions(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestDeleteAllUserPushSubscriptionsRetainsRecoverableRecordWhenOwnerReleaseFails(t *testing.T) {
+	core, _ := setupTestCore(t)
+	ctx := context.Background()
+	userID := "push-user-owner-retry"
+	endpoint := "https://push.example.com/owner-retry"
+
+	if _, err := core.SavePushSubscription(ctx, userID, endpoint, "key", "auth", "browser"); err != nil {
+		t.Fatalf("SavePushSubscription: %v", err)
+	}
+	ownerKey := pushEndpointOwnerKey(endpoint)
+	if _, err := core.storage.runtimeStateKV.Put(ctx, ownerKey, []byte("{")); err != nil {
+		t.Fatalf("corrupt endpoint owner: %v", err)
+	}
+
+	deleted, err := core.DeleteAllUserPushSubscriptions(ctx, userID)
+	if err == nil {
+		t.Fatal("DeleteAllUserPushSubscriptions unexpectedly succeeded with an undecodable endpoint owner")
+	}
+	if deleted != 0 {
+		t.Fatalf("deleted = %d, want 0 while endpoint ownership cannot be released", deleted)
+	}
+	if _, err := core.storage.runtimeStateKV.Get(ctx, pushSubscriptionKey(userID, endpoint)); err != nil {
+		t.Fatalf("subscription was not retained for retry: %v", err)
+	}
+	if _, err := core.storage.runtimeStateKV.Get(ctx, ownerKey); err != nil {
+		t.Fatalf("undecodable endpoint owner was unexpectedly removed: %v", err)
+	}
+	if err := core.pushSubscriptionCleanup.reconcileDeletedAccountPushState(ctx); err != nil {
+		t.Fatalf("reconcile malformed owner: %v", err)
+	}
+	if _, err := core.storage.runtimeStateKV.Get(ctx, ownerKey); !isPushRuntimeStateKeyAbsent(err) {
+		t.Fatalf("undecodable endpoint owner was not repaired: %v", err)
+	}
+
+	deleted, err = core.DeleteAllUserPushSubscriptions(ctx, userID)
+	if err != nil {
+		t.Fatalf("DeleteAllUserPushSubscriptions retry: %v", err)
+	}
+	if deleted != 1 {
+		t.Fatalf("retry deleted = %d, want 1", deleted)
+	}
+	if _, err := core.storage.runtimeStateKV.Get(ctx, pushSubscriptionKey(userID, endpoint)); !isPushRuntimeStateKeyAbsent(err) {
+		t.Fatalf("subscription remains after retry: %v", err)
+	}
+	if _, err := core.storage.runtimeStateKV.Get(ctx, ownerKey); !isPushRuntimeStateKeyAbsent(err) {
+		t.Fatalf("endpoint owner remains after retry: %v", err)
+	}
+}
+
+func TestPushSubscriptionCleanupRepairsLegacyOrphanOwner(t *testing.T) {
+	core, _ := setupTestCore(t)
+	ctx := context.Background()
+	userID := "push-user-orphan-owner"
+	endpoint := "https://push.example.com/orphan-owner"
+
+	if _, err := core.SavePushSubscription(ctx, userID, endpoint, "key", "auth", "browser"); err != nil {
+		t.Fatalf("SavePushSubscription: %v", err)
+	}
+	if err := core.storage.runtimeStateKV.Delete(ctx, pushSubscriptionKey(userID, endpoint)); err != nil {
+		t.Fatalf("create legacy orphan owner fixture: %v", err)
+	}
+	if owned, err := core.PushSubscriptionOwnedByUser(ctx, userID, endpoint); err != nil || !owned {
+		t.Fatalf("legacy owner fixture owned = %v, err = %v", owned, err)
+	}
+
+	if err := core.pushSubscriptionCleanup.reconcileDeletedAccountPushState(ctx); err != nil {
+		t.Fatalf("reconcile orphan owner: %v", err)
+	}
+	if owned, err := core.PushSubscriptionOwnedByUser(ctx, userID, endpoint); err != nil || owned {
+		t.Fatalf("orphan owner after repair = %v, err = %v", owned, err)
+	}
 }
 
 func TestPushSubscriptionIsolation(t *testing.T) {

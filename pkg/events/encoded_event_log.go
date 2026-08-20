@@ -29,11 +29,19 @@ var ErrInvalidEncodedRecord = errors.New("invalid encoded event record")
 // accidental publish-without-OCC path through the event log.
 var ErrMissingOCC = errors.New("missing optimistic concurrency guard")
 
+// ErrDuplicateBatchMessageID reports that JetStream rejected an atomic batch
+// because at least one record ID is still inside the stream's de-duplication
+// window. Callers can safely fall back to idempotent single-record publishes.
+var ErrDuplicateBatchMessageID = errors.New("atomic batch contains duplicate message id")
+
 // ErrInvalidBatchOCC is returned when an atomic batch places a stream-tail
 // guard where JetStream cannot evaluate it. Stream-tail OCC belongs on the
 // first batch entry because it fences the committed stream state that precedes
 // the complete batch.
 var ErrInvalidBatchOCC = errors.New("invalid optimistic concurrency guard placement")
+
+// NATS does not currently expose the atomic-batch duplicate-ID server code.
+const jetStreamDuplicateBatchMessageIDErrorCode = 10201
 
 // ErrInvalidSubjectReadLimit marks a page request that cannot provide a
 // bounded result.
@@ -63,6 +71,10 @@ func (p StreamPosition) IsZero() bool {
 type EncodedRecord struct {
 	ID   string
 	Data []byte
+	// TTL requests broker-side physical expiry for this record. Zero uses the
+	// stream's retention policy. Applications remain responsible for their own
+	// semantic expiry boundary.
+	TTL time.Duration
 }
 
 // EncodedSubjectRecord preserves a durable subject alongside its opaque
@@ -139,7 +151,8 @@ func (l *EncodedEventLog) Append(ctx context.Context, subject string, record Enc
 	if err != nil {
 		return 0, err
 	}
-	return l.publishAt(ctx, subject, record, expectedSeq, "")
+	sequence, _, err := l.publishAt(ctx, subject, record, expectedSeq, "")
+	return sequence, err
 }
 
 // AppendEventually retries OCC conflicts with the exact same opaque record.
@@ -155,7 +168,7 @@ func (l *EncodedEventLog) AppendEventually(ctx context.Context, subject string, 
 		if err != nil {
 			return 0, err
 		}
-		seq, err := l.publishAt(ctx, subject, record, expectedSeq, "")
+		seq, _, err := l.publishAt(ctx, subject, record, expectedSeq, "")
 		if err == nil {
 			return seq, nil
 		}
@@ -194,7 +207,8 @@ func (l *EncodedEventLog) AppendAt(
 	if err := validateEncodedRecord(record); err != nil {
 		return 0, err
 	}
-	return l.publishAt(ctx, subject, record, expectedSeq, "")
+	sequence, _, err := l.publishAt(ctx, subject, record, expectedSeq, "")
+	return sequence, err
 }
 
 // AppendAtFilter publishes a record to subject with OCC against the current
@@ -209,7 +223,8 @@ func (l *EncodedEventLog) AppendAtFilter(
 	if err := validateEncodedRecord(record); err != nil {
 		return 0, err
 	}
-	return l.publishAt(ctx, subject, record, expectedFilterSeq, filter)
+	sequence, _, err := l.publishAt(ctx, subject, record, expectedFilterSeq, filter)
+	return sequence, err
 }
 
 func (l *EncodedEventLog) publishAt(
@@ -218,16 +233,20 @@ func (l *EncodedEventLog) publishAt(
 	record EncodedRecord,
 	expectedSeq uint64,
 	filter string,
-) (uint64, error) {
+) (uint64, bool, error) {
 	var opt jetstream.PublishOpt
 	if filter == "" {
 		opt = jetstream.WithExpectLastSequencePerSubject(expectedSeq)
 	} else {
 		opt = jetstream.WithExpectLastSequenceForSubject(expectedSeq, filter)
 	}
-	ack, err := l.js.Publish(ctx, subject, record.Data, opt, jetstream.WithMsgID(record.ID))
+	publishOpts := []jetstream.PublishOpt{opt, jetstream.WithMsgID(record.ID)}
+	if record.TTL > 0 {
+		publishOpts = append(publishOpts, jetstream.WithMsgTTL(record.TTL))
+	}
+	ack, err := l.js.Publish(ctx, subject, record.Data, publishOpts...)
 	if err == nil {
-		return ack.Sequence, nil
+		return ack.Sequence, ack.Duplicate, nil
 	}
 
 	target := subject
@@ -235,9 +254,9 @@ func (l *EncodedEventLog) publishAt(
 		target = "filter " + filter
 	}
 	if conflictErr := sequenceConflictError(err, target, expectedSeq); conflictErr != nil {
-		return 0, conflictErr
+		return 0, false, conflictErr
 	}
-	return 0, fmt.Errorf("publish: %w", err)
+	return 0, false, fmt.Errorf("publish: %w", err)
 }
 
 func (l *EncodedEventLog) publishAtStreamTail(
@@ -245,24 +264,25 @@ func (l *EncodedEventLog) publishAtStreamTail(
 	subject string,
 	record EncodedRecord,
 	expectedStreamSeq uint64,
-) (uint64, error) {
+) (uint64, bool, error) {
 	if err := validateEncodedRecord(record); err != nil {
-		return 0, err
+		return 0, false, err
 	}
-	ack, err := l.js.Publish(
-		ctx,
-		subject,
-		record.Data,
+	publishOpts := []jetstream.PublishOpt{
 		jetstream.WithExpectLastSequence(expectedStreamSeq),
 		jetstream.WithMsgID(record.ID),
-	)
+	}
+	if record.TTL > 0 {
+		publishOpts = append(publishOpts, jetstream.WithMsgTTL(record.TTL))
+	}
+	ack, err := l.js.Publish(ctx, subject, record.Data, publishOpts...)
 	if err == nil {
-		return ack.Sequence, nil
+		return ack.Sequence, ack.Duplicate, nil
 	}
 	if conflictErr := sequenceConflictError(err, "stream", expectedStreamSeq); conflictErr != nil {
-		return 0, conflictErr
+		return 0, false, conflictErr
 	}
-	return 0, fmt.Errorf("publish: %w", err)
+	return 0, false, fmt.Errorf("publish: %w", err)
 }
 
 // AppendBatch atomically publishes encoded records. Either all records land
@@ -392,6 +412,9 @@ func decodeBatchAckWithExpectation(resp *nats.Msg, conflict conflictExpectation)
 			ErrorCode:   jetstream.ErrorCode(env.Error.ErrCode),
 			Description: env.Error.Description,
 		}
+		if apiErr.ErrorCode == jetStreamDuplicateBatchMessageIDErrorCode {
+			return 0, fmt.Errorf("%w: %s", ErrDuplicateBatchMessageID, env.Error.Description)
+		}
 		if isSequenceConflict(apiErr) {
 			if conflict.exact {
 				return 0, fmt.Errorf("%s at expected seq %d: %w", conflict.target, conflict.expectedSeq, ErrConflict)
@@ -425,6 +448,9 @@ func buildEncodedBatchMsg(
 		hdr.Set(jetstream.ExpectedLastSeqHeader, strconv.FormatUint(entry.ExpectedStreamSeq, 10))
 	}
 	hdr.Set(jetstream.MsgIDHeader, entry.Record.ID)
+	if entry.Record.TTL > 0 {
+		hdr.Set("Nats-TTL", entry.Record.TTL.String())
+	}
 	return &nats.Msg{Subject: entry.Subject, Header: hdr, Data: entry.Record.Data}
 }
 
@@ -598,6 +624,9 @@ func (l *EncodedEventLog) lastSubjectSeq(ctx context.Context, subject string) (u
 func validateEncodedRecord(record EncodedRecord) error {
 	if record.ID == "" {
 		return fmt.Errorf("%w: record id is empty", ErrInvalidEncodedRecord)
+	}
+	if record.TTL < 0 {
+		return fmt.Errorf("%w: record ttl is negative", ErrInvalidEncodedRecord)
 	}
 	return nil
 }

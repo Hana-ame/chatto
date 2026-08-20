@@ -50,7 +50,7 @@ socket.
 | ------- | --------------- | ----------- |
 | `chatto.auth.v1` | `ExternalIdentityAuthService` | Public capability-token flows |
 | `chatto.discovery.v1` | `ServerDiscoveryService` | Public discovery |
-| `chatto.api.v1` | `AssetService`, `AssetUploadService`, `MessageSearchService`, `MessageService`, `MyAccountService`, `NotificationPreferencesService`, `NotificationService`, `PushNotificationService`, `RoleService`, `RoomDirectoryService`, `RoomService`, `ServerService`, `ThreadService`, `UserService`, `ViewerService`, `VoiceCallService` | Authenticated user |
+| `chatto.api.v1` | `AssetService`, `AssetUploadService`, `MessageSearchService`, `MessageService`, `MyAccountService`, `NotificationService`, `PushNotificationService`, `RoleService`, `RoomDirectoryService`, `RoomService`, `ServerService`, `ThreadService`, `UserService`, `ViewerService`, `VoiceCallService` | Authenticated user |
 | `chatto.admin.v1` | `AdminDiagnosticsService`, `AdminEventLogService`, `AdminInviteLinkService`, `AdminOAuthClientService`, `AdminPermissionService`, `AdminRoleService`, `AdminRoomLayoutService`, `AdminServerService`, `AdminUserService` | Authenticated user; methods enforce administrative permissions |
 
 `AdminInviteLinkService` requires `user.invite`. Its resource includes the
@@ -58,13 +58,6 @@ full, deterministically reconstructed invite link so authorised operators can
 copy it again; raw bearer tokens are not stored in `EVT`. Opening
 `/invite/{token}` validates the compact capability, stores only the invitation
 ID in the signed browser session, and immediately redirects to registration.
-
-`AdminOAuthClientService` requires `server.manage`. It lists only clients that
-have completed a successful user-approved authorization, exposes aggregate
-usage counts rather than user identities, and changes default/trusted/blocked
-policy. Trusted never skips consent; blocked clients are rejected throughout
-authorization and token validation, and matching established realtime
-connections are terminated on every replica.
 
 `AdminDiagnosticsService.GetSystemInfo` is owner-only and includes
 broker-derived status for Chatto's known durable worker queues. The additive
@@ -110,11 +103,9 @@ provider replay counts stay on the trusted NATS contract and in operator logs;
 the authenticated public status does not expose server-wide event-log scale.
 
 `ServerDiscoveryService.GetServer` is the only Connect method for which the
-bundled client enables side-effect-free GET. It receives conditional-response
-caching. Other bundled-client Connect traffic uses POST. Browser HTTP and
-realtime transport is available from every syntactically valid origin without
-credentialed CORS; cross-origin authentication is bearer-only, while cookie
-fallback is restricted to the configured server origin.
+bundled client enables side-effect-free GET. It also receives wildcard public
+CORS and conditional-response caching. Other bundled-client Connect traffic
+uses POST.
 
 The discovery response includes the server software version as public
 pre-authentication state, along with configured provider metadata and the

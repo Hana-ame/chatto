@@ -106,7 +106,7 @@ func initializeCoreServices(
 	core.roomDirectoryReads = &RoomDirectoryReadModel{core: core}
 	core.messageModel = &MessageModel{core: core}
 	core.messageSearchReads = &MessageSearchReadModel{core: core}
-	core.notificationPrefs = &NotificationPreferencesModel{core: core}
+	core.notificationPolicy = &NotificationPolicyModel{core: core}
 	core.roomTimelineReads = &RoomTimelineReadModel{
 		core:  core,
 		rooms: core.roomModel,
@@ -114,6 +114,38 @@ func initializeCoreServices(
 	core.readStateModel = &ReadStateModel{
 		core:  core,
 		index: NewReadStateIndex(infra.storage.runtimeStateKV, logger.WithPrefix("core.ReadStateIndex")),
+	}
+	core.notificationBoundaries = newNotificationBoundaryIndex(
+		infra.storage.runtimeStateKV,
+		logger.WithPrefix("core.NotificationBoundaryIndex"),
+	)
+	core.notificationOccurrences = NewNotificationOccurrenceModel(
+		core,
+		projections.notifications,
+		infra.notificationPublisher,
+		infra.storage.notificationStream,
+		infra.storage.runtimeStateKV,
+		logger.WithPrefix("core.NotificationOccurrences"),
+	)
+	core.notificationMaterializer = NewNotificationMaterializer(core, projections.notificationDecisions)
+	core.notificationAlertDelivery = newNotificationAlertDelivery(core)
+	pushCleanupLease, err := lease.New(infra.js, infra.storage.memoryCacheKV, lease.Options{
+		Name:   pushSubscriptionReconcileLeaseName,
+		Bucket: "MEMORY_CACHE",
+		TTL:    pushSubscriptionReconcileLeaseTTL,
+		Logger: logger.WithPrefix("core.PushSubscriptionCleanupLease"),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to initialize push-subscription cleanup lease: %w", err)
+	}
+	core.pushSubscriptionCleanup, err = newPushSubscriptionCleanupModel(
+		ctx,
+		core,
+		pushCleanupLease,
+		logger.WithPrefix("core.PushSubscriptionCleanup"),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to initialize push-subscription cleanup: %w", err)
 	}
 	core.threadFollows = &ThreadFollowModel{core: core}
 	core.reactionModel = &ReactionModel{core: core, mutations: core.EventPublisher}
@@ -124,6 +156,12 @@ func initializeCoreServices(
 
 	if err := core.seedDefaultRBAC(ctx); err != nil {
 		return fmt.Errorf("failed to seed default RBAC: %w", err)
+	}
+	if err := core.notificationMaterializer.Initialize(ctx); err != nil {
+		return fmt.Errorf("failed to initialize notification materializer: %w", err)
+	}
+	if err := core.notificationAlertDelivery.initialize(ctx); err != nil {
+		return fmt.Errorf("failed to initialize notification alert delivery: %w", err)
 	}
 
 	core.permissionResolver = NewPermissionResolver(core)

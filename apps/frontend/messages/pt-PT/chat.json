@@ -9,7 +9,19 @@
       "time_now": "Neste momento",
       "time_minutes": "{count}m atrás",
       "time_hours": "{count}h atrás",
-      "time_days": "{count}d atrás"
+      "time_days": "{count}d atrás",
+      "unread": "Não lido",
+      "activity": "Nova atividade",
+      "summary": {
+        "direct_message": "{actor} enviou-lhe uma mensagem direta.",
+        "reaction": "{actor} reagiu com “{emoji}” à sua mensagem em {channel}.",
+        "reaction_group": "{actor} e outras pessoas reagiram com “{emoji}” à sua mensagem em {channel}.",
+        "reply": "{actor} respondeu à sua mensagem.",
+        "mention": "{actor} mencionou-o.",
+        "followed_thread": "{actor} respondeu num tópico que segue.",
+        "new_message": "{actor} publicou uma nova mensagem.",
+        "activity": "{actor} enviou-lhe uma notificação."
+      }
     },
     "sign_out": {
       "title": "Sair",

@@ -2,6 +2,9 @@
 
 Key files: [`cli/internal/core/storage.go`](../../cli/internal/core/storage.go),
 [`cli/internal/core/read_state_index.go`](../../cli/internal/core/read_state_index.go),
+[`cli/internal/core/notification_boundary_index.go`](../../cli/internal/core/notification_boundary_index.go),
+[`cli/internal/core/notification_materializer.go`](../../cli/internal/core/notification_materializer.go),
+[`cli/internal/core/notification_occurrence_model.go`](../../cli/internal/core/notification_occurrence_model.go),
 [`cli/internal/core/runtime_token_keys.go`](../../cli/internal/core/runtime_token_keys.go),
 [`cli/internal/core/external_identities.go`](../../cli/internal/core/external_identities.go),
 [`cli/internal/core/asset_uploads.go`](../../cli/internal/core/asset_uploads.go), and
@@ -13,8 +16,8 @@ Related decision: [ADR-036](../adr/ADR-036-runtime-state-kv-boundary.md).
 
 | Bucket                        | Storage | Backup   | Description                                     |
 | ----------------------------- | ------- | -------- | ----------------------------------------------- |
-| `RUNTIME_STATE`               | File    | Yes      | Persisted latest-value runtime/user state, including pending notifications, push subscriptions, auth/workflow tokens, wrapped app DEK records, and encrypted snapshot pointers |
-| `MEMORY_CACHE`                | Memory  | No       | Volatile cache state: presence, worker leases and cooldowns, and reconciliation counters |
+| `RUNTIME_STATE`               | File    | Yes      | Persisted latest-value runtime/user state, including notification visibility boundaries, push subscriptions, auth/workflow tokens, wrapped app DEK records, and encrypted snapshot pointers |
+| `MEMORY_CACHE`                | Memory  | No       | Volatile cache state: presence, worker leases and cooldowns, reconciliation counters, and worker health heartbeats |
 | `ENCRYPTION_KEYS`             | File    | **No**   | KMS KEKs and LiveKit per-call E2EE keys (excluded for security); app-owned wrapped DEKs live in `RUNTIME_STATE` |
 
 **ENCRYPTION_KEYS keys:**
@@ -58,7 +61,8 @@ survives restart but is not content/domain history. See
 | -------------------------------------- | ----------------------------------------------------------------- |
 | `read.room.{userId}.{roomId}`          | Last-read root message event ID (UTF-8 string, ~14 bytes). Empty value = "joined but no specific event read yet" (e.g. joined an empty room). Missing key triggers a one-time lazy init to the room's current last event. Membership and DM initialization create the key only when absent. |
 | `read.thread.{userId}.{roomId}.{threadRootEventId}` | Latest thread message event ID the user has seen. |
-| `notification.{userId}.{notificationId}` | Pending notification record (protobuf `Notification`) for DM messages, @mentions, replies, and all-message subscriptions. Uses per-key 90-day TTL. Internal `NotificationCreatedEvent` / `NotificationDismissedEvent` signals on `live.sync.user.{userId}.*` trigger authoritative notification projection replacements; DND keeps the record but marks the live creation transition silent and skips push delivery. |
+| `notification_read_boundary.{userId}.{roomId}[.{threadRootEventId}]` | Two big-endian EVT stream sequences: the latest room/thread timeline target read and the reaction projection horizon observed by that read action. One process-wide filtered watcher indexes these keys and local writes wait for their exact revision. Every replica performs one startup repair, then reconciles only unread occurrences in the room/thread scope whose boundary changed, completing an interrupted KV-to-`NOTIFICATIONS` handshake idempotently without a periodic global scan. The two coordinates keep reactions that arrive after a read new until the next read. The key expires 90 days after its latest update and account deletion removes it. |
+| `notification_visibility_boundary.{userId}.{roomId}` | Big-endian EVT stream sequence of the latest explicit or derived room visibility loss relevant to notification materialization. The same notification-boundary watcher makes fanout eligibility an indexed lookup. Leave/removal request paths record the boundary immediately after commit; the ordered worker records it for those facts and for universal-room, room-group placement, ban, or `room.join` RBAC/role changes that remove effective membership. Delayed source facts at or before the boundary cannot reappear after a rejoin. The key expires after 90 days, matching the maximum lifetime of source facts it can suppress, and account deletion removes it. |
 | `push_subscription.{userId}.{endpointHash}` | Web Push subscription record (protobuf `PushSubscription`) for a user's browser/device. The endpoint hash keeps multiple devices per user while deduplicating the same browser subscription. A record is deliverable only while its revision matches the endpoint's active owner claim. |
 | `push_endpoint_owner.{sha256(endpoint)}` | JSON Web Push endpoint owner claim containing the active user ID and exact `push_subscription` KV revision. Saves transfer the claim with KV OCC; revision-matched deletes prevent stale logout, expiry cleanup, and subscription rotation races from releasing a newer claim. Legacy subscription records without a claim remain inert until the browser re-registers. |
 | `push_test_notification_throttle.{userId}` | One-byte per-account admission marker owned by [`core/push.go`](../../cli/internal/core/push.go). Atomic creation with a 10-second per-key TTL rate-limits test push attempts across replicas; the marker contains no endpoint or delivery result. |
@@ -98,7 +102,7 @@ Token HMAC keys are derived with `[core].secret_key` and the token family as a d
 | Key                                        | Description                                      |
 | ------------------------------------------ | ------------------------------------------------ |
 | `presence.{userId}`                        | Serialized `UserPresence` proto for the user's live status and manual-selection flag; per-key 60s TTL |
-| `lease.{name}`                             | Ephemeral coordination record. Current names are `livekit_reconciler`, `projection-snapshot-threads`, and `projection-snapshot-expiry`. The expiry record is retained as a 24-hour cooldown after successful S3 cleanup; the others identify active worker ownership. |
+| `lease.{name}`                             | Ephemeral coordination record. Current names are `livekit_reconciler`, `projection-snapshot-threads`, `projection-snapshot-expiry`, and `push-subscription-deletion-reconcile`. Snapshot expiry retains a 24-hour cooldown after successful S3 cleanup; push cleanup uses a one-minute cooldown for its bounded late-write pass; the others identify active worker ownership. |
 | `livekit.reconciliation.list_failures`      | Shared consecutive LiveKit listing failure counter reset by any successful elected reconciliation pass |
 
 `MEMORY_CACHE` uses memory storage and is neither persisted nor backed up. The

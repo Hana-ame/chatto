@@ -9,7 +9,19 @@
       "time_now": "Právě teď",
       "time_minutes": "před {count}m",
       "time_hours": "před {count}h",
-      "time_days": "Před {count}d"
+      "time_days": "Před {count}d",
+      "unread": "Nepřečtené",
+      "activity": "Nová aktivita",
+      "summary": {
+        "direct_message": "Od uživatele {actor} máte novou přímou zprávu.",
+        "reaction": "Uživatel {actor} reagoval pomocí „{emoji}“ na vaši zprávu v kanálu {channel}.",
+        "reaction_group": "Uživatel {actor} a další reagovali pomocí „{emoji}“ na vaši zprávu v kanálu {channel}.",
+        "reply": "Uživatel {actor} odpověděl na vaši zprávu.",
+        "mention": "Uživatel {actor} vás zmínil.",
+        "followed_thread": "Uživatel {actor} odpověděl ve vlákně, které sledujete.",
+        "new_message": "Uživatel {actor} zveřejnil novou zprávu.",
+        "activity": "Uživatel {actor} vám poslal oznámení."
+      }
     },
     "sign_out": {
       "title": "Odhlásit se",

@@ -9,7 +9,19 @@
       "time_now": "Ĝuste nun",
       "time_minutes": "{count}m antaŭ",
       "time_hours": "{count}h antaŭ",
-      "time_days": "{count}d antaŭ"
+      "time_days": "{count}d antaŭ",
+      "unread": "Nelegite",
+      "activity": "Nova aktiveco",
+      "summary": {
+        "direct_message": "{actor} sendis al vi rektan mesaĝon.",
+        "reaction": "{actor} reagis per «{emoji}» al via mesaĝo en {channel}.",
+        "reaction_group": "{actor} kaj aliaj reagis per «{emoji}» al via mesaĝo en {channel}.",
+        "reply": "{actor} respondis al via mesaĝo.",
+        "mention": "{actor} menciis vin.",
+        "followed_thread": "{actor} respondis en fadeno, kiun vi sekvas.",
+        "new_message": "{actor} afiŝis novan mesaĝon.",
+        "activity": "{actor} sendis al vi sciigon."
+      }
     },
     "sign_out": {
       "title": "Eliru",

@@ -155,7 +155,7 @@
   async function handleServerNotificationClick() {
     const notification =
       notificationStore.getNonDMNotification() ?? notificationStore.getDMNotification();
-    if (!notification) {
+    if (!notification || !notification.targetSupported) {
       await goto(resolve('/chat/notifications'));
       return;
     }
@@ -163,12 +163,16 @@
     const target = notificationTarget(notification);
     prepareUiForNotificationTarget(appUi, serverId, target);
     if (target.eventId && target.roomId) {
-      stores.pendingHighlights.set(target.roomId, target.threadRootId, target.eventId);
+      stores.pendingHighlights.set(
+        target.roomId,
+        target.threadRootId,
+        target.eventId,
+        notification.id
+      );
     }
-    void notificationStore.dismiss(notification.id);
 
     const path = notificationStore.getCleanPath(serverId, notification);
-    // eslint-disable-next-line svelte/no-navigation-without-resolve -- path from getCleanPath() is already resolved
+    // eslint-disable-next-line svelte/no-navigation-without-resolve -- getCleanPath() returns a resolved app path
     await goto(path);
   }
 
@@ -197,6 +201,7 @@
   selected={isActiveServer}
   indicator={stores.serverIndicator()}
   notificationCount={notificationStore.unreadNotificationCount}
+  importantNotificationCount={notificationStore.importantUnreadNotificationCount}
   onclick={handleServerClick}
   onIndicatorClick={handleServerIndicatorClick}
   contextMenuTrigger={serverContextMenuTrigger}
@@ -232,7 +237,8 @@
       {/if}
       <div class="mt-1 flex items-center gap-1.5 text-muted">
         {#if serverUnavailable}
-          <span class="iconify icon-[uil--wifi-slash] shrink-0 text-warning" aria-hidden="true"></span>
+          <span class="iconify icon-[uil--wifi-slash] shrink-0 text-warning" aria-hidden="true"
+          ></span>
           <span class="text-warning">{m('chat.server_gutter.unreachable')}</span>
         {:else}
           <span>

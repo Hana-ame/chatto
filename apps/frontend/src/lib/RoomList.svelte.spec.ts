@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
 import { q } from '$lib/test-utils';
 
-import { NotificationItemKind } from '$lib/api-client/notifications';
+import { NotificationSignalKind } from '$lib/api-client/notifications';
 import type { RoomsListGroup } from '$lib/state/server/rooms.svelte';
 
 const { mocks } = vi.hoisted(() => ({
@@ -35,11 +35,8 @@ const { mocks } = vi.hoisted(() => ({
           totalCount: 0,
           notification: null
         }),
-        dismiss: vi.fn(),
+        markRead: vi.fn(),
         getCleanPath: vi.fn().mockReturnValue('/chat/-/room')
-      },
-      notificationLevels: {
-        isRoomMuted: vi.fn().mockReturnValue(false)
       },
       roomUnread: {
         roomIsUnread: vi.fn((roomId: string) => mocks.unreadRoomIds.has(roomId)),
@@ -147,26 +144,17 @@ vi.mock('$lib/navigation/readActions', () => ({
 import RoomList from './RoomList.svelte';
 
 function notification(id: string, roomId: string, isDM = false) {
-  if (isDM) {
-    return {
-      kind: NotificationItemKind.DirectMessage,
-      id,
-      createdAt: '2026-06-18T10:00:00Z',
-      actor: null,
-      summary: 'new direct message',
-      room: { id: roomId }
-    };
-  }
-
   return {
-    kind: NotificationItemKind.Mention,
     id,
     createdAt: '2026-06-18T10:00:00Z',
     actor: null,
-    summary: 'mentioned you',
-    mentionRoom: { id: roomId, name: 'general' },
-    mentionEventId: 'event-1',
-    mentionInThread: 'thread-1'
+    signalKind: isDM
+      ? NotificationSignalKind.DIRECT_MESSAGE
+      : NotificationSignalKind.DIRECT_MENTION,
+    targetSupported: true,
+    room: { id: roomId, name: 'general' },
+    eventId: 'event-1',
+    threadRootId: isDM ? null : 'thread-1'
   };
 }
 
@@ -191,6 +179,7 @@ function setRooms() {
       viewerCanJoinRoom: true,
       viewerCanManageRoom: true,
       viewerNotificationCount: 0,
+      viewerImportantNotificationCount: 0,
       members: []
     },
     {
@@ -202,6 +191,7 @@ function setRooms() {
       viewerCanJoinRoom: true,
       viewerCanManageRoom: false,
       viewerNotificationCount: 0,
+      viewerImportantNotificationCount: 0,
       members: []
     },
     {
@@ -213,6 +203,7 @@ function setRooms() {
       viewerCanJoinRoom: false,
       viewerCanManageRoom: false,
       viewerNotificationCount: 0,
+      viewerImportantNotificationCount: 0,
       members: []
     },
     {
@@ -224,6 +215,7 @@ function setRooms() {
       viewerCanJoinRoom: true,
       viewerCanManageRoom: false,
       viewerNotificationCount: 0,
+      viewerImportantNotificationCount: 0,
       members: [user('me', 'me', 'Me'), user('teal', 'teal', 'Teal')]
     },
     {
@@ -235,19 +227,22 @@ function setRooms() {
       viewerCanJoinRoom: true,
       viewerCanManageRoom: false,
       viewerNotificationCount: 0,
+      viewerImportantNotificationCount: 0,
       members: [user('me', 'me', 'Me'), user('river', 'river', 'River')]
     }
   ] as never;
 }
 
-function setRoomNotificationCount(roomId: string, count: number) {
+function setRoomNotificationCount(roomId: string, count: number, importantCount = count) {
   const rooms = mocks.store.navigation.rooms as Array<{
     id: string;
     viewerNotificationCount: number;
+    viewerImportantNotificationCount: number;
   }>;
   const room = rooms.find((item) => item.id === roomId);
   if (!room) throw new Error(`Missing mocked room ${roomId}`);
   room.viewerNotificationCount = count;
+  room.viewerImportantNotificationCount = importantCount;
 }
 
 function setRoomUnread(roomId: string, hasUnread: boolean) {
@@ -1004,7 +999,7 @@ describe('RoomList', () => {
       notification: roomNotification
     });
     mocks.store.notifications.getCleanPath.mockReturnValue('/chat/-/channel-1/thread-1');
-    mocks.store.notifications.dismiss.mockResolvedValue(true);
+    mocks.store.notifications.markRead.mockResolvedValue(true);
 
     const { container } = render(RoomList);
 
@@ -1019,19 +1014,30 @@ describe('RoomList', () => {
       expect(mocks.store.pendingHighlights.set).toHaveBeenCalledWith(
         'channel-1',
         'thread-1',
-        'event-1'
+        'event-1',
+        'mention-1'
       );
       expect(mocks.appUi.disableRoomCallWideFor).toHaveBeenCalledWith('origin', 'channel-1');
       expect(mocks.appUi.disableRoomCallWideFor.mock.invocationCallOrder[0]).toBeLessThan(
         mocks.goto.mock.invocationCallOrder[0]
       );
-      expect(mocks.store.notifications.dismiss).toHaveBeenCalledWith('mention-1');
+      expect(mocks.store.notifications.markRead).not.toHaveBeenCalled();
       expect(mocks.store.notifications.getCleanPath).toHaveBeenCalledWith(
         'origin',
         roomNotification
       );
       expect(mocks.goto).toHaveBeenCalledWith('/chat/-/channel-1/thread-1');
     });
+  });
+
+  it('uses a neutral room badge when only ambient notifications are unread', async () => {
+    setRoomNotificationCount('channel-1', 2, 0);
+
+    const { container } = render(RoomList);
+
+    const badge = q(container, '[data-testid="room-notification-badge"]');
+    await expect.element(badge).toHaveClass('bg-text');
+    await expect.element(badge).not.toHaveClass('bg-attention');
   });
 
   it('resolves a stale DM badge through the room-scoped notification query', async () => {
@@ -1043,7 +1049,7 @@ describe('RoomList', () => {
       notification: dmNotification
     });
     mocks.store.notifications.getCleanPath.mockReturnValue('/chat/-/dm-with-participants');
-    mocks.store.notifications.dismiss.mockResolvedValue(true);
+    mocks.store.notifications.markRead.mockResolvedValue(true);
 
     const { container } = render(RoomList);
 
@@ -1063,7 +1069,13 @@ describe('RoomList', () => {
       expect(mocks.appUi.disableRoomCallWideFor.mock.invocationCallOrder[0]).toBeLessThan(
         mocks.goto.mock.invocationCallOrder[0]
       );
-      expect(mocks.store.notifications.dismiss).toHaveBeenCalledWith('dm-1');
+      expect(mocks.store.pendingHighlights.set).toHaveBeenCalledWith(
+        'dm-with-participants',
+        null,
+        'event-1',
+        'dm-1'
+      );
+      expect(mocks.store.notifications.markRead).not.toHaveBeenCalled();
       expect(mocks.goto).toHaveBeenCalledWith('/chat/-/dm-with-participants');
     });
   });
@@ -1087,7 +1099,7 @@ describe('RoomList', () => {
         isDM: false
       });
       expect(mocks.goto).not.toHaveBeenCalled();
-      expect(mocks.store.notifications.dismiss).not.toHaveBeenCalled();
+      expect(mocks.store.notifications.markRead).not.toHaveBeenCalled();
     });
   });
 });

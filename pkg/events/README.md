@@ -26,6 +26,14 @@ Mutation callbacks choose their consistency boundary explicitly:
 records with OCC, and reruns the complete decision after conflicts. Logical
 event IDs must remain stable across attempts. Multi-record decisions require
 the bound stream to enable JetStream `AllowAtomicPublish`.
+For a single-record decision, `MutationResult.Committed` is false when
+JetStream acknowledges the stable message ID as a duplicate; callers can
+therefore distinguish a newly committed fact from an idempotent retry.
+
+`EncodedRecord.TTL` optionally requests broker-side expiry for one record when
+the application-owned stream enables JetStream `AllowMsgTTL`. A zero value uses
+the stream retention policy. The framework only publishes the TTL header; the
+application remains responsible for semantic expiry in projections and APIs.
 
 ```go
 result, err := log.ExecuteMutation(ctx, events.AtSubject(aggregateFilter),

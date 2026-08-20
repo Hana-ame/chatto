@@ -49,13 +49,13 @@ func TestCORSMiddleware(t *testing.T) {
 		request := httptest.NewRequest(http.MethodOptions, "/api/connect/test", nil)
 		request.Header.Set("Origin", "chatto://desktop")
 		request.Header.Set("Access-Control-Request-Method", "POST")
-		request.Header.Set("Access-Control-Request-Headers", "authorization, content-type, connect-protocol-version")
+		request.Header.Set("Access-Control-Request-Headers", "authorization, content-type, connect-protocol-version, connect-timeout-ms")
 		response := httptest.NewRecorder()
 		server.router.ServeHTTP(response, request)
 		if response.Code != http.StatusNoContent || response.Header().Get("Access-Control-Allow-Origin") != "*" {
 			t.Fatalf("status/origin = %d/%q", response.Code, response.Header().Get("Access-Control-Allow-Origin"))
 		}
-		for _, required := range []string{"Authorization", "Content-Type", "Connect-Protocol-Version"} {
+		for _, required := range []string{"Authorization", "Content-Type", "Connect-Protocol-Version", "Connect-Timeout-Ms"} {
 			if !strings.Contains(response.Header().Get("Access-Control-Allow-Headers"), required) {
 				t.Fatalf("allowed headers omit %q: %q", required, response.Header().Get("Access-Control-Allow-Headers"))
 			}

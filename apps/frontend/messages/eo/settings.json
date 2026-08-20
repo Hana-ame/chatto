@@ -195,35 +195,6 @@
         "enable": "Ebligu",
         "dismiss": "Ne dankon"
       },
-      "levels": {
-        "loading": "Ŝarĝante...",
-        "load_failed": "Malsukcesis ŝargi sciigajn preferojn",
-        "server_updated": "Servila sciiga nivelo ĝisdatigita",
-        "room_updated": "Ĉambra sciiga nivelo ĝisdatigita",
-        "update_failed": "Malsukcesis ĝisdatigi",
-        "server_title": "Servila Sciiga Nivelo",
-        "server_description": "Kontrolas kiel vi ricevas sciigojn por ĉiuj ĉambroj en ĉi tiu servilo. Individuaj ĉambroj povas anstataŭi ĉi tiun agordon.",
-        "room_title": "Ĉambro Anstataŭigoj",
-        "room_description": "Anstataŭigi la servilnivelan agordon por individuaj ĉambroj. Ĉambroj fiksitaj al \"Defaŭlta\" heredas la servilan agordon ({level}).",
-        "room_level_label": "Sciiga nivelo por #{room}",
-        "effective": "Efika: {level}",
-        "default": {
-          "label": "Defaŭlte",
-          "description": "Uzu la hereditan defaŭlton"
-        },
-        "muted": {
-          "label": "Silentita",
-          "description": "Neniuj sciigoj aŭ nelegitaj markiloj"
-        },
-        "normal": {
-          "label": "Normala",
-          "description": "Nelegitaj markiloj + mencioj, DM-oj kaj fadenaj respondoj"
-        },
-        "all_messages": {
-          "label": "Ĉiuj Mesaĝoj",
-          "description": "Normala + sciigo por ĉiu nova mesaĝo"
-        }
-      },
       "sound": {
         "title": "Sciiga Sono",
         "shape_title": "Sonformo",
@@ -272,6 +243,32 @@
           "siren": "Alerta Sireno",
           "dubstep": "Dubstep Drop",
           "circus": "Cirko"
+        }
+      },
+      "policy": {
+        "title": "Sciiga politiko",
+        "description": "Elektu kiom forte ĉiu speco de aktiveco atentigu vin. Heredi uzas la servilan aprioron.",
+        "load_failed": "Ne eblis ŝargi la sciigan politikon",
+        "save_failed": "Ne eblis konservi la sciigan politikon",
+        "effective": "Efektiva: {mode}",
+        "delivery_mode": {
+          "inherit": "Heredi",
+          "off": "Malŝaltita",
+          "silent": "Silenta",
+          "alert": "Alarmo"
+        },
+        "reason": {
+          "direct_message": "Rektaj mesaĝoj",
+          "direct_mention": "Rektaj mencioj",
+          "reply": "Respondoj al viaj mesaĝoj",
+          "role_mention": "Rolmencioj",
+          "here": "@here-mencioj",
+          "all": "@all-mencioj",
+          "followed_thread": "Sekvataj fadenoj",
+          "followed_room": "Sekvataj ĉambroj",
+          "reaction": "Reagoj al viaj mesaĝoj",
+          "activity": "Aktiveco",
+          "room_invitation": "Invitoj al ĉambroj"
         }
       }
     },

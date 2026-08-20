@@ -78,13 +78,6 @@ const { soundMocks, apiMocks, cacheMocks } = vi.hoisted(() => ({
     joinCall: vi.fn(() => Promise.resolve(true)),
     getCallToken: vi.fn(() => Promise.resolve(null)),
     leaveCall: vi.fn(() => Promise.resolve(true)),
-    listRoomNotificationCounts: vi.fn(() => Promise.resolve({})),
-    listNotifications: vi.fn(() =>
-      Promise.resolve({
-        items: [],
-        unreadCount: 0
-      })
-    ),
     getAuthenticatedServerState: vi.fn<() => Promise<AuthenticatedServerState>>(() =>
       Promise.resolve({
         name: 'Store Event Test',
@@ -148,12 +141,7 @@ const { soundMocks, apiMocks, cacheMocks } = vi.hoisted(() => ({
         canAdminManageRoles: false,
         canAdminViewSystem: false,
         canAdminViewAudit: false,
-        canManageUserPermissions: false,
-        serverNotificationPreference: {
-          level: 'DEFAULT',
-          effectiveLevel: 'NORMAL'
-        },
-        roomNotificationPreferences: []
+        canManageUserPermissions: false
       })
     ),
     getCurrentUserViaConnect: vi.fn(() =>
@@ -219,26 +207,30 @@ vi.mock('$lib/api-client/voiceCalls', () => ({
   }))
 }));
 
-vi.mock('$lib/api-client/notifications', () => ({
-  NotificationItemKind: {
-    DirectMessage: 'directMessage',
-    Mention: 'mention',
-    Reply: 'reply',
-    RoomMessage: 'roomMessage'
-  },
-  mapNotificationPage: vi.fn((response) => ({
-    items: [],
-    totalCount: Number(response.page?.totalCount ?? 0),
-    hasMore: response.page?.hasMore ?? false
-  })),
-  createNotificationAPI: vi.fn(() => ({
-    listNotifications: apiMocks.listNotifications,
-    listRoomNotifications: vi.fn(),
-    listRoomNotificationCounts: apiMocks.listRoomNotificationCounts,
-    dismissNotification: vi.fn(),
-    dismissAllNotifications: vi.fn()
-  }))
-}));
+vi.mock('$lib/api-client/notifications', async (importActual) => {
+  const actual = await importActual<typeof import('$lib/api-client/notifications')>();
+  return {
+    ...actual,
+    createNotificationAPI: vi.fn(() => ({
+      listNotificationOccurrences: vi.fn(() =>
+        Promise.resolve({
+          occurrences: [],
+          totalCount: 0,
+          hasMore: false,
+          unreadCount: 0,
+          importantUnreadCount: 0,
+          roomUnreadCounts: {},
+          roomImportantUnreadCounts: {}
+        })
+      ),
+      markNotificationRead: vi.fn(),
+      deleteNotificationOccurrence: vi.fn(),
+      batchDeleteNotificationOccurrences: vi.fn(),
+      getNotificationPolicy: vi.fn(() => Promise.resolve([])),
+      updateNotificationPolicy: vi.fn(() => Promise.resolve([]))
+    }))
+  };
+});
 
 vi.mock('$lib/api-client/roles', () => ({
   createRoleAPI: vi.fn(() => ({
@@ -470,11 +462,6 @@ beforeEach(() => {
   apiMocks.joinCall.mockResolvedValue(true);
   apiMocks.getCallToken.mockResolvedValue(null);
   apiMocks.leaveCall.mockResolvedValue(true);
-  apiMocks.listRoomNotificationCounts.mockResolvedValue({});
-  apiMocks.listNotifications.mockResolvedValue({
-    items: [],
-    unreadCount: 0
-  });
   apiMocks.getAuthenticatedServerState.mockResolvedValue({
     name: 'Store Event Test',
     version: 'test',
@@ -535,12 +522,7 @@ beforeEach(() => {
     canAdminManageRoles: false,
     canAdminViewSystem: false,
     canAdminViewAudit: false,
-    canManageUserPermissions: false,
-    serverNotificationPreference: {
-      level: 'DEFAULT',
-      effectiveLevel: 'NORMAL'
-    },
-    roomNotificationPreferences: []
+    canManageUserPermissions: false
   });
   apiMocks.getCurrentUserViaConnect.mockResolvedValue({
     id: 'U1',
@@ -684,23 +666,19 @@ describe('ServerStateStore live server updates', () => {
     flushSync();
     const bus = eventBusManager.getBus(registered.id)!;
 
-    store.notifications.replaceProjection({
-      items: [
-        {
-          kind: 'mention',
-          id: 'N1',
-          createdAt: '2026-01-01T00:00:00Z',
-          summary: 'Alice mentioned you',
-          mentionRoom: { id: 'R1', name: 'general' },
-          mentionEventId: 'M1'
-        } as never
-      ],
-      totalCount: 1
+    store.notifications.replaceOccurrenceProjection({
+      occurrences: [],
+      totalCount: 0,
+      hasMore: false,
+      unreadCount: 1,
+      importantUnreadCount: 1,
+      roomUnreadCounts: {},
+      roomImportantUnreadCounts: {},
+      nextExpiryAt: null
     });
     store.activeCallRooms.replaceProjection([
       new ActiveCall({ room: new Room({ id: 'R1' }), callId: 'call-1' })
     ]);
-    store.notificationLevels.setServerPreference('MUTED' as never, 'MUTED' as never);
     store.roomUnread.setRoomUnread('R1', true);
     store.setPermissions({ canViewAdmin: true } as never);
     store.serverInfo.applyProjectionState(
@@ -736,11 +714,10 @@ describe('ServerStateStore live server updates', () => {
       );
     }
 
-    expect(store.notifications.notifications).toEqual([]);
+    expect(store.notifications.occurrences).toEqual([]);
     expect(store.notifications.unreadNotificationCount).toBe(0);
     expect(store.notifications.hasLoaded).toBe(true);
     expect(store.activeCallRooms.has('R1')).toBe(false);
-    expect(store.notificationLevels.isServerMuted()).toBe(false);
     expect(store.roomUnread.hasAnyUnread).toBe(false);
     expect(store.permissions.loaded).toBe(false);
     expect(store.permissions.canViewAdmin).toBe(false);
@@ -831,11 +808,7 @@ describe('ServerStateStore live server updates', () => {
         }
       } as never
     ];
-    store.projection.viewer = {
-      user: { id: 'U1' },
-      serverNotificationPreference: { level: 'DEFAULT', effectiveLevel: 'NORMAL' },
-      roomNotificationPreferences: []
-    } as never;
+    store.projection.viewer = { user: { id: 'U1' } } as never;
     store.projection.users.set(
       'U2',
       new DirectoryMember({ user: new User({ id: 'U2', displayName: 'Deleted Person' }) })

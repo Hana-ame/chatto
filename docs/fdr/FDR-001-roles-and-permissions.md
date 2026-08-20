@@ -1,7 +1,7 @@
 # FDR-001: Roles & Permissions (RBAC)
 
 **Status:** Active
-**Last reviewed:** 2026-08-10
+**Last reviewed:** 2026-08-19
 
 ## Overview
 
@@ -16,7 +16,7 @@ Chatto controls who can do what through role-based access control. Every authent
 - Permissions gate capabilities, not every form of visibility. For example, DM read access comes from room membership, while `message.post` gates starting DMs and sending root DM messages.
 - Server admins can drag-and-drop to reorder custom roles. System role positions are fixed for ordering consistency.
 - Custom role display names are limited to 80 bytes; descriptions are limited to 500 bytes.
-- Owners are always granted all permissions. An effective owner is either assigned the durable `owner` role or has a verified email listed in `owners.emails` in `chatto.toml`.
+- Owners are always granted all permissions. An effective owner has the durable `owner` role; verified users listed in `owners.emails` in `chatto.toml` are materialized into that role at boot or through retryable durable work after verification.
 - `admin` and every other non-owner role confer only their explicit permission decisions; they have no role-name-based authority.
 - Owner permissions are virtual rather than persisted defaults: fresh servers do not seed editable owner permission rows, and the admin UI shows owner permissions as read-only green checks.
 - RBAC editor and inspection APIs are exposed through ConnectRPC admin services. Admin entry is authenticated, and individual operations keep narrower gates such as `role.manage`, `role.assign`, `user.manage-accounts`, `user.manage-permissions`, or `room.manage`.
@@ -24,6 +24,10 @@ Chatto controls who can do what through role-based access control. Every authent
 - Default permissions are creation-time state: fresh server defaults are seeded only into an empty RBAC stream, and channel-room defaults are committed atomically with room creation. Startup does not backfill missing or cleared decisions.
 - Roles have a `pingable` setting that controls whether `@role` pings notify assigned room members. Fresh servers seed `moderator` as pingable and leave `owner`, `admin`, and `everyone` unpingable.
 - User-initiated RBAC writes carry the authenticated user's ID as the event actor. Synthetic `system` actors are reserved for bootstrap, seeding, migrations, and other non-user maintenance.
+- Losing effective room visibility through membership, room-group layout, or
+  RBAC removes inaccessible notification occurrences. A durable visibility
+  boundary prevents activity queued before that loss from becoming visible if
+  access is quickly regained.
 
 ## Design Decisions
 
@@ -51,11 +55,11 @@ Chatto controls who can do what through role-based access control. Every authent
 **Why:** Instance owners must not be able to lock themselves out through unusual role or per-user permission configuration. See ADR-040.
 **Tradeoff:** RBAC cannot be used to restrict owners, and owner permissions appear as virtual read-only allows rather than stored permission decisions. Restricting owner access requires changing ownership configuration or account state.
 
-### 5. Config-designated owners remain effective even without a durable role
+### 5. Config-designated owners converge on the durable role
 
-**Decision:** `owners.emails` is checked at permission time for verified users and also materialized as an `owner` role assignment where possible.
-**Why:** The config is the emergency recovery path. Even if the durable `owner` role is removed, a verified configured owner remains able to recover access.
-**Tradeoff:** Removing an email from `owners.emails` now matters at the next permission check; durable owner role assignments may still need separate cleanup.
+**Decision:** `owners.emails` is materialized as durable `owner` role assignments. Existing verified matches are repaired at boot; a new matching verification is processed by a retryable durable worker and waits for that source fact before returning. Permission checks use only the durable role, and the role cannot be revoked while the matching verified email remains configured.
+**Why:** One durable representation keeps live authorization, event-time visibility, and recovery behavior consistent. A transient role append failure remains pending for redelivery instead of creating a live-only owner that notification cleanup cannot recognize.
+**Tradeoff:** A transient materialization failure can delay completion of email verification. Removing an email from `owners.emails` does not automatically revoke an already materialized owner role, because the server cannot distinguish config-created assignments from manual ones; operators may revoke it after updating configuration.
 
 ### 6. Target-user mutations are permission-gated and role assignment is bounded
 
@@ -99,5 +103,5 @@ The full permission catalog is in `cli/internal/core/permission.go`. Key permiss
 
 ## Related
 
-- **ADRs:** ADR-004 (authorization at API boundary), ADR-027 (instance/space consolidation), ADR-030 (space tier retirement), ADR-031 (room-group-centric ACL), ADR-033 (event-sourced state), ADR-035 (per-aggregate migration), ADR-037 (DM access via membership), ADR-040 (permission-only RBAC with owner override), ADR-052 (subject-specific RBAC with an everyone baseline)
-- **FDRs:** Every FDR that mentions a permission depends on this one.
+- **ADRs:** ADR-004 (authorization at API boundary), ADR-027 (instance/space consolidation), ADR-030 (space tier retirement), ADR-031 (room-group-centric ACL), ADR-033 (event-sourced state), ADR-035 (per-aggregate migration), ADR-037 (DM access via membership), ADR-040 (permission-only RBAC with owner override), ADR-052 (subject-specific RBAC with an everyone baseline), ADR-076 (notification occurrences), ADR-077 (persistent notification list)
+- **FDRs:** Every FDR that mentions a permission depends on this one; see also FDR-012 (Notifications).

@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/log"
 
 	"hmans.de/chatto/internal/evtstream"
+	"hmans.de/chatto/internal/notificationstream"
 	"hmans.de/chatto/internal/projectionsnapshot"
 	"hmans.de/chatto/pkg/events"
 )
@@ -19,21 +20,23 @@ type coreProjections struct {
 	registrations []projectionRegistration
 	snapshotJobs  []projectionSnapshotJob
 
-	roomDirectory   events.ProjectionHandle[*RoomDirectoryProjection]
-	serverConfig    events.ProjectionHandle[*ConfigProjection]
-	roomGroupLayout events.ProjectionHandle[*RoomGroupLayoutProjection]
-	roomTimeline    events.ProjectionHandle[*RoomTimelineProjection]
-	callState       events.ProjectionHandle[*CallStateProjection]
-	assets          events.ProjectionHandle[*AssetProjection]
-	threads         events.ProjectionHandle[*ThreadProjection]
-	reactions       events.ProjectionHandle[*ReactionProjection]
-	users           events.ProjectionHandle[*UserProjection]
-	userAuth        events.ProjectionHandle[*UserAuthProjection]
-	contentKeys     events.ProjectionHandle[*ContentKeyProjection]
-	rbac            events.ProjectionHandle[*RBACProjection]
-	mentionables    events.ProjectionHandle[*MentionablesProjection]
-	invitations     events.ProjectionHandle[*InvitationProjection]
-	oauthClients    events.ProjectionHandle[*OAuthClientProjection]
+	roomDirectory         events.ProjectionHandle[*RoomDirectoryProjection]
+	notificationDecisions events.ProjectionHandle[*NotificationDecisionProjection]
+	notifications         events.ProjectionHandle[*NotificationProjection]
+	serverConfig          events.ProjectionHandle[*ConfigProjection]
+	roomGroupLayout       events.ProjectionHandle[*RoomGroupLayoutProjection]
+	roomTimeline          events.ProjectionHandle[*RoomTimelineProjection]
+	callState             events.ProjectionHandle[*CallStateProjection]
+	assets                events.ProjectionHandle[*AssetProjection]
+	threads               events.ProjectionHandle[*ThreadProjection]
+	reactions             events.ProjectionHandle[*ReactionProjection]
+	users                 events.ProjectionHandle[*UserProjection]
+	userAuth              events.ProjectionHandle[*UserAuthProjection]
+	contentKeys           events.ProjectionHandle[*ContentKeyProjection]
+	rbac                  events.ProjectionHandle[*RBACProjection]
+	mentionables          events.ProjectionHandle[*MentionablesProjection]
+	invitations           events.ProjectionHandle[*InvitationProjection]
+	oauthClients          events.ProjectionHandle[*OAuthClientProjection]
 }
 
 type projectionSnapshotPolicy bool
@@ -51,6 +54,30 @@ type projectionRegistrar struct {
 	registrations []projectionRegistration
 }
 
+func registerProjectionHandle[P events.SubjectProjection](
+	r *projectionRegistrar,
+	handle events.ProjectionHandle[P],
+	projection P,
+	key string,
+	name string,
+	streamName string,
+	identityResolver events.StreamIdentityResolver,
+	estimate func() (int64, int64, []ProjectionAdminMetric),
+	snapshotPolicy projectionSnapshotPolicy,
+) events.ProjectionHandle[P] {
+	r.registrations = append(r.registrations, projectionRegistration{
+		key:              key,
+		name:             name,
+		projector:        handle.Projector(),
+		subjects:         slices.Clone(projection.Subjects()),
+		snapshotPolicy:   snapshotPolicy,
+		streamName:       streamName,
+		identityResolver: identityResolver,
+		estimate:         estimate,
+	})
+	return handle
+}
+
 func registerProjection[T any, P evtstream.ProjectionPointer[T]](
 	r *projectionRegistrar,
 	projection P,
@@ -66,15 +93,17 @@ func registerProjection[T any, P evtstream.ProjectionPointer[T]](
 		projection,
 		r.logger.WithPrefix("core."+loggerName),
 	)
-	r.registrations = append(r.registrations, projectionRegistration{
-		key:            key,
-		name:           name,
-		projector:      handle.Projector(),
-		subjects:       slices.Clone(projection.Subjects()),
-		snapshotPolicy: snapshotPolicy,
-		estimate:       estimate,
-	})
-	return handle
+	return registerProjectionHandle(
+		r,
+		handle,
+		projection,
+		key,
+		name,
+		r.infra.storage.serverEvtStream.CachedInfo().Config.Name,
+		evtstream.IdentityFromInfo,
+		estimate,
+		snapshotPolicy,
+	)
 }
 
 func initializeCoreProjections(
@@ -91,6 +120,35 @@ func initializeCoreProjections(
 		projectionsnapshot.ProjectionRoomDirectoryKey,
 		"Room Directory",
 		roomDirectory.adminProjectionEstimate,
+		sharedSnapshots,
+	)
+
+	notificationDecisions := NewNotificationDecisionProjection()
+	projections.notificationDecisions = registerProjection(
+		registrar,
+		notificationDecisions,
+		projectionsnapshot.ProjectionNotificationDecisionsKey,
+		"Notification Decisions",
+		notificationDecisions.adminProjectionEstimate,
+		sharedSnapshots,
+	)
+
+	notifications := NewNotificationProjection()
+	notificationHandle := notificationstream.NewProjectionHandle(
+		infra.js,
+		infra.storage.notificationStream,
+		notifications,
+		logger.WithPrefix("core.NotificationsProjector"),
+	)
+	projections.notifications = registerProjectionHandle(
+		registrar,
+		notificationHandle,
+		notifications,
+		projectionsnapshot.ProjectionNotificationsKey,
+		"Notifications",
+		infra.storage.notificationStream.CachedInfo().Config.Name,
+		notificationstream.IdentityFromInfo,
+		notifications.adminProjectionEstimate,
 		sharedSnapshots,
 	)
 
@@ -248,25 +306,35 @@ func configureProjectionSnapshots(
 		return nil
 	}
 
-	streamName := infra.storage.serverEvtStream.CachedInfo().Config.Name
 	for i := range projections.registrations {
 		registration := &projections.registrations[i]
 		if registration.snapshotPolicy == coldReplayOnly {
 			continue
 		}
+		source := events.ProjectionSnapshotSource(projectionSnapshotSource{repository: infra.snapshotRepository})
+		if registration.key == projectionsnapshot.ProjectionNotificationDecisionsKey {
+			source = cappedNotificationDecisionSnapshotSource{
+				source:     source,
+				projection: projections.notificationDecisions.Projection(),
+			}
+		}
 		if err := registration.projector.ConfigureSnapshots(
 			registration.key,
-			projectionSnapshotSource{repository: infra.snapshotRepository},
-			evtstream.IdentityFromInfo,
+			source,
+			registration.identityResolver,
 		); err != nil {
 			return fmt.Errorf("configure %s projection snapshots: %w", registration.key, err)
 		}
-		projections.snapshotJobs = append(projections.snapshotJobs, projectionSnapshotJob{
+		job := projectionSnapshotJob{
 			projector:     registration.projector,
 			repository:    infra.snapshotRepository,
 			projectionKey: registration.key,
-			streamName:    streamName,
-		})
+			streamName:    registration.streamName,
+		}
+		if registration.key == projectionsnapshot.ProjectionNotificationDecisionsKey {
+			job.allowPublication = projections.notificationDecisions.Projection().AllowSnapshotPublication
+		}
+		projections.snapshotJobs = append(projections.snapshotJobs, job)
 		registration.snapshotEnabled = true
 	}
 	return nil

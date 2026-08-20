@@ -1,7 +1,9 @@
 package core
 
 import (
+	"context"
 	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -12,6 +14,83 @@ import (
 	corev1 "hmans.de/chatto/internal/pb/chatto/core/v1"
 	"hmans.de/chatto/internal/testutil"
 )
+
+func TestPostThreadReplyWaitsForFollowProjectionBeforePlanningNotifications(t *testing.T) {
+	chattoCore, _ := setupTestCore(t)
+	ctx := testContext(t)
+	alice, err := chattoCore.CreateUser(ctx, SystemActorID, "thread-fence-alice", "Thread Fence Alice", "password")
+	if err != nil {
+		t.Fatalf("CreateUser alice: %v", err)
+	}
+	bob, err := chattoCore.CreateUser(ctx, SystemActorID, "thread-fence-bob", "Thread Fence Bob", "password")
+	if err != nil {
+		t.Fatalf("CreateUser bob: %v", err)
+	}
+	room, err := chattoCore.CreateRoom(ctx, alice.Id, KindChannel, "", "thread-fence-room", "")
+	if err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+	for _, userID := range []string{alice.Id, bob.Id} {
+		if _, err := chattoCore.JoinRoom(ctx, userID, KindChannel, userID, room.Id); err != nil {
+			t.Fatalf("JoinRoom %s: %v", userID, err)
+		}
+	}
+	root, err := chattoCore.PostMessage(ctx, KindChannel, room.Id, alice.Id, "thread fence root", nil, "", "", nil, false)
+	if err != nil {
+		t.Fatalf("PostMessage root: %v", err)
+	}
+	if _, err := chattoCore.PostMessage(ctx, KindChannel, room.Id, bob.Id, "first reply creates the thread", nil, root.Id, "", nil, false); err != nil {
+		t.Fatalf("PostMessage first reply: %v", err)
+	}
+	testDeleteAllNotificationOccurrences(t, chattoCore, alice.Id)
+
+	delayedThreads := evtstream.NewProjectionHandle(
+		chattoCore.js,
+		chattoCore.storage.serverEvtStream,
+		NewThreadProjection(),
+		testCoreLogger(),
+	)
+	chattoCore.roomModel.threads = delayedThreads
+	type postResult struct {
+		event *corev1.Event
+		err   error
+	}
+	result := make(chan postResult, 1)
+	go func() {
+		event, err := chattoCore.PostMessage(ctx, KindChannel, room.Id, bob.Id, "second reply needs the follower snapshot", nil, root.Id, "", nil, false)
+		result <- postResult{event: event, err: err}
+	}()
+	select {
+	case early := <-result:
+		t.Fatalf("PostMessage returned before delayed thread projection started: (%+v, %v)", early.event, early.err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	runCtx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- delayedThreads.Projector().Run(runCtx) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("delayed thread projector did not stop")
+		}
+	})
+	select {
+	case posted := <-result:
+		if posted.err != nil || posted.event == nil {
+			t.Fatalf("PostMessage after thread projection catch-up = (%+v, %v)", posted.event, posted.err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("PostMessage did not finish after thread projection caught up")
+	}
+
+	occurrences := testNotificationOccurrences(t, chattoCore, alice.Id)
+	if len(occurrences) != 1 || !testOccurrenceHasKind(occurrences[0], notificationTestSignalFollowedThread) {
+		t.Fatalf("followed-thread occurrences after delayed catch-up = %+v, want one", occurrences)
+	}
+}
 
 func TestChattoCore_PostMessage_Threading(t *testing.T) {
 	core, _ := setupTestCore(t)
@@ -1140,11 +1219,8 @@ func TestChattoCore_PostMessage_DirectMentionAutoFollowsThread(t *testing.T) {
 		t.Fatal("directly mentioned user should be auto-following the thread")
 	}
 
-	notifications, err := core.GetNotifications(ctx, mentioned.Id)
-	if err != nil {
-		t.Fatalf("GetNotifications: %v", err)
-	}
-	if len(notifications) != 1 || notifications[0].GetMention() == nil {
+	notifications := testNotificationOccurrences(t, core, mentioned.Id)
+	if len(notifications) != 1 || !testOccurrenceHasKind(notifications[0], notificationTestSignalDirectMention) {
 		t.Fatalf("expected one mention notification, got %#v", notifications)
 	}
 }
@@ -1181,11 +1257,8 @@ func TestChattoCore_PostMessage_DirectMentionRespectsExplicitUnfollow(t *testing
 		t.Fatal("direct mention should not restore an explicitly unfollowed thread")
 	}
 
-	notifications, err := core.GetNotifications(ctx, mentioned.Id)
-	if err != nil {
-		t.Fatalf("GetNotifications: %v", err)
-	}
-	if len(notifications) != 1 || notifications[0].GetMention() == nil {
+	notifications := testNotificationOccurrences(t, core, mentioned.Id)
+	if len(notifications) != 1 || !testOccurrenceHasKind(notifications[0], notificationTestSignalDirectMention) {
 		t.Fatalf("expected mention notification despite explicit unfollow, got %#v", notifications)
 	}
 
@@ -1233,7 +1306,7 @@ func TestChattoCore_PostMessage_BroadMentionsDoNotAutoFollowThread(t *testing.T)
 	}
 }
 
-func TestChattoCore_PostMessage_MutedDirectMentionDoesNotAutoFollowThread(t *testing.T) {
+func TestChattoCore_PostMessage_DisabledDirectMentionDoesNotAutoFollowThread(t *testing.T) {
 	core, _ := setupTestCore(t)
 	ctx := testContext(t)
 
@@ -1244,8 +1317,8 @@ func TestChattoCore_PostMessage_MutedDirectMentionDoesNotAutoFollowThread(t *tes
 	core.JoinRoom(ctx, rootAuthor.Id, KindChannel, rootAuthor.Id, room.Id)
 	core.JoinRoom(ctx, replyAuthor.Id, KindChannel, replyAuthor.Id, room.Id)
 	core.JoinRoom(ctx, mentioned.Id, KindChannel, mentioned.Id, room.Id)
-	if err := core.SetRoomNotificationLevel(ctx, mentioned.Id, room.Id, corev1.NotificationLevel_NOTIFICATION_LEVEL_MUTED); err != nil {
-		t.Fatalf("SetRoomNotificationLevel: %v", err)
+	if _, err := core.NotificationPolicy().SetRoomNotificationMode(ctx, mentioned.Id, room.Id, notificationTestSignalDirectMention, corev1.NotificationDeliveryMode_NOTIFICATION_DELIVERY_MODE_OFF); err != nil {
+		t.Fatalf("SetRoomNotificationMode: %v", err)
 	}
 
 	rootMsg, _ := core.PostMessage(ctx, KindChannel, room.Id, rootAuthor.Id, "Root", nil, "", "", nil, false)
@@ -1258,14 +1331,11 @@ func TestChattoCore_PostMessage_MutedDirectMentionDoesNotAutoFollowThread(t *tes
 		t.Fatalf("IsFollowingThread: %v", err)
 	}
 	if isFollowing {
-		t.Fatal("muted direct mention should not auto-follow the recipient")
+		t.Fatal("disabled direct mention should not auto-follow the recipient")
 	}
-	notifications, err := core.GetNotifications(ctx, mentioned.Id)
-	if err != nil {
-		t.Fatalf("GetNotifications: %v", err)
-	}
+	notifications := testNotificationOccurrences(t, core, mentioned.Id)
 	if len(notifications) != 0 {
-		t.Fatalf("expected no notifications for muted direct mention, got %#v", notifications)
+		t.Fatalf("expected no notifications for disabled direct mention, got %#v", notifications)
 	}
 }
 
@@ -1315,17 +1385,17 @@ func TestChattoCore_NotifyThreadFollowers(t *testing.T) {
 	core.UnfollowThread(ctx, KindChannel, userC.Id, room.Id, rootMsg.Id)
 
 	// Clear all existing notifications
-	core.DismissAllNotifications(ctx, userA.Id)
-	core.DismissAllNotifications(ctx, userB.Id)
-	core.DismissAllNotifications(ctx, userC.Id)
+	testDeleteAllNotificationOccurrences(t, core, userA.Id)
+	testDeleteAllNotificationOccurrences(t, core, userB.Id)
+	testDeleteAllNotificationOccurrences(t, core, userC.Id)
 
 	// User B posts another reply - should notify A (follower) but NOT C (unfollowed) or B (author)
 	core.PostMessage(ctx, KindChannel, room.Id, userB.Id, "Another reply from B", nil, rootMsg.Id, "", nil, false)
 
 	// Check notifications
-	notifsA, _ := core.GetNotifications(ctx, userA.Id)
-	notifsB, _ := core.GetNotifications(ctx, userB.Id)
-	notifsC, _ := core.GetNotifications(ctx, userC.Id)
+	notifsA := testNotificationOccurrences(t, core, userA.Id)
+	notifsB := testNotificationOccurrences(t, core, userB.Id)
+	notifsC := testNotificationOccurrences(t, core, userC.Id)
 
 	if len(notifsA) != 1 {
 		t.Errorf("Expected 1 notification for user A (follower), got %d", len(notifsA))
@@ -1508,10 +1578,10 @@ func TestChattoCore_PostMessage_EchoMentionNotification(t *testing.T) {
 	core.JoinRoom(ctx, target.Id, KindChannel, target.Id, room.Id)
 
 	t.Run("echo with mention produces exactly one notification", func(t *testing.T) {
-		// Subscribe to live mention events for the target user
-		mentionCount := 0
-		sub, err := nc.Subscribe(subjects.LiveSyncUserEvent(target.Id, "mentioned"), func(msg *nats.Msg) {
-			mentionCount++
+		// Subscribe to occurrence invalidations for the target user.
+		var mentionCount atomic.Int64
+		sub, err := nc.Subscribe(subjects.LiveSyncUserEvent(target.Id, "notification_v2"), func(msg *nats.Msg) {
+			mentionCount.Add(1)
 		})
 		if err != nil {
 			t.Fatalf("Failed to subscribe: %v", err)
@@ -1534,18 +1604,14 @@ func TestChattoCore_PostMessage_EchoMentionNotification(t *testing.T) {
 		nc.Flush()
 		time.Sleep(500 * time.Millisecond)
 
-		// Should have received exactly 1 live mention event (not 2)
-		if mentionCount != 1 {
-			t.Errorf("Expected exactly 1 live mention event, got %d", mentionCount)
+		// Should have received exactly one occurrence creation (not one per echo).
+		if got := mentionCount.Load(); got != 1 {
+			t.Errorf("Expected exactly 1 live mention event, got %d", got)
 		}
 
-		// Should have exactly 1 persistent notification
-		count, err := core.GetNotificationCount(ctx, target.Id)
-		if err != nil {
-			t.Fatalf("GetNotificationCount error: %v", err)
-		}
-		if count != 1 {
-			t.Errorf("Expected exactly 1 persistent notification, got %d", count)
+		occurrences := testNotificationOccurrences(t, core, target.Id)
+		if len(occurrences) != 1 || !testOccurrenceHasKind(occurrences[0], notificationTestSignalDirectMention) {
+			t.Errorf("Expected exactly one persistent mention occurrence, got %+v", occurrences)
 		}
 	})
 }
@@ -1569,50 +1635,29 @@ func TestChattoCore_PostMessage_InReplyToNotification(t *testing.T) {
 		}
 
 		// Bob replies with inReplyTo (room-level reply, no thread)
-		_, err = core.PostMessage(ctx, KindChannel, room.Id, bob.Id, "Hi back", nil, "", aliceMsg.Id, nil, false)
+		bobReply, err := core.PostMessage(ctx, KindChannel, room.Id, bob.Id, "Hi back", nil, "", aliceMsg.Id, nil, false)
 		if err != nil {
 			t.Fatalf("Failed to post reply: %v", err)
 		}
 
-		// Alice should have a ReplyNotification
-		notifications, err := core.GetNotifications(ctx, alice.Id)
-		if err != nil {
-			t.Fatalf("GetNotifications error: %v", err)
+		occurrences := testNotificationOccurrences(t, core, alice.Id)
+		if len(occurrences) != 1 {
+			t.Fatalf("expected exactly one occurrence for Alice, got %d", len(occurrences))
 		}
-		if len(notifications) == 0 {
-			t.Fatal("Expected at least 1 notification for Alice")
+		occurrence := occurrences[0]
+		if !testOccurrenceHasKind(occurrence, notificationTestSignalReply) {
+			t.Errorf("expected reply signal, got %+v", occurrence.GetSignal())
 		}
-
-		// Find the reply notification
-		var found bool
-		for _, n := range notifications {
-			replyNotif := n.GetReply()
-			if replyNotif != nil {
-				found = true
-				if replyNotif.RoomId != room.Id {
-					t.Errorf("ReplyNotification.RoomId = %s, want %s", replyNotif.RoomId, room.Id)
-				}
-				if replyNotif.InReplyToId != aliceMsg.Id {
-					t.Errorf("ReplyNotification.InReplyToId = %s, want %s", replyNotif.InReplyToId, aliceMsg.Id)
-				}
-				if replyNotif.InThread != "" {
-					t.Errorf("ReplyNotification.InThread should be empty for room-level reply, got %s", replyNotif.InThread)
-				}
-				if n.ActorId != bob.Id {
-					t.Errorf("Notification.ActorId = %s, want %s (bob)", n.ActorId, bob.Id)
-				}
-				break
-			}
+		roomMessageTarget := NotificationOccurrenceMessageReference(occurrence)
+		if roomMessageTarget.GetRoomId() != room.Id || roomMessageTarget.GetEventId() != bobReply.Id || roomMessageTarget.GetThreadRootEventId() != "" {
+			t.Errorf("occurrence target = %+v, want room %q and event %q without thread", roomMessageTarget, room.Id, bobReply.Id)
 		}
-		if !found {
-			t.Error("Expected a ReplyNotification for Alice, but none found")
+		if occurrence.GetActorId() != bob.Id {
+			t.Errorf("occurrence actor = %q, want Bob %q", occurrence.GetActorId(), bob.Id)
 		}
 
 		// Bob should NOT have any notifications
-		bobNotifs, err := core.GetNotifications(ctx, bob.Id)
-		if err != nil {
-			t.Fatalf("GetNotifications error: %v", err)
-		}
+		bobNotifs := testNotificationOccurrences(t, core, bob.Id)
 		if len(bobNotifs) != 0 {
 			t.Errorf("Expected 0 notifications for Bob, got %d", len(bobNotifs))
 		}
@@ -1620,7 +1665,7 @@ func TestChattoCore_PostMessage_InReplyToNotification(t *testing.T) {
 
 	t.Run("self-reply does not create notification", func(t *testing.T) {
 		// Clear existing notifications
-		core.DismissAllNotifications(ctx, alice.Id)
+		testDeleteAllNotificationOccurrences(t, core, alice.Id)
 
 		// Alice posts a message
 		aliceMsg, err := core.PostMessage(ctx, KindChannel, room.Id, alice.Id, "Talking to myself", nil, "", "", nil, false)
@@ -1635,24 +1680,25 @@ func TestChattoCore_PostMessage_InReplyToNotification(t *testing.T) {
 		}
 
 		// Alice should have no reply notifications
-		notifications, err := core.GetNotifications(ctx, alice.Id)
-		if err != nil {
-			t.Fatalf("GetNotifications error: %v", err)
-		}
-		for _, n := range notifications {
-			if n.GetReply() != nil {
-				t.Error("Expected no ReplyNotification for self-reply")
+		for _, occurrence := range testNotificationOccurrences(t, core, alice.Id) {
+			if testOccurrenceHasKind(occurrence, notificationTestSignalReply) {
+				t.Error("expected no reply occurrence for self-reply")
 			}
 		}
 	})
 
-	t.Run("muted room skips notification", func(t *testing.T) {
+	t.Run("disabled reply cause skips notification", func(t *testing.T) {
 		// Clear existing notifications
-		core.DismissAllNotifications(ctx, alice.Id)
+		testDeleteAllNotificationOccurrences(t, core, alice.Id)
 
-		// Alice mutes the room
-		core.SetRoomNotificationLevel(ctx, alice.Id, room.Id, corev1.NotificationLevel_NOTIFICATION_LEVEL_MUTED)
-		defer core.SetRoomNotificationLevel(ctx, alice.Id, room.Id, corev1.NotificationLevel_NOTIFICATION_LEVEL_UNSPECIFIED)
+		if _, err := core.NotificationPolicy().SetRoomNotificationMode(ctx, alice.Id, room.Id, notificationTestSignalReply, corev1.NotificationDeliveryMode_NOTIFICATION_DELIVERY_MODE_OFF); err != nil {
+			t.Fatalf("SetRoomNotificationMode: %v", err)
+		}
+		defer func() {
+			if _, err := core.NotificationPolicy().SetRoomNotificationMode(ctx, alice.Id, room.Id, notificationTestSignalReply, corev1.NotificationDeliveryMode_NOTIFICATION_DELIVERY_MODE_UNSPECIFIED); err != nil {
+				t.Errorf("restore reply notification mode: %v", err)
+			}
+		}()
 
 		// Alice posts a message
 		aliceMsg, err := core.PostMessage(ctx, KindChannel, room.Id, alice.Id, "Muted test", nil, "", "", nil, false)
@@ -1661,26 +1707,22 @@ func TestChattoCore_PostMessage_InReplyToNotification(t *testing.T) {
 		}
 
 		// Bob replies
-		_, err = core.PostMessage(ctx, KindChannel, room.Id, bob.Id, "Reply to muted", nil, "", aliceMsg.Id, nil, false)
+		_, err = core.PostMessage(ctx, KindChannel, room.Id, bob.Id, "Reply with notifications disabled", nil, "", aliceMsg.Id, nil, false)
 		if err != nil {
 			t.Fatalf("Failed to post reply: %v", err)
 		}
 
-		// Alice should have no notifications (muted)
-		notifications, err := core.GetNotifications(ctx, alice.Id)
-		if err != nil {
-			t.Fatalf("GetNotifications error: %v", err)
-		}
-		for _, n := range notifications {
-			if n.GetReply() != nil {
-				t.Error("Expected no ReplyNotification when room is muted")
+		// Alice should have no reply occurrence while that cause is disabled.
+		for _, occurrence := range testNotificationOccurrences(t, core, alice.Id) {
+			if testOccurrenceHasKind(occurrence, notificationTestSignalReply) {
+				t.Error("expected no reply occurrence when the reply cause is disabled")
 			}
 		}
 	})
 
-	t.Run("mention + reply deduplicates to mention only", func(t *testing.T) {
+	t.Run("mention and reply remain independent occurrences", func(t *testing.T) {
 		// Clear existing notifications
-		core.DismissAllNotifications(ctx, alice.Id)
+		testDeleteAllNotificationOccurrences(t, core, alice.Id)
 
 		// Alice posts a message
 		aliceMsg, err := core.PostMessage(ctx, KindChannel, room.Id, alice.Id, "Dedup test", nil, "", "", nil, false)
@@ -1694,34 +1736,18 @@ func TestChattoCore_PostMessage_InReplyToNotification(t *testing.T) {
 			t.Fatalf("Failed to post reply with mention: %v", err)
 		}
 
-		// Alice should have exactly 1 notification (the mention, not a duplicate reply)
-		notifications, err := core.GetNotifications(ctx, alice.Id)
-		if err != nil {
-			t.Fatalf("GetNotifications error: %v", err)
+		occurrences := testNotificationOccurrences(t, core, alice.Id)
+		if len(occurrences) != 2 {
+			t.Fatalf("expected two exact occurrences, got %d", len(occurrences))
 		}
-
-		mentionCount := 0
-		replyCount := 0
-		for _, n := range notifications {
-			if n.GetMention() != nil {
-				mentionCount++
-			}
-			if n.GetReply() != nil {
-				replyCount++
-			}
-		}
-
-		if mentionCount != 1 {
-			t.Errorf("Expected 1 mention notification, got %d", mentionCount)
-		}
-		if replyCount != 0 {
-			t.Errorf("Expected 0 reply notifications (deduped by mention), got %d", replyCount)
+		if !testOccurrencesHaveKinds(occurrences, notificationTestSignalDirectMention, notificationTestSignalReply) {
+			t.Errorf("expected mention and reply signals, got %+v", occurrences)
 		}
 	})
 
 	t.Run("thread reply sets InThread field", func(t *testing.T) {
 		// Clear existing notifications
-		core.DismissAllNotifications(ctx, alice.Id)
+		testDeleteAllNotificationOccurrences(t, core, alice.Id)
 
 		// Alice posts a root message
 		rootMsg, err := core.PostMessage(ctx, KindChannel, room.Id, alice.Id, "Thread root", nil, "", "", nil, false)
@@ -1735,31 +1761,18 @@ func TestChattoCore_PostMessage_InReplyToNotification(t *testing.T) {
 			t.Fatalf("Failed to post thread reply: %v", err)
 		}
 
-		// Alice should have a ReplyNotification with InThread set
-		notifications, err := core.GetNotifications(ctx, alice.Id)
-		if err != nil {
-			t.Fatalf("GetNotifications error: %v", err)
+		occurrences := testNotificationOccurrences(t, core, alice.Id)
+		if len(occurrences) != 1 || !testOccurrenceHasKind(occurrences[0], notificationTestSignalFollowedThread) {
+			t.Fatalf("expected one followed-thread occurrence, got %+v", occurrences)
 		}
-
-		var found bool
-		for _, n := range notifications {
-			replyNotif := n.GetReply()
-			if replyNotif != nil {
-				found = true
-				if replyNotif.InThread != rootMsg.Id {
-					t.Errorf("ReplyNotification.InThread = %q, want %q", replyNotif.InThread, rootMsg.Id)
-				}
-				break
-			}
-		}
-		if !found {
-			t.Error("Expected a ReplyNotification for thread reply")
+		if NotificationOccurrenceMessageReference(occurrences[0]).GetThreadRootEventId() != rootMsg.Id {
+			t.Errorf("thread target = %q, want %q", NotificationOccurrenceMessageReference(occurrences[0]).GetThreadRootEventId(), rootMsg.Id)
 		}
 	})
 
 	t.Run("thread mention keeps existing follower notification", func(t *testing.T) {
 		// Clear existing notifications
-		core.DismissAllNotifications(ctx, alice.Id)
+		testDeleteAllNotificationOccurrences(t, core, alice.Id)
 
 		// Alice posts a root message. The first thread reply auto-follows her
 		// as root author before notifications are fanned out.
@@ -1773,34 +1786,19 @@ func TestChattoCore_PostMessage_InReplyToNotification(t *testing.T) {
 			t.Fatalf("Failed to post thread reply with mention: %v", err)
 		}
 
-		notifications, err := core.GetNotifications(ctx, alice.Id)
-		if err != nil {
-			t.Fatalf("GetNotifications error: %v", err)
+		occurrences := testNotificationOccurrences(t, core, alice.Id)
+		if len(occurrences) != 2 {
+			t.Fatalf("expected two exact occurrences, got %d", len(occurrences))
 		}
-
-		mentionCount := 0
-		threadReplyCount := 0
-		for _, n := range notifications {
-			if mention := n.GetMention(); mention != nil && mention.InThread == rootMsg.Id {
-				mentionCount++
-			}
-			if reply := n.GetReply(); reply != nil && reply.InThread == rootMsg.Id {
-				threadReplyCount++
-			}
-		}
-
-		if mentionCount != 1 {
-			t.Errorf("Expected 1 thread mention notification, got %d", mentionCount)
-		}
-		if threadReplyCount != 1 {
-			t.Errorf("Expected 1 followed-thread notification, got %d", threadReplyCount)
+		if !testOccurrencesHaveKinds(occurrences, notificationTestSignalDirectMention, notificationTestSignalFollowedThread) {
+			t.Errorf("expected mention and followed-thread signals, got %+v", occurrences)
 		}
 	})
 
 	t.Run("in-thread inReplyTo notifies original author with InThread set", func(t *testing.T) {
 		// Clear existing notifications
-		core.DismissAllNotifications(ctx, alice.Id)
-		core.DismissAllNotifications(ctx, bob.Id)
+		testDeleteAllNotificationOccurrences(t, core, alice.Id)
+		testDeleteAllNotificationOccurrences(t, core, bob.Id)
 
 		// Create a third user for this test
 		charlie, _ := core.CreateUser(ctx, "system", "charlie", "Charlie", "password123")
@@ -1819,42 +1817,34 @@ func TestChattoCore_PostMessage_InReplyToNotification(t *testing.T) {
 		}
 
 		// Clear notifications from thread participant notifications
-		core.DismissAllNotifications(ctx, alice.Id)
-		core.DismissAllNotifications(ctx, bob.Id)
+		testDeleteAllNotificationOccurrences(t, core, alice.Id)
+		testDeleteAllNotificationOccurrences(t, core, bob.Id)
 
 		// Charlie replies to Bob's specific message within the thread (inThread + inReplyTo)
-		_, err = core.PostMessage(ctx, KindChannel, room.Id, charlie.Id, "Replying to Bob in thread", nil, rootMsg.Id, bobMsg.Id, nil, false)
+		charlieReply, err := core.PostMessage(ctx, KindChannel, room.Id, charlie.Id, "Replying to Bob in thread", nil, rootMsg.Id, bobMsg.Id, nil, false)
 		if err != nil {
 			t.Fatalf("Failed to post in-thread inReplyTo: %v", err)
 		}
 
-		// Bob should have a ReplyNotification from notifyInReplyToAuthor with InThread set
-		// (He also gets one from notifyThreadParticipants, but we check that at least one has InThread)
-		bobNotifs, err := core.GetNotifications(ctx, bob.Id)
-		if err != nil {
-			t.Fatalf("GetNotifications error: %v", err)
+		bobOccurrences := testNotificationOccurrences(t, core, bob.Id)
+		if len(bobOccurrences) != 2 || !testOccurrencesHaveKinds(bobOccurrences, notificationTestSignalReply, notificationTestSignalFollowedThread) {
+			t.Fatalf("expected Bob to get reply and followed-thread occurrences, got %+v", bobOccurrences)
 		}
-
-		var foundReply bool
-		for _, n := range bobNotifs {
-			replyNotif := n.GetReply()
-			if replyNotif != nil && replyNotif.InReplyToId == bobMsg.Id {
-				foundReply = true
-				if replyNotif.InThread != rootMsg.Id {
-					t.Errorf("ReplyNotification.InThread = %q, want %q", replyNotif.InThread, rootMsg.Id)
-				}
-				break
+		var target *corev1.NotificationMessageReference
+		for _, occurrence := range bobOccurrences {
+			if testOccurrenceHasKind(occurrence, notificationTestSignalReply) {
+				target = NotificationOccurrenceMessageReference(occurrence)
 			}
 		}
-		if !foundReply {
-			t.Error("Expected Bob to get a ReplyNotification for in-thread inReplyTo")
+		if target.GetEventId() != charlieReply.Id || target.GetThreadRootEventId() != rootMsg.Id {
+			t.Errorf("occurrence target = %+v, want event %q and thread %q", target, charlieReply.Id, rootMsg.Id)
 		}
 	})
 
-	t.Run("in-thread inReplyTo deduplicates with thread participant notification", func(t *testing.T) {
+	t.Run("in-thread inReplyTo remains independent from followed-thread activity", func(t *testing.T) {
 		// Clear existing notifications
-		core.DismissAllNotifications(ctx, alice.Id)
-		core.DismissAllNotifications(ctx, bob.Id)
+		testDeleteAllNotificationOccurrences(t, core, alice.Id)
+		testDeleteAllNotificationOccurrences(t, core, bob.Id)
 
 		// Alice posts a root message
 		rootMsg, err := core.PostMessage(ctx, KindChannel, room.Id, alice.Id, "Dedup thread root", nil, "", "", nil, false)
@@ -1863,7 +1853,7 @@ func TestChattoCore_PostMessage_InReplyToNotification(t *testing.T) {
 		}
 
 		// Clear Alice's thread participant notification
-		core.DismissAllNotifications(ctx, alice.Id)
+		testDeleteAllNotificationOccurrences(t, core, alice.Id)
 
 		// Bob replies to Alice's root message in the thread (both inThread and inReplyTo point to root)
 		// Alice is both the thread root author (notifyThreadParticipants) and the inReplyTo author (notifyInReplyToAuthor)
@@ -1872,20 +1862,12 @@ func TestChattoCore_PostMessage_InReplyToNotification(t *testing.T) {
 			t.Fatalf("Failed to post reply: %v", err)
 		}
 
-		// Alice should have exactly 1 ReplyNotification, not 2 (dedup between thread + inReplyTo)
-		notifications, err := core.GetNotifications(ctx, alice.Id)
-		if err != nil {
-			t.Fatalf("GetNotifications error: %v", err)
+		occurrences := testNotificationOccurrences(t, core, alice.Id)
+		if len(occurrences) != 2 {
+			t.Fatalf("expected two exact occurrences, got %d", len(occurrences))
 		}
-
-		replyCount := 0
-		for _, n := range notifications {
-			if n.GetReply() != nil {
-				replyCount++
-			}
-		}
-		if replyCount != 1 {
-			t.Errorf("Expected exactly 1 ReplyNotification (deduped), got %d", replyCount)
+		if !testOccurrencesHaveKinds(occurrences, notificationTestSignalReply, notificationTestSignalFollowedThread) {
+			t.Errorf("expected reply and followed-thread signals, got %+v", occurrences)
 		}
 	})
 }

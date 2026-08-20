@@ -9,7 +9,19 @@
       "time_now": "Akkurat nå",
       "time_minutes": "{count}m siden",
       "time_hours": "{count}h siden",
-      "time_days": "{count}d siden"
+      "time_days": "{count}d siden",
+      "unread": "Ulest",
+      "activity": "Ny aktivitet",
+      "summary": {
+        "direct_message": "{actor} har sendt deg en direktemelding.",
+        "reaction": "{actor} reagerte med «{emoji}» på meldingen din i {channel}.",
+        "reaction_group": "{actor} og andre reagerte med «{emoji}» på meldingen din i {channel}.",
+        "reply": "{actor} svarte på meldingen din.",
+        "mention": "{actor} nevnte deg.",
+        "followed_thread": "{actor} svarte i en tråd du følger.",
+        "new_message": "{actor} la ut en ny melding.",
+        "activity": "{actor} sendte deg et varsel."
+      }
     },
     "sign_out": {
       "title": "Logg av",

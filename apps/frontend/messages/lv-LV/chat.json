@@ -9,7 +9,19 @@
       "time_now": "Tikai tagad",
       "time_minutes": "Pirms {count}min",
       "time_hours": "Pirms {count}h",
-      "time_days": "Pirms {count}d"
+      "time_days": "Pirms {count}d",
+      "unread": "Nelasīts",
+      "activity": "Jauna aktivitāte",
+      "summary": {
+        "direct_message": "{actor} nosūtīja jums tiešu ziņu.",
+        "reaction": "{actor} reaģēja ar “{emoji}” uz jūsu ziņu kanālā {channel}.",
+        "reaction_group": "{actor} un citi reaģēja ar “{emoji}” uz jūsu ziņu kanālā {channel}.",
+        "reply": "{actor} atbildēja uz jūsu ziņu.",
+        "mention": "{actor} pieminēja jūs.",
+        "followed_thread": "{actor} atbildēja pavedienā, kuram sekojat.",
+        "new_message": "{actor} publicēja jaunu ziņu.",
+        "activity": "{actor} nosūtīja jums paziņojumu."
+      }
     },
     "sign_out": {
       "title": "Izrakstīties",

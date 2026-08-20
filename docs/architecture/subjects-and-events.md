@@ -13,8 +13,9 @@ Related decisions: [ADR-033](../adr/ADR-033-event-sourced-state-with-projections
 [ADR-034](../adr/ADR-034-single-event-stream.md),
 [ADR-040](../adr/ADR-040-permission-only-rbac-with-owner-override.md),
 [ADR-049](../adr/ADR-049-process-wide-realtime-event-hub.md),
-[ADR-053](../adr/ADR-053-versioned-nats-service-namespaces.md), and
-[ADR-068](../adr/ADR-068-selectable-event-mutation-consistency-boundaries.md).
+[ADR-053](../adr/ADR-053-versioned-nats-service-namespaces.md),
+[ADR-068](../adr/ADR-068-selectable-event-mutation-consistency-boundaries.md), and
+[ADR-076](../adr/ADR-076-deterministic-notification-occurrences.md).
 
 ## Event envelopes
 
@@ -40,9 +41,9 @@ Both files share `package chatto.core.v1` and generate into the same Go package.
 
 | Category                    | Storage    | Examples                                                    | Purpose                                                        |
 | --------------------------- | ---------- | ----------------------------------------------------------- | -------------------------------------------------------------- |
-| JetStream-stored (room) | Stream     | RoomCreated, RoomUniversalChanged, RoomSlowModeChanged, MessagePosted, MessageEdited, MessageRetracted, ReactionAdded, ReactionRemoved, UserJoinedRoom, CallStarted, CallParticipantJoined, CallParticipantLeft, CallEnded | Ordering guarantees, historical replay, projection source of truth |
+| JetStream-stored (room) | Stream     | RoomCreated, RoomUniversalChanged, RoomSlowModeChanged, MessagePosted, MessageEdited, MessageRetracted, ReactionAdded, ReactionRemoved, UserJoinedRoom, CallStarted, CallParticipantJoined, CallParticipantLeft, CallEnded | Ordering guarantees, historical replay, projection and recoverable-effect source of truth |
 | Room live-only              | NATS Core  | UserTyping | Ephemeral room notifications where another store/projection is source of truth |
-| Deployment live (user/config) | NATS Core  | UserCreated, ServerUpdated, MentionNotification, NotificationCreated, PresenceChanged | Cross-tab sync, notifications, server lifecycle |
+| Deployment live (user/config) | NATS Core  | UserCreated, ServerUpdated, NotificationOccurrencesInvalidated, PresenceChanged | Cross-tab sync, notification-state invalidation, server lifecycle |
 
 The distinction between stored and live-only events is explicit in the wire envelope: durable facts use `corev1.Event`, transient signals use `corev1.LiveEvent`. Room queries and server subscriptions are delivery contexts, not separate wrapper types.
 
@@ -161,11 +162,12 @@ reset; page reload deliberately starts without a cursor. Protocol v2 creates no
 long-lived per-connection JetStream consumer. See [ADR-049](../adr/ADR-049-process-wide-realtime-event-hub.md)
 and [ADR-051](../adr/ADR-051-server-scoped-resumable-client-projection.md).
 
-## EVT subject patterns
+## Durable and live subject patterns
 
 | Stream                       | Wrapper          | Scope      | Description                                      |
 | ---------------------------- | ---------------- | ---------- | ------------------------------------------------ |
-| `EVT`                        | `corev1.Event`   | Server     | Event-sourcing log ([ADR-033](../adr/ADR-033-event-sourced-state-with-projections.md) / [ADR-034](../adr/ADR-034-single-event-stream.md)). Subjects `evt.{aggregateType}.{aggregateId}.{eventType}`; republishes onto `live.evt.>` as the raw committed-event feed. Stores room membership/metadata, groups/layout, server config, users, messages/threads, reactions, assets, RBAC, OAuth client authorization/policy, and auth workflow audit facts. |
+| `EVT`                        | `corev1.Event`   | Server     | Event-sourcing log ([ADR-033](../adr/ADR-033-event-sourced-state-with-projections.md) / [ADR-034](../adr/ADR-034-single-event-stream.md)). Subjects `evt.{aggregateType}.{aggregateId}.{eventType}`; republishes onto `live.evt.>` as the raw committed-event feed. Stores room membership/metadata, groups/layout, server config, users, messages/threads, reactions, assets, RBAC, OAuth client authorization/policy, and auth workflow audit facts. Notification materialization derives exact-sequence output directly from existing source/lifecycle facts; it adds no notification-only EVT facts or prepared-work records. |
+| `NOTIFICATIONS`              | `corev1.NotificationEvent` | User occurrence | Bounded 90-day notification lifecycle log on four fixed subjects. A 24-hour broker cleanup grace follows the application expiry. Its projector owns the current list; the Alert worker consumes signalled facts directly. |
 | Live Sync                    | `corev1.LiveEvent` | Transient  | Direct NATS Core pubsub on `live.sync.>` for ephemeral activity and latest-value invalidation signals. `StreamMyEvents` authorizes them; genuinely transient activity becomes public realtime events, while invalidations trigger authoritative projection operations. |
 
 The republished `live.evt.{aggregateType}.{aggregateId}.{eventType}` subject is an internal server-side feed; `StreamMyEvents` waits for projections and authorization before delivering anything to clients.
@@ -181,6 +183,10 @@ The republished `live.evt.{aggregateType}.{aggregateId}.{eventType}` subject is 
 | `evt.asset.*.{eventType}`                        | One asset event type across all assets                                          |
 | `evt.config.>`                                   | Dynamic server/user configuration and preferences                               |
 | `evt.config.{subject}.{eventType}`               | Config fact for `server`, a user ID, or another configurable subject            |
+| `notifications.signalled`                       | Rich immutable per-recipient notification signal and initial delivery state     |
+| `notifications.read`                            | Idempotent transition of one occurrence to Read                                 |
+| `notifications.removed`                         | Minimal anti-recreation tombstone for one removed occurrence                    |
+| `notifications.alert_resolved`                  | Single terminal outcome for interruptive delivery                               |
 | `evt.group.{groupId}.{eventType}`                | Room group metadata and group-owned sidebar item ordering/membership facts      |
 | `evt.layout.default.{eventType}`                 | Singleton sidebar group ordering facts                                          |
 | `evt.user.{userId}.{eventType}`                  | User/account/profile/auth lookup facts and user-scoped auth audit facts         |
@@ -189,7 +195,6 @@ The republished `live.evt.{aggregateType}.{aggregateId}.{eventType}` subject is 
 | `evt.authorization.server.fence_advanced`        | Singleton OCC fence for changes that can alter mutation authority               |
 | `evt.auth.server.{eventType}`                    | Server-wide auth audit facts before a user aggregate exists                     |
 | `evt.invitation.{invitationId}.{eventType}`      | Invitation creation, redemption, and revocation facts                           |
-| `evt.oauth_client.{sha256(clientId)}.{eventType}` | Successful OAuth-client authorization and administrative policy facts; the aggregate ID is a lowercase SHA-256 digest, while the event payload retains the client ID |
 | `live.evt.>`                                     | JetStream republish of committed `EVT` facts                                    |
 
 The aggregate ID is intentionally part of the subject; actor/user and detailed context stay in the protobuf payload. Asset subjects are keyed by asset ID, while room scope lives in `AssetCreatedEvent` and is resolved by `AssetProjection`. Cross-event-type invariants use wildcard OCC filters such as `evt.room.>`, `evt.asset.>`, or `evt.rbac.>`.
@@ -265,10 +270,11 @@ cursors are trusted integration coordinates and are not public API cursors.
 | `evt.config.{subject}.user_time_format_changed`              | `UserTimeFormatChangedEvent`                        |
 | `evt.config.{subject}.user_time_format_cleared`              | `UserTimeFormatClearedEvent`                        |
 
-| `evt.config.{subject}.user_server_notification_level_set`    | `UserServerNotificationLevelSetEvent`               |
-| `evt.config.{subject}.user_server_notification_level_cleared` | `UserServerNotificationLevelClearedEvent`          |
-| `evt.config.{subject}.user_room_notification_level_set`      | `UserRoomNotificationLevelSetEvent`                 |
-| `evt.config.{subject}.user_room_notification_level_cleared`  | `UserRoomNotificationLevelClearedEvent`             |
+| `evt.config.{subject}.user_server_notification_level_set`    | `UserServerNotificationLevelSetEvent` (historical decode only; ignored by current projections) |
+| `evt.config.{subject}.user_server_notification_level_cleared` | `UserServerNotificationLevelClearedEvent` (historical decode only; ignored by current projections) |
+| `evt.config.{subject}.user_room_notification_level_set`      | `UserRoomNotificationLevelSetEvent` (historical decode only; ignored by current projections) |
+| `evt.config.{subject}.user_room_notification_level_cleared`  | `UserRoomNotificationLevelClearedEvent` (historical decode only; ignored by current projections) |
+| `evt.config.{subject}.user_notification_policy_changed`      | `UserNotificationPolicyChangedEvent` (complete overrides for one user/scope) |
 | `evt.group.{groupId}.group_created`                         | `RoomGroupCreatedEvent`                             |
 | `evt.group.{groupId}.group_updated`                         | `RoomGroupUpdatedEvent`                             |
 | `evt.group.{groupId}.group_deleted`                         | `RoomGroupDeletedEvent`                             |
@@ -310,8 +316,8 @@ cursors are trusted integration coordinates and are not public API cursors.
 | `evt.user.{userId}.auth_code_exchange_failed`               | `AuthCodeExchangeFailedEvent`                       |
 | `evt.user.{userId}.bearer_token_issued`                     | `BearerTokenIssuedEvent`                            |
 | `evt.user.{userId}.bearer_token_revoked`                    | `BearerTokenRevokedEvent`                           |
-| `evt.user.{userId}.oauth_consent_granted`                   | `OAuthConsentGrantedEvent`; stable client ID plus validated display metadata and canonical callback origin/native scheme |
-| `evt.user.{userId}.oauth_consent_denied`                    | `OAuthConsentDeniedEvent`; audit-only client ID, validated display metadata, and canonical callback origin/native scheme |
+| `evt.user.{userId}.oauth_consent_granted`                   | `OAuthConsentGrantedEvent`                          |
+| `evt.user.{userId}.oauth_consent_denied`                    | `OAuthConsentDeniedEvent`                           |
 | `evt.rbac.{server\|scopeId}.role_created`                   | `RbacRoleCreatedEvent`                             |
 | `evt.rbac.{server\|scopeId}.role_display_name_changed`      | `RbacRoleDisplayNameChangedEvent`                  |
 | `evt.rbac.{server\|scopeId}.role_description_changed`       | `RbacRoleDescriptionChangedEvent`                  |
@@ -329,8 +335,6 @@ cursors are trusted integration coordinates and are not public API cursors.
 | `evt.invitation.{invitationId}.created`                    | `InvitationCreatedEvent`                            |
 | `evt.invitation.{invitationId}.redeemed`                   | `InvitationRedeemedEvent`                           |
 | `evt.invitation.{invitationId}.revoked`                    | `InvitationRevokedEvent`                            |
-| `evt.oauth_client.{sha256(clientId)}.authorization_recorded` | `OAuthClientAuthorizationRecordedEvent`          |
-| `evt.oauth_client.{sha256(clientId)}.policy_changed`       | `OAuthClientPolicyChangedEvent`                    |
 
 Notes: Subject suffixes are stable NATS event tokens defined in [`cli/internal/evtstream/subjects.go`](../../cli/internal/evtstream/subjects.go). Protobuf message types are the concrete `corev1.Event` oneof payloads defined in [`proto/chatto/core/v1/event.proto`](../../proto/chatto/core/v1/event.proto) and sibling `*_events.proto` files. The current asset write path uses `evt.asset.{assetId}.*`; `AssetProjection` also consumes beta-era `evt.room.{roomId}.asset_*` histories for replay compatibility.
 
@@ -366,11 +370,7 @@ Patterns: `live.sync.>` for transient `LiveEvent` pubsub and `live.evt.>` for ra
 | `live.sync.user.{userId}.profile_updated`                | User profile changed (broadcast for login/display/avatar updates; custom status set/clear is delivered from `live.evt.>`) |
 | `live.sync.config.server_updated`                        | Public server profile/config changed (name/MOTD/welcome/logo/banner/description) |
 | `live.sync.config.room_groups_updated`                   | Admin reordered the room sidebar / room-group layout |
-| `live.sync.user.{userId}.mentioned`                      | User was @mentioned (legacy attention signal; suppressed during DND) |
-| `live.sync.user.{userId}.dm_message`                     | New DM message received (legacy attention signal; suppressed during DND) |
-| `live.sync.user.{userId}.notification_created`           | New notification created; may be marked silent for DND alert suppression |
-| `live.sync.user.{userId}.notification_dismissed`         | Notification dismissed       |
-| `live.sync.user.{userId}.notification_level_changed`     | Viewer's server/room notification level changed |
+| `live.sync.user.{userId}.notification_v2`                | Notification occurrence created, triaged, removed, or alert-eligibility changed; triggers an authoritative occurrence/count replacement |
 | `live.sync.user.{userId}.thread_follow_changed`          | Viewer's thread follow/unfollow toggled |
 | `live.sync.user.{userId}.settings_updated`               | User preferences changed     |
 | `live.sync.user.{userId}.room_read`                      | Room marked as read          |
@@ -411,12 +411,9 @@ Listing failures increment the shared
 end projected calls only after three consecutive failed elected reconciliation
 cycles. A successful elected pass deletes the counter.
 
-`VoiceCallService.GetActiveCall`, `BatchGetActiveCalls`, `GetCallToken`,
-`CreateCallMediaPublisherToken`, and `ListCallParticipants` expose the active
-call ID to integrations and command flows. The publisher-token operation mints
-a short-lived, publish-only LiveKit credential for a caller who is already in
-the active call; its companion identity is excluded from durable call
-membership. The bundled frontend receives complete authorized active-call state in
+`VoiceCallService.GetActiveCall`, `BatchGetActiveCalls`, `GetCallToken`, and
+`ListCallParticipants` expose the active call ID to integrations and command
+flows. The bundled frontend receives complete authorized active-call state in
 `active_calls_replace` projection operations and infers one-shot join/leave/end
 presentation effects by comparing replacements. Room membership remains the
 authorization boundary for live delivery.

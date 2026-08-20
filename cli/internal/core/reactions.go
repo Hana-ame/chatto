@@ -65,15 +65,25 @@ func (s *ReactionModel) addReaction(ctx context.Context, kind RoomKind, roomID, 
 	if err != nil {
 		return false, err
 	}
+	target, err := s.core.GetRoomEventByEventID(ctx, kind, roomID, messageEventID)
+	if err != nil {
+		return false, fmt.Errorf("resolve reaction notification target: %w", err)
+	}
+	if target == nil {
+		return false, ErrNotFound
+	}
 	event := newReactionAddedEvent(userID, roomID, messageEventID, emojiName)
-	added, err := s.publishReactionMutation(ctx, kind, roomID, messageEventID, emojiName, userID, event)
+	added, sequence, err := s.publishReactionMutation(ctx, kind, roomID, messageEventID, emojiName, userID, event)
 	if err != nil {
 		return false, fmt.Errorf("failed to add reaction: %w", err)
 	}
 	if !added {
 		return false, nil
 	}
-
+	if err := s.core.notificationMaterializer.WaitThrough(ctx, sequence); err != nil {
+		s.core.logger.Warn("Notification materialization did not reach the committed reaction before the request completed",
+			"room_id", roomID, "message_event_id", messageEventID, "error", err)
+	}
 	s.core.logger.Debug("Reaction added",
 		"kind", kind,
 		"room_id", roomID,
@@ -99,15 +109,25 @@ func (s *ReactionModel) removeReaction(ctx context.Context, kind RoomKind, roomI
 	if err != nil {
 		return false, err
 	}
+	target, err := s.core.GetRoomEventByEventID(ctx, kind, roomID, messageEventID)
+	if err != nil {
+		return false, fmt.Errorf("resolve reaction notification target: %w", err)
+	}
+	if target == nil {
+		return false, ErrNotFound
+	}
 	event := newReactionRemovedEvent(userID, roomID, messageEventID, emojiName)
-	removed, err := s.publishReactionMutation(ctx, kind, roomID, messageEventID, emojiName, userID, event)
+	removed, sequence, err := s.publishReactionMutation(ctx, kind, roomID, messageEventID, emojiName, userID, event)
 	if err != nil {
 		return false, fmt.Errorf("failed to remove reaction: %w", err)
 	}
 	if !removed {
 		return false, nil
 	}
-
+	if err := s.core.notificationMaterializer.WaitThrough(ctx, sequence); err != nil {
+		s.core.logger.Warn("Notification cleanup did not reach the committed reaction removal before the request completed",
+			"room_id", roomID, "message_event_id", messageEventID, "error", err)
+	}
 	s.core.logger.Debug("Reaction removed",
 		"kind", kind,
 		"room_id", roomID,
@@ -291,7 +311,6 @@ func (s *ReactionModel) mutateAuthorizedReaction(ctx context.Context, input Reac
 	publishSubject := agg.SubjectFor(event)
 	committedKind := KindChannel
 	committedMessageEventID := input.MessageEventID
-
 	result, err := s.executeMutation(ctx, events.AtSubject(agg.AllEventsFilter()), func(ctx context.Context, _ events.MutationAttempt) ([]evtstream.MutationEntry, error) {
 		kind, err := s.prepareAuthorizedReactionAttempt(ctx, input)
 		if err != nil {
@@ -331,7 +350,15 @@ func (s *ReactionModel) mutateAuthorizedReaction(ctx context.Context, input Reac
 
 		committedKind = kind
 		committedMessageEventID = messageEventID
-		return []evtstream.MutationEntry{{Subject: publishSubject, Event: event}}, nil
+		entries := []evtstream.MutationEntry{{Subject: publishSubject, Event: event}}
+		target, err := s.core.GetRoomEventByEventID(ctx, kind, input.RoomID, messageEventID)
+		if err != nil {
+			return nil, fmt.Errorf("resolve reaction notification target: %w", err)
+		}
+		if target == nil {
+			return nil, ErrNotFound
+		}
+		return entries, nil
 	})
 	if err != nil {
 		verb := "remove"
@@ -343,13 +370,16 @@ func (s *ReactionModel) mutateAuthorizedReaction(ctx context.Context, input Reac
 	if !result.Committed {
 		return false, nil
 	}
-	if len(result.Sequences) != 1 {
-		return false, fmt.Errorf("reaction mutation committed %d events, want 1", len(result.Sequences))
+	if len(result.Sequences) == 0 {
+		return false, fmt.Errorf("reaction mutation committed without a sequence")
 	}
 	if err := s.core.roomModel.waitForReactions(ctx, events.SubjectPosition(publishSubject, result.Sequences[0])); err != nil {
 		return false, fmt.Errorf("wait for reactions projection: %w", err)
 	}
-
+	if err := s.core.notificationMaterializer.WaitThrough(ctx, result.Sequences[0]); err != nil {
+		s.core.logger.Warn("Notification effect did not reach the committed reaction mutation before the request completed",
+			"room_id", input.RoomID, "message_event_id", committedMessageEventID, "error", err)
+	}
 	action := "removed"
 	if add {
 		action = "added"
@@ -410,11 +440,11 @@ func (s *ReactionModel) prepareAuthorizedReactionAttempt(ctx context.Context, in
 	return s.authorizeReaction(ctx, input)
 }
 
-func (s *ReactionModel) publishReactionMutation(ctx context.Context, kind RoomKind, roomID, messageEventID, emoji, userID string, event *corev1.Event) (bool, error) {
+func (s *ReactionModel) publishReactionMutation(ctx context.Context, kind RoomKind, roomID, messageEventID, emoji, userID string, event *corev1.Event) (bool, uint64, error) {
 	add := event.GetReactionAdded() != nil
 	remove := event.GetReactionRemoved() != nil
 	if !add && !remove {
-		return false, fmt.Errorf("unsupported reaction event %T", event.GetEvent())
+		return false, 0, fmt.Errorf("unsupported reaction event %T", event.GetEvent())
 	}
 
 	agg := evtstream.RoomAggregate(roomID)
@@ -438,20 +468,19 @@ func (s *ReactionModel) publishReactionMutation(ctx context.Context, kind RoomKi
 		} else if !snapshot.Exists {
 			return nil, nil
 		}
-
 		return []evtstream.MutationEntry{{Subject: publishSubject, Event: event}}, nil
 	})
 	if err != nil {
-		return false, err
+		return false, 0, err
 	}
 	if !result.Committed {
-		return false, nil
+		return false, 0, nil
 	}
-	if len(result.Sequences) != 1 {
-		return false, fmt.Errorf("reaction mutation committed %d events, want 1", len(result.Sequences))
+	if len(result.Sequences) == 0 {
+		return false, 0, fmt.Errorf("reaction mutation committed without a sequence")
 	}
 	if err := s.core.roomModel.waitForReactions(ctx, events.SubjectPosition(publishSubject, result.Sequences[0])); err != nil {
-		return false, fmt.Errorf("wait for reactions projection: %w", err)
+		return false, 0, fmt.Errorf("wait for reactions projection: %w", err)
 	}
-	return true, nil
+	return true, result.Sequences[0], nil
 }

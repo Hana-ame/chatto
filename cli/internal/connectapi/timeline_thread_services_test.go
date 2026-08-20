@@ -616,40 +616,12 @@ func TestRoomAndThreadServicesMarkRoomAsReadAnchorsAndDoesNotRegress(t *testing.
 	}
 	e2 := env.post(room.Id, env.viewer.Id, "two", "")
 	e3 := env.post(room.Id, env.viewer.Id, "three", "")
-	roomMention, err := env.core.CreateNotification(env.ctx, reader.Id, env.viewer.Id, &corev1.Notification{
-		Notification: &corev1.Notification_Mention{
-			Mention: &corev1.MentionNotification{RoomId: room.Id, EventId: e1.Id},
-		},
-	})
-	if err != nil {
-		t.Fatalf("CreateNotification room mention: %v", err)
-	}
-	roomReply, err := env.core.CreateNotification(env.ctx, reader.Id, env.viewer.Id, &corev1.Notification{
-		Notification: &corev1.Notification_Reply{
-			Reply: &corev1.ReplyNotification{RoomId: room.Id, EventId: e2.Id, InReplyToId: e1.Id},
-		},
-	})
-	if err != nil {
-		t.Fatalf("CreateNotification room reply: %v", err)
-	}
-	futureRoomNotification, err := env.core.CreateNotification(env.ctx, reader.Id, env.viewer.Id, &corev1.Notification{
-		Notification: &corev1.Notification_RoomMessage{
-			RoomMessage: &corev1.RoomMessageNotification{RoomId: room.Id, EventId: e3.Id},
-		},
-	})
-	if err != nil {
-		t.Fatalf("CreateNotification future room message: %v", err)
-	}
+	roomMention := createReadTestOccurrence(t, env, reader.Id, env.viewer.Id, room.Id, e1, "", notificationTestSignalDirectMention)
+	roomReply := createReadTestOccurrence(t, env, reader.Id, env.viewer.Id, room.Id, e2, "", notificationTestSignalReply)
+	futureRoomNotification := createReadTestOccurrence(t, env, reader.Id, env.viewer.Id, room.Id, e3, "", notificationTestSignalFollowedRoom)
 	threadRoot := env.post(room.Id, env.viewer.Id, "thread root", "")
 	threadReply := env.post(room.Id, env.viewer.Id, "thread reply", threadRoot.Id)
-	threadNotification, err := env.core.CreateNotification(env.ctx, reader.Id, env.viewer.Id, &corev1.Notification{
-		Notification: &corev1.Notification_Reply{
-			Reply: &corev1.ReplyNotification{RoomId: room.Id, EventId: threadReply.Id, InReplyToId: threadRoot.Id, InThread: threadRoot.Id},
-		},
-	})
-	if err != nil {
-		t.Fatalf("CreateNotification thread reply: %v", err)
-	}
+	threadNotification := createReadTestOccurrence(t, env, reader.Id, env.viewer.Id, room.Id, threadReply, threadRoot.Id, notificationTestSignalReply)
 
 	ctx := withCaller(env.ctx, reader)
 	resp, err := env.rooms.MarkRoomAsRead(ctx, connect.NewRequest(&apiv1.MarkRoomAsReadRequest{
@@ -665,11 +637,10 @@ func TestRoomAndThreadServicesMarkRoomAsReadAnchorsAndDoesNotRegress(t *testing.
 	if got, err := env.core.GetLastReadEventID(env.ctx, core.KindChannel, reader.Id, room.Id); err != nil || got != e2.Id {
 		t.Fatalf("marker after e2 = %q, %v; want %s", got, err, e2.Id)
 	}
-	assertAPINotifications(t, env, ctx,
+	assertAPINotificationStates(t, env, ctx,
 		[]string{futureRoomNotification.Id, threadNotification.Id},
 		[]string{roomMention.Id, roomReply.Id},
 	)
-	assertRoomNotificationCount(t, env, ctx, room.Id, 2)
 
 	if _, err := env.rooms.MarkRoomAsRead(ctx, connect.NewRequest(&apiv1.MarkRoomAsReadRequest{
 		RoomId:      room.Id,
@@ -680,7 +651,7 @@ func TestRoomAndThreadServicesMarkRoomAsReadAnchorsAndDoesNotRegress(t *testing.
 	if got, err := env.core.GetLastReadEventID(env.ctx, core.KindChannel, reader.Id, room.Id); err != nil || got != e2.Id {
 		t.Fatalf("marker after stale e1 = %q, %v; want %s", got, err, e2.Id)
 	}
-	assertAPINotifications(t, env, ctx,
+	assertAPINotificationStates(t, env, ctx,
 		[]string{futureRoomNotification.Id, threadNotification.Id},
 		[]string{roomMention.Id, roomReply.Id},
 	)
@@ -714,11 +685,10 @@ func TestRoomAndThreadServicesMarkRoomAsReadAnchorsAndDoesNotRegress(t *testing.
 	if got, err := env.core.GetLastReadEventID(env.ctx, core.KindChannel, reader.Id, room.Id); err != nil || got != threadRoot.Id {
 		t.Fatalf("marker after omitted anchor = %q, %v; want %s", got, err, threadRoot.Id)
 	}
-	assertAPINotifications(t, env, ctx,
+	assertAPINotificationStates(t, env, ctx,
 		[]string{threadNotification.Id},
 		[]string{futureRoomNotification.Id, roomMention.Id, roomReply.Id},
 	)
-	assertRoomNotificationCount(t, env, ctx, room.Id, 1)
 }
 
 func TestRoomAndThreadServicesMarkRoomAsReadRejectsMissingAnchorWithoutLazyMarker(t *testing.T) {
@@ -785,49 +755,14 @@ func TestRoomAndThreadServicesMarkThreadAsReadAnchorsAndDoesNotRegress(t *testin
 	root := env.post(room.Id, env.viewer.Id, "root", "")
 	reply1 := env.post(room.Id, env.viewer.Id, "reply one", root.Id)
 	reply2 := env.post(room.Id, env.viewer.Id, "reply two", root.Id)
-	threadReplyNotification, err := env.core.CreateNotification(env.ctx, reader.Id, env.viewer.Id, &corev1.Notification{
-		Notification: &corev1.Notification_Reply{
-			Reply: &corev1.ReplyNotification{RoomId: room.Id, EventId: reply1.Id, InReplyToId: root.Id, InThread: root.Id},
-		},
-	})
-	if err != nil {
-		t.Fatalf("CreateNotification thread reply: %v", err)
-	}
-	threadMentionNotification, err := env.core.CreateNotification(env.ctx, reader.Id, env.viewer.Id, &corev1.Notification{
-		Notification: &corev1.Notification_Mention{
-			Mention: &corev1.MentionNotification{RoomId: room.Id, EventId: reply2.Id, InThread: root.Id},
-		},
-	})
-	if err != nil {
-		t.Fatalf("CreateNotification thread mention: %v", err)
-	}
+	threadReplyNotification := createReadTestOccurrence(t, env, reader.Id, env.viewer.Id, room.Id, reply1, root.Id, notificationTestSignalReply)
+	threadMentionNotification := createReadTestOccurrence(t, env, reader.Id, env.viewer.Id, room.Id, reply2, root.Id, notificationTestSignalDirectMention)
 	reply3 := env.post(room.Id, env.viewer.Id, "reply three", root.Id)
-	futureThreadNotification, err := env.core.CreateNotification(env.ctx, reader.Id, env.viewer.Id, &corev1.Notification{
-		Notification: &corev1.Notification_Reply{
-			Reply: &corev1.ReplyNotification{RoomId: room.Id, EventId: reply3.Id, InReplyToId: root.Id, InThread: root.Id},
-		},
-	})
-	if err != nil {
-		t.Fatalf("CreateNotification future thread reply: %v", err)
-	}
+	futureThreadNotification := createReadTestOccurrence(t, env, reader.Id, env.viewer.Id, room.Id, reply3, root.Id, notificationTestSignalReply)
 	otherRoot := env.post(room.Id, env.viewer.Id, "other root", "")
 	otherReply := env.post(room.Id, env.viewer.Id, "other reply", otherRoot.Id)
-	otherThreadNotification, err := env.core.CreateNotification(env.ctx, reader.Id, env.viewer.Id, &corev1.Notification{
-		Notification: &corev1.Notification_Reply{
-			Reply: &corev1.ReplyNotification{RoomId: room.Id, EventId: otherReply.Id, InReplyToId: otherRoot.Id, InThread: otherRoot.Id},
-		},
-	})
-	if err != nil {
-		t.Fatalf("CreateNotification other thread reply: %v", err)
-	}
-	roomNotification, err := env.core.CreateNotification(env.ctx, reader.Id, env.viewer.Id, &corev1.Notification{
-		Notification: &corev1.Notification_Mention{
-			Mention: &corev1.MentionNotification{RoomId: room.Id, EventId: root.Id},
-		},
-	})
-	if err != nil {
-		t.Fatalf("CreateNotification room mention: %v", err)
-	}
+	otherThreadNotification := createReadTestOccurrence(t, env, reader.Id, env.viewer.Id, room.Id, otherReply, otherRoot.Id, notificationTestSignalReply)
+	roomNotification := createReadTestOccurrence(t, env, reader.Id, env.viewer.Id, room.Id, root, "", notificationTestSignalDirectMention)
 
 	ctx := withCaller(env.ctx, reader)
 	resp, err := env.threads.MarkThreadAsRead(ctx, connect.NewRequest(&apiv1.MarkThreadAsReadRequest{
@@ -845,11 +780,10 @@ func TestRoomAndThreadServicesMarkThreadAsReadAnchorsAndDoesNotRegress(t *testin
 	if err != nil {
 		t.Fatalf("GetThreadLastOpened after reply2: %v", err)
 	}
-	assertAPINotifications(t, env, ctx,
+	assertAPINotificationStates(t, env, ctx,
 		[]string{futureThreadNotification.Id, otherThreadNotification.Id, roomNotification.Id},
 		[]string{threadReplyNotification.Id, threadMentionNotification.Id},
 	)
-	assertRoomNotificationCount(t, env, ctx, room.Id, 3)
 
 	resp, err = env.threads.MarkThreadAsRead(ctx, connect.NewRequest(&apiv1.MarkThreadAsReadRequest{
 		RoomId:            room.Id,
@@ -869,7 +803,7 @@ func TestRoomAndThreadServicesMarkThreadAsReadAnchorsAndDoesNotRegress(t *testin
 	if !markerAfter.Equal(marker2) {
 		t.Fatalf("thread marker regressed from %v to %v", marker2, markerAfter)
 	}
-	assertAPINotifications(t, env, ctx,
+	assertAPINotificationStates(t, env, ctx,
 		[]string{futureThreadNotification.Id, otherThreadNotification.Id, roomNotification.Id},
 		[]string{threadReplyNotification.Id, threadMentionNotification.Id},
 	)
@@ -905,45 +839,55 @@ func TestRoomAndThreadServicesMarkThreadAsReadAnchorsAndDoesNotRegress(t *testin
 	}
 }
 
-func assertAPINotifications(t *testing.T, env *connectAPITestEnv, ctx context.Context, present []string, absent []string) {
+func createReadTestOccurrence(t *testing.T, env *connectAPITestEnv, recipientID, actorID, roomID string, event *corev1.Event, threadRootID string, reason notificationTestSignalKind) *corev1.NotificationOccurrence {
 	t.Helper()
-	resp, err := env.notifications.ListNotifications(ctx, connect.NewRequest(&apiv1.ListNotificationsRequest{
+	sequence, err := env.core.GetEventSequence(env.ctx, core.KindChannel, roomID, event.GetId())
+	if err != nil {
+		t.Fatalf("GetEventSequence: %v", err)
+	}
+	target := testNotificationRoomMessageTarget(roomID, event.GetId())
+	if threadRootID != "" {
+		target.ThreadRootEventId = &threadRootID
+	}
+	occurrence, _, err := env.core.NotificationOccurrences().Create(env.ctx, core.CreateNotificationOccurrenceInput{
+		RecipientID:          recipientID,
+		SourceEventID:        event.GetId(),
+		SourceCreated:        event.GetCreatedAt().AsTime(),
+		SourceStreamSequence: sequence,
+		ActorID:              actorID,
+		Signal:               testNotificationSignalWithMessage(reason, target),
+		Mode:                 corev1.NotificationDeliveryMode_NOTIFICATION_DELIVERY_MODE_SILENT,
+		AttentionLevel:       corev1.NotificationAttentionLevel_NOTIFICATION_ATTENTION_LEVEL_IMPORTANT,
+		InitiallyRead:        false,
+		SkipReadLookup:       true,
+	})
+	if err != nil {
+		t.Fatalf("Create notification occurrence: %v", err)
+	}
+	return occurrence
+}
+
+func assertAPINotificationStates(t *testing.T, env *connectAPITestEnv, ctx context.Context, unreadIDs []string, readIDs []string) {
+	t.Helper()
+	resp, err := env.notifications.ListNotificationOccurrences(ctx, connect.NewRequest(&apiv1.ListNotificationOccurrencesRequest{
 		Page: &apiv1.PageRequest{Limit: 100},
 	}))
 	if err != nil {
-		t.Fatalf("ListNotifications: %v", err)
+		t.Fatalf("ListNotificationOccurrences: %v", err)
 	}
-	ids := map[string]bool{}
-	for _, notification := range resp.Msg.GetNotifications() {
-		ids[notification.GetId()] = true
+	states := map[string]bool{}
+	for _, notification := range resp.Msg.GetOccurrences() {
+		states[notification.GetId()] = notification.GetUnread()
 	}
-	for _, id := range present {
-		if !ids[id] {
-			t.Fatalf("notification %s missing from API list; got %v", id, ids)
+	for _, id := range unreadIDs {
+		if !states[id] {
+			t.Fatalf("notification %s state = %v, want unread; got %v", id, states[id], states)
 		}
 	}
-	for _, id := range absent {
-		if ids[id] {
-			t.Fatalf("notification %s still present in API list; got %v", id, ids)
+	for _, id := range readIDs {
+		if states[id] {
+			t.Fatalf("notification %s state = %v, want read; got %v", id, states[id], states)
 		}
-	}
-}
-
-func assertRoomNotificationCount(t *testing.T, env *connectAPITestEnv, ctx context.Context, roomID string, want int32) {
-	t.Helper()
-	resp, err := env.notifications.ListRoomNotificationCounts(ctx, connect.NewRequest(&apiv1.ListRoomNotificationCountsRequest{}))
-	if err != nil {
-		t.Fatalf("ListRoomNotificationCounts: %v", err)
-	}
-	got := int32(0)
-	for _, count := range resp.Msg.GetRoomCounts() {
-		if count.GetRoomId() == roomID {
-			got = count.GetTotalCount()
-			break
-		}
-	}
-	if got != want {
-		t.Fatalf("room notification count for %s = %d, want %d", roomID, got, want)
 	}
 }
 

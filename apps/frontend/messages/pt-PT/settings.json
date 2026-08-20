@@ -195,35 +195,6 @@
         "enable": "Ativar",
         "dismiss": "Não, obrigado"
       },
-      "levels": {
-        "loading": "Carregando...",
-        "load_failed": "Falha ao carregar as preferências de notificação",
-        "server_updated": "Nível de notificação do servidor atualizado",
-        "room_updated": "Nível de notificação da sala atualizado",
-        "update_failed": "Falha ao atualizar",
-        "server_title": "Nível de notificação do servidor",
-        "server_description": "Controla a forma como recebe notificações de todas as salas deste servidor. Salas individuais podem substituir esta configuração.",
-        "room_title": "Substituições de salas",
-        "room_description": "Substitua a definição de nível de servidor para salas individuais. As salas definidas como \"Padrão\" herdam a configuração do servidor ({level}).",
-        "room_level_label": "Nível de notificação para #{room}",
-        "effective": "Em vigor: {level}",
-        "default": {
-          "label": "Padrão",
-          "description": "Utilizar o padrão herdado"
-        },
-        "muted": {
-          "label": "Silenciado",
-          "description": "Sem notificação ou marcadores não lidos"
-        },
-        "normal": {
-          "label": "Normal",
-          "description": "Marcadores não lidos + menções, mensagens diretas e respostas ao tópico"
-        },
-        "all_messages": {
-          "label": "Todas as mensagens",
-          "description": "Normal + notificação para cada nova mensagem"
-        }
-      },
       "sound": {
         "title": "Som de notificação",
         "shape_title": "Forma sonora",
@@ -272,6 +243,32 @@
           "siren": "Sirene de Alerta",
           "dubstep": "Queda de Dubstep",
           "circus": "Circo"
+        }
+      },
+      "policy": {
+        "title": "Política de notificações",
+        "description": "Escolha quanta atenção deve receber cada tipo de atividade. Herdar usa a predefinição do servidor.",
+        "load_failed": "Não foi possível carregar a política de notificações",
+        "save_failed": "Não foi possível guardar a política de notificações",
+        "effective": "Efetivo: {mode}",
+        "delivery_mode": {
+          "inherit": "Herdar",
+          "off": "Desativado",
+          "silent": "Silencioso",
+          "alert": "Alerta"
+        },
+        "reason": {
+          "direct_message": "Mensagens diretas",
+          "direct_mention": "Menções diretas",
+          "reply": "Respostas às suas mensagens",
+          "role_mention": "Menções a cargos",
+          "here": "Menções @here",
+          "all": "Menções @all",
+          "followed_thread": "Tópicos seguidos",
+          "followed_room": "Salas seguidas",
+          "reaction": "Reações às suas mensagens",
+          "activity": "Atividade",
+          "room_invitation": "Convites para salas"
         }
       }
     },

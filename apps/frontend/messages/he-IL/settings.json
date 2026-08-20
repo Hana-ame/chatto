@@ -195,35 +195,6 @@
         "enable": "הפעל",
         "dismiss": "לא תודה"
       },
-      "levels": {
-        "loading": "טוען...",
-        "load_failed": "נכשל בטעינת העדפות ההתראות",
-        "server_updated": "רמת ההתראה של השרת עודכנה",
-        "room_updated": "רמת ההתראה בחדר עודכנה",
-        "update_failed": "נכשל בעדכון",
-        "server_title": "רמת הודעות שרת",
-        "server_description": "שולט כיצד אתה מקבל התראות עבור כל החדרים בשרת זה. חדרים בודדים יכולים לעקוף הגדרה זו.",
-        "room_title": "עקיפות לחדרים",
-        "room_description": "עוקף את ההגדרה ברמת השרת עבור חדרים בודדים. חדרים המוגדרים ל\"ברירת מחדל\" יורשים את הגדרת השרת ({level}).",
-        "room_level_label": "רמת התראה עבור #{room}",
-        "effective": "יעיל: {level}",
-        "default": {
-          "label": "ברירת מחדל",
-          "description": "השתמש בברירת המחדל שהורשתה"
-        },
-        "muted": {
-          "label": "מושתק",
-          "description": "אין התראות או סמנים שלא נקראו"
-        },
-        "normal": {
-          "label": "רגיל",
-          "description": "סמנים שלא נקראו + אזכורים, הודעות DM ותשובות שרשור"
-        },
-        "all_messages": {
-          "label": "כל ההודעות",
-          "description": "רגיל + התראה לכל הודעה חדשה"
-        }
-      },
       "sound": {
         "title": "צליל התראה",
         "shape_title": "צורת צליל",
@@ -272,6 +243,32 @@
           "siren": "צפירת התראה",
           "dubstep": "Dubstep Drop",
           "circus": "קרקס"
+        }
+      },
+      "policy": {
+        "title": "מדיניות התראות",
+        "description": "בחרו באיזו עוצמה כל סוג פעילות ימשוך את תשומת לבכם. ירושה משתמשת בברירת המחדל של השרת.",
+        "load_failed": "טעינת מדיניות ההתראות נכשלה",
+        "save_failed": "שמירת מדיניות ההתראות נכשלה",
+        "effective": "בתוקף: {mode}",
+        "delivery_mode": {
+          "inherit": "ירושה",
+          "off": "כבוי",
+          "silent": "שקט",
+          "alert": "התראה"
+        },
+        "reason": {
+          "direct_message": "הודעות ישירות",
+          "direct_mention": "אזכורים ישירים",
+          "reply": "תגובות להודעות שלך",
+          "role_mention": "אזכורי תפקידים",
+          "here": "אזכורי @here",
+          "all": "אזכורי @all",
+          "followed_thread": "שרשורים במעקב",
+          "followed_room": "חדרים במעקב",
+          "reaction": "תגובות להודעות שלך",
+          "activity": "פעילות",
+          "room_invitation": "הזמנות לחדרים"
         }
       }
     },

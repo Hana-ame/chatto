@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	webpush "github.com/SherClockHolmes/webpush-go"
 	"github.com/charmbracelet/log"
@@ -29,6 +31,7 @@ type Sender struct {
 	httpClient       webpush.HTTPClient
 	validateEndpoint func(string) error
 	requestSlots     chan struct{}
+	now              func() time.Time
 }
 
 const (
@@ -50,6 +53,7 @@ func NewSender(cfg config.PushConfig, logger *log.Logger) *Sender {
 		httpClient:       pushendpoint.NewHTTPClient(pushRequestTimeout),
 		validateEndpoint: pushendpoint.Validate,
 		requestSlots:     make(chan struct{}, maxConcurrentPushRequests),
+		now:              time.Now,
 	}
 }
 
@@ -63,6 +67,14 @@ type Payload struct {
 	NotificationID string `json:"notificationId,omitempty"`
 	URL            string `json:"url,omitempty"`
 	AppBadge       string `json:"-"`
+	// TTLSeconds overrides the provider retention horizon. Notification alerts
+	// set this to their remaining immutable delivery lifetime; other push types
+	// retain the normal 24-hour default.
+	TTLSeconds int `json:"-"`
+	// DeliveryDeadline is the immutable absolute provider-retention boundary for
+	// time-sensitive alerts. Sender calculates the remaining TTL only after it
+	// acquires a request slot so local contention cannot extend that boundary.
+	DeliveryDeadline time.Time `json:"-"`
 	// Action is empty for regular user-visible notifications. Control pushes set
 	// it to a command such as "dismiss" and do not display a new notification.
 	Action string `json:"action,omitempty"`
@@ -148,6 +160,22 @@ func (p Payload) deliveryUrgency() webpush.Urgency {
 	return webpush.UrgencyNormal
 }
 
+func (p Payload) deliveryTTL(now time.Time) (int, bool) {
+	if !p.DeliveryDeadline.IsZero() {
+		remaining := p.DeliveryDeadline.Sub(now)
+		if remaining <= 0 {
+			return 0, false
+		}
+		// Truncation is intentional: the provider must never retain the payload
+		// beyond the absolute deadline. Zero means immediate delivery only.
+		return int(remaining / time.Second), true
+	}
+	if p.TTLSeconds > 0 {
+		return p.TTLSeconds, true
+	}
+	return 24 * 60 * 60, true
+}
+
 // PayloadContext provides optional context for building push payloads.
 type PayloadContext struct {
 	// MessagePreview is a truncated preview of the message body
@@ -156,23 +184,27 @@ type PayloadContext struct {
 	RoomName string
 }
 
-// maxPreviewLength is the maximum length for message previews
+// maxPreviewLength is the maximum number of Unicode code points in a message
+// preview, including the ellipsis added when truncating.
 const maxPreviewLength = 100
 
-// truncatePreview truncates a message to maxPreviewLength with ellipsis
+// truncatePreview truncates a message to maxPreviewLength Unicode code points,
+// preferring a nearby whitespace boundary and including the ellipsis in the
+// limit. It never slices through a UTF-8 encoding.
 func truncatePreview(text string) string {
-	if len(text) <= maxPreviewLength {
+	if utf8.RuneCountInString(text) <= maxPreviewLength {
 		return text
 	}
-	// Find a good break point (space) near the limit
-	breakPoint := maxPreviewLength
-	for i := maxPreviewLength - 1; i > maxPreviewLength-20 && i > 0; i-- {
-		if text[i] == ' ' {
+	runes := []rune(text)
+	contentLimit := maxPreviewLength - 1
+	breakPoint := contentLimit
+	for i := contentLimit - 1; i > contentLimit-20 && i > 0; i-- {
+		if unicode.IsSpace(runes[i]) {
 			breakPoint = i
 			break
 		}
 	}
-	return text[:breakPoint] + "…"
+	return string(runes[:breakPoint]) + "…"
 }
 
 // SendResult contains the result of a push notification send attempt.
@@ -206,6 +238,11 @@ func (s *Sender) Send(ctx context.Context, sub *corev1.PushSubscription, payload
 		result.Error = requestCtx.Err()
 		return result
 	}
+	ttl, deliverable := payload.deliveryTTL(s.now())
+	if !deliverable {
+		result.Error = context.DeadlineExceeded
+		return result
+	}
 
 	// Marshal payload to JSON
 	payloadJSON, err := json.Marshal(payload)
@@ -228,7 +265,7 @@ func (s *Sender) Send(ctx context.Context, sub *corev1.PushSubscription, payload
 		Subscriber:      normalizeVAPIDSubject(s.config.VAPIDSubject),
 		VAPIDPublicKey:  s.config.VAPIDPublicKey,
 		VAPIDPrivateKey: s.config.VAPIDPrivateKey,
-		TTL:             86400, // 24 hours
+		TTL:             ttl,
 		Urgency:         payload.deliveryUrgency(),
 		RecordSize:      pushRecordSize,
 		HTTPClient:      s.httpClient,
@@ -345,12 +382,12 @@ func buildNotificationURL(baseURL, roomID, threadRootID, highlightEventID string
 	return buildAppURL(baseURL, segments, "highlight", highlightEventID)
 }
 
-// BuildPayloadFromNotification creates a push payload from a notification.
+// BuildPayloadFromOccurrence creates a push payload from a notification occurrence.
 // The baseURL is used to build navigation URLs (e.g., "https://chatto.example.com").
 // The optional payloadCtx provides message preview and room name for richer notifications.
-func BuildPayloadFromNotification(notif *corev1.Notification, actorDisplayName, baseURL string, payloadCtx *PayloadContext) *Payload {
+func BuildPayloadFromOccurrence(occurrence *corev1.NotificationOccurrence, actorDisplayName, baseURL string, payloadCtx *PayloadContext) *Payload {
 	payload := &Payload{
-		NotificationID: notif.Id,
+		NotificationID: occurrence.GetId(),
 		Icon:           buildAppURL(baseURL, []string{"icons", "icon-192.png"}, "", ""),
 		Badge:          buildAppURL(baseURL, []string{"icons", "icon-192.png"}, "", ""), // Badge should be monochrome, but use same for now
 	}
@@ -363,65 +400,127 @@ func BuildPayloadFromNotification(notif *corev1.Notification, actorDisplayName, 
 		roomName = payloadCtx.RoomName
 	}
 
-	switch n := notif.Notification.(type) {
-	case *corev1.Notification_DmMessage:
+	target := occurrenceMessageReference(occurrence)
+	if target == nil {
+		payload.Title = "New notification"
+		payload.Body = "You have a new notification"
+		return payload
+	}
+
+	switch {
+	case occurrence.GetSignal().GetDirectMessageReceived() != nil:
 		payload.Title = fmt.Sprintf("@%s sent you a new DM", actorDisplayName)
 		payload.Body = preview
-		payload.Tag = "dm-" + n.DmMessage.EventId
-		payload.URL = buildNotificationURL(baseURL, n.DmMessage.RoomId, "", "")
+		payload.Tag = OccurrenceTag(occurrence)
+		payload.URL = buildNotificationURL(baseURL, target.GetRoomId(), "", "")
 
-	case *corev1.Notification_Mention:
+	case occurrenceHasMentionReason(occurrence):
 		if roomName != "" {
 			payload.Title = fmt.Sprintf("@%s mentioned you in #%s", actorDisplayName, roomName)
 		} else {
 			payload.Title = fmt.Sprintf("@%s mentioned you", actorDisplayName)
 		}
 		payload.Body = preview
-		payload.Tag = "mention-" + n.Mention.EventId
-		payload.URL = buildNotificationURL(baseURL, n.Mention.RoomId, n.Mention.InThread, n.Mention.EventId)
+		payload.Tag = OccurrenceTag(occurrence)
+		payload.URL = buildNotificationURL(baseURL, target.GetRoomId(), target.GetThreadRootEventId(), target.GetEventId())
 
-	case *corev1.Notification_Reply:
+	case occurrence.GetSignal().GetReactionReceived() != nil:
+		if roomName != "" {
+			payload.Title = fmt.Sprintf("@%s reacted to your message in #%s", actorDisplayName, roomName)
+		} else {
+			payload.Title = fmt.Sprintf("@%s reacted to your message", actorDisplayName)
+		}
+		payload.Body = preview
+		if emoji := occurrence.GetSignal().GetReactionReceived().GetEmoji(); emoji != "" {
+			payload.Body = ":" + emoji + ":"
+			if preview != "" {
+				payload.Body += " · " + preview
+			}
+		}
+		payload.Tag = OccurrenceTag(occurrence)
+		payload.URL = buildNotificationURL(baseURL, target.GetRoomId(), target.GetThreadRootEventId(), target.GetEventId())
+
+	case occurrence.GetSignal().GetReplyReceived() != nil:
 		if roomName != "" {
 			payload.Title = fmt.Sprintf("@%s replied to you in #%s", actorDisplayName, roomName)
 		} else {
 			payload.Title = fmt.Sprintf("@%s replied to you", actorDisplayName)
 		}
 		payload.Body = preview
-		payload.Tag = "reply-" + n.Reply.EventId
-		payload.URL = buildNotificationURL(baseURL, n.Reply.RoomId, n.Reply.InThread, n.Reply.EventId)
+		payload.Tag = OccurrenceTag(occurrence)
+		payload.URL = buildNotificationURL(baseURL, target.GetRoomId(), target.GetThreadRootEventId(), target.GetEventId())
 
-	case *corev1.Notification_RoomMessage:
+	default:
 		if roomName != "" {
 			payload.Title = fmt.Sprintf("@%s posted in #%s", actorDisplayName, roomName)
 		} else {
 			payload.Title = fmt.Sprintf("@%s posted a message", actorDisplayName)
 		}
 		payload.Body = preview
-		payload.Tag = "room-message-" + n.RoomMessage.EventId
-		payload.URL = buildNotificationURL(baseURL, n.RoomMessage.RoomId, "", n.RoomMessage.EventId)
-
-	default:
-		payload.Title = "New notification"
-		payload.Body = "You have a new notification"
+		payload.Tag = OccurrenceTag(occurrence)
+		payload.URL = buildNotificationURL(baseURL, target.GetRoomId(), target.GetThreadRootEventId(), target.GetEventId())
 	}
 
 	return payload
 }
 
-// NotificationTag returns the push notification tag for a notification.
-// Used for dismissing notifications on other devices.
-// Tags use event IDs to uniquely identify each notification.
-func NotificationTag(notif *corev1.Notification) string {
-	switch n := notif.Notification.(type) {
-	case *corev1.Notification_DmMessage:
-		return "dm-" + n.DmMessage.EventId
-	case *corev1.Notification_Mention:
-		return "mention-" + n.Mention.EventId
-	case *corev1.Notification_Reply:
-		return "reply-" + n.Reply.EventId
-	case *corev1.Notification_RoomMessage:
-		return "room-message-" + n.RoomMessage.EventId
+// OccurrenceTag returns the stable native-notification tag for an occurrence.
+func OccurrenceTag(occurrence *corev1.NotificationOccurrence) string {
+	target := occurrenceMessageReference(occurrence)
+	if target == nil {
+		return ""
+	}
+	eventID := target.GetEventId()
+	switch {
+	case occurrence.GetSignal().GetDirectMessageReceived() != nil:
+		return "dm-" + eventID
+	case occurrenceHasMentionReason(occurrence):
+		return "mention-" + eventID
+	case occurrence.GetSignal().GetReplyReceived() != nil:
+		return "reply-" + eventID
+	case occurrence.GetSignal().GetReactionReceived() != nil:
+		return "reaction-" + eventID
+	case target != nil:
+		return "room-message-" + eventID
 	default:
 		return ""
 	}
+}
+
+func occurrenceMessageReference(occurrence *corev1.NotificationOccurrence) *corev1.NotificationMessageReference {
+	if occurrence == nil || occurrence.GetSignal() == nil {
+		return nil
+	}
+	switch payload := occurrence.GetSignal().GetKind().(type) {
+	case *corev1.NotificationSignal_DirectMessageReceived:
+		return payload.DirectMessageReceived.GetMessage()
+	case *corev1.NotificationSignal_DirectMentionReceived:
+		return payload.DirectMentionReceived.GetMessage()
+	case *corev1.NotificationSignal_ReplyReceived:
+		return payload.ReplyReceived.GetMessage()
+	case *corev1.NotificationSignal_RoleMentionReceived:
+		return payload.RoleMentionReceived.GetMessage()
+	case *corev1.NotificationSignal_HereMentionReceived:
+		return payload.HereMentionReceived.GetMessage()
+	case *corev1.NotificationSignal_AllMentionReceived:
+		return payload.AllMentionReceived.GetMessage()
+	case *corev1.NotificationSignal_FollowedThreadActivity:
+		return payload.FollowedThreadActivity.GetMessage()
+	case *corev1.NotificationSignal_FollowedRoomActivity:
+		return payload.FollowedRoomActivity.GetMessage()
+	case *corev1.NotificationSignal_ReactionReceived:
+		return payload.ReactionReceived.GetMessage()
+	default:
+		return nil
+	}
+}
+
+func occurrenceHasMentionReason(occurrence *corev1.NotificationOccurrence) bool {
+	if occurrence == nil || occurrence.GetSignal() == nil {
+		return false
+	}
+	return occurrence.GetSignal().GetDirectMentionReceived() != nil ||
+		occurrence.GetSignal().GetRoleMentionReceived() != nil ||
+		occurrence.GetSignal().GetHereMentionReceived() != nil ||
+		occurrence.GetSignal().GetAllMentionReceived() != nil
 }

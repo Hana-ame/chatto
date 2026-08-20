@@ -195,35 +195,6 @@
         "enable": "Habilitar",
         "dismiss": "No, gracias"
       },
-      "levels": {
-        "loading": "Cargando...",
-        "load_failed": "No se pudo cargar las preferencias de notificación",
-        "server_updated": "Nivel de notificación del servidor actualizado",
-        "room_updated": "Nivel de notificación de sala actualizado",
-        "update_failed": "No se pudo actualizar",
-        "server_title": "Nivel de notificación del servidor",
-        "server_description": "Controla cómo recibes notificaciones para todas las salas de este servidor. Las habitaciones individuales pueden anular esta configuración.",
-        "room_title": "Anulación de salas",
-        "room_description": "Anula la configuración a nivel de servidor para salas individuales. Las habitaciones configuradas como \"Predeterminadas\" heredan la configuración del servidor ({level}).",
-        "room_level_label": "Nivel de notificación para #{room}",
-        "effective": "Vigente: {level}",
-        "default": {
-          "label": "Predeterminado",
-          "description": "Usar el valor predeterminado heredado"
-        },
-        "muted": {
-          "label": "Silenciado",
-          "description": "No hay notificaciones ni marcadores de no leídos"
-        },
-        "normal": {
-          "label": "Normal",
-          "description": "Marcadores no leídos + menciones, DM y respuestas a hilos"
-        },
-        "all_messages": {
-          "label": "Todos los mensajes",
-          "description": "Normal + notificación por cada mensaje nuevo"
-        }
-      },
       "sound": {
         "title": "Sonido de notificación",
         "shape_title": "Forma del sonido",
@@ -272,6 +243,32 @@
           "siren": "Sirena de Alerta",
           "dubstep": "Lanzamiento de Dubstep",
           "circus": "Circo"
+        }
+      },
+      "policy": {
+        "title": "Política de notificaciones",
+        "description": "Elige cuánta atención debe recibir cada tipo de actividad. Heredar usa el valor predeterminado del servidor.",
+        "load_failed": "No se pudo cargar la política de notificaciones",
+        "save_failed": "No se pudo guardar la política de notificaciones",
+        "effective": "Efectivo: {mode}",
+        "delivery_mode": {
+          "inherit": "Heredar",
+          "off": "Desactivado",
+          "silent": "Silencioso",
+          "alert": "Alerta"
+        },
+        "reason": {
+          "direct_message": "Mensajes directos",
+          "direct_mention": "Menciones directas",
+          "reply": "Respuestas a tus mensajes",
+          "role_mention": "Menciones de roles",
+          "here": "Menciones @here",
+          "all": "Menciones @all",
+          "followed_thread": "Hilos seguidos",
+          "followed_room": "Salas seguidas",
+          "reaction": "Reacciones a tus mensajes",
+          "activity": "Actividad",
+          "room_invitation": "Invitaciones a salas"
         }
       }
     },

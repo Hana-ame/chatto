@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -309,7 +310,31 @@ func enumerateStreams(ctx context.Context, js jetstream.JetStream) ([]string, er
 		return nil, err
 	}
 
+	orderBackupStreams(names)
 	return names, nil
+}
+
+// orderBackupStreams preserves notification materialization across independently
+// captured snapshots. EVT captures the durable consumer floor first,
+// RUNTIME_STATE captures read/visibility boundaries, and NOTIFICATIONS captures
+// deterministic derived lifecycle facts last. A handoff racing the snapshots
+// is therefore either present or replayable after restore.
+func orderBackupStreams(names []string) {
+	priority := func(name string) int {
+		switch name {
+		case "EVT":
+			return 0
+		case "KV_RUNTIME_STATE":
+			return 1
+		case "NOTIFICATIONS":
+			return 2
+		default:
+			return 1
+		}
+	}
+	sort.SliceStable(names, func(i, j int) bool {
+		return priority(names[i]) < priority(names[j])
+	})
 }
 
 // backupStream backs up a single stream and returns info about the backup

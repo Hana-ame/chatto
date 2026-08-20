@@ -9,7 +9,19 @@
       "time_now": "Just praegu",
       "time_minutes": "{count}min tagasi",
       "time_hours": "{count}h tagasi",
-      "time_days": "{count}p tagasi"
+      "time_days": "{count}p tagasi",
+      "unread": "Lugemata",
+      "activity": "Uus tegevus",
+      "summary": {
+        "direct_message": "{actor} saatis sulle otsesõnumi.",
+        "reaction": "{actor} reageeris emotikoniga „{emoji}” sinu sõnumile kanalis {channel}.",
+        "reaction_group": "{actor} ja teised reageerisid emotikoniga „{emoji}” sinu sõnumile kanalis {channel}.",
+        "reply": "{actor} vastas sinu sõnumile.",
+        "mention": "{actor} mainis sind.",
+        "followed_thread": "{actor} vastas lõimes, mida jälgid.",
+        "new_message": "{actor} postitas uue sõnumi.",
+        "activity": "{actor} saatis sulle teavituse."
+      }
     },
     "sign_out": {
       "title": "Logi välja",

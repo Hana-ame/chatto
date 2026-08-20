@@ -1,7 +1,7 @@
 # FDR-005: Reactions
 
 **Status:** Active
-**Last reviewed:** 2026-08-10
+**Last reviewed:** 2026-08-20
 
 ## Overview
 
@@ -12,6 +12,13 @@ Users can react to a message with emoji. Reactions are aggregated into pills sho
 - Each pill shows: the emoji, how many users reacted with it, and a highlight when the current user has reacted.
 - Hovering a pill shows a tooltip with up to 5 reactor names plus an overflow count.
 - Clicking a pill toggles the current user's reaction.
+- Another user's reaction to your message creates one exact Ambient
+  notification occurrence when the reaction preference resolves to Silent or
+  Alert. Your own reactions do not notify you. Removing the reaction removes
+  that exact occurrence.
+- The notification list may consolidate every actor and emoji for the same
+  reacted-to message into one row, while unread badges continue to count the
+  exact underlying occurrences.
 - A user can add up to 20 distinct emoji reactions to one message. Reaching the limit rolls back the attempted reaction and shows a specific explanation; removing a reaction frees a slot.
 - On desktop, hovering a message reveals a quick-reaction bar with the user's most recently used emojis (falling back to a default set if none have been used yet).
 - Recent emoji selections persist in localStorage so the quick-bar stays personal across sessions.
@@ -96,5 +103,5 @@ into a narrow commit-time authorization fence instead.
 
 ## Related
 
-- **ADRs:** ADR-026 (event identity via NanoID), ADR-033 (event-sourced state with projections), ADR-034 (single event stream), ADR-035 (per-aggregate migration), ADR-042 (protobuf-first public API), ADR-044 (ConnectRPC service conventions), ADR-048 (frontend optimistic UI), ADR-051 (server-scoped resumable client projection), ADR-068 (selectable event mutation consistency boundaries)
-- **FDRs:** FDR-003 (Thread Reply Echo)
+- **ADRs:** ADR-026 (event identity via NanoID), ADR-033 (event-sourced state with projections), ADR-034 (single event stream), ADR-035 (per-aggregate migration), ADR-042 (protobuf-first public API), ADR-044 (ConnectRPC service conventions), ADR-048 (frontend optimistic UI), ADR-051 (server-scoped resumable client projection), ADR-068 (selectable event mutation consistency boundaries), ADR-076 (deterministic notification occurrences), ADR-077 (persistent notification list)
+- **FDRs:** FDR-003 (Thread Reply Echo), FDR-012 (Notifications)

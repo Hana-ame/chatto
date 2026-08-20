@@ -33,7 +33,6 @@ var publicReflectionServiceNames = []string{
 	adminv1connect.AdminServerServiceName,
 	apiv1connect.MessageServiceName,
 	apiv1connect.MessageSearchServiceName,
-	apiv1connect.NotificationPreferencesServiceName,
 	apiv1connect.NotificationServiceName,
 	apiv1connect.PushNotificationServiceName,
 	apiv1connect.RoleServiceName,

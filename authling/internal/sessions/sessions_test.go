@@ -141,6 +141,48 @@ func TestSessionRejectsAnOlderAuthenticationVersion(t *testing.T) {
 	}
 }
 
+func TestGenerationBoundSessionDoesNotUpgradeAcrossCredentialChange(t *testing.T) {
+	service, _, cleanup := testService(t)
+	defer cleanup()
+	version := uint64(4)
+	service.authenticationVersion = func(accountID string) (uint64, bool) {
+		return version, accountID == "acc_generation_bound"
+	}
+	if _, created, err := service.CreateAtAuthenticationVersion(t.Context(), "acc_generation_bound", version); err != nil {
+		t.Fatal(err)
+	} else if created.AuthenticationVersion != version {
+		t.Fatalf("authentication version = %d, want %d", created.AuthenticationVersion, version)
+	}
+	version++
+	if _, _, err := service.CreateAtAuthenticationVersion(t.Context(), "acc_generation_bound", version-1); err == nil {
+		t.Fatal("generation-bound session silently upgraded across credential change")
+	}
+}
+
+func TestGenerationBoundSessionRemovesRecordWhenVersionChangesAfterStore(t *testing.T) {
+	service, stores, cleanup := testService(t)
+	defer cleanup()
+	const expected = uint64(7)
+	var resolutions int
+	service.authenticationVersion = func(accountID string) (uint64, bool) {
+		resolutions++
+		if resolutions == 1 {
+			return expected, accountID == "acc_post_store_race"
+		}
+		return expected + 1, accountID == "acc_post_store_race"
+	}
+	if _, _, err := service.CreateAtAuthenticationVersion(t.Context(), "acc_post_store_race", expected); err == nil {
+		t.Fatal("generation-bound session survived a post-store credential change")
+	}
+	keys, err := stores.RuntimeState.Keys(t.Context())
+	if err != nil && !errors.Is(err, jetstream.ErrNoKeysFound) {
+		t.Fatal(err)
+	}
+	if len(keys) != 0 {
+		t.Fatalf("runtime session keys after rejected creation = %v, want none", keys)
+	}
+}
+
 func testService(t *testing.T) (*Service, storage.Stores, func()) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)

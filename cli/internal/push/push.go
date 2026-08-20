@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/url"
 	"strings"
 	"sync"
@@ -18,6 +19,7 @@ import (
 
 	webpush "github.com/SherClockHolmes/webpush-go"
 	"github.com/charmbracelet/log"
+	"golang.org/x/net/idna"
 
 	"hmans.de/chatto/internal/config"
 	corev1 "hmans.de/chatto/internal/pb/chatto/core/v1"
@@ -35,10 +37,15 @@ type Sender struct {
 }
 
 const (
-	pushRecordSize            uint32 = 2048
-	declarativeWebPushValue          = 8030
-	pushRequestTimeout               = 10 * time.Second
-	maxConcurrentPushRequests        = 16
+	// Keep ordinary encrypted requests compact, but grow for a longer installed
+	// client route without reaching push providers' common 4 KiB body ceiling.
+	pushRecordSize    uint32 = 2048
+	maxPushRecordSize uint32 = 3990
+	// aes128gcm framing uses 86 header bytes, a delimiter, and a 16-byte tag.
+	pushRecordOverhead        = 103
+	declarativeWebPushValue   = 8030
+	pushRequestTimeout        = 10 * time.Second
+	maxConcurrentPushRequests = 16
 )
 
 // NewSender creates a new push notification sender.
@@ -219,12 +226,12 @@ type SendResult struct {
 // Send sends a push notification to a single subscription.
 func (s *Sender) Send(ctx context.Context, sub *corev1.PushSubscription, payload *Payload) *SendResult {
 	result := &SendResult{
-		Endpoint: sub.Endpoint,
+		Endpoint: sub.GetEndpoint(),
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if err := s.validateEndpoint(sub.Endpoint); err != nil {
+	if err := s.validateEndpoint(sub.GetEndpoint()); err != nil {
 		result.Error = errors.New("push delivery failed: invalid endpoint")
 		return result
 	}
@@ -250,10 +257,15 @@ func (s *Sender) Send(ctx context.Context, sub *corev1.PushSubscription, payload
 		result.Error = fmt.Errorf("failed to marshal payload: %w", err)
 		return result
 	}
+	recordSize, err := recordSizeForPayload(len(payloadJSON))
+	if err != nil {
+		result.Error = err
+		return result
+	}
 
 	// Create webpush subscription from our proto
 	subscription := &webpush.Subscription{
-		Endpoint: sub.Endpoint,
+		Endpoint: sub.GetEndpoint(),
 		Keys: webpush.Keys{
 			P256dh: sub.P256Dh,
 			Auth:   sub.Auth,
@@ -267,7 +279,7 @@ func (s *Sender) Send(ctx context.Context, sub *corev1.PushSubscription, payload
 		VAPIDPrivateKey: s.config.VAPIDPrivateKey,
 		TTL:             ttl,
 		Urgency:         payload.deliveryUrgency(),
-		RecordSize:      pushRecordSize,
+		RecordSize:      recordSize,
 		HTTPClient:      s.httpClient,
 	})
 	if err != nil {
@@ -301,6 +313,17 @@ func (s *Sender) Send(ctx context.Context, sub *corev1.PushSubscription, payload
 	return result
 }
 
+func recordSizeForPayload(payloadLength int) (uint32, error) {
+	required := payloadLength + pushRecordOverhead
+	if required > int(maxPushRecordSize) {
+		return 0, errors.New("push delivery failed: payload too large")
+	}
+	if required <= int(pushRecordSize) {
+		return pushRecordSize, nil
+	}
+	return uint32(required), nil
+}
+
 func normalizeVAPIDSubject(subject string) string {
 	return strings.TrimPrefix(subject, "mailto:")
 }
@@ -325,6 +348,18 @@ func EndpointLogID(endpoint string) string {
 // SendToMany sends a push notification to multiple subscriptions.
 // Returns results for each subscription.
 func (s *Sender) SendToMany(ctx context.Context, subscriptions []*corev1.PushSubscription, payload *Payload) []*SendResult {
+	return s.SendToManyMapped(ctx, subscriptions, func(*corev1.PushSubscription) *Payload {
+		return payload
+	})
+}
+
+// SendToManyMapped sends a destination-specific payload to each subscription.
+// It is used when click routes differ between installed web clients.
+func (s *Sender) SendToManyMapped(
+	ctx context.Context,
+	subscriptions []*corev1.PushSubscription,
+	payloadFor func(*corev1.PushSubscription) *Payload,
+) []*SendResult {
 	if len(subscriptions) > pushendpoint.MaxSubscriptionsPerUser {
 		subscriptions = subscriptions[:pushendpoint.MaxSubscriptionsPerUser]
 	}
@@ -341,7 +376,7 @@ func (s *Sender) SendToMany(ctx context.Context, subscriptions []*corev1.PushSub
 		go func() {
 			defer workers.Done()
 			for i := range jobs {
-				results[i] = s.Send(ctx, subscriptions[i], payload)
+				results[i] = s.Send(ctx, subscriptions[i], payloadFor(subscriptions[i]))
 			}
 		}()
 	}
@@ -372,7 +407,7 @@ func buildAppURL(baseURL string, segments []string, queryKey, queryValue string)
 }
 
 func buildNotificationURL(baseURL, roomID, threadRootID, highlightEventID string) string {
-	segments := []string{"chat", "-"}
+	segments := []string{}
 	if roomID != "" {
 		segments = append(segments, roomID)
 	}
@@ -386,10 +421,141 @@ func buildNotificationURL(baseURL, roomID, threadRootID, highlightEventID string
 // The baseURL is used to build navigation URLs (e.g., "https://chatto.example.com").
 // The optional payloadCtx provides message preview and room name for richer notifications.
 func BuildPayloadFromOccurrence(occurrence *corev1.NotificationOccurrence, actorDisplayName, baseURL string, payloadCtx *PayloadContext) *Payload {
+	return buildPayloadFromOccurrence(
+		occurrence,
+		actorDisplayName,
+		baseURL,
+		buildAppURL(baseURL, []string{"chat", "-"}, "", ""),
+		payloadCtx,
+	)
+}
+
+// BuildPayloadFromOccurrenceForSubscription creates a payload whose click
+// target opens the server in the web client that owns this subscription.
+func BuildPayloadFromOccurrenceForSubscription(
+	occurrence *corev1.NotificationOccurrence,
+	actorDisplayName, serverBaseURL string,
+	subscription *corev1.PushSubscription,
+	payloadCtx *PayloadContext,
+) *Payload {
+	return buildPayloadFromOccurrence(
+		occurrence,
+		actorDisplayName,
+		serverBaseURL,
+		NavigationBaseURL(subscription, serverBaseURL),
+		payloadCtx,
+	)
+}
+
+// NavigationBaseURL reconstructs the client route for a subscription. Records
+// without a usable client host fall back to this server's bundled app route.
+func NavigationBaseURL(subscription *corev1.PushSubscription, serverBaseURL string) string {
+	legacyURL := buildAppURL(serverBaseURL, []string{"chat", "-"}, "", "")
+	if subscription == nil || subscription.ClientHost == "" {
+		return legacyURL
+	}
+
+	serverURL, err := url.Parse(serverBaseURL)
+	if err != nil || serverURL.Scheme == "" || serverURL.Hostname() == "" {
+		return legacyURL
+	}
+	clientURL, err := url.Parse(serverURL.Scheme + "://" + subscription.ClientHost)
+	if err != nil || clientURL.Host != subscription.ClientHost || clientURL.Hostname() == "" {
+		return legacyURL
+	}
+	clientHostname, err := canonicalHostname(clientURL.Hostname())
+	if err != nil {
+		return legacyURL
+	}
+	clientURL.Host = hostnameWithOptionalPort(clientHostname, clientURL.Port())
+
+	if sameOriginHost(clientURL, serverURL) {
+		return buildAppURL(clientURL.String(), []string{"chat", "-"}, "", "")
+	}
+
+	clientURL.Scheme = "https"
+	if isLoopbackHostname(clientHostname) {
+		clientURL.Scheme = "http"
+	}
+	serverRouteHostname, err := browserRouteHostname(serverURL.Hostname())
+	if err != nil {
+		return legacyURL
+	}
+	return buildAppURL(clientURL.String(), []string{"chat", serverRouteHostname}, "", "")
+}
+
+func sameOriginHost(clientURL, serverURL *url.URL) bool {
+	clientHostname, clientErr := canonicalHostname(clientURL.Hostname())
+	serverHostname, serverErr := canonicalHostname(serverURL.Hostname())
+	if clientErr != nil || serverErr != nil || clientHostname != serverHostname {
+		return false
+	}
+	return effectivePort(clientURL) == effectivePort(serverURL)
+}
+
+func canonicalHostname(hostname string) (string, error) {
+	if ip := net.ParseIP(hostname); ip != nil {
+		return strings.ToLower(ip.String()), nil
+	}
+	value, err := idna.Lookup.ToASCII(strings.ToLower(hostname))
+	if err != nil {
+		return "", err
+	}
+	return strings.ToLower(value), nil
+}
+
+func browserRouteHostname(hostname string) (string, error) {
+	value, err := canonicalHostname(hostname)
+	if err != nil {
+		return "", err
+	}
+	if strings.Contains(value, ":") {
+		return "[" + value + "]", nil
+	}
+	return value, nil
+}
+
+func hostnameWithOptionalPort(hostname, port string) string {
+	if port != "" {
+		return net.JoinHostPort(hostname, port)
+	}
+	if strings.Contains(hostname, ":") {
+		return "[" + hostname + "]"
+	}
+	return hostname
+}
+
+func effectivePort(value *url.URL) string {
+	if port := value.Port(); port != "" {
+		return port
+	}
+	switch strings.ToLower(value.Scheme) {
+	case "http":
+		return "80"
+	case "https":
+		return "443"
+	default:
+		return ""
+	}
+}
+
+func isLoopbackHostname(hostname string) bool {
+	if strings.EqualFold(hostname, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(hostname)
+	return ip != nil && ip.IsLoopback()
+}
+
+func buildPayloadFromOccurrence(
+	occurrence *corev1.NotificationOccurrence,
+	actorDisplayName, serverBaseURL, navigationBaseURL string,
+	payloadCtx *PayloadContext,
+) *Payload {
 	payload := &Payload{
 		NotificationID: occurrence.GetId(),
-		Icon:           buildAppURL(baseURL, []string{"icons", "icon-192.png"}, "", ""),
-		Badge:          buildAppURL(baseURL, []string{"icons", "icon-192.png"}, "", ""), // Badge should be monochrome, but use same for now
+		Icon:           buildAppURL(serverBaseURL, []string{"icons", "icon-192.png"}, "", ""),
+		Badge:          buildAppURL(serverBaseURL, []string{"icons", "icon-192.png"}, "", ""), // Badge should be monochrome, but use same for now
 	}
 
 	// Get preview from context, truncate if needed
@@ -412,7 +578,7 @@ func BuildPayloadFromOccurrence(occurrence *corev1.NotificationOccurrence, actor
 		payload.Title = fmt.Sprintf("@%s sent you a new DM", actorDisplayName)
 		payload.Body = preview
 		payload.Tag = OccurrenceTag(occurrence)
-		payload.URL = buildNotificationURL(baseURL, target.GetRoomId(), "", "")
+		payload.URL = buildNotificationURL(navigationBaseURL, target.GetRoomId(), "", "")
 
 	case occurrenceHasMentionReason(occurrence):
 		if roomName != "" {
@@ -422,7 +588,7 @@ func BuildPayloadFromOccurrence(occurrence *corev1.NotificationOccurrence, actor
 		}
 		payload.Body = preview
 		payload.Tag = OccurrenceTag(occurrence)
-		payload.URL = buildNotificationURL(baseURL, target.GetRoomId(), target.GetThreadRootEventId(), target.GetEventId())
+		payload.URL = buildNotificationURL(navigationBaseURL, target.GetRoomId(), target.GetThreadRootEventId(), target.GetEventId())
 
 	case occurrence.GetSignal().GetReactionReceived() != nil:
 		if roomName != "" {
@@ -438,7 +604,7 @@ func BuildPayloadFromOccurrence(occurrence *corev1.NotificationOccurrence, actor
 			}
 		}
 		payload.Tag = OccurrenceTag(occurrence)
-		payload.URL = buildNotificationURL(baseURL, target.GetRoomId(), target.GetThreadRootEventId(), target.GetEventId())
+		payload.URL = buildNotificationURL(navigationBaseURL, target.GetRoomId(), target.GetThreadRootEventId(), target.GetEventId())
 
 	case occurrence.GetSignal().GetReplyReceived() != nil:
 		if roomName != "" {
@@ -448,7 +614,7 @@ func BuildPayloadFromOccurrence(occurrence *corev1.NotificationOccurrence, actor
 		}
 		payload.Body = preview
 		payload.Tag = OccurrenceTag(occurrence)
-		payload.URL = buildNotificationURL(baseURL, target.GetRoomId(), target.GetThreadRootEventId(), target.GetEventId())
+		payload.URL = buildNotificationURL(navigationBaseURL, target.GetRoomId(), target.GetThreadRootEventId(), target.GetEventId())
 
 	default:
 		if roomName != "" {
@@ -458,7 +624,7 @@ func BuildPayloadFromOccurrence(occurrence *corev1.NotificationOccurrence, actor
 		}
 		payload.Body = preview
 		payload.Tag = OccurrenceTag(occurrence)
-		payload.URL = buildNotificationURL(baseURL, target.GetRoomId(), target.GetThreadRootEventId(), target.GetEventId())
+		payload.URL = buildNotificationURL(navigationBaseURL, target.GetRoomId(), target.GetThreadRootEventId(), target.GetEventId())
 	}
 
 	return payload

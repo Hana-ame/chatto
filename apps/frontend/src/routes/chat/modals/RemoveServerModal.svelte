@@ -7,7 +7,9 @@
   import { serverRegistry } from '$lib/state/server/registry.svelte';
   import { clearLastRoom } from '$lib/storage/lastRoom';
   import { m } from '$lib/i18n/messages';
+  import { unsubscribeBeforeLeaving as unsubscribePushBeforeLeaving } from '$lib/notifications/pushNotifications';
   import ConfirmDialog from '$lib/ui/ConfirmDialog.svelte';
+  import { toast } from '$lib/ui/toast';
 
   let {
     modal,
@@ -18,22 +20,31 @@
   } = $props();
 
   const activeServerId = $derived(getActiveServer());
+  let removing = $state(false);
 
-  function removeServer() {
-    const removingActiveServer = modal.serverId === activeServerId;
-    clearLastRoom(modal.serverId);
-    serverRegistry.removeServer(modal.serverId);
+  async function removeServer() {
+    if (removing) return;
+    removing = true;
+    try {
+      const removingActiveServer = modal.serverId === activeServerId;
+      await unsubscribePushBeforeLeaving(modal.serverId);
+      clearLastRoom(modal.serverId);
+      serverRegistry.removeServer(modal.serverId);
 
-    if (!removingActiveServer) {
-      onclose();
-      return;
-    }
+      if (!removingActiveServer) {
+        onclose();
+        return;
+      }
 
-    const originId = serverRegistry.originServer?.id;
-    if (originId && originId !== modal.serverId) {
-      goto(resolve('/chat/[serverId]', { serverId: serverIdToSegment(originId) }));
-    } else {
-      goto(resolve('/'));
+      const originId = serverRegistry.originServer?.id;
+      if (originId && originId !== modal.serverId) {
+        await goto(resolve('/chat/[serverId]', { serverId: serverIdToSegment(originId) }));
+      } else {
+        await goto(resolve('/'));
+      }
+    } catch {
+      removing = false;
+      toast.error(m('common.error.network'));
     }
   }
 </script>
@@ -42,6 +53,7 @@
   title={m('room.server.remove_title')}
   actionLabel={m('room.server.remove_action')}
   actionIcon="iconify icon-[uil--minus-circle]"
+  loading={removing}
   onconfirm={removeServer}
   {onclose}
 >

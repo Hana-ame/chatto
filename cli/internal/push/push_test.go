@@ -21,6 +21,7 @@ import (
 	"github.com/charmbracelet/log"
 
 	"hmans.de/chatto/internal/config"
+	"hmans.de/chatto/internal/core"
 	corev1 "hmans.de/chatto/internal/pb/chatto/core/v1"
 	"hmans.de/chatto/internal/pushendpoint"
 )
@@ -552,6 +553,120 @@ func TestBuildPayloadFromOccurrence(t *testing.T) {
 	})
 }
 
+func TestBuildPayloadFromOccurrenceForSubscription(t *testing.T) {
+	notif := notificationOccurrenceForTest(
+		"notif-remote",
+		"",
+		"",
+		"room-remote",
+		"event-remote",
+		"",
+		notificationTestSignalDirectMention,
+	)
+	subscription := &corev1.PushSubscription{
+		ClientHost: "app.example.com",
+	}
+
+	payload := BuildPayloadFromOccurrenceForSubscription(
+		notif,
+		"Alice",
+		"https://remote.example.com",
+		subscription,
+		nil,
+	)
+
+	if payload.URL != "https://app.example.com/chat/remote.example.com/room-remote?highlight=event-remote" {
+		t.Fatalf("URL = %q", payload.URL)
+	}
+	if payload.Icon != "https://remote.example.com/icons/icon-192.png" {
+		t.Fatalf("Icon = %q", payload.Icon)
+	}
+}
+
+func TestNavigationBaseURL(t *testing.T) {
+	tests := []struct {
+		name          string
+		subscription  *corev1.PushSubscription
+		serverBaseURL string
+		want          string
+	}{
+		{
+			name:          "legacy subscription uses bundled client",
+			subscription:  &corev1.PushSubscription{},
+			serverBaseURL: "https://chat.example.com",
+			want:          "https://chat.example.com/chat/-",
+		},
+		{
+			name:          "remote server opens in stored client host",
+			subscription:  &corev1.PushSubscription{ClientHost: "app.example.com"},
+			serverBaseURL: "https://remote.example.com",
+			want:          "https://app.example.com/chat/remote.example.com",
+		},
+		{
+			name:          "remote route lowercases the server hostname",
+			subscription:  &corev1.PushSubscription{ClientHost: "app.example.com"},
+			serverBaseURL: "https://REMOTE.EXAMPLE.COM",
+			want:          "https://app.example.com/chat/remote.example.com",
+		},
+		{
+			name:          "remote route uses the browser IDNA hostname",
+			subscription:  &corev1.PushSubscription{ClientHost: "app.example.com"},
+			serverBaseURL: "https://b\u00fccher.example",
+			want:          "https://app.example.com/chat/xn--bcher-kva.example",
+		},
+		{
+			name:          "remote route preserves browser IPv6 brackets",
+			subscription:  &corev1.PushSubscription{ClientHost: "app.example.com"},
+			serverBaseURL: "https://[0:0::1]:8443",
+			want:          "https://app.example.com/chat/[::1]",
+		},
+		{
+			name:          "remote client preserves a non-default port",
+			subscription:  &corev1.PushSubscription{ClientHost: "app.example.com:8443"},
+			serverBaseURL: "https://remote.example.com",
+			want:          "https://app.example.com:8443/chat/remote.example.com",
+		},
+		{
+			name:          "same origin uses bundled client route",
+			subscription:  &corev1.PushSubscription{ClientHost: "chat.example.com"},
+			serverBaseURL: "https://chat.example.com",
+			want:          "https://chat.example.com/chat/-",
+		},
+		{
+			name:          "default port is the same origin",
+			subscription:  &corev1.PushSubscription{ClientHost: "chat.example.com:443"},
+			serverBaseURL: "https://chat.example.com",
+			want:          "https://chat.example.com:443/chat/-",
+		},
+		{
+			name:          "loopback remote client uses HTTP",
+			subscription:  &corev1.PushSubscription{ClientHost: "localhost:5173"},
+			serverBaseURL: "https://remote.example.com",
+			want:          "http://localhost:5173/chat/remote.example.com",
+		},
+		{
+			name:          "same loopback origin preserves HTTPS",
+			subscription:  &corev1.PushSubscription{ClientHost: "localhost:8443"},
+			serverBaseURL: "https://localhost:8443",
+			want:          "https://localhost:8443/chat/-",
+		},
+		{
+			name:          "malformed persisted host falls back safely",
+			subscription:  &corev1.PushSubscription{ClientHost: "https://app.example.com"},
+			serverBaseURL: "https://remote.example.com",
+			want:          "https://remote.example.com/chat/-",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := NavigationBaseURL(test.subscription, test.serverBaseURL); got != test.want {
+				t.Fatalf("NavigationBaseURL() = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestOccurrenceTag(t *testing.T) {
 	t.Run("returns DM tag with event ID", func(t *testing.T) {
 		notif := notificationOccurrenceForTest("", "", "", "room-123", "event-abc", "", notificationTestSignalDirectMessage)
@@ -833,6 +948,61 @@ func TestSend(t *testing.T) {
 		}
 	})
 
+	t.Run("sends a notification at the accepted client host boundary", func(t *testing.T) {
+		var bodyLen int
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Errorf("ReadAll request body: %v", err)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			bodyLen = len(body)
+			w.WriteHeader(http.StatusCreated)
+		}))
+		defer server.Close()
+
+		clientHost := strings.Join([]string{
+			strings.Repeat("a", 63),
+			strings.Repeat("b", 63),
+			strings.Repeat("c", 63),
+			strings.Repeat("d", 61),
+		}, ".") + ":1"
+		if len(clientHost) != core.MaxPushClientHostLength {
+			t.Fatalf("test client host length = %d, want %d", len(clientHost), core.MaxPushClientHostLength)
+		}
+		payload := BuildPayloadFromOccurrenceForSubscription(
+			notificationOccurrenceForTest(
+				strings.Repeat("n", 64),
+				"",
+				"",
+				strings.Repeat("r", 64),
+				strings.Repeat("e", 64),
+				strings.Repeat("t", 64),
+				notificationTestSignalDirectMention,
+			),
+			strings.Repeat("a", 80),
+			"https://remote.example.com",
+			&corev1.PushSubscription{ClientHost: clientHost},
+			&PayloadContext{
+				MessagePreview: strings.Repeat("p", maxPreviewLength),
+				RoomName:       strings.Repeat("q", 100),
+			},
+		)
+
+		sender := newTestSender(t, server.Client())
+		result := sender.Send(context.Background(), newTestPushSubscription(t, server.URL), payload)
+		if result.Error != nil || !result.Success {
+			t.Fatalf("Send at route boundary = %+v, want success", result)
+		}
+		if bodyLen <= int(pushRecordSize) {
+			t.Fatalf("request body length = %d, want adaptive record above %d", bodyLen, pushRecordSize)
+		}
+		if bodyLen > int(maxPushRecordSize) {
+			t.Fatalf("request body length = %d, want at most %d", bodyLen, maxPushRecordSize)
+		}
+	})
+
 	t.Run("uses normal urgency for silent dismiss pushes", func(t *testing.T) {
 		var urgency string
 		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -925,6 +1095,22 @@ func TestSend(t *testing.T) {
 			})
 		}
 	})
+}
+
+func TestRecordSizeForPayload(t *testing.T) {
+	if got, err := recordSizeForPayload(100); err != nil || got != pushRecordSize {
+		t.Fatalf("compact record = %d, %v; want %d, nil", got, err, pushRecordSize)
+	}
+
+	expandedPayloadLength := int(pushRecordSize) - pushRecordOverhead + 1
+	if got, err := recordSizeForPayload(expandedPayloadLength); err != nil || got != uint32(expandedPayloadLength+pushRecordOverhead) {
+		t.Fatalf("expanded record = %d, %v; want %d, nil", got, err, expandedPayloadLength+pushRecordOverhead)
+	}
+
+	tooLargePayloadLength := int(maxPushRecordSize) - pushRecordOverhead + 1
+	if _, err := recordSizeForPayload(tooLargePayloadLength); err == nil {
+		t.Fatal("oversized payload error = nil, want rejection")
+	}
 }
 
 func TestSendToMany(t *testing.T) {

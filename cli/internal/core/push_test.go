@@ -181,6 +181,91 @@ func TestSavePushSubscription(t *testing.T) {
 	})
 }
 
+func TestSavePushSubscriptionForClient(t *testing.T) {
+	core, _ := setupTestCore(t)
+	ctx := context.Background()
+	clientHost := "app.example.com:8443"
+
+	sub, err := core.SavePushSubscriptionForClient(
+		ctx,
+		"push-user-client-host",
+		"https://push.example.com/client-host",
+		"key",
+		"auth",
+		"browser",
+		clientHost,
+	)
+	if err != nil {
+		t.Fatalf("SavePushSubscriptionForClient error: %v", err)
+	}
+	if sub.ClientHost != clientHost {
+		t.Fatalf("ClientHost = %q, want %q", sub.ClientHost, clientHost)
+	}
+	if sub.Endpoint != "https://push.example.com/client-host" {
+		t.Fatalf("Endpoint = %q, want provider endpoint", sub.Endpoint)
+	}
+}
+
+func TestSavePushSubscriptionForClient_ValidatesClientHosts(t *testing.T) {
+	core, _ := setupTestCore(t)
+	ctx := context.Background()
+	maxClientHost := strings.Join([]string{
+		strings.Repeat("a", 63),
+		strings.Repeat("b", 63),
+		strings.Repeat("c", 63),
+		strings.Repeat("d", 61),
+	}, ".") + ":1"
+
+	invalid := []string{
+		"https://app.example.com",
+		"user:password@app.example.com",
+		"app.example.com/chat/remote.example.com",
+		"app.example.com?source=push",
+		"app.example.com#fragment",
+		"app.example.com:",
+		"app.example.com:0",
+		"app.example.com:65536",
+		"app.example.com:not-a-port",
+		strings.Repeat("x", MaxPushClientHostLength+1),
+	}
+	for index, clientHost := range invalid {
+		_, err := core.SavePushSubscriptionForClient(
+			ctx,
+			fmt.Sprintf("push-user-invalid-client-host-%d", index),
+			fmt.Sprintf("https://push.example.com/invalid-client-host-%d", index),
+			"key",
+			"auth",
+			"browser",
+			clientHost,
+		)
+		if !errors.Is(err, ErrInvalidArgument) {
+			t.Errorf("client host %q: error = %v, want ErrInvalidArgument", clientHost, err)
+		}
+	}
+
+	for _, clientHost := range []string{
+		"app.example.com",
+		"app.example.com:8443",
+		"localhost:5173",
+		"127.0.0.1:5173",
+		"[::1]:5173",
+		maxClientHost,
+	} {
+		_, err := core.SavePushSubscriptionForClient(
+			ctx,
+			"push-user-valid-client-host",
+			"https://push.example.com/valid-client-host-"+hashEndpoint(clientHost),
+			"key",
+			"auth",
+			"browser",
+			clientHost,
+		)
+		if err != nil {
+			t.Errorf("client host %q: %v", clientHost, err)
+		}
+	}
+}
+
 func TestSavePushSubscription_StringLengthLimits(t *testing.T) {
 	core, _ := setupTestCore(t)
 	ctx := context.Background()
@@ -474,6 +559,53 @@ func TestPushSubscriptionCurrentForUserRejectsRotatedCredentials(t *testing.T) {
 	current, err = core.PushSubscriptionCurrentForUser(ctx, userID, fresh[0])
 	if err != nil || !current {
 		t.Fatalf("fresh push credentials should be current: current=%t err=%v", current, err)
+	}
+}
+
+func TestDeletePushSubscriptionByCapabilityPreservesReplacementOwner(t *testing.T) {
+	core, _ := setupTestCore(t)
+	ctx := context.Background()
+	endpoint := "https://push.example.com/capability-cleanup"
+	userA := "push-capability-user-a"
+	userB := "push-capability-user-b"
+	auth := "shared-browser-auth"
+	tokenA := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	tokenB := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+	if _, err := core.SavePushSubscriptionWithCleanupToken(ctx, userA, endpoint, "key-a", auth, "browser-a", tokenA); err != nil {
+		t.Fatalf("SavePushSubscription user A: %v", err)
+	}
+	if err := core.DeletePushSubscriptionByCapability(ctx, endpoint, "wrong-auth", tokenA); err != nil {
+		t.Fatalf("DeletePushSubscriptionByCapability wrong auth: %v", err)
+	}
+	if owned, err := core.PushSubscriptionOwnedByUser(ctx, userA, endpoint); err != nil || !owned {
+		t.Fatalf("wrong capability changed A ownership: owned=%t err=%v", owned, err)
+	}
+	if err := core.DeletePushSubscriptionByCapability(ctx, endpoint, auth, "cccccccccccccccccccccccccccccccc"); err != nil {
+		t.Fatalf("DeletePushSubscriptionByCapability wrong token: %v", err)
+	}
+	if owned, err := core.PushSubscriptionOwnedByUser(ctx, userA, endpoint); err != nil || !owned {
+		t.Fatalf("wrong cleanup token changed A ownership: owned=%t err=%v", owned, err)
+	}
+
+	if _, err := core.SavePushSubscriptionWithCleanupToken(ctx, userB, endpoint, "key-b", auth, "browser-b", tokenB); err != nil {
+		t.Fatalf("SavePushSubscription user B: %v", err)
+	}
+	if err := core.DeletePushSubscriptionByCapability(ctx, endpoint, auth, tokenA); err != nil {
+		t.Fatalf("DeletePushSubscriptionByCapability stale auth: %v", err)
+	}
+	if owned, err := core.PushSubscriptionOwnedByUser(ctx, userB, endpoint); err != nil || !owned {
+		t.Fatalf("stale capability changed B ownership: owned=%t err=%v", owned, err)
+	}
+	if subscriptions, err := core.GetUserPushSubscriptions(ctx, userB); err != nil || len(subscriptions) != 1 {
+		t.Fatalf("stale capability removed B subscription: count=%d err=%v", len(subscriptions), err)
+	}
+
+	if err := core.DeletePushSubscriptionByCapability(ctx, endpoint, auth, tokenB); err != nil {
+		t.Fatalf("DeletePushSubscriptionByCapability current auth: %v", err)
+	}
+	if owned, err := core.PushSubscriptionOwnedByUser(ctx, userB, endpoint); err != nil || owned {
+		t.Fatalf("current capability left B ownership: owned=%t err=%v", owned, err)
 	}
 }
 

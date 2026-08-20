@@ -17,6 +17,7 @@ import (
 	"hmans.de/chatto/internal/core/subjects"
 	adminv1 "hmans.de/chatto/internal/pb/chatto/admin/v1"
 	apiv1 "hmans.de/chatto/internal/pb/chatto/api/v1"
+	authv1 "hmans.de/chatto/internal/pb/chatto/auth/v1"
 	corev1 "hmans.de/chatto/internal/pb/chatto/core/v1"
 )
 
@@ -2088,29 +2089,40 @@ func TestPushNotificationServiceSubscribeAndUnsubscribe(t *testing.T) {
 		VAPIDSubject:    "mailto:admin@example.com",
 	}
 	if _, err := env.push.Subscribe(ctx, connect.NewRequest(&apiv1.SubscribePushRequest{
-		Endpoint: "http://127.0.0.1/internal",
+		Endpoint: "https://push.example.test/client-host-required",
 		P256Dh:   "p256dh-key",
 		Auth:     "auth-secret",
+	})); connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("missing client host Subscribe code = %v, want invalid_argument", connect.CodeOf(err))
+	}
+	if _, err := env.push.Subscribe(ctx, connect.NewRequest(&apiv1.SubscribePushRequest{
+		Endpoint:     "http://127.0.0.1/internal",
+		P256Dh:       "p256dh-key",
+		Auth:         "auth-secret",
+		ClientHost:   "app.example.test",
+		CleanupToken: "0123456789abcdef0123456789abcdef",
 	})); connect.CodeOf(err) != connect.CodeInvalidArgument {
 		t.Fatalf("unsafe endpoint Subscribe code = %v, want invalid_argument", connect.CodeOf(err))
 	}
 	subResp, err := env.push.Subscribe(ctx, connect.NewRequest(&apiv1.SubscribePushRequest{
-		Endpoint:  "https://push.example.test/sub",
-		P256Dh:    "p256dh-key",
-		Auth:      "auth-secret",
-		UserAgent: stringPtr("test-agent"),
+		Endpoint:     "https://push.example.test/sub",
+		P256Dh:       "p256dh-key",
+		Auth:         "auth-secret",
+		UserAgent:    stringPtr("test-agent"),
+		ClientHost:   "app.example.test",
+		CleanupToken: "0123456789abcdef0123456789abcdef",
 	}))
 	if err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
 	if !subResp.Msg.GetSubscribed() {
-		t.Fatal("Subscribe subscribed = false, want true")
+		t.Fatalf("Subscribe response = %+v, want subscription acknowledgement", subResp.Msg)
 	}
 	subs, err := env.core.GetUserPushSubscriptions(env.ctx, env.viewer.Id)
 	if err != nil {
 		t.Fatalf("GetUserPushSubscriptions: %v", err)
 	}
-	if len(subs) != 1 || subs[0].GetEndpoint() != "https://push.example.test/sub" || subs[0].GetUserAgent() != "test-agent" {
+	if len(subs) != 1 || subs[0].GetEndpoint() != "https://push.example.test/sub" || subs[0].GetUserAgent() != "test-agent" || subs[0].GetClientHost() != "app.example.test" || subs[0].GetCleanupToken() != "0123456789abcdef0123456789abcdef" {
 		t.Fatalf("stored subscriptions = %+v, want one saved subscription", subs)
 	}
 
@@ -2155,6 +2167,26 @@ func TestPushNotificationServiceSubscribeAndUnsubscribe(t *testing.T) {
 		Endpoint: "https://push.example.test/sub",
 	})); err != nil {
 		t.Fatalf("idempotent Unsubscribe: %v", err)
+	}
+
+	capabilityEndpoint := "https://push.example.test/capability-cleanup"
+	capabilityToken := "0123456789abcdef0123456789abcdef"
+	if _, err := env.core.SavePushSubscriptionWithCleanupToken(env.ctx, env.viewer.Id, capabilityEndpoint, "p256dh-key", "capability-auth", "test-agent", capabilityToken); err != nil {
+		t.Fatalf("save capability cleanup fixture: %v", err)
+	}
+	cleanupResp, err := env.pushCleanup.DeleteSubscription(context.Background(), connect.NewRequest(&authv1.DeleteSubscriptionRequest{
+		Endpoint:     capabilityEndpoint,
+		Auth:         "capability-auth",
+		CleanupToken: capabilityToken,
+	}))
+	if err != nil {
+		t.Fatalf("capability-authenticated DeleteSubscription: %v", err)
+	}
+	if !cleanupResp.Msg.GetCompleted() {
+		t.Fatal("DeleteSubscription completed = false, want true")
+	}
+	if owned, err := env.core.PushSubscriptionOwnedByUser(env.ctx, env.viewer.Id, capabilityEndpoint); err != nil || owned {
+		t.Fatalf("capability cleanup ownership = %t, err = %v", owned, err)
 	}
 }
 

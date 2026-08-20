@@ -1,7 +1,7 @@
 # FDR-013: Web Push Notifications
 
 **Status:** Active
-**Last reviewed:** 2026-08-19
+**Last reviewed:** 2026-08-20
 
 ## Overview
 
@@ -14,18 +14,18 @@ Users can opt in to receive notifications through the browser's W3C Web Push sys
 - On granting permission, the browser creates a subscription using the server's VAPID public key. The subscription details (endpoint URL, keys) are sent to the server and stored.
 - When a signed-in user opens Chatto and browser notification permission is already granted, Chatto refreshes the server's copy of the current browser subscription without prompting again.
 - A browser push endpoint is active for only the account that most recently registered it. Switching accounts in the same browser transfers delivery to the current account; stale records for the previous account are not delivered.
-- In multi-server mode, native Web Push controls are shown only for the server that served the installed app. Remote servers can still update in-app notification badges and sounds while Chatto is open, but they do not offer direct browser push registration from another server's app origin.
+- In multi-server mode, each authenticated server gets its own browser subscription under a stable, server-scoped service-worker registration. Each server uses its own VAPID key and sends directly to the browser push endpoint; no serving-server relay is involved.
 - On iOS/iPadOS, Web Push is available only for Home Screen web apps on supported versions. Chatto treats Web Push as a notification trigger rather than authoritative app state.
-- Stored subscription fields are bounded: endpoint 4,096 bytes, public key 256 bytes, auth secret 128 bytes, and user agent 512 bytes.
+- Stored subscription fields are bounded: endpoint 4,096 bytes, public key 256 bytes, auth secret 128 bytes, user agent 512 bytes, and client host 255 bytes.
 - Push endpoints must be absolute HTTPS URLs without user information or fragments. Delivery bypasses environment proxies, rejects redirects, and blocks private and other special-use network addresses after resolving the hostname immediately before connecting.
-- A user can have up to 16 active devices subscribed simultaneously — every current device is attempted for each push. Once any device accepts an occurrence, Chatto does not retry the whole device set merely because another endpoint failed, avoiding duplicate alerts on healthy devices.
+- An account can have up to 16 active subscriptions on each server. Every current subscription is attempted for pushes originating from that server. Once any endpoint accepts an occurrence, Chatto does not retry the whole device set merely because another endpoint failed, avoiding duplicate alerts on healthy devices.
 - Test notifications are limited to one attempt per account every 10 seconds across server replicas. Delivery failures expose neither provider response bodies nor low-level network errors through the public API.
 - Push payloads include a mutable declarative-compatible notification envelope with a title, a message preview truncated to at most 100 Unicode characters including its ellipsis and preferring a nearby word boundary, a navigation URL, and the pending app badge count when available. The legacy root fields remain present so older Chatto service workers can display the same notification during upgrades.
 - User-visible notification pushes request high-urgency delivery so mobile push services can wake sleeping devices promptly.
 - Notification-alert pushes set the Web Push provider TTL to the remaining portion of the occurrence's immutable two-minute, source-time delivery window. The remaining TTL is calculated only after a bounded provider-request slot is acquired. Durable-consumer retry, backup restore, or local request contention cannot extend how long private content remains eligible at the provider.
 - Clicking a push notification navigates to the relevant room, thread, or DM.
 - Immediately before a regular push is sent, Chatto waits the sending replica's user and room projections through freshly captured recipient and server-wide room-event boundaries, then confirms that the occurrence is still unread and Alert-eligible, its account and membership remain active, its target message and exact reaction still exist, every prepared subscription is still owned by the recipient, and Do Not Disturb is still off. Transient projection or subscription reads fail the attempt for retry instead of being treated as absence or an empty device set. This prevents replica lag or slower asynchronous delivery from overtaking notification mutations, target removal, visibility loss, subscription rotation, or a newly enabled DND state.
-- While Chatto is visible, its notification stores are authoritative for the app-icon badge. Declarative Web Push supplies the origin server's exact unread-occurrence count while the app is closed or suspended.
+- While Chatto is visible, its notification stores are authoritative for the aggregate app-icon badge. Declarative Web Push supplies the sending server's exact unread-occurrence count while the app is closed or suspended.
 - Clicking or manually dismissing a native notification does not change the occurrence inside Chatto. Attention state changes only through Chatto's read and delete actions or through covered room/thread read state.
 - Expired or invalid subscriptions (browsers report 404/410 on push delivery) are cleaned up automatically.
 - Deleting the user account removes all push subscriptions. Cleanup is tied to
@@ -34,6 +34,8 @@ Users can opt in to receive notifications through the browser's W3C Web Push sys
   renewable lease leader performs startup/periodic reconciliation without a
   fixed whole-pass deadline, using that permanent fact to erase late writes and
   repair orphaned endpoint-owner records without a second deletion marker.
+- Browser push requires the Web Locks API and writable durable local storage so registration and cleanup can be serialized safely across tabs and opt-out state survives reloads.
+- Disabling push, signing out, or removing a server writes a same-origin cross-tab suspension before cancelling active registration and queued refreshes. Per-server Web Locks serialize registration and cleanup across tabs, while storage events and a cross-tab cancellation signal release the lock even when registration is blocked on an unreachable RPC. Another tab therefore cannot recreate or adopt the shared service-worker subscription in the middle of cleanup. If an abort-insensitive save settles after another account resumes registration, account-independent cleanup presents the browser subscription's existing Push API auth secret plus its random per-save token and removes only the matching current owner/revision; this cleanup remains available after cookies or bearer tokens are revoked, and a later save reusing the same browser subscription cannot redirect it at another record. A durable same-origin refresh marker then makes the active account reassert its subscription, restoring ownership when stale work arrived last; the marker remains for the next startup until a covering save succeeds. Sign-out or server removal completes only after the browser subscription is confirmed absent or invalidated, or the server record is removed. Browser lookup failures are not treated as absence and retain the local session or server entry for a retry. Once browser invalidation succeeds, server-record cleanup remains best-effort. Explicit re-enabling clears a disabled suspension, while only a newly authenticated session clears a sign-out/removal suspension.
 - If the server isn't configured with VAPID keys, the push UI is hidden entirely — no opt-in prompt, no settings toggle.
 
 ## Design Decisions
@@ -48,7 +50,7 @@ Users can opt in to receive notifications through the browser's W3C Web Push sys
 
 **Decision:** Each browser subscription is stored in `RUNTIME_STATE` as its own record, identified by a hash of the push endpoint URL. A separate OCC-protected claim makes the exact current record active for only one account at a time.
 **Why:** The same user might be subscribed from a laptop and a phone, and pushing to both is the expected behavior. A browser can also retain the same endpoint while the person signs out and into another account; exclusive ownership prevents pushes for the previous account from leaking into that shared browser. Tying the claim to the subscription revision also prevents a stale unsubscribe from releasing newly rotated credentials.
-**Tradeoff:** Old non-owner records can remain stored but inert until normal unsubscribe or account cleanup. Records created by older versions have no claim and do not deliver until the browser reopens Chatto and performs its normal startup registration.
+**Tradeoff:** Old non-owner records can remain stored but inert until normal unsubscribe or account cleanup. Records created by older versions have no claim and do not deliver until the browser reopens Chatto and performs its normal startup registration. If the browser cannot determine subscription state and the server record cannot be removed, Chatto keeps the account session or server entry in place so the user can retry instead of crossing the privacy boundary with delivery still active.
 
 ### 3. VAPID with self-managed keys
 
@@ -84,11 +86,11 @@ device after the occurrence is triaged until the person dismisses it there.
 **Why:** Whether push is useful depends on the device. Dismissing the prompt on a desktop browser should not suppress the prompt on an iOS PWA where push may be more valuable.
 **Tradeoff:** The same user may see the prompt again on another browser or device. That is intentional; each device has its own push subscription and OS permission.
 
-### 8. Origin-bound native push registration
+### 8. One native push registration per server
 
-**Decision:** Direct browser push registration is offered only for the Chatto server that served the installed web app.
-**Why:** A browser push subscription belongs to a service worker origin and is created with a single application server key. Registering arbitrary remote servers from another server's app origin would imply cross-origin routing and VAPID-key behavior that Chatto has not designed yet.
-**Tradeoff:** Users connected to remote servers do not get native OS notifications for those servers through this app origin. They still get realtime in-app badges and notification sounds while Chatto is open, and remote-native push can be revisited with an explicit relay or shared-key design.
+**Decision:** The serving server uses SvelteKit's root service-worker registration. Every remote server uses another registration of the same worker script under a stable narrow scope, giving that server an independent browser subscription bound to its own VAPID key. Every subscription records the URL host of the Chatto server that supplied the installed app with the subscription. The sending server combines that client host with its own hostname to reconstruct the click route; production client hosts use HTTPS and loopback development hosts use HTTP.
+**Why:** Push subscriptions belong to service-worker registrations, not to an origin as a single undifferentiated slot. Separate scopes let one installed PWA receive direct pushes from multiple servers without sharing private VAPID keys or routing notifications through the server that hosted the frontend. A host is enough to reconstruct Chatto's conventional route while avoiding storage of an arbitrary client-provided navigation URL. Per-subscription client context also supports the same server account from PWAs hosted at different origins.
+**Tradeoff:** Each server consumes one of the account's 16 stored subscription slots for each installed client origin. Reconstructing the scheme assumes HTTPS outside loopback development, so an HTTP PWA on a non-loopback host is unsupported. This 0.5 behavior requires the 0.5 client and server subscription contract; no pre-0.5 mixed-version path is provided.
 
 ### 9. Declarative-compatible payloads with service-worker notification fallback
 
@@ -98,9 +100,9 @@ device after the occurrence is triaged until the person dismisses it there.
 
 ### 10. Late delivery and badge ownership
 
-**Decision:** Regular push delivery revalidates the exact unread Alert occurrence, target visibility, and active subscription immediately before sending. The visible app owns its aggregate multi-server badge; Declarative Web Push carries the origin server's exact unread-occurrence count while the app is closed.
+**Decision:** Regular push delivery revalidates the exact unread Alert occurrence, target visibility, and active subscription immediately before sending. The visible app owns its aggregate multi-server badge; Declarative Web Push carries the sending server's exact unread-occurrence count while the app is closed.
 **Why:** Occurrence materialization and push delivery are asynchronous, so a slower delivery can otherwise overtake read/delete state, target removal, or subscription rotation. Revalidation keeps the push tied to current authoritative state without persisting a separate badge record.
-**Tradeoff:** The server cannot revoke a request after final validation and provider acceptance. Concurrent badge-bearing pushes remain last-delivery-wins until another push or the visible app refreshes the aggregate, and a closed-app count covers only the app's origin server.
+**Tradeoff:** The server cannot revoke a request after final validation and provider acceptance. Concurrent badge-bearing pushes remain last-delivery-wins until another push or the visible app refreshes the aggregate, and a closed-app count reflects only the server whose push arrived last.
 
 ### 11. High urgency only for user-visible pushes
 

@@ -16,13 +16,16 @@ const mocks = vi.hoisted(() => ({
   },
   serverInfo: {
     pushNotificationsEnabled: false,
-    vapidPublicKey: null as string | null
+    vapidPublicKey: null as string | null,
+    supportsFeature: vi.fn(() => true)
   },
   pushNotifications: {
     ensureRegistered: vi.fn(),
+    isBrowserWebPushRuntime: vi.fn(),
     getPushCapability: vi.fn(),
     getPermission: vi.fn(),
     isSubscribed: vi.fn(),
+    refreshPushSubscriptions: vi.fn(),
     sendTestNotification: vi.fn()
   }
 }));
@@ -37,9 +40,11 @@ vi.mock('$lib/audio/notificationSounds', async (importOriginal) => {
 
 vi.mock('$lib/notifications/pushNotifications', () => ({
   ensureRegistered: mocks.pushNotifications.ensureRegistered,
+  isBrowserWebPushRuntime: mocks.pushNotifications.isBrowserWebPushRuntime,
   getPushCapability: mocks.pushNotifications.getPushCapability,
   getPermission: mocks.pushNotifications.getPermission,
   isSubscribed: mocks.pushNotifications.isSubscribed,
+  refreshPushSubscriptions: mocks.pushNotifications.refreshPushSubscriptions,
   sendTestNotification: mocks.pushNotifications.sendTestNotification
 }));
 
@@ -49,37 +54,52 @@ vi.mock('$lib/state/server/registry.svelte', () => ({
   }
 }));
 
-vi.mock('$lib/state/server/scope.svelte', () => ({
-  useServerScope: () => ({
-    get serverId() {
-      return mocks.activeServerId;
-    },
-    store: {
-      serverInfo: mocks.serverInfo,
-      notifications: mocks.notifications
-    },
-    connection: {
-      queryScope: 'origin-session',
-      isConnected: true,
-      showConnectionLostBanner: false,
-      connectBaseUrl: 'https://origin.test/api/connect',
-      bearerToken: 'origin-token',
-      apiConfig: {
-        serverId: 'origin',
-        baseUrl: 'https://origin.test/api/connect',
-        bearerToken: 'origin-token'
+vi.mock('$lib/state/server/scope.svelte', async () => {
+  const { userPreferences: reactivePreferences } =
+    await import('$lib/state/userPreferences.svelte');
+  return {
+    useServerScope: () => ({
+      get serverId() {
+        // Keep the mock route ID reactive without introducing test-only state
+        // into production code.
+        void reactivePreferences.notificationSound;
+        return mocks.activeServerId;
       },
-      getAPI: (factory: (config: never) => unknown) => factory({} as never)
-    },
-    isCurrent: () => true
-  })
-}));
+      store: {
+        serverInfo: mocks.serverInfo,
+        notifications: mocks.notifications
+      },
+      connection: {
+        queryScope: 'origin-session',
+        isConnected: true,
+        showConnectionLostBanner: false,
+        connectBaseUrl: 'https://origin.test/api/connect',
+        bearerToken: 'origin-token',
+        apiConfig: {
+          serverId: 'origin',
+          baseUrl: 'https://origin.test/api/connect',
+          bearerToken: 'origin-token'
+        },
+        getAPI: (factory: (config: never) => unknown) => factory({} as never)
+      },
+      isCurrent: () => true
+    })
+  };
+});
 
 async function settle() {
   await Promise.resolve();
   await Promise.resolve();
   await Promise.resolve();
   flushSync();
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
 }
 
 function setRangeValue(input: HTMLInputElement, value: string) {
@@ -117,14 +137,19 @@ describe('Notification settings page', () => {
     mocks.notifications.updatePolicy.mockResolvedValue(null);
     mocks.serverInfo.pushNotificationsEnabled = false;
     mocks.serverInfo.vapidPublicKey = null;
+    mocks.serverInfo.supportsFeature.mockReturnValue(true);
     mocks.pushNotifications.ensureRegistered.mockReset();
     mocks.pushNotifications.ensureRegistered.mockResolvedValue(true);
+    mocks.pushNotifications.isBrowserWebPushRuntime.mockReset();
+    mocks.pushNotifications.isBrowserWebPushRuntime.mockReturnValue(true);
     mocks.pushNotifications.getPermission.mockReset();
     mocks.pushNotifications.getPermission.mockReturnValue('default');
     mocks.pushNotifications.getPushCapability.mockReset();
     mocks.pushNotifications.getPushCapability.mockReturnValue('supported');
     mocks.pushNotifications.isSubscribed.mockReset();
     mocks.pushNotifications.isSubscribed.mockResolvedValue(false);
+    mocks.pushNotifications.refreshPushSubscriptions.mockReset();
+    mocks.pushNotifications.refreshPushSubscriptions.mockResolvedValue(undefined);
     mocks.pushNotifications.sendTestNotification.mockReset();
     mocks.pushNotifications.sendTestNotification.mockResolvedValue(true);
   });
@@ -174,7 +199,7 @@ describe('Notification settings page', () => {
     expect(container.textContent).not.toContain('Disable');
   });
 
-  it('does not offer native push registration for remote servers', async () => {
+  it('offers an independent push subscription for remote servers', async () => {
     mocks.activeServerId = 'remote';
     mocks.serverInfo.pushNotificationsEnabled = true;
     mocks.serverInfo.vapidPublicKey = 'vapid-key';
@@ -184,16 +209,70 @@ describe('Notification settings page', () => {
     await settle();
 
     expect(container.textContent).toContain('Push Notifications');
-    expect(container.textContent).toContain('Native push is unavailable for remote servers');
-    expect(container.textContent).toContain('In-app notification badges and sounds still work');
-    expect(container.textContent).not.toContain('Get notified about new messages while Chatto');
-    expect(
-      Array.from(container.querySelectorAll('button')).some((button) =>
-        button.textContent?.includes('Enable')
-      )
-    ).toBe(false);
+    await expect.element(buttonWithText(container, 'Enable')).toBeVisible();
+    expect(mocks.pushNotifications.isSubscribed).toHaveBeenCalledWith('remote');
+  });
+
+  it('does not offer browser Web Push controls inside Chatto Desktop', async () => {
+    mocks.activeServerId = 'remote';
+    mocks.serverInfo.pushNotificationsEnabled = true;
+    mocks.serverInfo.vapidPublicKey = 'vapid-key';
+    mocks.pushNotifications.isBrowserWebPushRuntime.mockReturnValue(false);
+
+    const { container } = render(NotificationsPage);
+    await settle();
+
+    expect(container.textContent).not.toContain('Push Notifications');
     expect(mocks.pushNotifications.isSubscribed).not.toHaveBeenCalled();
-    expect(mocks.pushNotifications.ensureRegistered).not.toHaveBeenCalled();
+  });
+
+  it('ignores a stale subscription result after navigating to another server', async () => {
+    mocks.serverInfo.pushNotificationsEnabled = true;
+    mocks.serverInfo.vapidPublicKey = 'vapid-key';
+    const originResult = deferred<boolean>();
+    mocks.pushNotifications.isSubscribed
+      .mockReturnValueOnce(originResult.promise)
+      .mockResolvedValueOnce(false);
+
+    const view = render(NotificationsPage);
+    await settle();
+    expect(mocks.pushNotifications.isSubscribed).toHaveBeenCalledWith('origin');
+
+    mocks.activeServerId = 'remote';
+    userPreferences.notificationSound = 'pop';
+    await settle();
+    expect(mocks.pushNotifications.isSubscribed).toHaveBeenCalledWith('remote');
+
+    originResult.resolve(true);
+    await settle();
+
+    await expect.element(buttonWithText(view.container, 'Enable')).toBeVisible();
+    expect(view.container.textContent).not.toContain('Push notifications enabled');
+  });
+
+  it('ignores a stale subscription result after navigating away and back', async () => {
+    mocks.serverInfo.pushNotificationsEnabled = true;
+    mocks.serverInfo.vapidPublicKey = 'vapid-key';
+    const firstOriginResult = deferred<boolean>();
+    mocks.pushNotifications.isSubscribed
+      .mockReturnValueOnce(firstOriginResult.promise)
+      .mockResolvedValue(false);
+
+    const view = render(NotificationsPage);
+    await settle();
+
+    mocks.activeServerId = 'remote';
+    userPreferences.notificationSound = 'pop';
+    await settle();
+    mocks.activeServerId = 'origin';
+    userPreferences.notificationSound = 'ding';
+    await settle();
+
+    firstOriginResult.resolve(true);
+    await settle();
+
+    await expect.element(buttonWithText(view.container, 'Enable')).toBeVisible();
+    expect(view.container.textContent).not.toContain('Push notifications enabled');
   });
 
   it('shows iOS Home Screen guidance without checking or registering push', async () => {
@@ -234,12 +313,44 @@ describe('Notification settings page', () => {
     buttonWithText(container, 'Enable').click();
     await settle();
 
-    expect(mocks.pushNotifications.ensureRegistered).toHaveBeenCalledWith('vapid-key', {
+    expect(mocks.pushNotifications.ensureRegistered).toHaveBeenCalledWith('origin', 'vapid-key', {
       prompt: true
     });
+    expect(mocks.pushNotifications.refreshPushSubscriptions).toHaveBeenCalledOnce();
     expect(container.textContent).toContain('Push notifications enabled');
     expect(container.textContent).toContain('disable them for this site');
     expect(container.textContent).not.toContain('Disable');
+  });
+
+  it('ignores a stale enable result after navigating away and back', async () => {
+    mocks.serverInfo.pushNotificationsEnabled = true;
+    mocks.serverInfo.vapidPublicKey = 'vapid-key';
+    mocks.pushNotifications.isSubscribed.mockResolvedValue(false);
+    const firstOriginResult = deferred<boolean>();
+    mocks.pushNotifications.ensureRegistered
+      .mockReturnValueOnce(firstOriginResult.promise)
+      .mockResolvedValueOnce(false);
+
+    const { container } = render(NotificationsPage);
+    await settle();
+    buttonWithText(container, 'Enable').click();
+    await settle();
+
+    mocks.activeServerId = 'remote';
+    userPreferences.notificationSound = 'pop';
+    await settle();
+    mocks.activeServerId = 'origin';
+    userPreferences.notificationSound = 'ding';
+    await settle();
+    buttonWithText(container, 'Enable').click();
+    await settle();
+    expect(container.textContent).toContain('Failed to enable push notifications');
+
+    firstOriginResult.resolve(true);
+    await settle();
+
+    expect(container.textContent).toContain('Failed to enable push notifications');
+    expect(container.textContent).not.toContain('Push notifications enabled');
   });
 
   it('sends a test push notification when push is enabled', async () => {
@@ -254,8 +365,40 @@ describe('Notification settings page', () => {
     buttonWithText(container, 'Send test notification').click();
     await settle();
 
-    expect(mocks.pushNotifications.sendTestNotification).toHaveBeenCalledOnce();
+    expect(mocks.pushNotifications.sendTestNotification).toHaveBeenCalledWith('origin');
     expect(container.textContent).toContain('Test notification sent.');
+  });
+
+  it('ignores a stale test result after navigating away and back', async () => {
+    mocks.serverInfo.pushNotificationsEnabled = true;
+    mocks.serverInfo.vapidPublicKey = 'vapid-key';
+    mocks.pushNotifications.getPermission.mockReturnValue('granted');
+    mocks.pushNotifications.isSubscribed.mockResolvedValue(true);
+    const firstOriginResult = deferred<boolean>();
+    mocks.pushNotifications.sendTestNotification
+      .mockReturnValueOnce(firstOriginResult.promise)
+      .mockResolvedValueOnce(false);
+
+    const { container } = render(NotificationsPage);
+    await settle();
+    buttonWithText(container, 'Send test notification').click();
+    await settle();
+
+    mocks.activeServerId = 'remote';
+    userPreferences.notificationSound = 'pop';
+    await settle();
+    mocks.activeServerId = 'origin';
+    userPreferences.notificationSound = 'ding';
+    await settle();
+    buttonWithText(container, 'Send test notification').click();
+    await settle();
+    expect(container.textContent).toContain('Could not send a test notification');
+
+    firstOriginResult.resolve(true);
+    await settle();
+
+    expect(container.textContent).toContain('Could not send a test notification');
+    expect(container.textContent).not.toContain('Test notification sent.');
   });
 
   it('updates and persists notification sound filter sliders', async () => {

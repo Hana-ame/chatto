@@ -40,7 +40,8 @@ const { mocks } = vi.hoisted(() => ({
     resetToOrigin: vi.fn(),
     signOutAuthling: vi.fn(),
     signOutCurrentAccount: vi.fn(),
-    signOutAllAccount: vi.fn()
+    signOutAllAccount: vi.fn(),
+    unsubscribePushBeforeLeaving: vi.fn()
   }
 }));
 
@@ -160,6 +161,11 @@ vi.mock('$lib/accountData/signOut', () => ({
   signOutAccountData: mocks.signOutAuthling
 }));
 
+vi.mock('$lib/notifications/pushNotifications', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('$lib/notifications/pushNotifications')>()),
+  unsubscribeBeforeLeaving: mocks.unsubscribePushBeforeLeaving
+}));
+
 vi.mock('$lib/state/clientAccount', () => ({
   clientAccount: {
     signOutCurrentServer: mocks.signOutCurrentAccount,
@@ -244,6 +250,7 @@ beforeEach(() => {
   mocks.signOutServer.mockResolvedValue(new Response('{}', { status: 200 }));
   mocks.signOutServers.mockResolvedValue(undefined);
   mocks.signOutAuthling.mockResolvedValue(undefined);
+  mocks.unsubscribePushBeforeLeaving.mockResolvedValue(undefined);
   mocks.signOutCurrentAccount.mockImplementation(async (serverId: string) => {
     const server = mocks.servers.find((candidate) => candidate.id === serverId);
     if (!server) return null;
@@ -518,6 +525,21 @@ describe('ModalContainer sign out modal', () => {
     });
   });
 
+  it('keeps the session when push cleanup cannot establish a delivery fence', async () => {
+    mocks.modal = { type: 'logout' };
+    mocks.signOutCurrentAccount.mockRejectedValueOnce(new Error('push cleanup unavailable'));
+
+    const { container } = render(ModalContainer);
+    clickButton(container, 'Current Server');
+
+    await vi.waitFor(() => {
+      expect(mocks.toastError).toHaveBeenCalledWith('Network error. Please try again.');
+      expect(findButton(container, 'Current Server').hasAttribute('aria-busy')).toBe(false);
+    });
+    expect(mocks.goto).not.toHaveBeenCalled();
+    expect(mocks.hardRedirectAfterSignOut).not.toHaveBeenCalled();
+  });
+
   it('signs out of all registered servers', async () => {
     const remote = {
       id: 'remote',
@@ -670,6 +692,7 @@ describe('ModalContainer remove server modal', () => {
     };
     mocks.servers = [mocks.originServer!, remote];
     mocks.modal = { type: 'removeServer', serverId: 'remote', spaceName: 'Remote' };
+    mocks.unsubscribePushBeforeLeaving.mockResolvedValueOnce(undefined);
 
     const { container } = render(ModalContainer);
     await expect
@@ -678,7 +701,9 @@ describe('ModalContainer remove server modal', () => {
     expect(container.textContent).toContain(
       'Your account and data on the server will not be deleted.'
     );
-    clickButton(container, 'Remove Server');
+    const removeButton = findButton(container, 'Remove Server');
+    removeButton.click();
+    removeButton.click();
 
     await vi.waitFor(() => {
       expect(mocks.clearLastRoom).toHaveBeenCalledWith('remote');
@@ -686,6 +711,9 @@ describe('ModalContainer remove server modal', () => {
       expect(window.history.back).toHaveBeenCalledOnce();
     });
     expect(mocks.goto).not.toHaveBeenCalled();
+    expect(mocks.unsubscribePushBeforeLeaving).toHaveBeenCalledWith('remote');
+    expect(mocks.unsubscribePushBeforeLeaving).toHaveBeenCalledOnce();
+    expect(mocks.removeServer).toHaveBeenCalledOnce();
   });
 
   it('navigates to the origin after removing the active remote server', async () => {
@@ -706,6 +734,29 @@ describe('ModalContainer remove server modal', () => {
       expect(mocks.removeServer).toHaveBeenCalledWith('remote');
       expect(mocks.goto).toHaveBeenCalledWith('/chat/-');
     });
+  });
+
+  it('keeps a server registered when push cleanup cannot establish a delivery fence', async () => {
+    const remote = {
+      id: 'remote',
+      url: 'https://remote.example.test',
+      name: 'Remote',
+      token: 'token'
+    };
+    mocks.servers = [mocks.originServer!, remote];
+    mocks.modal = { type: 'removeServer', serverId: 'remote', spaceName: 'Remote' };
+    mocks.unsubscribePushBeforeLeaving.mockRejectedValueOnce(new Error('push cleanup unavailable'));
+
+    const { container } = render(ModalContainer);
+    clickButton(container, 'Remove Server');
+
+    await vi.waitFor(() => {
+      expect(mocks.toastError).toHaveBeenCalledWith('Network error. Please try again.');
+      expect(findButton(container, 'Remove Server').hasAttribute('aria-busy')).toBe(false);
+    });
+    expect(mocks.clearLastRoom).not.toHaveBeenCalled();
+    expect(mocks.removeServer).not.toHaveBeenCalled();
+    expect(mocks.goto).not.toHaveBeenCalled();
   });
 });
 

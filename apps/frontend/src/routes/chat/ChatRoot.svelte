@@ -17,6 +17,7 @@
   import { useProjectionEvent, useSessionTerminated } from '$lib/hooks/useEvent.svelte';
   import { initPresenceTracking } from '$lib/presenceTracking';
   import { serverIdToSegment } from '$lib/navigation';
+  import { getPushRegistrationTargets } from '$lib/notifications/pushNotifications';
   import {
     updateAuthenticatedCurrentUserPresenceEntries,
     type PresenceCache
@@ -57,6 +58,7 @@
     originUser && originServerId && currentUserState
       ? { user: originUser, serverId: originServerId, currentUser: currentUserState }
       : null;
+  const pushPromptTarget = $derived(getPushRegistrationTargets()[0] ?? null);
 
   if (originSession) {
     rootPresenceCache.update(
@@ -196,9 +198,13 @@
 {#if idleState.isInAnyCall}
   <ScreenWakeLock />
 {/if}
+<PushNotificationSetup />
+{#if pushPromptTarget}
+  {#key `${pushPromptTarget.serverId}:${pushPromptTarget.userId}`}
+    <PushNotificationPrompt {...pushPromptTarget} />
+  {/key}
+{/if}
 {#if originSession}
-  <PushNotificationSetup />
-  <PushNotificationPrompt userId={originSession.user.id} />
   <WelcomeBanner />
 {/if}
 

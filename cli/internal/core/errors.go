@@ -303,12 +303,18 @@ const (
 
 	// MaxPushEndpointLength is the maximum length of a Push API endpoint URL in bytes.
 	MaxPushEndpointLength = 4096
+	// MaxPushClientHostLength bounds the URL host stored with a browser subscription.
+	MaxPushClientHostLength = 255
 
 	// MaxPushKeyLength is the maximum length of a Push API p256dh public key in bytes.
 	MaxPushKeyLength = 256
 
 	// MaxPushAuthLength is the maximum length of a Push API auth secret in bytes.
 	MaxPushAuthLength = 128
+	// MaxPushCleanupTokenLength bounds the random capability attached to one save.
+	MaxPushCleanupTokenLength = 128
+	// MinPushCleanupTokenLength preserves at least 128 bits for hexadecimal tokens.
+	MinPushCleanupTokenLength = 32
 
 	// MaxPushUserAgentLength is the maximum length of a stored push user-agent string in bytes.
 	MaxPushUserAgentLength = 512

@@ -309,6 +309,38 @@ workflow 等）。本地改动的去向是 `ci/deploy` 分支，会持续与 ups
   不要删上游注释（上游合并回来时会再次冲突）。
 - 新增配置项、工作流、部署步骤时同样要写，不限于 Go 代码。
 
+## 合并 upstream 后的语义冲突审计（硬性要求）
+
+每次从 upstream `main` 合并进 `ci/deploy` 后、push/部署之前，必须做一次
+**语义冲突审计**——git 报告零冲突 ≠ 安全：上游经常重命名符号、重构结构体、
+改同文件的相邻区域，文本上不冲突但语义上可能已经打架。
+
+### 审计步骤
+
+1. **找交集文件**：upstream 本次动过的文件 ∩ 含 `【本地改动】` 标记的文件：
+
+   ```sh
+   git diff --name-only MERGE_SHA^1 MERGE_SHA > /tmp/upstream_files.txt
+   grep -rl '本地改动' cli internal apps --include='*.go' -r | sort
+   # 手工或脚本取两列表交集
+   ```
+
+2. **逐个核验交集文件的语义兼容性**，重点回答：
+   - 上游是否重命名/删除了本地代码引用的符号？
+     （例：2026-08-23 合并 #2087 把 `cookieCredentialFromSession`
+     改名为 `cookieCredentialIDFromSession`，本地的 `/assets/*` 跳过
+     Set-Cookie 逻辑依赖它的行为语义）
+   - 上游的行为变更是否让本地改动失去意义或产生反效果？
+     （例：上游删掉某条路径上的 cookie 下发，本地的对应 skip 是否还需要）
+   - 上游重构的字段/函数与本地新增字段是否仍在同一处被初始化/消费？
+
+3. **最小改动审计**：`git diff origin/main..HEAD --name-only` 应当只包含
+   有明确用途的 fork 差异；出现来历不明的杂散文件要在报告里点名，
+   由人决定去留（不要擅自删）。
+
+4. 审计结果写进最终报告（表格：文件 × 上游改动 × 本地改动 × 判定）；
+   发现有实际语义冲突的，修复时按「如何加注释」规则补记取舍。
+
 ## Testing Judgment
 
 - Pick the lowest test layer that exercises the change, but do not stop below

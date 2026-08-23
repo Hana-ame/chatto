@@ -12,6 +12,10 @@ export interface ServerConnectionConfig {
   serverUrl: string;
   /** Bearer token for Connect/realtime auth, or null for origin cookie auth. */
   token: string | null;
+  /** Access-token expiry as Unix epoch milliseconds. */
+  accessTokenExpiresAt?: number | null;
+  /** Absolute renewable-session expiry as Unix epoch milliseconds. */
+  refreshTokenExpiresAt?: number | null;
   /** Registered server ID, used to clear stale credentials after auth failures */
   serverId?: string;
 }
@@ -56,6 +60,9 @@ export class ServerConnection {
   #connectBaseUrl: string;
   #realtimeUrl: string;
   #token: string | null;
+  #accessTokenExpiresAt: number | null;
+  #refreshTokenExpiresAt: number | null;
+  #renewalTimer: ReturnType<typeof setTimeout> | null = null;
   #serverId: string | undefined;
   #realtimeReconnect: ((reason: string) => void) | null = null;
   #apis = new WeakMap<object, unknown>();
@@ -101,7 +108,11 @@ export class ServerConnection {
     return {
       serverId: this.#serverId,
       baseUrl: this.#connectBaseUrl,
-      bearerToken: this.#token
+      bearerToken: this.#token,
+      renewBearerToken:
+        this.#serverId && this.#token
+          ? (force) => serverRegistry.renewServerAuthentication(this.#serverId!, force)
+          : undefined
     };
   }
 
@@ -180,22 +191,74 @@ export class ServerConnection {
     this.#failedAttempts = failedAttempts;
   }
 
-  handleAuthenticationRequired(): void {
+  async handleAuthenticationRequired(): Promise<boolean> {
     if (this.#serverId) {
       if (isExplicitSignOutRedirectInProgress() && serverRegistry.isOriginServer(this.#serverId)) {
-        return;
+        return false;
+      }
+      if (this.#token) {
+        return (await serverRegistry.renewServerAuthentication(this.#serverId, true)) !== null;
       }
       serverRegistry.handleAuthenticationRequired(this.#serverId);
     }
+    return false;
+  }
+
+  /** Adopt a rotated token without replacing the connection or query scope. */
+  updateBearerSession(
+    token: string | null,
+    accessTokenExpiresAt: number | null,
+    refreshTokenExpiresAt: number | null
+  ): void {
+    const changed = token !== this.#token;
+    this.#token = token;
+    this.#accessTokenExpiresAt = accessTokenExpiresAt;
+    this.#refreshTokenExpiresAt = refreshTokenExpiresAt;
+    this.#scheduleRenewal();
+    if (changed && this.status === 'connected') {
+      this.forceReconnect('access token rotated');
+    }
+  }
+
+  #scheduleRenewal(retryDelayMs?: number): void {
+    if (this.#renewalTimer !== null) {
+      clearTimeout(this.#renewalTimer);
+      this.#renewalTimer = null;
+    }
+    if (!this.#serverId || !this.#token || !this.#accessTokenExpiresAt) return;
+    if (
+      this.#refreshTokenExpiresAt !== null &&
+      this.#accessTokenExpiresAt >= this.#refreshTokenExpiresAt
+    ) {
+      return;
+    }
+    const remaining = this.#accessTokenExpiresAt - Date.now();
+    const refreshLead = Math.min(60_000, Math.max(0, remaining / 5));
+    const delay = retryDelayMs ?? Math.max(0, remaining - refreshLead);
+    this.#renewalTimer = setTimeout(() => {
+      this.#renewalTimer = null;
+      void serverRegistry.renewServerAuthentication(this.#serverId!, true).catch((error) => {
+        console.warn('[auth:%s] background bearer renewal failed', this.#host, error);
+        const retryRemaining = this.#accessTokenExpiresAt
+          ? this.#accessTokenExpiresAt - Date.now()
+          : 0;
+        const retryDelay =
+          retryRemaining > 0 ? Math.min(30_000, Math.max(250, retryRemaining / 2)) : 30_000;
+        this.#scheduleRenewal(retryDelay);
+      });
+    }, delay);
   }
 
   constructor(config: ServerConnectionConfig) {
-    const { serverUrl, token, serverId } = config;
+    const { serverUrl, token, accessTokenExpiresAt, refreshTokenExpiresAt, serverId } = config;
     this.#host = hostFromServerUrl(serverUrl);
     this.#connectBaseUrl = connectBaseUrlFromServerUrl(serverUrl);
     this.#realtimeUrl = realtimeUrlFromServerUrl(serverUrl);
     this.#token = token;
+    this.#accessTokenExpiresAt = accessTokenExpiresAt ?? null;
+    this.#refreshTokenExpiresAt = refreshTokenExpiresAt ?? null;
     this.#serverId = serverId;
+    this.#scheduleRenewal();
 
     // A suspended browser can retain a locally "open" WebSocket long after the
     // server has dropped it. Replace the active transport after a meaningful
@@ -275,6 +338,10 @@ export class ServerConnection {
       clearInterval(this.#suspendDetectorInterval);
       this.#suspendDetectorInterval = null;
     }
+    if (this.#renewalTimer !== null) {
+      clearTimeout(this.#renewalTimer);
+      this.#renewalTimer = null;
+    }
   }
 }
 
@@ -306,6 +373,8 @@ class ServerConnectionManager {
     this.#originClient = new ServerConnection({
       serverUrl: ORIGIN_SERVER_URL,
       token,
+      accessTokenExpiresAt: origin?.accessTokenExpiresAt,
+      refreshTokenExpiresAt: origin?.refreshTokenExpiresAt,
       serverId
     });
     this.#originClientToken = token;
@@ -330,6 +399,8 @@ class ServerConnectionManager {
     const client = new ServerConnection({
       serverUrl: server.url,
       token: server.token,
+      accessTokenExpiresAt: server.accessTokenExpiresAt,
+      refreshTokenExpiresAt: server.refreshTokenExpiresAt,
       serverId
     });
 
@@ -354,6 +425,28 @@ class ServerConnectionManager {
     client.dispose();
     this.#clients.delete(serverId);
     return true;
+  }
+
+  /** Push persisted bearer rotation into an existing connection in place. */
+  updateBearerSession(serverId: string): void {
+    const server = serverRegistry.getServer(serverId);
+    if (!server) return;
+    if (serverRegistry.isOriginServer(serverId)) {
+      this.#originClient?.updateBearerSession(
+        server.token,
+        server.accessTokenExpiresAt ?? null,
+        server.refreshTokenExpiresAt ?? null
+      );
+      this.#originClientToken = server.token;
+      return;
+    }
+    this.#clients
+      .get(serverId)
+      ?.updateBearerSession(
+        server.token,
+        server.accessTokenExpiresAt ?? null,
+        server.refreshTokenExpiresAt ?? null
+      );
   }
 }
 

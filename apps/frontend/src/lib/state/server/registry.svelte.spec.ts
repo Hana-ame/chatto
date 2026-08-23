@@ -1,4 +1,4 @@
-import { afterEach, describe, it, expect, beforeEach } from 'vitest';
+import { afterEach, describe, it, expect, beforeEach, vi } from 'vitest';
 import {
 	generateServerId,
 	restorePersistedServerState,
@@ -7,8 +7,23 @@ import {
 	type RegisteredServer
 } from './registry.svelte';
 import { queryClient } from '$lib/query/client';
+import { serverStorageKey } from '$lib/storage/serverStorage';
 
 const STORAGE_KEY = 'chatto:instances';
+
+function authenticationStorageKey(serverId: string): string {
+	return serverStorageKey(serverId, 'authentication');
+}
+
+function updatePersistedAuthentication(
+	serverId: string,
+	patch: Record<string, string | number | null>
+): void {
+	const key = authenticationStorageKey(serverId);
+	const stored = JSON.parse(localStorage.getItem(key) ?? 'null') as Record<string, unknown> | null;
+	if (!stored) throw new Error(`No persisted authentication for ${serverId}`);
+	localStorage.setItem(key, JSON.stringify({ ...stored, ...patch }));
+}
 
 function makeServer(overrides: Partial<RegisteredServer> = {}): RegisteredServer {
 	return {
@@ -65,11 +80,13 @@ describe('generateServerId', () => {
 
 describe('ServerRegistry', () => {
 	beforeEach(() => {
-		localStorage.removeItem(STORAGE_KEY);
+		localStorage.clear();
 	});
 
 	afterEach(() => {
 		serverRegistry.removeAll();
+		vi.unstubAllGlobals();
+		vi.restoreAllMocks();
 	});
 
 	it('exports the singleton', async () => {
@@ -439,6 +456,200 @@ describe('ServerRegistry', () => {
 		});
 	});
 
+	describe('bearer renewal', () => {
+		function renewableServer() {
+			return makeServer({
+				id: 'renewable',
+				url: 'https://renewable.example',
+				token: 'access-1',
+				refreshToken: 'refresh-1',
+				accessTokenExpiresAt: Date.now() + 10 * 60_000,
+				refreshTokenExpiresAt: Date.now() + 24 * 60 * 60_000,
+				oauthClientId: 'https://client.example/oauth/client-metadata.json'
+			});
+		}
+
+		function refreshedResponse() {
+			return new Response(
+				JSON.stringify({
+					access_token: 'access-2',
+					refresh_token: 'refresh-2',
+					expires_in: 900,
+					refresh_token_expires_in: 86_400
+				}),
+				{ headers: { 'Content-Type': 'application/json' } }
+			);
+		}
+
+		it('coalesces concurrent rotations and installs the pair in place', async () => {
+			const fetchMock = vi.fn(async (input: string | URL | Request) => {
+				if (String(input).endsWith('/oauth/token')) return refreshedResponse();
+				return new Response('', { status: 503 });
+			});
+			vi.stubGlobal('fetch', fetchMock);
+			serverRegistry.addServer(renewableServer());
+
+			const [first, second] = await Promise.all([
+				serverRegistry.renewServerAuthentication('renewable', true),
+				serverRegistry.renewServerAuthentication('renewable', true)
+			]);
+
+			expect(first).toBe('access-2');
+			expect(second).toBe('access-2');
+			const tokenCalls = fetchMock.mock.calls.filter(([input]) =>
+				String(input).endsWith('/oauth/token')
+			);
+			expect(tokenCalls).toHaveLength(1);
+			expect(serverRegistry.getServer('renewable')).toMatchObject({
+				token: 'access-2',
+				refreshToken: 'refresh-2',
+				refreshRequestId: null,
+				reauthRequiredAt: null
+			});
+		});
+
+		it('reuses its persisted request ID after a lost refresh response', async () => {
+			let refreshAttempts = 0;
+			const requestBodies: Array<Record<string, string>> = [];
+			vi.stubGlobal(
+				'fetch',
+				vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+					if (!String(input).endsWith('/oauth/token')) return new Response('', { status: 503 });
+					requestBodies.push(JSON.parse(String(init?.body)) as Record<string, string>);
+					refreshAttempts++;
+					if (refreshAttempts === 1) throw new TypeError('response lost');
+					return refreshedResponse();
+				})
+			);
+			serverRegistry.addServer(renewableServer());
+
+			await expect(serverRegistry.renewServerAuthentication('renewable', true)).rejects.toThrow(
+				'response lost'
+			);
+			const persistedAfterFailure = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '[]')[0];
+			expect(persistedAfterFailure.refreshRequestId).toBeTruthy();
+
+			await expect(serverRegistry.renewServerAuthentication('renewable', true)).resolves.toBe(
+				'access-2'
+			);
+			expect(requestBodies[1].refresh_request_id).toBe(requestBodies[0].refresh_request_id);
+		});
+
+		it('does not rotate when the recovery request ID cannot be persisted', async () => {
+			const fetchMock = vi.fn(async (..._args: Parameters<typeof fetch>) => refreshedResponse());
+			vi.stubGlobal('fetch', fetchMock);
+			serverRegistry.addServer(renewableServer());
+			vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+				throw new DOMException('Storage quota exceeded', 'QuotaExceededError');
+			});
+
+			await expect(serverRegistry.renewServerAuthentication('renewable', true)).rejects.toThrow(
+				'Unable to persist bearer renewal state.'
+			);
+			expect(
+				fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/oauth/token'))
+			).toHaveLength(0);
+		});
+
+		it("adopts another tab's persisted rotation after acquiring the refresh lock", async () => {
+			const fetchMock = vi.fn();
+			vi.stubGlobal('fetch', fetchMock);
+			serverRegistry.addServer(renewableServer());
+			updatePersistedAuthentication('renewable', {
+				token: 'access-from-other-tab',
+				refreshToken: 'refresh-from-other-tab',
+				accessTokenExpiresAt: Date.now() + 15 * 60_000,
+				refreshRequestId: null
+			});
+
+			await expect(serverRegistry.renewServerAuthentication('renewable', true)).resolves.toBe(
+				'access-from-other-tab'
+			);
+			expect(
+				fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/oauth/token'))
+			).toHaveLength(0);
+			expect(serverRegistry.getServer('renewable')).toMatchObject({
+				token: 'access-from-other-tab',
+				refreshToken: 'refresh-from-other-tab',
+				reauthRequiredAt: null
+			});
+		});
+
+		it("adopts another tab's request ID after a lost refresh response", async () => {
+			const requestBodies: Array<Record<string, string>> = [];
+			vi.stubGlobal(
+				'fetch',
+				vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+					if (!String(input).endsWith('/oauth/token')) return new Response('', { status: 503 });
+					requestBodies.push(JSON.parse(String(init?.body)) as Record<string, string>);
+					return refreshedResponse();
+				})
+			);
+			serverRegistry.addServer(renewableServer());
+			updatePersistedAuthentication('renewable', {
+				refreshRequestId: 'request-from-other-tab'
+			});
+
+			await expect(serverRegistry.renewServerAuthentication('renewable', true)).resolves.toBe(
+				'access-2'
+			);
+			expect(requestBodies).toHaveLength(1);
+			expect(requestBodies[0].refresh_request_id).toBe('request-from-other-tab');
+		});
+
+		it("does not let a stale tab's metadata write restore rotated credentials", async () => {
+			const fetchMock = vi.fn();
+			vi.stubGlobal('fetch', fetchMock);
+			serverRegistry.addServer(renewableServer());
+			updatePersistedAuthentication('renewable', {
+				token: 'access-from-other-tab',
+				refreshToken: 'refresh-from-other-tab',
+				accessTokenExpiresAt: Date.now() + 15 * 60_000,
+				refreshRequestId: 'request-from-other-tab'
+			});
+
+			serverRegistry.updateRegistration('renewable', { name: 'Renamed by stale tab' });
+
+			const combined = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '[]')[0];
+			expect(combined).toMatchObject({
+				name: 'Renamed by stale tab',
+				token: 'access-from-other-tab',
+				refreshToken: 'refresh-from-other-tab',
+				refreshRequestId: 'request-from-other-tab'
+			});
+			await expect(serverRegistry.renewServerAuthentication('renewable', true)).resolves.toBe(
+				'access-from-other-tab'
+			);
+			expect(
+				fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/oauth/token'))
+			).toHaveLength(0);
+		});
+
+		it('preserves the session and marks explicit reconnect after invalid_grant', async () => {
+			const fetchMock = vi.fn(async (input: string | URL | Request) => {
+				if (!String(input).endsWith('/oauth/token')) return new Response('', { status: 503 });
+				return new Response(JSON.stringify({ error: 'invalid_grant' }), {
+					status: 400,
+					headers: { 'Content-Type': 'application/json' }
+				});
+			});
+			vi.stubGlobal('fetch', fetchMock);
+			serverRegistry.addServer(renewableServer());
+
+			await expect(serverRegistry.renewServerAuthentication('renewable', true)).resolves.toBeNull();
+			expect(serverRegistry.getServer('renewable')).toMatchObject({
+				token: 'access-1',
+				refreshToken: 'refresh-1',
+				reauthRequiredAt: expect.any(Number)
+			});
+
+			await expect(serverRegistry.renewServerAuthentication('renewable', true)).resolves.toBeNull();
+			expect(
+				fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/oauth/token'))
+			).toHaveLength(1);
+		});
+	});
+
 	describe('getServer', () => {
 		it('returns instance by ID', async () => {
 			const registry = await createRegistry();
@@ -470,6 +681,37 @@ describe('ServerRegistry', () => {
 			expect(restored.sessions).toEqual([
 				['persisted', expect.objectContaining({ token: server.token, userId: server.userId })]
 			]);
+		});
+
+		it('restores per-server authentication instead of stale combined credentials', () => {
+			const server = makeServer({
+				id: 'persisted',
+				token: 'stale-access',
+				refreshToken: 'stale-refresh',
+				refreshRequestId: 'stale-request-id'
+			});
+			localStorage.setItem(STORAGE_KEY, JSON.stringify([server]));
+			localStorage.setItem(
+				authenticationStorageKey('persisted'),
+				JSON.stringify({
+					version: 1,
+					token: 'rotated-access',
+					refreshToken: 'rotated-refresh',
+					accessTokenExpiresAt: 20_000,
+					refreshTokenExpiresAt: 30_000,
+					oauthClientId: null,
+					refreshRequestId: 'rotated-request-id',
+					reauthRequiredAt: null
+				})
+			);
+
+			const restored = restorePersistedServerState();
+
+			expect(restored.sessions[0][1]).toMatchObject({
+				token: 'rotated-access',
+				refreshToken: 'rotated-refresh',
+				refreshRequestId: 'rotated-request-id'
+			});
 		});
 
 		it('clears retired account-data browser storage', () => {

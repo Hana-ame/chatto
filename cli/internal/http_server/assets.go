@@ -22,13 +22,49 @@ import (
 
 const protectedAssetCacheControl = "private, no-store"
 
+// stripServerAssetFilenameTail removes a single trailing {fn.ext} segment from
+// a /assets/server/ request path. The segment must be a short dot-bearing name
+// in the URL-safe filename alphabet; anything else (or a path without '/') is
+// not a decorated URL and is returned unchanged.
+//
+// 【本地改动 2026-08-23】配合 core 侧带 {fn.ext} 的公开 server 资产 URL。
+// 只在「整路径分类失败」后才尝试剥尾段，且剥掉后的 key 仍走完整公开分类，
+// 因此该容错不会让私有对象或保留命名空间变得可达。
+func stripServerAssetFilenameTail(path string) (string, bool) {
+	idx := strings.LastIndexByte(path, '/')
+	if idx <= 0 {
+		return path, false
+	}
+	tail := path[idx+1:]
+	if tail == "" || len(tail) > 128 || !strings.Contains(tail, ".") {
+		return path, false
+	}
+	for _, r := range tail {
+		ok := r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '-' || r == '_'
+		if !ok {
+			return path, false
+		}
+	}
+	return path[:idx], true
+}
+
+// publicAssetCacheControl is used for everything addressable by an immutable
+// URL: public server assets and (【本地改动 2026-08-18】) attachment binaries
+// and derivatives, whose URLs are keyed by assetID and never change.
+const publicAssetCacheControl = "public, max-age=31536000, immutable"
+
 func (s *HTTPServer) setupAssetRoutes() {
 	// Server assets use *path which catches everything including /t/signedPath for transforms
 	// The serveServerAsset handler detects and routes transform requests appropriately
 	// These handlers probe both NATS and S3 backends automatically
 	s.router.GET("/assets/server/*path", s.serveServerAsset)
+	// 【本地改动 2026-08-18】附件 URL 增加 {fn.ext} 尾段的新路由：带文件名的
+	// 走公开入口（仅 assetID 访问 + public immutable 缓存）；旧的无文件名
+	// 路由保留原 ticket/成员校验语义，历史消息与已发出的 URL 继续有效。
 	s.router.GET("/assets/files/:assetID", s.serveStableAttachment)
+	s.router.GET("/assets/files/:assetID/:filename", s.servePublicStableAttachment)
 	s.router.GET("/assets/files/:assetID/image/:dimensions/:fit", s.serveStableTransformedAttachment)
+	s.router.GET("/assets/files/:assetID/image/:dimensions/:fit/:filename", s.servePublicStableTransformedAttachment)
 	s.router.GET("/assets/hls/:assetID/master.m3u8", s.serveHLSMasterPlaylist)
 	s.router.GET("/assets/hls/:assetID/renditions/:rendition/playlist.m3u8", s.serveHLSMediaPlaylist)
 	s.router.GET("/assets/hls/:assetID/renditions/:rendition/segments/:segment", s.serveHLSSegment)
@@ -107,8 +143,26 @@ func (s *HTTPServer) serveServerAsset(c *gin.Context) {
 		transformRequest = true
 		key = path[:idx]
 		signedPath = path[idx+3:]
+		// 【本地改动 2026-08-23】transform URL 可带 {fn.ext} 尾段
+		// （/t/{params}.{sig}/{fn.ext}）。签名只覆盖第一段，剥掉装饰性尾段
+		// 再验证；签名段本身不含 '/'。
+		if cut := strings.IndexByte(signedPath, '/'); cut != -1 {
+			signedPath = signedPath[:cut]
+		}
 	}
 	location, public := s.core.ResolvePublicServerAsset(c.Request.Context(), key)
+	if !public {
+		// 【本地改动 2026-08-23】原始 URL 也可带 {fn.ext} 尾段
+		// （/{key}/{fn.ext}）。合法 key 永远不含 '.'（canonical ID 是固定
+		// 字母表、public/ 前缀下也是纯 ID），所以「整路径分类失败 → 剥掉
+		// 最后一个点段重试」不会歧义。剥掉后仍走完整公开分类，私有对象与
+		// 保留命名空间照旧 fail closed，不产生新的可达面。
+		if base, ok := stripServerAssetFilenameTail(key); ok {
+			if loc2, pub2 := s.core.ResolvePublicServerAsset(c.Request.Context(), base); pub2 {
+				key, location, public = base, loc2, true
+			}
+		}
+	}
 	if key == "" || !public {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Asset not found"})
 		return
@@ -200,7 +254,61 @@ func (s *HTTPServer) serveStableAttachment(c *gin.Context) {
 
 	c.Header("Cache-Control", protectedAssetCacheControl)
 	c.Header("ETag", fmt.Sprintf("\"%s\"", assetID))
-	c.Header("Vary", "Accept-Encoding, Authorization, Cookie")
+	// 【本地改动 2026-08-23】Vary 不再携带 Authorization/Cookie：响应字节只由
+	// assetID 决定，凭据只是访问门控而非表示选择器；这些 ticket URL 即将被
+	// 带 {fn.ext} 的公开 URL 全面取代（仅剩历史客户端兜底），对它们做按凭据
+	// 缓存分片毫无收益，反而干扰共享缓存键。
+	c.Header("Vary", "Accept-Encoding")
+	// Chatto-backed streams are sequential. Seekable media delivery requires an
+	// S3 redirect, whose object server handles byte ranges directly.
+	c.Header("Accept-Ranges", "none")
+	c.DataFromReader(http.StatusOK, info.Size, contentType, reader, nil)
+}
+
+// servePublicStableAttachment serves the canonical public asset URL:
+//
+//	/assets/files/{assetID}/{fn.ext}
+//
+// 【本地改动 2026-08-18】带 {fn.ext} 尾段的新 URL 走公开入口：访问仅凭
+// assetID（无 ticket、无成员校验），响应 public immutable 可长期缓存。
+// 旧的无文件名 URL 继续走 serveStableAttachment（ticket 语义）。
+func (s *HTTPServer) servePublicStableAttachment(c *gin.Context) {
+	ctx := c.Request.Context()
+	assetID := c.Param("assetID")
+
+	attachment, ok := s.resolvePublicAttachment(c, assetID)
+	if !ok {
+		return
+	}
+
+	if protectedAssetDeliveryMode(attachment) == deliveryS3Redirect {
+		if presignedURL, err := s.core.TryPresignedAttachmentURL(ctx, attachment, core.S3AssetRedirectTTL); err == nil {
+			// 302 重定向本身不缓存；presigned URL 短期有效。
+			c.Header("Cache-Control", protectedAssetCacheControl)
+			c.Redirect(http.StatusFound, presignedURL)
+			return
+		}
+	}
+
+	reader, info, err := s.core.GetAttachmentReader(ctx, attachment)
+	if err != nil {
+		s.logger.Error("Failed to get stable attachment", "error", err, "attachment_id", assetID)
+		c.JSON(http.StatusNotFound, gin.H{"error": "Attachment not found"})
+		return
+	}
+	if closer, ok := reader.(io.Closer); ok {
+		defer closer.Close()
+	}
+
+	contentType := info.ContentType
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	setOriginalAttachmentSecurityHeaders(c, contentType)
+
+	c.Header("Cache-Control", publicAssetCacheControl)
+	c.Header("ETag", fmt.Sprintf("\"%s\"", assetID))
+	c.Header("Vary", "Accept-Encoding")
 	// Chatto-backed streams are sequential. Seekable media delivery requires an
 	// S3 redirect, whose object server handles byte ranges directly.
 	c.Header("Accept-Ranges", "none")
@@ -267,6 +375,40 @@ func (s *HTTPServer) serveStableTransformedAttachment(c *gin.Context) {
 			return reader, info.ContentType, nil
 		},
 		Authorize: func(c *gin.Context) bool { return true },
+	}, params)
+}
+
+// servePublicStableTransformedAttachment serves a public image derivative:
+//
+//	/assets/files/{assetID}/image/{width}x{height}/{fit}/{fn.ext}
+//
+// 【本地改动 2026-08-18】带 {fn.ext} 尾段的新 URL 走公开入口：仅凭 assetID
+// 访问，Authorize 为 nil → 响应 public immutable 可长期缓存。
+func (s *HTTPServer) servePublicStableTransformedAttachment(c *gin.Context) {
+	assetID := c.Param("assetID")
+	params, err := parseStableTransformParams(c.Param("dimensions"), c.Param("fit"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	attachment, ok := s.resolvePublicAttachment(c, assetID)
+	if !ok {
+		return
+	}
+
+	s.serveTransformedAssetWithParams(c, transformRequest{
+		CachePrefix: AttachmentStableCachePrefix,
+		AssetID:     assetID,
+		JPEGQuality: AttachmentDerivativeJPEGQuality,
+		FetchAsset: func(ctx context.Context) (io.Reader, string, error) {
+			reader, info, err := s.core.GetAttachmentReader(ctx, attachment)
+			if err != nil {
+				return nil, "", err
+			}
+			return reader, info.ContentType, nil
+		},
+		Authorize: nil, // Attachment derivatives are publicly readable by assetID.
 	}, params)
 }
 
@@ -355,6 +497,28 @@ func (s *HTTPServer) resolveAttachmentForViewer(c *gin.Context, ctx context.Cont
 		return nil, false
 	}
 	attachment.RoomId = roomID
+	return attachment, true
+}
+
+// resolvePublicAttachment resolves an attachment by assetID without any
+// viewer checks. 【本地改动 2026-08-18】带 {fn.ext} 的公开 URL 专用：访问
+// 仅凭 assetID，不再校验成员身份/会话/ticket。assetID 即访问凭证。
+func (s *HTTPServer) resolvePublicAttachment(c *gin.Context, assetID string) (*corev1.Attachment, bool) {
+	if assetID == "" {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Attachment not found"})
+		return nil, false
+	}
+	state := s.core.GetAssetState(assetID)
+	declared := state.Creation
+	if declared == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Attachment not found"})
+		return nil, false
+	}
+	attachment := core.AttachmentFromAsset(declared.GetAsset())
+	if attachment == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Attachment not found"})
+		return nil, false
+	}
 	return attachment, true
 }
 
@@ -698,10 +862,10 @@ func transformedAssetCacheControl(public bool) string {
 }
 
 func transformedAssetVary(public bool) string {
-	if public {
-		return "Accept-Encoding"
-	}
-	return "Accept-Encoding, Authorization, Cookie"
+	// 【本地改动 2026-08-23】两种分支统一为 Accept-Encoding：响应字节只由
+	// assetID + transform 参数决定，凭据只是访问门控而非表示选择器；
+	// per-user ticket 路由本身 no-store，按凭据分片缓存毫无收益。
+	return "Accept-Encoding"
 }
 
 // serveTransformedServerAsset serves a dynamically transformed version of an server asset.

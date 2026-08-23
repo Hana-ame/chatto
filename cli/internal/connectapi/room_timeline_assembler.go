@@ -296,8 +296,10 @@ func (h *timelineHydrator) attachments(roomID, messageEventID string, attachment
 		if attachment.MessageBodyId == "" {
 			attachment.MessageBodyId = messageEventID
 		}
-		assetURL := h.api.core.GetStableAttachmentAssetURL(attachment.Id, h.viewerID)
-		thumbnailURL := h.api.core.GetStableTransformedAttachmentAssetURL(attachment.Id, h.viewerID, thumbnail.width, thumbnail.height, thumbnail.fit)
+		// 【本地改动 2026-08-18】入口选择公开版 URL 生成：无 ticket、带
+		// {fn.ext} 尾段，可被浏览器/CDN 长期缓存。
+		assetURL := h.api.core.GetPublicStableAttachmentAssetURL(attachment)
+		thumbnailURL := h.api.core.GetPublicStableTransformedAttachmentAssetURL(attachment, thumbnail.width, thumbnail.height, thumbnail.fit)
 		result = append(result, &apiv1.MessageAttachment{
 			Id:                attachment.Id,
 			Filename:          attachment.Filename,
@@ -397,6 +399,11 @@ func callEvent(roomID, callID string) *apiv1.RoomTimelineCallEvent {
 }
 
 func assetURLView(assetURL core.StableAssetURL) *apiv1.MessageAssetUrl {
+	// 【本地改动 2026-08-18】公开 URL 无 ticket、永不过期：ExpiresAt 零值时
+	// 不填充过期时间，前端据此跳过 URL 刷新（避免序列化成 1970 触发无限刷新）。
+	if assetURL.ExpiresAt.IsZero() {
+		return &apiv1.MessageAssetUrl{Url: assetURL.URL}
+	}
 	return &apiv1.MessageAssetUrl{
 		Url:       assetURL.URL,
 		ExpiresAt: timestamppb.New(assetURL.ExpiresAt),

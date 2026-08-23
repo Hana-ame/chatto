@@ -996,9 +996,12 @@ func TestAsset_OriginalAttachment_HasCacheHeaders(t *testing.T) {
 		t.Error("Expected ETag header to be set")
 	}
 
+	// 【本地改动 2026-08-23】Vary 收紧为 Accept-Encoding：响应字节只由
+	// assetID 决定，凭据是访问门控而非表示选择器；ticket URL 已被带
+	// {fn.ext} 的公开 URL 取代，按凭据分片缓存毫无收益。
 	vary := originalResp.Header.Get("Vary")
-	if vary != "Accept-Encoding, Authorization, Cookie" {
-		t.Errorf("Expected Vary: Accept-Encoding, Authorization, Cookie, got: %s", vary)
+	if vary != "Accept-Encoding" {
+		t.Errorf("Expected Vary: Accept-Encoding, got: %s", vary)
 	}
 }
 
@@ -1179,6 +1182,95 @@ func TestAsset_ServerAsset_HasCacheHeaders(t *testing.T) {
 	vary := resp.Header.Get("Vary")
 	if vary != "Accept-Encoding" {
 		t.Errorf("Expected Vary: Accept-Encoding, got: %s", vary)
+	}
+}
+
+// 【本地改动 2026-08-23】server 资产公开 URL 统一带 {fn.ext} 尾段的回归测试。
+//
+// 发现背景：用户要求附件/头像全部使用带扩展名的 public URL（public
+// immutable 缓存 + 浏览器按扩展名识别类型），并要求 Vary 去掉
+// Authorization/Cookie。实现：core 侧 ServerAssetURLFilename 与
+// GetTransformedServerAssetURLWithFilename 在 URL 末尾追加安全文件名段；
+// serving 端 serveServerAsset 对整路径分类失败时剥掉最后一个点段重试，
+// 剥尾后的 key 仍走完整公开分类（transform 分支则先截掉签名后的尾段再验签）。
+// 本测试保护：原始与 transform URL 都以 .webp 结尾且可匿名访问、缓存头正确、
+// ETag 用剥尾后的 key；伪造多段尾缀不能让未知 key 变得可达（fail closed）。
+func TestAsset_ServerAsset_FilenameTailURLs(t *testing.T) {
+	env := setupAssetTestServer(t)
+
+	user, err := env.core.CreateUser(env.ctx, "system", "tailurluser", "Tail URL User", "password123")
+	if err != nil {
+		t.Fatalf("Failed to create user: %v", err)
+	}
+	avatarData := createAssetTestPNG(t, 200, 200)
+	avatar, err := env.core.UploadUserAvatar(env.ctx, user.Id, bytes.NewReader(avatarData))
+	if err != nil {
+		t.Fatalf("Failed to upload avatar: %v", err)
+	}
+	if err := env.core.SetUserAvatar(env.ctx, user.Id, avatar); err != nil {
+		t.Fatalf("Failed to set avatar: %v", err)
+	}
+	avatarKey := core.ServerAssetDeliveryKey(avatar)
+
+	originalURL, err := env.core.GetUserAvatarURL(env.ctx, user.Id, nil, nil, "")
+	if err != nil {
+		t.Fatalf("Failed to get avatar URL: %v", err)
+	}
+	if !strings.HasSuffix(originalURL, "/avatar.webp") {
+		t.Fatalf("Original avatar URL = %q, want /avatar.webp tail", originalURL)
+	}
+
+	originalResp, err := env.client.Get(env.server.URL + originalURL)
+	if err != nil {
+		t.Fatalf("Failed to get original avatar: %v", err)
+	}
+	defer originalResp.Body.Close()
+	if originalResp.StatusCode != http.StatusOK {
+		t.Fatalf("Original avatar status = %d, want 200", originalResp.StatusCode)
+	}
+	if got := originalResp.Header.Get("Cache-Control"); got != publicAssetCacheControl {
+		t.Errorf("Original avatar Cache-Control = %q, want %q", got, publicAssetCacheControl)
+	}
+	if got := originalResp.Header.Get("Vary"); got != "Accept-Encoding" {
+		t.Errorf("Original avatar Vary = %q, want Accept-Encoding", got)
+	}
+	if expectedETag := fmt.Sprintf("%q", avatarKey); originalResp.Header.Get("ETag") != expectedETag {
+		t.Errorf("Original avatar ETag = %q, want %q (stripped key)", originalResp.Header.Get("ETag"), expectedETag)
+	}
+
+	width, height := 96, 96
+	transformedURL, err := env.core.GetUserAvatarURL(env.ctx, user.Id, &width, &height, "cover")
+	if err != nil {
+		t.Fatalf("Failed to get transformed avatar URL: %v", err)
+	}
+	if !strings.Contains(transformedURL, "/t/") || !strings.HasSuffix(transformedURL, ".webp") {
+		t.Fatalf("Transformed avatar URL = %q, want signed transform path with .webp tail", transformedURL)
+	}
+	transformedResp, err := env.client.Get(env.server.URL + transformedURL)
+	if err != nil {
+		t.Fatalf("Failed to get transformed avatar: %v", err)
+	}
+	defer transformedResp.Body.Close()
+	if transformedResp.StatusCode != http.StatusOK {
+		t.Fatalf("Transformed avatar status = %d, want 200", transformedResp.StatusCode)
+	}
+
+	// 未知 key 即使带上合法形状的文件名尾段也必须保持不可达。
+	guessResp, err := env.client.Get(env.server.URL + "/assets/server/" + avatar.GetId() + "/extra/notreal.png")
+	if err != nil {
+		t.Fatalf("Failed to probe unknown key with tail: %v", err)
+	}
+	guessResp.Body.Close()
+	if guessResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("Unknown key with extra tail status = %d, want 404", guessResp.StatusCode)
+	}
+	fakeResp, err := env.client.Get(env.server.URL + "/assets/server/Anotarealkey0000/guess.png")
+	if err != nil {
+		t.Fatalf("Failed to probe fake key with tail: %v", err)
+	}
+	fakeResp.Body.Close()
+	if fakeResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("Fake key with tail status = %d, want 404", fakeResp.StatusCode)
 	}
 }
 

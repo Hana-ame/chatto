@@ -50,7 +50,10 @@ func apiLinkPreview(api *API, preview *corev1.LinkPreview) *apiv1.LinkPreview {
 
 	imageURL := ""
 	if imageAssetKey != "" {
-		imageURL = api.core.GetTransformedServerAssetURL(imageAssetKey, 600, 314, "contain")
+		// 【本地改动 2026-08-23】URL 追加 {fn.ext} 尾段；image 记录缺失时
+		// 推导不出扩展名，保持无尾段旧形态。
+		imageURL = api.core.GetTransformedServerAssetURLWithFilename(
+			imageAssetKey, core.ServerAssetURLFilename(preview.GetImageAsset(), "preview"), 600, 314, "contain")
 	}
 
 	out := &apiv1.LinkPreview{
@@ -130,7 +133,9 @@ func linkPreviewAsset(api *API, asset *corev1.AssetRecord, width, height int, fi
 		return nil, nil
 	}
 	assetID := asset.GetId()
-	url := api.core.GetTransformedServerAssetURL(core.ServerAssetDeliveryKey(asset), width, height, fit)
+	// 【本地改动 2026-08-23】URL 追加 {fn.ext} 尾段（公开 immutable 缓存）。
+	url := api.core.GetTransformedServerAssetURLWithFilename(
+		core.ServerAssetDeliveryKey(asset), core.ServerAssetURLFilename(asset, "preview"), width, height, fit)
 	if url == "" {
 		return nil, &assetID
 	}

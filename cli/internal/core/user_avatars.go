@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/url"
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -202,11 +203,18 @@ func (c *ChattoCore) GetUserAvatarURL(ctx context.Context, userID string, width,
 	}
 
 	// Always use the standard server asset URL format - storage backend is an internal detail
+	// 【本地改动 2026-08-23】URL 追加 {fn.ext} 尾段（头像上传统一转 WebP →
+	// .webp），走公开 immutable 缓存语义；推导不出扩展名时保持旧形态。
+	tail := ServerAssetURLFilename(avatar, "avatar")
 	if width != nil && height != nil {
 		if fit == "" {
 			fit = "cover"
 		}
-		return c.GetTransformedServerAssetURL(assetKey, *width, *height, fit), nil
+		return c.GetTransformedServerAssetURLWithFilename(assetKey, tail, *width, *height, fit), nil
 	}
-	return c.assetURL(fmt.Sprintf("/assets/server/%s", assetKey)), nil
+	path := fmt.Sprintf("/assets/server/%s", assetKey)
+	if tail != "" {
+		path += "/" + url.PathEscape(tail)
+	}
+	return c.assetURL(path), nil
 }

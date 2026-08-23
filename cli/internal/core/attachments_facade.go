@@ -69,8 +69,23 @@ func (c *ChattoCore) GetStableTransformedAttachmentAssetURL(assetID, userID stri
 	return c.mediaModel.GetStableTransformedAttachmentAssetURL(assetID, userID, width, height, fit)
 }
 
+// 【本地改动 2026-08-18】公开附件 URL 的入口（ticket 版保留，connectapi 选择
+// 用 Public* 生成无 ticket、带 {fn.ext} 的 URL）。
+func (c *ChattoCore) GetPublicStableAttachmentAssetURL(attachment *corev1.Attachment) StableAssetURL {
+	return c.mediaModel.GetPublicStableAttachmentAssetURL(attachment)
+}
+
+func (c *ChattoCore) GetPublicStableTransformedAttachmentAssetURL(attachment *corev1.Attachment, width, height int, fit string) StableAssetURL {
+	return c.mediaModel.GetPublicStableTransformedAttachmentAssetURL(attachment, width, height, fit)
+}
+
 func (c *ChattoCore) GetTransformedServerAssetURL(key string, width, height int, fit string) string {
 	return c.mediaModel.GetTransformedServerAssetURL(key, width, height, fit)
+}
+
+// 【本地改动 2026-08-23】带 {fn.ext} 尾段的 server 资产 transform URL。
+func (c *ChattoCore) GetTransformedServerAssetURLWithFilename(key, filename string, width, height int, fit string) string {
+	return c.mediaModel.GetTransformedServerAssetURLWithFilename(key, filename, width, height, fit)
 }
 
 func (c *ChattoCore) ImageCacheEnabled() bool {

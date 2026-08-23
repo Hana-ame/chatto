@@ -104,6 +104,8 @@ func apiAsset(api *API, attachment *corev1.Attachment, viewerID string, thumbnai
 	if attachment == nil {
 		return nil
 	}
+	// 【本地改动 2026-08-18】入口选择公开版 URL 生成（无 ticket、带 {fn.ext}，
+	// 长期可缓存）；HLS 仍走 ticket 版（GetStableHLSMasterPlaylistAssetURL）。
 	return &apiv1.Asset{
 		Id:                attachment.Id,
 		Filename:          attachment.Filename,
@@ -111,8 +113,8 @@ func apiAsset(api *API, attachment *corev1.Attachment, viewerID string, thumbnai
 		Size:              attachment.Size,
 		Width:             attachment.Width,
 		Height:            attachment.Height,
-		AssetUrl:          assetURLView(api.core.GetStableAttachmentAssetURL(attachment.Id, viewerID)),
-		ThumbnailAssetUrl: assetURLView(api.core.GetStableTransformedAttachmentAssetURL(attachment.Id, viewerID, thumbnail.width, thumbnail.height, thumbnail.fit)),
+		AssetUrl:          assetURLView(api.core.GetPublicStableAttachmentAssetURL(attachment)),
+		ThumbnailAssetUrl: assetURLView(api.core.GetPublicStableTransformedAttachmentAssetURL(attachment, thumbnail.width, thumbnail.height, thumbnail.fit)),
 		VideoProcessing:   apiVideoProcessing(api, viewerID, attachment),
 	}
 }
@@ -141,7 +143,13 @@ func apiVideoProcessing(api *API, viewerID string, attachment *corev1.Attachment
 			SourceAvailable: assetSourceAvailable(api, attachment.GetId(), true),
 		}
 		if thumbnailID := video.GetThumbnailAssetId(); thumbnailID != "" {
-			result.ThumbnailAssetUrl = assetURLView(api.core.GetStableAttachmentAssetURL(thumbnailID, viewerID))
+			// 【本地改动 2026-08-18】缩略图只有 ID，先取声明的附件对象再生成
+			// 公开 URL（需要 Filename/ContentType 拼 {fn.ext}）。
+			if created := api.core.GetAssetState(thumbnailID).Creation; created != nil {
+				if thumb := core.AttachmentFromAsset(created.GetAsset()); thumb != nil {
+					result.ThumbnailAssetUrl = assetURLView(api.core.GetPublicStableAttachmentAssetURL(thumb))
+				}
+			}
 		}
 		for _, variant := range video.GetVariants() {
 			if variant == nil {
@@ -149,12 +157,14 @@ func apiVideoProcessing(api *API, viewerID string, attachment *corev1.Attachment
 			}
 			var width, height int32
 			var size int64
+			var variantAttachment *corev1.Attachment
 			if created := api.core.GetAssetState(variant.GetAssetId()).Creation; created != nil {
 				asset := created.GetAsset()
 				if asset != nil {
 					width = asset.GetWidth()
 					height = asset.GetHeight()
 					size = asset.GetSize()
+					variantAttachment = core.AttachmentFromAsset(asset)
 				}
 			}
 			result.Variants = append(result.Variants, &apiv1.MessageVideoVariant{
@@ -162,7 +172,7 @@ func apiVideoProcessing(api *API, viewerID string, attachment *corev1.Attachment
 				Width:    width,
 				Height:   height,
 				Size:     size,
-				AssetUrl: assetURLView(api.core.GetStableAttachmentAssetURL(variant.GetAssetId(), viewerID)),
+				AssetUrl: assetURLView(api.core.GetPublicStableAttachmentAssetURL(variantAttachment)),
 			})
 		}
 		if hls := video.GetHls(); hls != nil && len(hls.GetRenditions()) > 0 {

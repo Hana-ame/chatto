@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -846,17 +847,203 @@ func (c *MediaModel) stableAttachmentPathWithAccess(assetID, userID, path string
 	return path + "?" + values.Encode()
 }
 
+// ----------------------------------------------------------------------------
+// 【本地改动 2026-08-18】公开附件 URL（不删除上面的 ticket 实现，只是新增）
+// 附件访问由「仅凭 URL 中 assetID 可读 + public immutable 缓存」的公开版
+// 承担：URL 形如 /assets/files/{assetID}/{fn.ext}，无签名 ticket、无会话/
+// 成员校验，assetID 本身就是访问凭证（URL 泄露即可读取，已缓存内容在成员
+// 移除后仍有效）。connectapi 这层入口选择调用 Public* 版本；ticket 版保留
+// 给旧的无文件名 URL 继续使用，两套实现并存。
+// ----------------------------------------------------------------------------
+
+// GetPublicStableAttachmentAssetURL returns the canonical public URL for an
+// asset binary: /assets/files/{assetID}/{fn.ext}. The trailing filename is
+// derived from stored attachment metadata, keeping the URL stable for the
+// asset's lifetime so browsers and CDNs can cache it immutably.
+func (c *MediaModel) GetPublicStableAttachmentAssetURL(attachment *corev1.Attachment) StableAssetURL {
+	if attachment == nil || attachment.GetId() == "" {
+		return StableAssetURL{}
+	}
+	return StableAssetURL{URL: c.assetURL(stableAttachmentPath(attachment, ""))}
+}
+
+// GetPublicStableTransformedAttachmentAssetURL returns the canonical public
+// URL for a derived image form factor:
+// /assets/files/{assetID}/image/{width}x{height}/{fit}/{fn.ext}
+func (c *MediaModel) GetPublicStableTransformedAttachmentAssetURL(attachment *corev1.Attachment, width, height int, fit string) StableAssetURL {
+	if attachment == nil || attachment.GetId() == "" {
+		return StableAssetURL{}
+	}
+	transformPath := fmt.Sprintf(
+		"/assets/files/%s/image/%dx%d/%s",
+		url.PathEscape(attachment.GetId()),
+		width,
+		height,
+		url.PathEscape(fit),
+	)
+	return StableAssetURL{URL: c.assetURL(stableAttachmentPath(attachment, transformPath))}
+}
+
+// stableAttachmentPath builds /assets/files/{assetID}/{suffix}/{fn.ext} where
+// suffix is empty or "/image/{w}x{h}/{fit}". The trailing filename is part of
+// the URL purely for readability and cache-key variety; the server resolves
+// the asset by ID alone and ignores the filename segment.
+func stableAttachmentPath(attachment *corev1.Attachment, suffix string) string {
+	base := fmt.Sprintf("/assets/files/%s", url.PathEscape(attachment.GetId()))
+	if suffix != "" {
+		base += suffix
+	}
+	if fn := attachmentURLFilename(attachment.GetFilename(), attachment.GetContentType()); fn != "" {
+		base += "/" + url.PathEscape(fn)
+	}
+	return base
+}
+
+// attachmentURLFilename builds the {fn.ext} tail of stable attachment URLs.
+// 原始用户文件名不可信（可能含路径分隔符/../、非 ASCII、控制字符），这里
+// 只保留 [A-Za-z0-9._-] 的安全子集；扩展名必须匹配白名单，否则按
+// ContentType 映射兜底，保证 URL 后缀与真实字节格式一致（例如 AVIF 重编码
+// 后的 image/avif 附件落到 .avif）。
+func attachmentURLFilename(filename, contentType string) string {
+	base := sanitizeAttachmentFilename(filename)
+	ext := safeAttachmentExtension(base, contentType)
+	base = strings.TrimSuffix(base, filepath.Ext(base))
+	base = strings.Trim(base, ".-")
+	if base == "" {
+		base = "file"
+	}
+	return base + ext
+}
+
+// sanitizeAttachmentFilename keeps only [A-Za-z0-9._-] from the filename base,
+// collapsing every other run into a single dash.
+func sanitizeAttachmentFilename(filename string) string {
+	base := filepath.Base(filename)
+	var b strings.Builder
+	lastDash := false
+	for _, r := range base {
+		ok := r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '-' || r == '_'
+		if ok {
+			b.WriteRune(r)
+			lastDash = false
+		} else if !lastDash {
+			b.WriteByte('-')
+			lastDash = true
+		}
+	}
+	return b.String()
+}
+
+// attachmentExtWhitelist receives URL-visible extensions from user filenames.
+// Anything else falls back to ContentType mapping so the extension never lies
+// about the byte format.
+var attachmentExtWhitelist = map[string]bool{
+	".jpg": true, ".jpeg": true, ".png": true, ".gif": true, ".webp": true,
+	".avif": true, ".mp4": true, ".webm": true, ".mov": true, ".ogg": true,
+	".m4a": true, ".mp3": true, ".wav": true, ".flac": true, ".pdf": true,
+	".txt": true, ".zip": true, ".7z": true, ".tar": true, ".gz": true,
+}
+
+// safeAttachmentExtension prefers the sanitized filename's own extension when
+// it is whitelisted, otherwise derives one from ContentType.
+func safeAttachmentExtension(filename, contentType string) string {
+	ext := strings.ToLower(filepath.Ext(filename))
+	if attachmentExtWhitelist[ext] {
+		return ext
+	}
+	switch strings.ToLower(strings.TrimSpace(strings.Split(contentType, ";")[0])) {
+	case "image/jpeg":
+		return ".jpg"
+	case "image/png":
+		return ".png"
+	case "image/gif":
+		return ".gif"
+	case "image/webp":
+		return ".webp"
+	case "image/avif":
+		return ".avif"
+	case "video/mp4":
+		return ".mp4"
+	case "video/webm":
+		return ".webm"
+	case "video/quicktime":
+		return ".mov"
+	case "video/ogg":
+		return ".ogg"
+	case "audio/mpeg":
+		return ".mp3"
+	case "audio/ogg":
+		return ".ogg"
+	case "audio/mp4":
+		return ".m4a"
+	case "audio/wav":
+		return ".wav"
+	case "audio/flac":
+		return ".flac"
+	case "application/pdf":
+		return ".pdf"
+	case "text/plain":
+		return ".txt"
+	case "application/zip":
+		return ".zip"
+	}
+	return ""
+}
+
 // GetTransformedServerAssetURL returns the URL for accessing a transformed version of an server asset.
 // Server assets include server logos, server banners, and user avatars stored in SERVER_ASSETS.
 // The URL includes HMAC signature to prevent parameter tampering.
 // Format: /assets/server/{key}/t/{params}.{signature}
 // where {params} is base64url-encoded JSON: {"w":width,"h":height,"f":"fit"}
 func (c *MediaModel) GetTransformedServerAssetURL(key string, width, height int, fit string) string {
+	return c.GetTransformedServerAssetURLWithFilename(key, "", width, height, fit)
+}
+
+// GetTransformedServerAssetURLWithFilename is GetTransformedServerAssetURL
+// with a trailing {fn.ext} URL segment.
+//
+// 【本地改动 2026-08-23】头像/logo/banner/链接预览的公开 URL 统一带 {fn.ext}
+// 尾段：浏览器按扩展名嗅探类型、CDN 缓存键更可读。签名仍只覆盖 {key} 与
+// transform 参数，文件名段纯粹是装饰，serving 端会剥掉它再验证。
+// filename 为空时保持旧的无尾段形态（推导不出安全扩展名的兜底）。
+func (c *MediaModel) GetTransformedServerAssetURLWithFilename(key, filename string, width, height int, fit string) string {
 	// Generate signed transform path component using the server asset resource ID.
 	signedPath := signedurl.SignedTransformPath(c.config.Assets.SigningSecret, ServerAssetSignResource, key, width, height, fit)
 
+	path := fmt.Sprintf("/assets/server/%s/t/%s", key, signedPath)
+	if filename != "" {
+		path += "/" + url.PathEscape(filename)
+	}
+
 	// Return signed transform URL
-	return c.assetURL(fmt.Sprintf("/assets/server/%s/t/%s", key, signedPath))
+	return c.assetURL(path)
+}
+
+// ServerAssetURLFilename builds the safe {fn.ext} tail for public
+// /assets/server/ URLs from the asset record. It prefers the stored filename's
+// sanitized base and falls back to fallbackBase (e.g. "avatar"/"logo"); the
+// extension must be derivable and URL-safe, otherwise the returned string is
+// empty and callers keep the legacy filename-less URL shape.
+//
+// 【本地改动 2026-08-23】与附件的 attachmentURLFilename 同一套白名单逻辑，
+// 保证 URL 扩展名永远不撒谎（如头像统一转 WebP 后落 .webp）。
+func ServerAssetURLFilename(record *corev1.AssetRecord, fallbackBase string) string {
+	name := ""
+	contentType := ""
+	if record != nil {
+		if fn := record.GetFilename(); fn != "" {
+			name = fn
+		}
+		contentType = record.GetContentType()
+	}
+	if name == "" {
+		name = fallbackBase
+	}
+	out := attachmentURLFilename(name, contentType)
+	if out == "" || filepath.Ext(out) == "" {
+		return ""
+	}
+	return out
 }
 
 // ============================================================================

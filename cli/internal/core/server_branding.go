@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/url"
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -197,7 +198,7 @@ func (c *ChattoCore) GetServerLogoURL(ctx context.Context, width, height *int, f
 	if err != nil || logo == nil {
 		return "", err
 	}
-	return c.serverAssetURL(logo, width, height, fit), nil
+	return c.serverAssetURL(logo, "logo", width, height, fit), nil
 }
 
 // GetServerBannerURL returns the URL for the server's banner, optionally
@@ -208,23 +209,30 @@ func (c *ChattoCore) GetServerBannerURL(ctx context.Context, width, height *int,
 	if err != nil || banner == nil {
 		return "", err
 	}
-	return c.serverAssetURL(banner, width, height, fit), nil
+	return c.serverAssetURL(banner, "banner", width, height, fit), nil
 }
 
 // serverAssetURL builds the public URL for an server-scoped asset,
 // optionally with transform parameters.
-func (c *ChattoCore) serverAssetURL(asset *corev1.AssetRecord, width, height *int, fit string) string {
+// 【本地改动 2026-08-23】URL 追加 {fn.ext} 尾段（kind 作为无文件名记录的
+// 兜底基名，如 logo/banner），走公开 immutable 缓存语义。
+func (c *ChattoCore) serverAssetURL(asset *corev1.AssetRecord, kind string, width, height *int, fit string) string {
 	assetKey := ServerAssetDeliveryKey(asset)
 	if assetKey == "" {
 		return ""
 	}
+	tail := ServerAssetURLFilename(asset, kind)
 	if width != nil && height != nil {
 		if fit == "" {
 			fit = "cover"
 		}
-		return c.GetTransformedServerAssetURL(assetKey, *width, *height, fit)
+		return c.GetTransformedServerAssetURLWithFilename(assetKey, tail, *width, *height, fit)
 	}
-	return c.assetURL(fmt.Sprintf("/assets/server/%s", assetKey))
+	path := fmt.Sprintf("/assets/server/%s", assetKey)
+	if tail != "" {
+		path += "/" + url.PathEscape(tail)
+	}
+	return c.assetURL(path)
 }
 
 // DeleteServerLogo clears the server's logo pointer and object-store asset.

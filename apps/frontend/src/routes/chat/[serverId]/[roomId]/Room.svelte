@@ -53,6 +53,8 @@
   import { RoomNavigationState } from './roomNavigationState.svelte';
   import { buildRoomPresentation } from './roomPresentation';
   import type { ThreadOpenOptions } from './threadOpenOptions';
+  import { RoomThreadingMode } from '$lib/roomThreading';
+  import { recentThreadRootCandidate } from './recentThreadRoot';
 
   let threadPaneModule: Promise<typeof import('./ThreadPane.svelte')> | null = null;
   let threadPaneLoadAttempt = $state(0);
@@ -191,12 +193,31 @@
       Boolean(room.roomData?.canManageRoom)
   });
   let composerCanAttach = $derived(room.roomData === undefined ? true : permissions.canAttach);
+  let threadingMode = $derived(room.roomData?.room.threadingMode ?? RoomThreadingMode.ENABLED);
   let composerCanCreateThread = $derived(
     !room.isDM &&
       permissions.canPostMessage &&
-      permissions.canPostInThread &&
-      serverInfo.supportsFeature('threadCreation')
+      (threadingMode === RoomThreadingMode.REQUIRED ||
+        (permissions.canPostInThread &&
+          (threadingMode === RoomThreadingMode.ENABLED ||
+            threadingMode === RoomThreadingMode.ENCOURAGED)))
   );
+  let composerRequiresThread = $derived(
+    !room.isDM && permissions.canPostMessage && threadingMode === RoomThreadingMode.REQUIRED
+  );
+
+  function getRecentThreadRootCandidate() {
+    const currentUserId = currentUser.user?.id;
+    if (
+      !currentUserId ||
+      room.isDM ||
+      !permissions.canPostInThread ||
+      threadingMode === RoomThreadingMode.DISABLED
+    ) {
+      return null;
+    }
+    return recentThreadRootCandidate(roomMessageStore.rootEvents, roomId, currentUserId, Date.now());
+  }
 
   createRoomPermissions(() => permissions);
 
@@ -676,6 +697,7 @@
           onHighlightComplete={() => navigation.clearMainHighlight()}
           typingUserIds={typingIndicator.userIds}
           typingMembers={getRoomMembers()}
+          {threadingMode}
         />
 
         <MessageComposer
@@ -686,6 +708,10 @@
           slowModeNextPostAt={room.roomData?.slowModeNextPostAt ?? null}
           slowModeBypassed={permissions.canManageRoom || permissions.canManageOthersMessage}
           showCreateThread={composerCanCreateThread}
+          createThreadRequired={composerRequiresThread}
+          createThreadDefault={threadingMode === RoomThreadingMode.ENCOURAGED}
+          threadsEncouraged={threadingMode === RoomThreadingMode.ENCOURAGED}
+          {getRecentThreadRootCandidate}
           inReplyTo={replyState.messageEventId ?? undefined}
           replyDisplayName={replyState.actorDisplayName || undefined}
           replyExcerpt={replyState.excerpt || undefined}
@@ -700,6 +726,10 @@
             } else {
               void roomMessageStore.refreshCurrentWindow(null);
             }
+          }}
+          onThreadMessageSent={(threadRootEventId, event) => {
+            typingIndicator?.resetDebounce();
+            openThread(threadRootEventId, { highlightEventId: event?.id });
           }}
         />
       </div>
@@ -720,15 +750,19 @@
             roomName={room.roomData.room.name}
             threadRootEventId={threadId}
             onClose={closeThread}
-            canPostInThread={room.roomData.canPostInThread}
-            canAttach={room.roomData.canAttach}
-            canEchoMessage={room.roomData.canEchoMessage && room.roomData.canPostMessage}
+            canPostInThread={room.roomData.canPostInThread &&
+              threadingMode !== RoomThreadingMode.DISABLED}
+            canAttach={room.roomData.canAttach && threadingMode !== RoomThreadingMode.DISABLED}
+            canEchoMessage={room.roomData.canEchoMessage &&
+              room.roomData.canPostMessage &&
+              threadingMode !== RoomThreadingMode.DISABLED}
             slowModeSeconds={room.roomData.room.slowModeSeconds}
             slowModeNextPostAt={room.roomData.slowModeNextPostAt}
             slowModeBypassed={room.roomData.canManageRoom || room.roomData.canManageOthersMessage}
             highlightEventId={navigation.pendingThreadHighlight}
             pendingQuote={navigation.pendingThreadQuote}
             pendingReply={navigation.pendingThreadReply}
+            {threadingMode}
             onHighlightComplete={() => navigation.clearThreadHighlight()}
             onQuoteConsumed={() => navigation.clearThreadQuote()}
             onReplyConsumed={() => navigation.clearThreadReply()}

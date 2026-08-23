@@ -87,6 +87,7 @@
         "add_reaction": "Dodaj reakcję",
         "more_reactions": "Więcej reakcji",
         "reply": "Odpowiedz",
+        "reply_room": "Odpowiedz w pokoju",
         "reply_thread": "Odpowiedz w wątku",
         "open_thread": "Otwórz wątek",
         "edit": "Edytuj wiadomość",
@@ -134,6 +135,7 @@
       "unarchived": "cofnął archiwizację pokoju",
       "call_started": "rozpoczął rozmowę w tym pokoju",
       "call_ended": "Aktywna rozmowa zakończyła się",
+      "threading_mode_changed": "zmienił(a) tryb wątków na {mode}",
       "and": "i",
       "other_people_count": {
         "one": "inna osoba",

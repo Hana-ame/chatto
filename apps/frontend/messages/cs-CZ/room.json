@@ -87,6 +87,7 @@
         "add_reaction": "Přidejte reakci",
         "more_reactions": "Více reakcí",
         "reply": "Odpovědět",
+        "reply_room": "Odpovědět v místnosti",
         "reply_thread": "Odpověď ve vláknu",
         "open_thread": "Otevřete vlákno",
         "edit": "Upravit zprávu",
@@ -130,6 +131,7 @@
       "unarchived": "zrušil archivaci místnosti",
       "call_started": "zahájil hovor v této místnosti",
       "call_ended": "Aktivní hovor skončil",
+      "threading_mode_changed": "změnil(a) režim vláken na {mode}",
       "and": "a",
       "other_people_count": {
         "one": "jiné",

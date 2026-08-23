@@ -87,6 +87,7 @@
         "add_reaction": "Pievienojiet reakciju",
         "more_reactions": "Vairāk reakciju",
         "reply": "Atbildēt",
+        "reply_room": "Atbildēt telpā",
         "reply_thread": "Atbildēt pavedienā",
         "open_thread": "Atvērt pavedienu",
         "edit": "Rediģēt ziņojumu",
@@ -130,6 +131,7 @@
       "unarchived": "atarhivēta telpa",
       "call_started": "uzsāka zvanu šajā telpā",
       "call_ended": "Aktīvais zvans ir beidzies",
+      "threading_mode_changed": "mainīja pavedienu režīmu uz {mode}",
       "and": "un",
       "other_people_count": {
         "one": "cits",

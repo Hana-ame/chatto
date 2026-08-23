@@ -8,6 +8,8 @@
   import { m } from '$lib/i18n/messages';
   import { useServerScope } from '$lib/state/server/scope.svelte';
   import ConfirmDialog from '$lib/ui/ConfirmDialog.svelte';
+  import Dialog from '$lib/ui/Dialog.svelte';
+  import { Button } from '$lib/ui/form';
   import { toast } from '$lib/ui/toast';
   import { getRoomMembers, getRoomMembersStore, getComposerContext } from '$lib/state/room';
   import { shouldAutoFocus } from '$lib/utils/shouldAutoFocus';
@@ -60,10 +62,15 @@
     onReady,
     onTyping,
     onMessageSent,
+    onThreadMessageSent,
     onCancelReply,
     onEscape,
     showAlsoSendToChannel = false,
-    showCreateThread = false
+    showCreateThread = false,
+    createThreadRequired = false,
+    createThreadDefault = false,
+    getRecentThreadRootCandidate = () => null,
+    threadsEncouraged = false
   }: MessageComposerProps = $props();
 
   const clock = new SvelteDate();
@@ -110,6 +117,9 @@
     getCanAttach: () => canAttach,
     getSlowModeBlocked: () => slowModeBlocked,
     getCanCreateThread: () => showCreateThread,
+    getCreateThreadRequired: () => createThreadRequired,
+    getCreateThreadDefault: () => createThreadDefault,
+    getRecentThreadRootCandidate: () => getRecentThreadRootCandidate(),
     getAutoFocus: () => autoFocus,
     getComposerSendMode: () => userPreferences.composerSendMode,
     getPlaceholder: () => placeholder,
@@ -121,6 +131,7 @@
         if (event) optimisticPost = { roomId, createdAt: Date.parse(event.createdAt) };
         onMessageSent?.(event);
       },
+      onThreadMessageSent,
       onCancelReply,
       onEscape
     }),
@@ -178,6 +189,12 @@
       {:else}
         {m('composer.slow_mode_ready', { interval: slowModeInterval })}
       {/if}
+    </p>
+  {/if}
+
+  {#if threadsEncouraged && inReplyTo && !inThread}
+    <p class="px-0.5 text-xs text-muted" data-testid="threads-encouraged-hint">
+      {m('composer.threads_encouraged')}
     </p>
   {/if}
 
@@ -247,7 +264,8 @@
       fileInputElement={composer.fileInputElement}
       effectiveTimezone={userSettings.effectiveTimezone}
       showCreateThread={showCreateThread && !composer.isEditing && !inThread}
-      createThread={composer.createThread}
+      createThread={createThreadRequired || composer.createThread}
+      {createThreadRequired}
       onToggleCreateThread={() => (composer.createThread = !composer.createThread)}
       showAlsoSendToChannel={(showAlsoSendToChannel && !composer.isEditing) ||
         composer.showEditEchoToggle}
@@ -279,4 +297,30 @@
   >
     {m('composer.role_mention_confirm_body')}
   </ConfirmDialog>
+{/if}
+
+{#if composer.pendingThreadDestinationConfirmation}
+  <Dialog
+    visible
+    size="sm"
+    title={m('composer.recent_thread_confirm_title')}
+    onclose={() => composer.cancelThreadDestinationConfirmation()}
+  >
+    <p class="text-muted">{m('composer.recent_thread_confirm_body')}</p>
+
+    {#snippet footer()}
+      <div class="flex flex-wrap justify-end gap-2">
+        <Button variant="secondary" onclick={() => composer.cancelThreadDestinationConfirmation()}>
+          {m('common.cancel')}
+        </Button>
+        <Button variant="secondary" onclick={() => composer.postAsNewRoot()}>
+          {m('composer.post_as_new_message')}
+        </Button>
+        <Button variant="action" onclick={() => composer.postInRecentThread()}>
+          <span class="iconify icon-[uil--comment-alt-lines]"></span>
+          {m('composer.continue_in_thread')}
+        </Button>
+      </div>
+    {/snippet}
+  </Dialog>
 {/if}

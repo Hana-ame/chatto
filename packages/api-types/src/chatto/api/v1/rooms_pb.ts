@@ -5,9 +5,9 @@
 
 import type { BinaryReadOptions, FieldList, JsonReadOptions, JsonValue, PartialMessage, PlainMessage } from "@bufbuild/protobuf";
 import { Message, proto3, Timestamp } from "@bufbuild/protobuf";
+import { ImageTransformOptions, RoomThreadingMode } from "./common_pb.js";
 import { DirectoryMember } from "./member_directory_pb.js";
 import { PageInfo, PageRequest } from "./pagination_pb.js";
-import { ImageTransformOptions } from "./common_pb.js";
 import { RoomAttachmentListItem } from "./attachments_pb.js";
 import { Message as Message$1 } from "./message_types_pb.js";
 
@@ -109,6 +109,14 @@ export class Room extends Message<Room> {
    */
   slowModeSeconds = 0;
 
+  /**
+   * Threading policy for this channel room. Direct-message rooms report
+   * UNSPECIFIED because they do not support threads.
+   *
+   * @generated from field: chatto.api.v1.RoomThreadingMode threading_mode = 9;
+   */
+  threadingMode = RoomThreadingMode.UNSPECIFIED;
+
   constructor(data?: PartialMessage<Room>) {
     super();
     proto3.util.initPartial(data, this);
@@ -125,6 +133,7 @@ export class Room extends Message<Room> {
     { no: 6, name: "group_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 7, name: "universal", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
     { no: 8, name: "slow_mode_seconds", kind: "scalar", T: 13 /* ScalarType.UINT32 */ },
+    { no: 9, name: "threading_mode", kind: "enum", T: proto3.getEnumType(RoomThreadingMode) },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): Room {
@@ -239,6 +248,13 @@ export class CreateRoomRequest extends Message<CreateRoomRequest> {
    */
   universal = false;
 
+  /**
+   * Threading policy for the new channel. UNSPECIFIED selects ENABLED.
+   *
+   * @generated from field: chatto.api.v1.RoomThreadingMode threading_mode = 5;
+   */
+  threadingMode = RoomThreadingMode.UNSPECIFIED;
+
   constructor(data?: PartialMessage<CreateRoomRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -251,6 +267,7 @@ export class CreateRoomRequest extends Message<CreateRoomRequest> {
     { no: 2, name: "description", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 3, name: "group_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 4, name: "universal", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+    { no: 5, name: "threading_mode", kind: "enum", T: proto3.getEnumType(RoomThreadingMode) },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): CreateRoomRequest {
@@ -357,6 +374,14 @@ export class UpdateRoomRequest extends Message<UpdateRoomRequest> {
    */
   slowModeSeconds?: number;
 
+  /**
+   * New threading policy. Direct-message rooms cannot set this field, and an
+   * explicitly supplied UNSPECIFIED or unknown value is rejected.
+   *
+   * @generated from field: optional chatto.api.v1.RoomThreadingMode threading_mode = 6;
+   */
+  threadingMode?: RoomThreadingMode;
+
   constructor(data?: PartialMessage<UpdateRoomRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -370,6 +395,7 @@ export class UpdateRoomRequest extends Message<UpdateRoomRequest> {
     { no: 3, name: "description", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
     { no: 4, name: "universal", kind: "scalar", T: 8 /* ScalarType.BOOL */, opt: true },
     { no: 5, name: "slow_mode_seconds", kind: "scalar", T: 13 /* ScalarType.UINT32 */, opt: true },
+    { no: 6, name: "threading_mode", kind: "enum", T: proto3.getEnumType(RoomThreadingMode), opt: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): UpdateRoomRequest {

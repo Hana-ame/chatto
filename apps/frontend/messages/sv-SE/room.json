@@ -87,6 +87,7 @@
         "add_reaction": "Lägg till reaktion",
         "more_reactions": "Fler reaktioner",
         "reply": "Svara",
+        "reply_room": "Svara i rummet",
         "reply_thread": "Svara i tråden",
         "open_thread": "Öppna tråden",
         "edit": "Redigera meddelande",
@@ -130,6 +131,7 @@
       "unarchived": "har tagit bort rummet från arkivet",
       "call_started": "startade ett samtal i det här rummet",
       "call_ended": "Det aktiva samtalet har avslutats",
+      "threading_mode_changed": "ändrade trådläget till {mode}",
       "and": "och",
       "other_people_count": {
         "one": "annan",

@@ -75,7 +75,7 @@ func TestProjectionSnapshotContractsIncludeCurrentSchema(t *testing.T) {
 		{reactionSnapshotContractID, "v1", &corev1.ReactionProjectionSnapshot{}},
 		{roomDirectorySnapshotContractID, "v1", &corev1.RoomDirectoryProjectionSnapshot{}},
 		{roomGroupLayoutSnapshotContractID, "v1", &corev1.RoomGroupLayoutProjectionSnapshot{}},
-		{roomTimelineSnapshotContractID, "v6", &corev1.RoomTimelineProjectionSnapshot{}},
+		{roomTimelineSnapshotContractID, "v7", &corev1.RoomTimelineProjectionSnapshot{}},
 		{threadSnapshotContractID, "v2", &corev1.ThreadProjectionSnapshot{}},
 		{userSnapshotContractID, "v4", &corev1.UserProfileProjectionSnapshot{}},
 	}
@@ -94,6 +94,7 @@ func TestPrivacyBoundaryProjectionContractsRejectPreRequestSnapshots(t *testing.
 		{userSnapshotContractID, snapshotContractID("v3", &corev1.UserProfileProjectionSnapshot{})},
 		{mentionablesSnapshotContractID, snapshotContractID("v1", &corev1.MentionablesProjectionSnapshot{})},
 		{roomTimelineSnapshotContractID, snapshotContractID("v5", &corev1.RoomTimelineProjectionSnapshot{})},
+		{roomTimelineSnapshotContractID, snapshotContractID("v6", &corev1.RoomTimelineProjectionSnapshot{})},
 		{threadSnapshotContractID, snapshotContractID("v1", &corev1.ThreadProjectionSnapshot{})},
 	}
 	for _, tt := range tests {
@@ -171,6 +172,41 @@ func TestMentionablesSnapshotRetainsEncryptedSourceWithoutPlaintextHandle(t *tes
 	require.False(t, availability.Available)
 	require.Equal(t, mentionableOwnerUser, availability.OwnerKind)
 	require.Equal(t, "U1", availability.OwnerID)
+}
+
+func TestRoomDirectorySnapshotPreservesUnknownThreadingMode(t *testing.T) {
+	const unknownMode = corev1.RoomThreadingMode(99)
+	projection := NewRoomDirectoryProjection()
+	require.NoError(t, projection.Catalog.Apply(&corev1.Event{Event: &corev1.Event_RoomCreated{
+		RoomCreated: &corev1.RoomCreatedEvent{
+			RoomId: "R1", Name: "future-threading", Kind: corev1.RoomKind_ROOM_KIND_CHANNEL,
+			ThreadingMode: unknownMode,
+		},
+	}}, 1))
+
+	room, ok := projection.Catalog.Get("R1")
+	require.True(t, ok)
+	require.Equal(t, corev1.RoomThreadingMode_ROOM_THREADING_MODE_DISABLED, room.GetThreadingMode())
+
+	payload, err := projection.Snapshot()
+	require.NoError(t, err)
+	assertRawMode := func(snapshotBytes []byte) {
+		t.Helper()
+		snapshot := &corev1.RoomDirectoryProjectionSnapshot{}
+		require.NoError(t, proto.Unmarshal(snapshotBytes, snapshot))
+		require.Len(t, snapshot.GetRooms(), 1)
+		require.Equal(t, unknownMode, snapshot.GetRooms()[0].GetThreadingMode())
+	}
+	assertRawMode(payload)
+
+	restored := NewRoomDirectoryProjection()
+	require.NoError(t, restored.Restore(payload))
+	restoredRoom, ok := restored.Catalog.Get("R1")
+	require.True(t, ok)
+	require.Equal(t, corev1.RoomThreadingMode_ROOM_THREADING_MODE_DISABLED, restoredRoom.GetThreadingMode())
+	roundTrip, err := restored.Snapshot()
+	require.NoError(t, err)
+	assertRawMode(roundTrip)
 }
 
 func TestProjectionSnapshotsRoundTripTransactionally(t *testing.T) {
@@ -306,7 +342,7 @@ func TestProjectionSnapshotsRoundTripTransactionally(t *testing.T) {
 	expectedContractPrefix := map[string]string{
 		"room_directory": "v1-", "server_config": "v1-", "room_group_layout": "v1-",
 		"notification_decisions": "v1-", "notifications": "v2-",
-		"room_timeline": "v6-", "call_state": "v1-", "assets": "v3-", "reactions": "v1-",
+		"room_timeline": "v7-", "call_state": "v1-", "assets": "v3-", "reactions": "v1-",
 		"content_keys": "v1-", "rbac": "v1-", "mentionables": "v2-", "users": "v4-",
 	}
 	for _, tt := range tests {

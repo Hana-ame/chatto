@@ -87,6 +87,7 @@
         "add_reaction": "Agregar reacción",
         "more_reactions": "Más reacciones",
         "reply": "Responder",
+        "reply_room": "Responder en la sala",
         "reply_thread": "Responder en hilo",
         "open_thread": "Abrir hilo",
         "edit": "Editar mensaje",
@@ -130,6 +131,7 @@
       "unarchived": "desarchivó la sala",
       "call_started": "inició una llamada en esta sala",
       "call_ended": "La llamada activa ha terminado",
+      "threading_mode_changed": "cambió el modo de hilos a {mode}",
       "and": "y",
       "other_people_count": {
         "one": "otro",

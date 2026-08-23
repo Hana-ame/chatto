@@ -87,6 +87,7 @@
         "add_reaction": "リアクションを追加",
         "more_reactions": "その他のリアクション",
         "reply": "返信",
+        "reply_room": "ルームで返信",
         "reply_thread": "スレッド内で返信",
         "open_thread": "スレッドを開きます",
         "edit": "メッセージを編集",
@@ -130,6 +131,7 @@
       "unarchived": "ルームのアーカイブを解除しました",
       "call_started": "がこのルームで通話を開始しました",
       "call_ended": "通話が終了しました",
+      "threading_mode_changed": "スレッドモードを「{mode}」に変更しました",
       "and": "と",
       "other_people_count": {
         "one": "その他",

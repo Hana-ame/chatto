@@ -769,6 +769,14 @@ func (s *HTTPServer) realtimeProjectionFrameForEventWithRooms(ctx context.Contex
 		if err := appendRoom(payload.RoomSlowModeChanged.GetRoomId()); err != nil {
 			return nil, false, err
 		}
+	case *corev1.Event_RoomThreadingModeChanged:
+		roomID := payload.RoomThreadingModeChanged.GetRoomId()
+		if err := appendRoom(roomID); err != nil {
+			return nil, false, err
+		}
+		if err := appendSourceTimeline(roomID); err != nil {
+			return nil, false, err
+		}
 	case *corev1.Event_UserJoinedRoom:
 		roomID := payload.UserJoinedRoom.GetRoomId()
 		if err := appendRoom(roomID); err != nil {

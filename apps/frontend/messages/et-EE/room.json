@@ -87,6 +87,7 @@
         "add_reaction": "Lisa reaktsioon",
         "more_reactions": "Rohkem reaktsioone",
         "reply": "Vasta",
+        "reply_room": "Vasta ruumis",
         "reply_thread": "Vasta lõimes",
         "open_thread": "Ava lõng",
         "edit": "Redigeeri sõnumit",
@@ -130,6 +131,7 @@
       "unarchived": "eemaldas ruumi arhiivist",
       "call_started": "alustas selles ruumis kõnet",
       "call_ended": "Aktiivne kõne on lõppenud",
+      "threading_mode_changed": "muutis lõimerežiimiks {mode}",
       "and": "ja",
       "other_people_count": {
         "one": "muud",

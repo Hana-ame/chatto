@@ -31,6 +31,8 @@ func roomIDOfEvent(event *corev1.Event) string {
 		return e.RoomUniversalChanged.GetRoomId()
 	case *corev1.Event_RoomSlowModeChanged:
 		return e.RoomSlowModeChanged.GetRoomId()
+	case *corev1.Event_RoomThreadingModeChanged:
+		return e.RoomThreadingModeChanged.GetRoomId()
 	case *corev1.Event_UserJoinedRoom:
 		return e.UserJoinedRoom.GetRoomId()
 	case *corev1.Event_UserLeftRoom:
@@ -153,8 +155,8 @@ func isAssetLifecycleEvent(event *corev1.Event) bool {
 //     live, but not displayed as chat timeline items.
 //
 // Visible: root messages, room lifecycle (created/updated/archived/
-// unarchived/deleted), memberships (user_joined / user_left), and voice call
-// lifecycle (started / ended).
+// unarchived/deleted), Threading Mode changes, memberships (user_joined /
+// user_left), and voice call lifecycle (started / ended).
 func isVisibleRoomTimelineEntry(event *corev1.Event) bool {
 	if event == nil {
 		return false
@@ -167,6 +169,7 @@ func isVisibleRoomTimelineEntry(event *corev1.Event) bool {
 		*corev1.Event_RoomDeleted,
 		*corev1.Event_RoomArchived,
 		*corev1.Event_RoomUnarchived,
+		*corev1.Event_RoomThreadingModeChanged,
 		*corev1.Event_UserJoinedRoom,
 		*corev1.Event_UserLeftRoom,
 		*corev1.Event_VoiceCallStarted,
@@ -209,6 +212,7 @@ func isDeliverableLiveEVTRoomEventType(eventType string) bool {
 		evtstream.EventRoomUnarchived,
 		evtstream.EventRoomUniversalChanged,
 		evtstream.EventRoomSlowModeChanged,
+		evtstream.EventRoomThreadingModeChanged,
 		evtstream.EventUserJoinedRoom,
 		evtstream.EventUserLeftRoom,
 		evtstream.EventRoomMemberAdded,
@@ -335,6 +339,7 @@ func eventNeedsRoomDirectoryProjection(event *corev1.Event) bool {
 		*corev1.Event_RoomUnarchived,
 		*corev1.Event_RoomUniversalChanged,
 		*corev1.Event_RoomSlowModeChanged,
+		*corev1.Event_RoomThreadingModeChanged,
 		*corev1.Event_RoomDeleted:
 		return true
 	default:

@@ -1,5 +1,9 @@
 import { expect, type Locator, type Page } from '@playwright/test';
-import { createAndLoginTestUser } from './fixtures/testUser';
+import {
+  createAndLoginTestUser,
+  loginAsAdmin,
+  openServer
+} from './fixtures/testUser';
 import { withServerUser } from './fixtures/serverUser';
 import { waitForRoomReady } from './fixtures/realtimeSync';
 import {
@@ -108,6 +112,142 @@ test.describe('Message Threading', () => {
     await root.openThread();
     await roomPage.expectTextInThreadPane(rootMessage);
     await roomPage.expectThreadPaneFollowing();
+  });
+
+  test('recent threaded root offers to receive the next message', async ({
+    page,
+    chatPage,
+    roomPage
+  }) => {
+    await createAndLoginTestUser(page);
+    await chatPage.goto();
+    await chatPage.enterRoom('general');
+
+    const rootMessage = `Recent thread ${Date.now()}`;
+    await roomPage.waitForInputEditable();
+    await page.getByRole('button', { name: 'Post as thread' }).click();
+    await roomPage.sendMessage(rootMessage);
+
+    const followup = `Recent follow-up ${Date.now()}`;
+    await roomPage.messageInput.fill(followup);
+    await roomPage.messageInput.press('Control+Enter');
+
+    await expect(roomPage.recentThreadConfirmationDialog).toBeVisible();
+    await expect(roomPage.messageInput).toHaveText(followup);
+    await roomPage.recentThreadConfirmationDialog
+      .getByRole('button', { name: 'Continue in thread' })
+      .click();
+
+    await expect(roomPage.recentThreadConfirmationDialog).toBeHidden();
+    await roomPage.expectThreadPaneVisible();
+    await roomPage.expectTextInThreadPane(rootMessage);
+    await roomPage.expectTextInThreadPane(followup);
+  });
+
+  test('another user attaching a thread triggers the safeguard for the root author', async ({
+    page,
+    chatPage,
+    roomPage,
+    browser,
+    serverURL
+  }) => {
+    await createAndLoginTestUser(page);
+    await chatPage.goto();
+    await chatPage.enterRoom('general');
+
+    const rootMessage = `Externally threaded root ${Date.now()}`;
+    const root = await roomPage.sendMessage(rootMessage);
+    const externalReply = `External thread reply ${Date.now()}`;
+
+    await withServerUser(
+      browser!,
+      serverURL,
+      async ({ page: page2, chatPage: chatPage2, roomPage: roomPage2 }) => {
+        await chatPage2.enterRoom('general');
+        await waitForRoomReady(page2, 'general');
+
+        const rootForB = roomPage2.getMessage(rootMessage);
+        await rootForB.openThread();
+        await roomPage2.expectThreadPaneVisible();
+        await roomPage2.postThreadReply(externalReply);
+
+        await expect(root.locator.getByRole('link', { name: '1 reply' })).toBeVisible({
+          timeout: TIMEOUTS.REALTIME_EVENT
+        });
+      }
+    );
+
+    const followup = `Separate root after external thread ${Date.now()}`;
+    await roomPage.messageInput.fill(followup);
+    await roomPage.messageInput.press('Control+Enter');
+
+    await expect(roomPage.recentThreadConfirmationDialog).toBeVisible();
+    await expect(roomPage.messageInput).toHaveText(followup);
+    await roomPage.recentThreadConfirmationDialog
+      .getByRole('button', { name: 'Post as new message' })
+      .click();
+
+    await expect(roomPage.getMessage(followup).locator).toBeVisible();
+    await root.openThread();
+    await roomPage.expectTextInThreadPane(externalReply);
+    await roomPage.expectTextNotInThreadPane(followup);
+  });
+
+  test('threading mode changes update the composer and appear in the timeline live', async ({
+    page,
+    chatPage,
+    roomPage,
+    browser,
+    serverURL
+  }) => {
+    await createAndLoginTestUser(page);
+    await chatPage.goto();
+    await chatPage.enterRoom('general');
+    await roomPage.waitForInputEditable();
+
+    const threadToggle = page.getByRole('button', { name: 'Post as thread' });
+    await expect(threadToggle).toHaveAttribute('aria-pressed', 'false');
+    await expect(threadToggle).toBeEnabled();
+
+    const adminContext = await browser.newContext({ baseURL: serverURL });
+    const adminPage = await adminContext.newPage();
+    try {
+      await loginAsAdmin(adminPage);
+      await openServer(adminPage);
+      await adminPage.goto(routes.serverAdminRooms);
+      const generalRow = adminPage.locator('.cursor-grab', { hasText: 'general' });
+      await generalRow.getByTitle('Edit room').click();
+
+      const threadingModes = adminPage.getByRole('radiogroup', { name: 'Threading mode' });
+      const setThreadingMode = async (mode: 'Encouraged' | 'Required' | 'Disabled') => {
+        await threadingModes.getByRole('radio', { name: new RegExp(`^${mode}`) }).click();
+        await adminPage.getByRole('button', { name: 'Save Changes' }).click();
+      };
+
+      await setThreadingMode('Encouraged');
+      await expect(page.getByText(/changed threading mode to Encouraged/)).toBeVisible({
+        timeout: TIMEOUTS.REALTIME_EVENT
+      });
+      await expect(threadToggle).toHaveAttribute('aria-pressed', 'true');
+      await expect(threadToggle).toBeEnabled();
+      await threadToggle.click();
+      await expect(threadToggle).toHaveAttribute('aria-pressed', 'false');
+
+      await setThreadingMode('Required');
+      await expect(page.getByText(/changed threading mode to Required/)).toBeVisible({
+        timeout: TIMEOUTS.REALTIME_EVENT
+      });
+      await expect(threadToggle).toHaveAttribute('aria-pressed', 'true');
+      await expect(threadToggle).toBeDisabled();
+
+      await setThreadingMode('Disabled');
+      await expect(page.getByText(/changed threading mode to Disabled/)).toBeVisible({
+        timeout: TIMEOUTS.REALTIME_EVENT
+      });
+      await expect(threadToggle).toHaveCount(0);
+    } finally {
+      await adminContext.close();
+    }
   });
 
   test('thread reply from another user appears in real-time', async ({

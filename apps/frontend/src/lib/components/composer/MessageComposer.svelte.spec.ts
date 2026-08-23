@@ -1584,6 +1584,23 @@ describe('MessageComposer', () => {
   });
 
   describe('edit mode transitions', () => {
+    it('keeps an existing message editable when new posting is unavailable', async () => {
+      roomStateMock.editState.eventId = 'evt_historical_thread_edit';
+      roomStateMock.editState.originalBody = 'historical reply';
+      const { container } = renderMessageComposer({ roomId: 'room_456', canPost: false });
+      const editor = await findEditor(container);
+
+      await expect.element(editor).toHaveAttribute('contenteditable', 'true');
+      (q(container, 'button[aria-label="Send message"]') as HTMLButtonElement).click();
+
+      await vi.waitFor(() => expect(updateMessageConnectMock).toHaveBeenCalledOnce());
+      expect(updateMessageConnectMock).toHaveBeenCalledWith({
+        roomId: expect.any(String),
+        eventId: 'evt_historical_thread_edit',
+        body: 'historical reply'
+      });
+    });
+
     it('does not start editing on ArrowUp when no editable message is available', async () => {
       const { container } = renderMessageComposer({ roomId: 'room_456' });
       const editor = await findEditor(container);
@@ -3026,6 +3043,153 @@ describe('MessageComposer', () => {
       await vi.waitFor(() => expect(onMessageSent).toHaveBeenCalledOnce());
       expect(onMessageSent).toHaveBeenCalledWith(expect.objectContaining({ id: 'msg_123' }));
       await expect.element(threadToggle).toHaveAttribute('aria-pressed', 'false');
+    });
+
+    it('defaults Thread on for Encouraged drafts while preserving an explicit opt-out', async () => {
+      const rendered = renderMessageComposer({
+        roomId: 'room_456',
+        showCreateThread: true,
+        createThreadDefault: true,
+        threadsEncouraged: true
+      });
+      const threadToggle = q(
+        rendered.container,
+        'button[aria-label="Post as thread"]'
+      ) as HTMLButtonElement;
+
+      await expect.element(threadToggle).toHaveAttribute('aria-pressed', 'true');
+      await userEvent.click(threadToggle);
+      await expect.element(threadToggle).toHaveAttribute('aria-pressed', 'false');
+
+      await rendered.rerender({ threadsEncouraged: true });
+      await expect.element(threadToggle).toHaveAttribute('aria-pressed', 'false');
+
+      const editor = await findEditor(rendered.container);
+      await typeInEditor(editor, 'flat by choice');
+      await userEvent.click(
+        q(rendered.container, 'button[aria-label="Send message"]') as HTMLButtonElement
+      );
+      await vi.waitFor(() => expect(mutationMock).toHaveBeenCalledOnce());
+      expect(mutationMock.mock.calls[0][1].input).toMatchObject({ createThread: false });
+      await expect.element(threadToggle).toHaveAttribute('aria-pressed', 'true');
+    });
+
+    it('offers a recent thread before upload and routes the draft into it', async () => {
+      const onMessageSent = vi.fn();
+      const onThreadMessageSent = vi.fn();
+      const getRecentThreadRootCandidate = vi.fn(() => ({
+        threadRootEventId: 'previous-root'
+      }));
+      const { container, getByRole } = renderMessageComposer({
+        roomId: 'room_456',
+        showCreateThread: true,
+        createThreadDefault: true,
+        getRecentThreadRootCandidate,
+        onMessageSent,
+        onThreadMessageSent
+      });
+      const editor = await findEditor(container);
+      await typeInEditor(editor, 'continue this thought');
+      await userEvent.click(q(container, 'button[aria-label="Send message"]') as HTMLButtonElement);
+
+      await expect
+        .element(getByRole('dialog', { name: 'Continue your previous thread?' }))
+        .toBeInTheDocument();
+      expect(mutationMock).not.toHaveBeenCalled();
+      await userEvent.click(getByRole('button', { name: 'Continue in thread' }));
+
+      await vi.waitFor(() => expect(mutationMock).toHaveBeenCalledOnce());
+      expect(mutationMock.mock.calls[0][1].input).toMatchObject({
+        body: 'continue this thought',
+        threadRootEventId: 'previous-root',
+        createThread: false
+      });
+      expect(onMessageSent).not.toHaveBeenCalled();
+      expect(onThreadMessageSent).toHaveBeenCalledWith(
+        'previous-root',
+        expect.objectContaining({ id: 'msg_123' })
+      );
+    });
+
+    it('keeps the prepared root unchanged when the user confirms a new message', async () => {
+      const onMessageSent = vi.fn();
+      const { container, getByRole } = renderMessageComposer({
+        roomId: 'room_456',
+        showCreateThread: true,
+        createThreadDefault: true,
+        getRecentThreadRootCandidate: () => ({ threadRootEventId: 'previous-root' }),
+        onMessageSent
+      });
+      const editor = await findEditor(container);
+      await typeInEditor(editor, 'a distinct topic');
+      await userEvent.click(q(container, 'button[aria-label="Send message"]') as HTMLButtonElement);
+      await userEvent.click(getByRole('button', { name: 'Post as new message' }));
+
+      await vi.waitFor(() => expect(mutationMock).toHaveBeenCalledOnce());
+      expect(mutationMock.mock.calls[0][1].input).toMatchObject({
+        body: 'a distinct topic',
+        threadRootEventId: null,
+        createThread: true
+      });
+      expect(onMessageSent).toHaveBeenCalledOnce();
+    });
+
+    it('keeps the draft and attachments untouched when the destination choice is cancelled', async () => {
+      const { container, getByRole } = renderMessageComposer({
+        roomId: 'room_456',
+        getRecentThreadRootCandidate: () => ({ threadRootEventId: 'previous-root' })
+      });
+      const editor = await findEditor(container);
+      const file = selectFirstAttachment(q(container, 'input[type="file"]') as HTMLInputElement);
+
+      await expect.poll(() => q(container, 'img')).toBeTruthy();
+      await typeInEditor(editor, 'keep this destination undecided');
+      await userEvent.click(q(container, 'button[aria-label="Send message"]') as HTMLButtonElement);
+
+      const dialog = getByRole('dialog', { name: 'Continue your previous thread?' });
+      await expect.element(dialog).toBeInTheDocument();
+      expect(mutationMock).not.toHaveBeenCalled();
+
+      await userEvent.click(getByRole('button', { name: 'Cancel' }));
+
+      await expect.element(dialog).not.toBeInTheDocument();
+      await expect.element(editor).toHaveTextContent('keep this destination undecided');
+      await expect.poll(() => q(container, 'img')).toBeTruthy();
+      expect(mutationMock).not.toHaveBeenCalled();
+      expect(file.name).toBe('paste.png');
+    });
+
+    it('keeps Required thread creation visible, locked on, and reactive to policy changes', async () => {
+      const rendered = renderMessageComposer({
+        roomId: 'room_456',
+        showCreateThread: true,
+        createThreadRequired: false
+      });
+      const editor = await findEditor(rendered.container);
+      const threadToggle = q(
+        rendered.container,
+        'button[aria-label="Post as thread"]'
+      ) as HTMLButtonElement;
+
+      await expect.element(threadToggle).toHaveAttribute('aria-pressed', 'false');
+      expect(threadToggle.disabled).toBe(false);
+
+      await rendered.rerender({ createThreadRequired: true });
+      await expect.element(threadToggle).toHaveAttribute('aria-pressed', 'true');
+      expect(threadToggle.disabled).toBe(true);
+
+      await typeInEditor(editor, 'required thread root');
+      (q(rendered.container, 'button[aria-label="Send message"]') as HTMLButtonElement).click();
+      await vi.waitFor(() => expect(mutationMock).toHaveBeenCalledOnce());
+      expect(mutationMock.mock.calls[0][1].input).toMatchObject({
+        roomId: rendered.roomId,
+        body: 'required thread root',
+        createThread: true
+      });
+
+      await rendered.rerender({ createThreadRequired: false });
+      await expect.element(threadToggle).toHaveAttribute('aria-pressed', 'false');
+      expect(threadToggle.disabled).toBe(false);
     });
 
     it('clears hidden thread creation state when navigating to another room', async () => {

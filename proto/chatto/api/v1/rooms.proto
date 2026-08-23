@@ -43,6 +43,9 @@ message Room {
   // Minimum number of seconds a non-exempt member must wait between message
   // posts. Channel rooms only; zero means slow mode is disabled.
   uint32 slow_mode_seconds = 8;
+  // Threading policy for this channel room. Direct-message rooms report
+  // UNSPECIFIED because they do not support threads.
+  RoomThreadingMode threading_mode = 9;
 }
 
 // Lightweight room reference for cross-resource rows.
@@ -72,6 +75,8 @@ message CreateRoomRequest {
   // Whether the new channel should grant effective membership to eligible
   // server members.
   bool universal = 4;
+  // Threading policy for the new channel. UNSPECIFIED selects ENABLED.
+  RoomThreadingMode threading_mode = 5;
 }
 
 // Result of creating a room.
@@ -100,6 +105,9 @@ message UpdateRoomRequest {
   // maximum supported interval is six hours. Direct-message rooms cannot use
   // slow mode.
   optional uint32 slow_mode_seconds = 5 [(buf.validate.field).uint32.lte = 21600];
+  // New threading policy. Direct-message rooms cannot set this field, and an
+  // explicitly supplied UNSPECIFIED or unknown value is rejected.
+  optional RoomThreadingMode threading_mode = 6;
 }
 
 // Result of updating a room.

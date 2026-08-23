@@ -87,6 +87,7 @@
         "add_reaction": "Ajouter une réaction",
         "more_reactions": "Plus de réactions",
         "reply": "Répondre",
+        "reply_room": "Répondre dans le salon",
         "reply_thread": "Répondre dans le fil de discussion",
         "open_thread": "Ouvrir le fil de discussion",
         "edit": "Modifier le message",
@@ -130,6 +131,7 @@
       "unarchived": "a désarchivé la salle",
       "call_started": "a lancé un appel dans cette salle",
       "call_ended": "L’appel en cours est terminé",
+      "threading_mode_changed": "a défini le mode des fils sur {mode}",
       "and": "et",
       "other_people_count": {
         "one": "autre",

@@ -288,8 +288,39 @@ func TestMediaModelStableAttachmentURLs(t *testing.T) {
 	}
 }
 
-func TestMediaModelStableAttachmentURLIssuanceBuckets(t *testing.T) {
+// 【本地改动 2026-08-23】公开附件 URL 构造器的精确断言测试。
+//
+// 发现背景：GetPublicStableTransformedAttachmentAssetURL 曾把完整路径传给
+// stableAttachmentPath（后者会再拼一遍 /assets/files/{id} 前缀），线上缩略图
+// URL 双重前缀全部 404，2026-08-23 部署后由用户浏览器控制台发现。此前的
+// HasPrefix 断言对该 bug 失效，故这里用完整相等断言锁死 URL 形状。
+func TestMediaModelPublicStableAttachmentURLShapes(t *testing.T) {
 	core, _ := setupTestCore(t)
+	core.AssetBaseURL = "https://assets.example"
+	service := core.mediaModel
+
+	attachment := &corev1.Attachment{Id: "A-pub", Filename: "photo.jpg", ContentType: "image/jpeg"}
+
+	original := service.GetPublicStableAttachmentAssetURL(attachment)
+	if original.URL != "https://assets.example/assets/files/A-pub/photo.jpg" {
+		t.Fatalf("public original URL = %q, want exact /assets/files/A-pub/photo.jpg", original.URL)
+	}
+
+	transformed := service.GetPublicStableTransformedAttachmentAssetURL(attachment, 960, 400, "contain")
+	if transformed.URL != "https://assets.example/assets/files/A-pub/image/960x400/contain/photo.jpg" {
+		t.Fatalf("public transformed URL = %q, want single-prefix image path", transformed.URL)
+	}
+	if strings.Count(transformed.URL, "/assets/files/") != 1 {
+		t.Fatalf("public transformed URL = %q, want exactly one /assets/files/ prefix", transformed.URL)
+	}
+
+	empty := service.GetPublicStableAttachmentAssetURL(nil)
+	if empty.URL != "" {
+		t.Fatalf("public URL for nil attachment = %q, want empty", empty.URL)
+	}
+}
+
+func TestMediaModelStableAttachmentURLIssuanceBuckets(t *testing.T) {	core, _ := setupTestCore(t)
 	service := core.mediaModel
 	now := time.Date(2026, time.July, 19, 10, 15, 0, 0, time.FixedZone("test", 2*60*60))
 	service.now = func() time.Time { return now }

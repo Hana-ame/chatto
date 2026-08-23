@@ -874,13 +874,12 @@ func (c *MediaModel) GetPublicStableTransformedAttachmentAssetURL(attachment *co
 	if attachment == nil || attachment.GetId() == "" {
 		return StableAssetURL{}
 	}
-	transformPath := fmt.Sprintf(
-		"/assets/files/%s/image/%dx%d/%s",
-		url.PathEscape(attachment.GetId()),
-		width,
-		height,
-		url.PathEscape(fit),
-	)
+	// 【本地改动 2026-08-23】修复：这里只能传「尾段」(/image/{w}x{h}/{fit})，
+	// 不能传完整路径——stableAttachmentPath 自己会拼 /assets/files/{id} 前缀。
+	// 此前误传完整路径导致线上缩略图 URL 双重前缀全部 404（2026-08-23 部署
+	// 后由用户浏览器控制台发现；CI 的 HasPrefix 断言与 build-linux 不跑全量
+	// 测试叠加，未能拦截）。
+	transformPath := fmt.Sprintf("/image/%dx%d/%s", width, height, url.PathEscape(fit))
 	return StableAssetURL{URL: c.assetURL(stableAttachmentPath(attachment, transformPath))}
 }
 

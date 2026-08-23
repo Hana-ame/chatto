@@ -26,44 +26,49 @@ import (
 // It provides a unified API for spaces, users, rooms, and messages,
 // managing current JetStream resources internally.
 type ChattoCore struct {
-	nc                       *nats.Conn
-	js                       jetstream.JetStream
-	logger                   *log.Logger
-	storage                  *storage
-	config                   config.CoreConfig
-	encryption               *encryptionManager
-	dekResolver              *unwrappedDEKResolver
-	configModel              *ConfigModel
-	roomModel                *RoomModel
-	roomCommands             *RoomCommandModel
-	roomDirectoryReads       *RoomDirectoryReadModel
-	messageModel             *MessageModel
-	messageSearchReads       *MessageSearchReadModel
-	notificationPrefs        *NotificationPreferencesModel
-	roomTimelineReads        *RoomTimelineReadModel
-	readStateModel           *ReadStateModel
-	threadFollows            *ThreadFollowModel
-	reactionModel            *ReactionModel
-	userModel                *UserModel
-	rbacModel                *RBACModel
-	mentionables             *MentionablesModel
-	invitationModel          *InvitationModel
-	oauthClientModel         *OAuthClientModel
-	myEventsModel            *MyEventsModel
-	presenceModel            *PresenceModel
-	mediaModel               *MediaModel
-	callModel                *CallModel
-	assetModel               *AssetModel
-	assetUploadModel         *AssetUploadModel
-	keyShredding             *UserKeyShreddingModel
-	s3Client                 *S3Client            // Optional S3 client for S3-compatible storage
-	permissionResolver       *PermissionResolver  // Hierarchical permission resolver
-	linkPreviewCache         *linkpreview.Cache   // Cache for link preview metadata
-	linkPreviewFetcher       *linkpreview.Fetcher // Fetcher for link preview metadata
-	projectionSnapshotWorker *projectionSnapshotWorker
-	natsRecoveryState        atomic.Int32
-	natsRecoveryStartedAt    atomic.Int64
-	natsRecoveredReconnects  atomic.Uint64
+	nc                        *nats.Conn
+	js                        jetstream.JetStream
+	logger                    *log.Logger
+	storage                   *storage
+	config                    config.CoreConfig
+	encryption                *encryptionManager
+	dekResolver               *unwrappedDEKResolver
+	configModel               *ConfigModel
+	roomModel                 *RoomModel
+	roomCommands              *RoomCommandModel
+	roomDirectoryReads        *RoomDirectoryReadModel
+	messageModel              *MessageModel
+	messageSearchReads        *MessageSearchReadModel
+	notificationPolicy        *NotificationPolicyModel
+	roomTimelineReads         *RoomTimelineReadModel
+	readStateModel            *ReadStateModel
+	notificationBoundaries    *notificationBoundaryIndex
+	notificationOccurrences   *NotificationOccurrenceModel
+	notificationMaterializer  *NotificationMaterializer
+	notificationAlertDelivery *notificationAlertDelivery
+	pushSubscriptionCleanup   *pushSubscriptionCleanupModel
+	threadFollows             *ThreadFollowModel
+	reactionModel             *ReactionModel
+	userModel                 *UserModel
+	rbacModel                 *RBACModel
+	mentionables              *MentionablesModel
+	invitationModel           *InvitationModel
+	oauthClientModel          *OAuthClientModel
+	myEventsModel             *MyEventsModel
+	presenceModel             *PresenceModel
+	mediaModel                *MediaModel
+	callModel                 *CallModel
+	assetModel                *AssetModel
+	assetUploadModel          *AssetUploadModel
+	keyShredding              *UserKeyShreddingModel
+	s3Client                  *S3Client            // Optional S3 client for S3-compatible storage
+	permissionResolver        *PermissionResolver  // Hierarchical permission resolver
+	linkPreviewCache          *linkpreview.Cache   // Cache for link preview metadata
+	linkPreviewFetcher        *linkpreview.Fetcher // Fetcher for link preview metadata
+	projectionSnapshotWorker  *projectionSnapshotWorker
+	natsRecoveryState         atomic.Int32
+	natsRecoveryStartedAt     atomic.Int64
+	natsRecoveredReconnects   atomic.Uint64
 
 	// VideoMaxUploadSize is the maximum size for video uploads in bytes.
 	// When set (> 0), video attachments use this limit instead of the asset limit.
@@ -88,15 +93,7 @@ type ChattoCore struct {
 	// independently; the main process does not hand work to a local callback.
 	VideoUploadsEnabled bool
 
-	// OnNotificationCreated is called when a notification is created.
-	// Used by the push notification system to send Web Push notifications.
-	// Set this after ChattoCore is created.
-	OnNotificationCreated func(ctx context.Context, notification *corev1.Notification)
-
-	// OnNotificationDismissed is called when a notification is dismissed.
-	// Used by the push notification system to dismiss notifications on other devices.
-	// Set this after ChattoCore is created.
-	OnNotificationDismissed func(ctx context.Context, userID string, notification *corev1.Notification)
+	notificationAlertHandler func(ctx context.Context, occurrence *corev1.NotificationOccurrence) error
 
 	// OnPushTestRequested sends a test notification to a user's push subscriptions.
 	OnPushTestRequested func(ctx context.Context, userID string) error
@@ -179,6 +176,12 @@ func (c *ChattoCore) Run(ctx context.Context) error {
 		if err := c.readStateModel.WaitReady(gctx); err != nil {
 			return fmt.Errorf("wait for read state index: %w", err)
 		}
+		if err := c.notificationOccurrences.WaitReady(gctx); err != nil {
+			return fmt.Errorf("wait for notification occurrence index: %w", err)
+		}
+		if err := c.notificationMaterializer.WaitReady(gctx); err != nil {
+			return fmt.Errorf("wait for notification materializer: %w", err)
+		}
 		c.secureDeleteObsoleteProjectedMessageBodyEvents(gctx)
 		// Apply config-designated owners to already-verified users on every
 		// boot. Changing owners.emails requires a process restart, so this
@@ -204,6 +207,11 @@ func (c *ChattoCore) Run(ctx context.Context) error {
 	})
 
 	g.Go(func() error { return c.readStateModel.Run(gctx) })
+	g.Go(func() error { return c.notificationBoundaries.run(gctx) })
+	g.Go(func() error { return c.notificationOccurrences.Run(gctx) })
+	g.Go(func() error { return c.notificationMaterializer.Run(gctx) })
+	g.Go(func() error { return c.notificationAlertDelivery.run(gctx) })
+	g.Go(func() error { return c.pushSubscriptionCleanup.Run(gctx) })
 	g.Go(func() error { return c.presenceModel.Run(gctx) })
 	g.Go(func() error { return c.myEventsModel.Run(gctx) })
 	g.Go(func() error { return c.callModel.Run(gctx) })

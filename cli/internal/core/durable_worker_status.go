@@ -1,5 +1,7 @@
 package core
 
+import "hmans.de/chatto/internal/notificationstream"
+
 const assetProcessingConsumerName = "chatto-asset-processing-v1"
 
 // DurableWorkerHealth is broker-derived health for a known durable queue.
@@ -38,6 +40,9 @@ func durableWorkerAdminStatuses(stats *JetStreamStats, videoUploadsEnabled bool)
 		{key: "asset_cleanup", streamName: "EVT", consumerName: assetCleanupConsumerName, required: true},
 		{key: "call_key_cleanup", streamName: "EVT", consumerName: callKeyCleanupConsumerName, required: true},
 		{key: "user_key_shredding", streamName: "EVT", consumerName: userKeyShreddingConsumerName, required: true},
+		{key: "user_push_subscription_cleanup", streamName: "EVT", consumerName: pushSubscriptionCleanupConsumerName, required: true},
+		{key: "notification_materializer", streamName: "EVT", consumerName: notificationWorkerConsumerName, required: true},
+		{key: "notification_alert_delivery", streamName: notificationstream.StreamName, consumerName: notificationAlertConsumerName, required: true},
 		{key: "asset_processing", streamName: "EVT", consumerName: assetProcessingConsumerName, required: videoUploadsEnabled},
 	}
 	type consumerCoordinate struct{ stream, name string }

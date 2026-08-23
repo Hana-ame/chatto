@@ -1,10 +1,11 @@
 # Events
 
-`hmans.de/chatto/pkg/events` is an envelope-neutral event-sourcing framework
-for NATS JetStream. It provides optimistic-concurrency-controlled publication,
-ordered projection replay, startup and read-your-writes barriers, optional
-snapshot or checkpoint restore, bounded subject reads, and bounded durable
-pull-worker execution.
+`hmans.de/chatto/pkg/events` supplies the core reusable mechanics for the
+repository-wide [Loom Architecture](../../docs/adr/ADR-073-define-the-loom-architecture.md).
+It is an envelope-neutral event-sourcing framework for NATS JetStream,
+providing optimistic-concurrency-controlled publication, ordered projection
+replay, startup and read-your-writes barriers, optional snapshot or checkpoint
+restore, bounded subject reads, and bounded durable pull-worker execution.
 
 The intended reader is an application integrator. This module owns ordering,
 OCC, replay, and delivery mechanics; the application owns event codecs,
@@ -25,6 +26,14 @@ Mutation callbacks choose their consistency boundary explicitly:
 records with OCC, and reruns the complete decision after conflicts. Logical
 event IDs must remain stable across attempts. Multi-record decisions require
 the bound stream to enable JetStream `AllowAtomicPublish`.
+For a single-record decision, `MutationResult.Committed` is false when
+JetStream acknowledges the stable message ID as a duplicate; callers can
+therefore distinguish a newly committed fact from an idempotent retry.
+
+`EncodedRecord.TTL` optionally requests broker-side expiry for one record when
+the application-owned stream enables JetStream `AllowMsgTTL`. A zero value uses
+the stream retention policy. The framework only publishes the TTL header; the
+application remains responsible for semantic expiry in projections and APIs.
 
 ```go
 result, err := log.ExecuteMutation(ctx, events.AtSubject(aggregateFilter),

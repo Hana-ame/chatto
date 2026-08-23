@@ -6,7 +6,8 @@
       "profile": "Profil",
       "display": "Ekran",
       "notifications": "Bildirimler",
-      "account": "Hesap"
+      "account": "Hesap",
+      "bots": "Botlar"
     },
     "profile": {
       "title": "Profil",
@@ -179,9 +180,7 @@
         "enabling": "Etkinleştiriliyor...",
         "blocked_error": "Anında bildirimler tarayıcınızda veya işletim sistemi ayarlarınızda engellenir.",
         "enable_failed": "Anlık bildirimler etkinleştirilemedi. Lütfen tekrar deneyin.",
-        "enable_error": "Anlık bildirimler etkinleştirilirken bir hata oluştu",
-        "remote_title": "Uzak sunucular için yerel push kullanılamıyor",
-        "remote_description": "Yüklenen bu uygulama, yalnızca kendisine hizmet veren sunucuya tarayıcı anlık bildirimlerini kaydedebilir. Chatto açıkken uygulama içi bildirim işaretleri ve sesler bu sunucu için çalışmaya devam eder."
+        "enable_error": "Anlık bildirimler etkinleştirilirken bir hata oluştu"
       },
       "push_prompt": {
         "title": "Anlık bildirimleri etkinleştir",
@@ -194,35 +193,6 @@
         "enabling": "Etkinleştiriliyor...",
         "enable": "Etkinleştir",
         "dismiss": "Hayır teşekkürler"
-      },
-      "levels": {
-        "loading": "Yükleniyor...",
-        "load_failed": "Bildirim tercihleri yüklenemedi",
-        "server_updated": "Sunucu bildirim düzeyi güncellendi",
-        "room_updated": "Oda bildirim düzeyi güncellendi",
-        "update_failed": "Güncelleme başarısız oldu",
-        "server_title": "Sunucu Bildirim Düzeyi",
-        "server_description": "Bu sunucudaki tüm odalara ilişkin bildirimleri nasıl alacağınızı kontrol eder. Bireysel odalar bu ayarı geçersiz kılabilir.",
-        "room_title": "Oda Geçersiz Kılmaları",
-        "room_description": "Bireysel odalar için sunucu düzeyindeki ayarı geçersiz kılın. \"Varsayılan\" olarak ayarlanan odalar sunucu ayarını ({level}) devralır.",
-        "room_level_label": "#{room} için bildirim düzeyi",
-        "effective": "Geçerli: {level}",
-        "default": {
-          "label": "Varsayılan",
-          "description": "Devralınan varsayılanı kullan"
-        },
-        "muted": {
-          "label": "Sessize alındı",
-          "description": "Bildirim veya okunmamış işaretçi yok"
-        },
-        "normal": {
-          "label": "Normal",
-          "description": "Okunmamış işaretler + bahsetmeler, DM'ler ve mesaj dizisi yanıtları"
-        },
-        "all_messages": {
-          "label": "Tüm Mesajlar",
-          "description": "Her yeni mesaj için normal + bildirim"
-        }
       },
       "sound": {
         "title": "Bildirim Sesi",
@@ -272,6 +242,32 @@
           "siren": "Uyarı Sireni",
           "dubstep": "Dubstep Bırak",
           "circus": "Sirk"
+        }
+      },
+      "policy": {
+        "title": "Bildirim politikası",
+        "description": "Her etkinlik türünün dikkatinizi ne ölçüde çekmesi gerektiğini seçin. Devral, sunucu varsayılanını kullanır.",
+        "load_failed": "Bildirim politikası yüklenemedi",
+        "save_failed": "Bildirim politikası kaydedilemedi",
+        "effective": "Geçerli: {mode}",
+        "delivery_mode": {
+          "inherit": "Devral",
+          "off": "Kapalı",
+          "silent": "Sessiz",
+          "alert": "Uyarı"
+        },
+        "reason": {
+          "direct_message": "Doğrudan mesajlar",
+          "direct_mention": "Doğrudan bahsetmeler",
+          "reply": "Mesajlarınıza verilen yanıtlar",
+          "role_mention": "Rol bahsetmeleri",
+          "here": "@here bahsetmeleri",
+          "all": "@all bahsetmeleri",
+          "followed_thread": "Takip edilen ileti dizileri",
+          "followed_room": "Takip edilen odalar",
+          "reaction": "Mesajlarınıza verilen tepkiler",
+          "activity": "Etkinlik",
+          "room_invitation": "Oda davetleri"
         }
       }
     },
@@ -349,6 +345,52 @@
         "confirm_placeholder": "DELETE",
         "cancel": "İptal",
         "deleting": "Siliniyor..."
+      }
+    },
+    "bots": {
+      "title": "Botlar",
+      "subtitle": "API hesapları oluşturun ve tam olarak ne yapabileceklerini kontrol edin",
+      "singular": "bot",
+      "unsupported": "Bu sunucu sürümü bot hesaplarını desteklemiyor.",
+      "list_title": "Bot Hesapları",
+      "loading": "Botlar yükleniyor...",
+      "empty_title": "Henüz bot yok",
+      "empty_body": "Entegrasyonun kendi kimliğine ve izinlerine ihtiyacı olduğunda bir bot oluşturun.",
+      "create_permission_required": "Mevcut botları yönetebilirsiniz, ancak yeni bir bot oluşturma izniniz yok.",
+      "create": "Bot Oluştur",
+      "create_title": "Bot Hesabı Oluştur",
+      "create_failed": "Bot oluşturulamadı",
+      "created": "Bot oluşturuldu",
+      "edit": "Düzenle",
+      "edit_title": "Bot Hesabını Düzenle",
+      "updated": "Bot güncellendi",
+      "update_failed": "Bot güncellenemedi",
+      "update_conflict": "Başka biri bu botu güncelledi. Sayfayı yeniden yükleyip tekrar dene.",
+      "username": "Kullanıcı adı",
+      "username_hint": "Bot kullanıcı adları _bot ile bitmelidir.",
+      "display_name": "Görünen Ad",
+      "owner": "Sahibi",
+      "reassign_owner": "Sahibi yeniden ata",
+      "reassign_owner_warning": "Botun API anahtarı ve yapılandırılmış izinleri aynı kalır. Etkin izinler yeni sahibin izinlerini hemen izler.",
+      "owner_reassigned": "Bot sahibi yeniden atandı",
+      "owner_reassign_failed": "Bot sahibi yeniden atanamadı",
+      "api_key_title": "Bu API Anahtarını Kaydet",
+      "api_key_warning": "Bu anahtar yalnızca bir kez gösterilir. Bu pencereyi kapatmadan önce onu güvenli bir yerde saklayın.",
+      "key_created": "API anahtarı oluşturuldu",
+      "key_rotated_at": "Son döndürülen",
+      "key_copied": "API anahtarı kopyalandı",
+      "rotate_key": "Döndürme Anahtarı",
+      "rotate_title": "API Anahtarını Döndür",
+      "rotate_warning": "Geçerli anahtarın çalışması hemen durdurulacak. Bunu kullanan tüm entegrasyonların güncellenmesi gerekir.",
+      "key_rotated": "API anahtarı döndürüldü",
+      "rotate_failed": "API anahtarı döndürülemedi",
+      "delete_title": "Bot'u Sil",
+      "delete_warning": "{name} silinsin mi? API anahtarının çalışması hemen durdurulacak ve hesap kurtarılamaz.",
+      "deleted": "Bot silindi",
+      "delete_failed": "Bot silinemedi",
+      "permissions": {
+        "owner_ceiling": "Bu botun neler yapabileceğini seçin. Yalnızca sizin de sahip olduğunuz izinleri verebilirsiniz. Bir izni kaybederseniz bot da artık o izni kullanamaz.",
+        "save_failed": "Bot izni güncellenemedi"
       }
     }
   }

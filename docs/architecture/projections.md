@@ -160,7 +160,7 @@ generation prefix. The contract covers serialized state, replay semantics,
 consumed event families, and cutoff meaning. Each ID combines a manual semantic
 token with a fingerprint of the codec's reachable protobuf schema, so a schema
 change automatically starts a new contract namespace. Most contracts use
-semantic token `v1`; Assets uses `v3`, user profile uses `v3`, and Room Timeline
+semantic token `v1`; Assets uses `v3`, user profile uses `v4`, and Room Timeline
 uses `v6`.
 
 Room Timeline `v3` keeps retraction tombstones authoritative when a legacy
@@ -246,7 +246,7 @@ reconstruction. Legacy cohort paths remain outside application S3 expiry.
 
 | Projection | Contract | Payload store | Pointer store | Publication |
 | ---------- | -------- | ------------- | ------------- | ----------- |
-| Room Directory, Server Config, Room Group Layout, Call State, Reactions, Content Keys, RBAC | `v1` per projection | `PROJECTION_SNAPSHOTS` or configured S3 | Encrypted per-projection `RUNTIME_STATE` pointer with KV revision OCC | Elected publisher checks hourly; cold/delta replay publishes immediately and unchanged state refreshes at 23 hours |
+| Room Directory, Notification Decisions, Notifications, Server Config, Room Group Layout, Call State, Reactions, Content Keys, RBAC | `v1` per projection | `PROJECTION_SNAPSHOTS` or configured S3 | Encrypted per-projection `RUNTIME_STATE` pointer with KV revision OCC | Elected publisher checks hourly; cold/delta replay publishes immediately and unchanged state refreshes at 23 hours. Notification Decisions caps restore and publication at the notification worker's full acknowledged EVT floor. Notifications binds its snapshots to the independent `NOTIFICATIONS` stream identity and sequence |
 | Threads, Mentionables | `v2` per projection | `PROJECTION_SNAPSHOTS` or configured S3 | Encrypted per-projection `RUNTIME_STATE` pointer with KV revision OCC | The key-shredding request boundary invalidates pre-request snapshot contracts |
 | Room Timeline | `v6` | `PROJECTION_SNAPSHOTS` or configured S3 | Encrypted per-projection `RUNTIME_STATE` pointer with KV revision OCC | Restores call lifecycle rows and active pin associations, and rebuilds Slow Mode's latest-original-post index; earlier contracts remain isolated |
 | Assets | `v3` | `PROJECTION_SNAPSHOTS` or configured S3 | Encrypted per-projection `RUNTIME_STATE` pointer with KV revision OCC | Restores explicit exclusive attachments while retaining first uploader-authored message-reference ownership for older histories; earlier snapshots remain independently addressable during rollout and rollback |
@@ -257,13 +257,15 @@ reconstruction. Legacy cohort paths remain outside application S3 expiry.
 | Runtime area       | Registered projector | Consumes                                                   | Read models / primary readers                                                             |
 | ------------------ | -------------------- | ---------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
 | Room directory     | Room Directory       | `evt.room.>`                                               | `RoomCatalogProjection`, `RoomMembershipProjection`, `RoomBanProjection`; room metadata including Slow Mode, room/member queries, room authorization, and Universal-room effective membership |
+| Notification derivation and privacy | Notification Decisions | Focused message/reaction sources plus account, room membership/kind, room-group placement, RBAC, notification-policy, and thread-follow facts | Current decision state plus a second in-memory evaluator at the worker position; compact intervening event deltas preserve exact source and administrative boundaries without per-message full-state copies. Snapshot restore/publication and delta release follow the shared consumer's confirmed acknowledgement floor |
+| Notification list | Notifications | `notifications.signalled`, `notifications.read`, `notifications.removed`, `notifications.alert_resolved` | Current exact occurrence state, minimal anti-recreation tombstones, source-signal stream sequences for secure deletion, semantic expiry, list/count reads, realtime replacement, and alert-delivery idempotency |
 | Room organization  | Room Group Layout    | `evt.group.>`, `evt.layout.>`                              | `RoomGroupProjection`, `RoomLayoutProjection`; sidebar groups, sidebar links, and mixed sidebar item ordering |
 | Room timeline      | Room Timeline        | `evt.room.>`, `evt.user.*.user_key_shredding_requested`, `evt.user.*.user_key_shredded` | Visible room timeline including call start/end facts, latest message bodies, tombstone timestamps, hidden echoes, current attachment-bearing message index, direct message-post lookup, active canonical pinned-message associations, the latest pin-fact marker per room, and latest original post by room and author |
 | Assets             | Assets               | `evt.asset.>`, legacy `evt.room.*.asset_*`, `evt.room.*.message_body` | `AssetModel`; detached asset declaration/room/processing/deletion snapshots, derivative graph, exclusive message attachment/author references, public link-preview image references, and legacy uploader-matched first-reference compatibility |
 | Threads            | Threads              | `evt.room.*.thread_created`, `evt.room.*.thread_followed`, `evt.room.*.thread_unfollowed`, `evt.room.*.message_posted`, `evt.room.*.message_edited`, `evt.room.*.message_retracted`, `evt.user.*.user_key_shredding_requested`, `evt.user.*.user_key_shredded` | Per-thread existence, reply logs, summaries, participants, reply counts, and follow state  |
 | Reactions          | Reactions            | `evt.room.>`                                               | Current canonical per-message reaction sets, echo-to-original reaction aliases, and room-scoped snapshot OCC positions; intentionally broad so reaction writes can OCC against the room tail |
 | Voice calls        | Call State           | `evt.room.>`                                               | Current LiveKit call session, participants, active room IDs, and room-scoped snapshot OCC positions |
-| Server/user config | Server Config        | `evt.config.>`, selected user cleanup/preference facts     | `ConfigModel`; server config, branding refs, user preferences, notification levels, blocked usernames |
+| Server/user config | Server Config        | `evt.config.>`, selected user cleanup/preference facts     | `ConfigModel`; server config, branding refs, user preferences, explicit per-signal-class server/room notification delivery modes, blocked usernames; historical coarse notification-level facts decode but have no projected effect |
 | Users              | Users                | `evt.user.>`                                               | `UserModel`; account/profile/custom-status state, verified emails, lookup digests, and encrypted user PII |
 | User authentication | User Auth            | Focused account, password, external-identity, consent, deletion, and key-shredding user facts | `UserModel`; password verifiers, auth generations, external identity links, and OAuth consent keyed by stable client ID (legacy facts by redirect origin); always cold-replayed |
 | OAuth clients        | OAuth Clients        | `evt.oauth_client.>`                                       | `OAuthClientModel`; validated metadata and callback origins for successfully authorized clients, distinct authorized-user counts, and administrative default/trusted/blocked policy; always cold-replayed |
@@ -287,11 +289,11 @@ OCC positions, such as Reactions and Call State. Threads reports the focused
 logical subjects above for waits and diagnostics; non-thread room facts are
 skipped before `Apply`.
 
-Room Timeline, Threads, and Assets physically replay through one `evt.>` filter.
-Their narrower logical subjects still determine readiness and application. The
-projector rejects other subjects before protobuf decoding. This avoids
-JetStream's expensive multi-filter scans while preserving independent
-consumers and projection-local replay frontiers.
+Room Timeline, Threads, Assets, and Notification Decisions physically replay
+through one `evt.>` filter. Their narrower logical subjects still determine
+readiness and application. The projector rejects other subjects before
+protobuf decoding. This avoids JetStream's expensive multi-filter scans while
+preserving independent consumers and projection-local replay frontiers.
 
 `AssetModel` is the sole production reader of every asset-derived index and
 owns asset-projector readiness. Cross-package callers receive a detached
@@ -314,3 +316,13 @@ rather than appearing as missing or deleted users.
 external-identity, consent, and auth-generation state from
 `UserAuthProjection`, giving domain callers one user boundary while snapshot
 serialization cannot reach authentication state.
+
+Bot account kind and owner ID are durable user-aggregate fields projected by
+`UserProjection`; it also maintains the current owner-to-bot index used for
+management, reassignment, and cascade deletion. `UserAuthProjection` replays
+the latest bot API-key verifier and creation/rotation timestamps from EVT. It
+also closes process-local realtime watchers whose non-secret verifier generation
+is superseded, so every replica terminates stale bot connections when it
+observes the durable rotation.
+The raw API key is never a projection value, snapshot field, or retrievable
+resource.

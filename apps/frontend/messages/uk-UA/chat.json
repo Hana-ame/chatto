@@ -9,7 +9,19 @@
       "time_now": "Щойно",
       "time_minutes": "{count}м тому",
       "time_hours": "{count}h тому",
-      "time_days": "{count}d тому"
+      "time_days": "{count}d тому",
+      "unread": "Непрочитане",
+      "activity": "Нова активність",
+      "summary": {
+        "direct_message": "Від користувача {actor} надійшло особисте повідомлення.",
+        "reaction": "Користувач {actor} відреагував «{emoji}» на ваше повідомлення в {channel}.",
+        "reaction_group": "Користувач {actor} та інші відреагували «{emoji}» на ваше повідомлення в {channel}.",
+        "reply": "Користувач {actor} відповів на ваше повідомлення.",
+        "mention": "Користувач {actor} згадав вас.",
+        "followed_thread": "Користувач {actor} відповів у темі, за якою ви стежите.",
+        "new_message": "Користувач {actor} опублікував нове повідомлення.",
+        "activity": "Від користувача {actor} надійшло сповіщення."
+      }
     },
     "sign_out": {
       "title": "Вийти",
@@ -27,15 +39,11 @@
     },
     "user_menu": {
       "profile": "Профіль користувача",
-      "send_message": "Надіслати повідомлення"
+      "send_message": "Надіслати повідомлення",
+      "copy_user_id": "Копіювати ID користувача"
     },
     "server_gutter": {
       "add_server": "Додати сервер",
-      "account_data_connect": "Синхронізувати список серверів з Authling",
-      "account_data_connecting": "Підключення синхронізації серверів…",
-      "account_data_connected": "Список серверів синхронізується з {provider}",
-      "account_data_connected_toast": "Ваш список серверів тепер синхронізується.",
-      "account_data_error": "Не вдалося синхронізувати список серверів",
       "version": "Версія {version}",
       "version_unknown": "Версія невідома",
       "unreachable": "Сервер недоступний",

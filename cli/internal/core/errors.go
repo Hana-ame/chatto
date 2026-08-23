@@ -161,6 +161,21 @@ var (
 	// outside the allowed set (letters, digits, periods, underscores, hyphens).
 	ErrLoginInvalidCharacter = errors.New("username can only contain letters, numbers, periods, underscores, and hyphens")
 
+	// ErrHumanLoginReservedForBot is returned when a human account attempts to
+	// claim the reserved `_bot` suffix.
+	ErrHumanLoginReservedForBot = errors.New("human usernames cannot end in _bot")
+
+	// ErrBotLoginSuffixRequired is returned when a bot login omits the reserved
+	// `_bot` suffix.
+	ErrBotLoginSuffixRequired = errors.New("bot usernames must end in _bot")
+
+	// ErrHumanAccountRequired is returned when a human-only operation targets a bot.
+	ErrHumanAccountRequired = errors.New("operation requires a human account")
+
+	// ErrBotOwnerPermissionCeiling is returned when a requested bot grant would
+	// exceed its owner's current effective permission.
+	ErrBotOwnerPermissionCeiling = errors.New("bot permission exceeds its owner's current permission")
+
 	// ErrLoginChangeCooldown is returned when a user tries to change their login
 	// before the cooldown period has elapsed.
 	ErrLoginChangeCooldown = errors.New("you can only change your username once every 30 days")
@@ -303,12 +318,18 @@ const (
 
 	// MaxPushEndpointLength is the maximum length of a Push API endpoint URL in bytes.
 	MaxPushEndpointLength = 4096
+	// MaxPushClientHostLength bounds the URL host stored with a browser subscription.
+	MaxPushClientHostLength = 255
 
 	// MaxPushKeyLength is the maximum length of a Push API p256dh public key in bytes.
 	MaxPushKeyLength = 256
 
 	// MaxPushAuthLength is the maximum length of a Push API auth secret in bytes.
 	MaxPushAuthLength = 128
+	// MaxPushCleanupTokenLength bounds the random capability attached to one save.
+	MaxPushCleanupTokenLength = 128
+	// MinPushCleanupTokenLength preserves at least 128 bits for hexadecimal tokens.
+	MinPushCleanupTokenLength = 32
 
 	// MaxPushUserAgentLength is the maximum length of a stored push user-agent string in bytes.
 	MaxPushUserAgentLength = 512

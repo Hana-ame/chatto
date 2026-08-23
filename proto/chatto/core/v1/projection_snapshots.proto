@@ -6,6 +6,7 @@ import "google/protobuf/timestamp.proto";
 import "chatto/core/v1/asset_events.proto";
 import "chatto/core/v1/event.proto";
 import "chatto/core/v1/models.proto";
+import "chatto/core/v1/notification.proto";
 import "chatto/core/v1/rbac_events.proto";
 import "chatto/core/v1/room_events.proto";
 import "chatto/core/v1/user_events.proto";
@@ -123,6 +124,24 @@ message RoomGroupStateSnapshot {
   RoomGroup group = 1;
 }
 
+// NotificationDecisionProjectionSnapshot combines the exact event-time
+// state needed to derive notifications and enforce persistent visibility
+// boundaries.
+message NotificationDecisionProjectionSnapshot {
+  RoomDirectoryProjectionSnapshot room_directory = 1;
+  RoomGroupLayoutProjectionSnapshot room_group_layout = 2;
+  RBACProjectionSnapshot rbac = 3;
+  ConfigProjectionSnapshot config = 4;
+  repeated string active_user_ids = 5;
+  repeated ThreadFollowSnapshot thread_follows = 6;
+  repeated NotificationThreadStateSnapshot threads = 7;
+}
+
+message NotificationThreadStateSnapshot {
+  string thread_root_event_id = 1;
+  uint64 reply_count = 2;
+}
+
 message CallStateProjectionSnapshot {
   repeated CallRoomStateSnapshot rooms = 1;
 }
@@ -190,13 +209,25 @@ message UserConfigSnapshot {
   string user_id = 1;
   optional string timezone = 2;
   optional TimeFormat time_format = 3;
-  optional NotificationLevel server_notification_level = 4;
-  repeated RoomNotificationLevelSnapshot room_notification_levels = 5;
+  NotificationDeliveryModes server_notification_modes = 4;
+  repeated RoomNotificationModesSnapshot room_notification_modes = 5;
 }
 
-message RoomNotificationLevelSnapshot {
+message RoomNotificationModesSnapshot {
   string room_id = 1;
-  NotificationLevel level = 2;
+  NotificationDeliveryModes modes = 2;
+}
+
+message NotificationProjectionSnapshot {
+  repeated NotificationOccurrence notifications = 1;
+  repeated NotificationProjectionTombstone tombstones = 2;
+}
+
+message NotificationProjectionTombstone {
+  string notification_id = 1;
+  string recipient_id = 2;
+  google.protobuf.Timestamp expires_at = 3;
+  uint64 signal_stream_sequence = 4;
 }
 
 message AssetProjectionSnapshot {
@@ -248,6 +279,7 @@ message EmojiReactionsSnapshot {
 message UserReactionSnapshot {
   string user_id = 1;
   int64 added_at_nanos = 2;
+  string source_event_id = 3;
 }
 
 message StringUint64Snapshot { string key = 1; uint64 value = 2; }

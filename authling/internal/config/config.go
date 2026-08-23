@@ -4,17 +4,18 @@ package config
 import (
 	"fmt"
 	"net"
-	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"hmans.de/chatto/pkg/appconfig"
 )
 
 const (
-	DefaultPath                  = "authling.toml"
-	DefaultPasswordMinimumLength = 10
+	DefaultPath                           = "authling.toml"
+	DefaultPasswordMinimumLength          = 10
+	DefaultSigningKeyRotationIntervalDays = 90
 )
 
 // Config is Authling's canonical process configuration.
@@ -29,8 +30,20 @@ type Config struct {
 // OIDCConfig controls Authling's OpenID Provider and conventional clients.
 // URL-identified CIMD clients require no configuration.
 type OIDCConfig struct {
-	Clients                 []OIDCClientConfig `toml:"clients"`
-	CIMDTrustedPrivateHosts []string           `toml:"cimd_trusted_private_hosts" env:"AUTHLING_OIDC_CIMD_TRUSTED_PRIVATE_HOSTS"`
+	Clients                        []OIDCClientConfig `toml:"clients"`
+	CIMDTrustedPrivateHosts        []string           `toml:"cimd_trusted_private_hosts" env:"AUTHLING_OIDC_CIMD_TRUSTED_PRIVATE_HOSTS"`
+	CIMDTrustedLoopbackHosts       []string           `toml:"cimd_trusted_loopback_hosts" env:"AUTHLING_OIDC_CIMD_TRUSTED_LOOPBACK_HOSTS"`
+	SigningKeyRotationIntervalDays int                `toml:"signing_key_rotation_interval_days" env:"AUTHLING_OIDC_SIGNING_KEY_ROTATION_INTERVAL_DAYS"`
+}
+
+// SigningKeyRotationInterval returns how long an active OIDC signing key may
+// remain in use before Authling automatically starts a rollover.
+func (c OIDCConfig) SigningKeyRotationInterval() time.Duration {
+	days := c.SigningKeyRotationIntervalDays
+	if days == 0 {
+		days = DefaultSigningKeyRotationIntervalDays
+	}
+	return time.Duration(days) * 24 * time.Hour
 }
 
 // OIDCClientConfig declares one conventional OpenID Connect client. An empty
@@ -46,8 +59,19 @@ type OIDCClientConfig struct {
 // may resolve to private addresses. Other special-use destinations remain
 // forbidden even for these explicitly trusted hosts.
 func (c OIDCConfig) TrustedPrivateCIMDHosts() []string {
-	hosts := make([]string, 0, len(c.CIMDTrustedPrivateHosts))
-	for _, host := range c.CIMDTrustedPrivateHosts {
+	return normalizeCIMDHosts(c.CIMDTrustedPrivateHosts)
+}
+
+// TrustedLoopbackCIMDHosts returns normalized hostnames whose CIMD documents
+// may resolve to loopback addresses. This explicit development exception does
+// not relax restrictions for any other special-use destination.
+func (c OIDCConfig) TrustedLoopbackCIMDHosts() []string {
+	return normalizeCIMDHosts(c.CIMDTrustedLoopbackHosts)
+}
+
+func normalizeCIMDHosts(configured []string) []string {
+	hosts := make([]string, 0, len(configured))
+	for _, host := range configured {
 		hosts = append(hosts, normalizeCIMDHost(host))
 	}
 	return hosts
@@ -112,21 +136,9 @@ type HTTPConfig struct {
 	// PublicURL is the externally visible origin. It determines whether browser
 	// cookies require HTTPS and will become the basis of Authling's issuer URL.
 	PublicURL string `toml:"public_url" env:"AUTHLING_HTTP_PUBLIC_URL"`
-	// TrustedProxyCIDRs contains direct reverse-proxy peers whose sanitized,
-	// single-address X-Forwarded-For value Authling may trust.
-	TrustedProxyCIDRs []string `toml:"trusted_proxy_cidrs" env:"AUTHLING_HTTP_TRUSTED_PROXY_CIDRS"`
-}
-
-// TrustedProxies returns the validated network prefixes of direct proxies.
-func (c HTTPConfig) TrustedProxies() []netip.Prefix {
-	trusted := make([]netip.Prefix, 0, len(c.TrustedProxyCIDRs))
-	for _, raw := range c.TrustedProxyCIDRs {
-		prefix, err := netip.ParsePrefix(strings.TrimSpace(raw))
-		if err == nil {
-			trusted = append(trusted, prefix.Masked())
-		}
-	}
-	return trusted
+	// TrustProxyHeaders accepts the sanitized X-Forwarded-Host and
+	// X-Forwarded-Proto supplied by the deployment's sole reverse proxy.
+	TrustProxyHeaders bool `toml:"trust_proxy_headers" env:"AUTHLING_HTTP_TRUST_PROXY_HEADERS"`
 }
 
 // PublicURLOrDefault returns the configured browser origin. A loopback
@@ -211,6 +223,9 @@ func (c *Config) applyDefaults() {
 // Validate checks that Authling has exactly one usable NATS deployment mode.
 func (c Config) Validate() error {
 	var problems []string
+	if days := c.OIDC.SigningKeyRotationIntervalDays; days < 0 || days > 3650 {
+		problems = append(problems, "oidc.signing_key_rotation_interval_days must be between 1 and 3650 when set")
+	}
 	if minimum := c.Authentication.PasswordMinimumLengthOrDefault(); minimum < 8 || minimum > 128 {
 		problems = append(problems, "authentication.password_minimum_length must be between 8 and 128")
 	}
@@ -236,12 +251,6 @@ func (c Config) Validate() error {
 		bindHost, _, bindErr := net.SplitHostPort(c.HTTP.BindAddressOrDefault())
 		if bindErr != nil || !isLoopbackHost(bindHost) || !isLoopbackHost(publicURL.Hostname()) {
 			problems = append(problems, "http.public_url may use plain HTTP only when both the public URL and listener are loopback")
-		}
-	}
-	for _, raw := range c.HTTP.TrustedProxyCIDRs {
-		prefix, prefixErr := netip.ParsePrefix(strings.TrimSpace(raw))
-		if prefixErr != nil || !prefix.Addr().IsValid() {
-			problems = append(problems, "http.trusted_proxy_cidrs must contain valid IP network prefixes")
 		}
 	}
 	seenClients := make(map[string]struct{}, len(c.OIDC.Clients))
@@ -280,20 +289,24 @@ func (c Config) Validate() error {
 			}
 		}
 	}
-	seenCIMDHosts := make(map[string]struct{}, len(c.OIDC.CIMDTrustedPrivateHosts))
-	for index, raw := range c.OIDC.CIMDTrustedPrivateHosts {
-		host := normalizeCIMDHost(raw)
-		field := fmt.Sprintf("oidc.cimd_trusted_private_hosts[%d]", index)
-		parsed, err := url.Parse("https://" + host)
-		if host == "" || err != nil || parsed.Host != host || parsed.Hostname() != host || parsed.Port() != "" {
-			problems = append(problems, field+" must be one hostname without a scheme, port, path, query, or fragment")
-			continue
+	seenCIMDHosts := make(map[string]string, len(c.OIDC.CIMDTrustedPrivateHosts)+len(c.OIDC.CIMDTrustedLoopbackHosts))
+	validateCIMDHosts := func(name string, configured []string) {
+		for index, raw := range configured {
+			host := normalizeCIMDHost(raw)
+			field := fmt.Sprintf("oidc.%s[%d]", name, index)
+			parsed, err := url.Parse("https://" + host)
+			if host == "" || err != nil || parsed.Host != host || parsed.Hostname() != host || parsed.Port() != "" {
+				problems = append(problems, field+" must be one hostname without a scheme, port, path, query, or fragment")
+				continue
+			}
+			if previous, exists := seenCIMDHosts[host]; exists {
+				problems = append(problems, field+" duplicates "+previous)
+			}
+			seenCIMDHosts[host] = field
 		}
-		if _, exists := seenCIMDHosts[host]; exists {
-			problems = append(problems, field+" is duplicated")
-		}
-		seenCIMDHosts[host] = struct{}{}
 	}
+	validateCIMDHosts("cimd_trusted_private_hosts", c.OIDC.CIMDTrustedPrivateHosts)
+	validateCIMDHosts("cimd_trusted_loopback_hosts", c.OIDC.CIMDTrustedLoopbackHosts)
 	replicas := c.NATS.ReplicasOrDefault()
 	if replicas != 1 && replicas != 3 && replicas != 5 {
 		problems = append(problems, "nats.replicas must be 1, 3, or 5")

@@ -9,7 +9,19 @@
       "time_now": "Justo ahora",
       "time_minutes": "Hace {count}m",
       "time_hours": "Hace {count}h",
-      "time_days": "Hace {count}d"
+      "time_days": "Hace {count}d",
+      "unread": "No leído",
+      "activity": "Actividad nueva",
+      "summary": {
+        "direct_message": "{actor} te envió un mensaje directo.",
+        "reaction": "{actor} reaccionó con «{emoji}» a tu mensaje en {channel}.",
+        "reaction_group": "{actor} y otras personas reaccionaron con «{emoji}» a tu mensaje en {channel}.",
+        "reply": "{actor} respondió a tu mensaje.",
+        "mention": "{actor} te mencionó.",
+        "followed_thread": "{actor} respondió en un hilo que sigues.",
+        "new_message": "{actor} publicó un mensaje nuevo.",
+        "activity": "{actor} te envió una notificación."
+      }
     },
     "sign_out": {
       "title": "Cerrar sesión",
@@ -27,15 +39,11 @@
     },
     "user_menu": {
       "profile": "Perfil de usuario",
-      "send_message": "Enviar Mensaje"
+      "send_message": "Enviar Mensaje",
+      "copy_user_id": "Copiar ID de usuario"
     },
     "server_gutter": {
       "add_server": "Agregar servidor",
-      "account_data_connect": "Sincronizar la lista de servidores con Authling",
-      "account_data_connecting": "Conectando la sincronización de servidores…",
-      "account_data_connected": "La lista de servidores está sincronizada con {provider}",
-      "account_data_connected_toast": "Tu lista de servidores ya está sincronizada.",
-      "account_data_error": "No se pudo sincronizar la lista de servidores",
       "version": "Versión {version}",
       "version_unknown": "Versión desconocida",
       "unreachable": "Servidor inaccesible",

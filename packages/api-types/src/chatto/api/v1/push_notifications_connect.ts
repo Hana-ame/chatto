@@ -7,7 +7,7 @@ import { SendTestPushNotificationRequest, SendTestPushNotificationResponse, Subs
 import { MethodIdempotency, MethodKind } from "@bufbuild/protobuf";
 
 /**
- * Browser Web Push subscription commands for the current user.
+ * Browser Web Push subscription commands for the authenticated user.
  *
  * @generated from service chatto.api.v1.PushNotificationService
  */

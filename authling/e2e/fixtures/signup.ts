@@ -16,9 +16,11 @@ export async function completeSignup(
   const code = await waitForVerificationCode(request, stack.mailpitURL);
   await page.getByLabel('Verification code').fill(code);
   await page.getByRole('button', { name: 'Verify email' }).click();
-  await page.getByLabel('Password').fill(password);
+  await page.getByLabel('Password', { exact: true }).fill(password);
+  await page.getByLabel('Confirm password').fill(password);
   await page.getByRole('button', { name: 'Create account' }).click();
   await expect(page.getByRole('heading', { name: 'Your account' })).toBeVisible();
+  await expect(page.getByRole('link', { name: `Signed in as ${email}. View your account.` })).toBeVisible();
   const accountID = await page.locator('code').textContent();
   expect(accountID).toMatch(/^acc_[a-z0-9]+$/);
   return accountID ?? '';

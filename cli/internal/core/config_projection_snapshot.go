@@ -31,12 +31,12 @@ func (p *ConfigProjection) Snapshot() ([]byte, error) {
 			value := *user.timeFormat
 			row.TimeFormat = &value
 		}
-		if user.serverLevel != nil {
-			value := *user.serverLevel
-			row.ServerNotificationLevel = &value
-		}
-		for _, roomID := range sortedMapKeys(user.roomLevelByRoom) {
-			row.RoomNotificationLevels = append(row.RoomNotificationLevels, &corev1.RoomNotificationLevelSnapshot{RoomId: roomID, Level: user.roomLevelByRoom[roomID]})
+		row.ServerNotificationModes = cloneNotificationDeliveryModes(user.serverModes)
+		for _, roomID := range sortedMapKeys(user.roomModesByRoom) {
+			row.RoomNotificationModes = append(row.RoomNotificationModes, &corev1.RoomNotificationModesSnapshot{
+				RoomId: roomID,
+				Modes:  cloneNotificationDeliveryModes(user.roomModesByRoom[roomID]),
+			})
 		}
 		snapshot.Users = append(snapshot.Users, row)
 	}
@@ -63,7 +63,7 @@ func (p *ConfigProjection) Restore(data []byte) error {
 		if _, duplicate := users[row.GetUserId()]; duplicate {
 			return fmt.Errorf("config snapshot repeats user %q", row.GetUserId())
 		}
-		user := &userConfigState{roomLevelByRoom: make(map[string]corev1.NotificationLevel)}
+		user := &userConfigState{roomModesByRoom: make(map[string]*corev1.NotificationDeliveryModes)}
 		if row.Timezone != nil {
 			value := row.GetTimezone()
 			user.timezone = &value
@@ -72,18 +72,15 @@ func (p *ConfigProjection) Restore(data []byte) error {
 			value := row.GetTimeFormat()
 			user.timeFormat = &value
 		}
-		if row.ServerNotificationLevel != nil {
-			value := row.GetServerNotificationLevel()
-			user.serverLevel = &value
-		}
-		for _, level := range row.GetRoomNotificationLevels() {
-			if level.GetRoomId() == "" {
-				return fmt.Errorf("config snapshot has empty notification room ID")
+		user.serverModes = cloneNotificationDeliveryModes(row.GetServerNotificationModes())
+		for _, room := range row.GetRoomNotificationModes() {
+			if room.GetRoomId() == "" {
+				return fmt.Errorf("config snapshot has empty notification preference room ID")
 			}
-			if _, duplicate := user.roomLevelByRoom[level.GetRoomId()]; duplicate {
-				return fmt.Errorf("config snapshot repeats room notification level")
+			if _, duplicate := user.roomModesByRoom[room.GetRoomId()]; duplicate {
+				return fmt.Errorf("config snapshot repeats room notification preferences")
 			}
-			user.roomLevelByRoom[level.GetRoomId()] = level.GetLevel()
+			user.roomModesByRoom[room.GetRoomId()] = cloneNotificationDeliveryModes(room.GetModes())
 		}
 		users[row.GetUserId()] = user
 	}

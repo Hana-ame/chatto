@@ -57,6 +57,9 @@ func TestServerDiscoveryServiceGetServerPublicMetadata(t *testing.T) {
 	if !msg.GetLogin().GetDirectRegistrationEnabled() {
 		t.Fatal("DirectRegistrationEnabled = false, want true")
 	}
+	if msg.GetLogin().DirectLoginEnabled == nil || !msg.GetLogin().GetDirectLoginEnabled() {
+		t.Fatal("DirectLoginEnabled is absent or false, want explicit true")
+	}
 	if msg.GetLogin().GetAccountCreationPolicy() != apiv1.AccountCreationPolicy_ACCOUNT_CREATION_POLICY_OPEN {
 		t.Fatalf("AccountCreationPolicy = %v, want OPEN", msg.GetLogin().GetAccountCreationPolicy())
 	}
@@ -75,6 +78,21 @@ func TestServerDiscoveryServiceGetServerPublicMetadata(t *testing.T) {
 	}
 	if !provider.GetAutoProvision() {
 		t.Fatal("provider AutoProvision = false, want true")
+	}
+}
+
+func TestServerDiscoveryServiceGetServerReportsDisabledDirectLogin(t *testing.T) {
+	disabled := false
+	api := New(nil, config.ChattoConfig{
+		Auth: config.AuthConfig{DirectLogin: &disabled},
+	}, "9.8.7")
+
+	resp, err := (&serverDiscoveryService{api: api}).GetServer(context.Background(), connect.NewRequest(&discoveryv1.GetServerRequest{}))
+	if err != nil {
+		t.Fatalf("GetServer: %v", err)
+	}
+	if resp.Msg.GetLogin().DirectLoginEnabled == nil || resp.Msg.GetLogin().GetDirectLoginEnabled() {
+		t.Fatal("DirectLoginEnabled is absent or true, want explicit false")
 	}
 }
 
@@ -166,8 +184,9 @@ func TestExternalIdentityFlowsAndAccountManagement(t *testing.T) {
 	}
 
 	created, err := env.externalAuth.CreateExternalIdentityAccount(env.ctx, connect.NewRequest(&authv1.CreateExternalIdentityAccountRequest{
-		Token: createToken,
-		Login: "sso-user",
+		Token:       createToken,
+		Login:       "sso-user",
+		DisplayName: "Chosen SSO User",
 	}))
 	if err != nil {
 		t.Fatalf("CreateExternalIdentityAccount: %v", err)
@@ -184,8 +203,8 @@ func TestExternalIdentityFlowsAndAccountManagement(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetUser created: %v", err)
 	}
-	if createdUser.GetDisplayName() != "SSO User" {
-		t.Fatalf("created display name = %q, want SSO User", createdUser.GetDisplayName())
+	if createdUser.GetDisplayName() != "Chosen SSO User" {
+		t.Fatalf("created display name = %q, want Chosen SSO User", createdUser.GetDisplayName())
 	}
 	if _, err := env.core.GetPendingExternalIdentityFlow(env.ctx, createToken); !errors.Is(err, core.ErrExternalIdentityFlowNotFound) {
 		t.Fatalf("pending create flow after confirmation error = %v, want ErrExternalIdentityFlowNotFound", err)
@@ -329,11 +348,19 @@ func TestExternalIdentityFlowsAndAccountManagement(t *testing.T) {
 
 func TestExternalIdentityCreateDisplayName(t *testing.T) {
 	tests := []struct {
-		name  string
-		login string
-		hint  string
-		want  string
+		name      string
+		login     string
+		requested string
+		hint      string
+		want      string
 	}{
+		{
+			name:      "valid requested name overrides hint",
+			login:     "sso-user",
+			requested: "Chosen User",
+			hint:      "SSO User",
+			want:      "Chosen User",
+		},
 		{
 			name:  "valid hint",
 			login: "sso-user",
@@ -367,8 +394,8 @@ func TestExternalIdentityCreateDisplayName(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := externalIdentityCreateDisplayName(tt.login, tt.hint); got != tt.want {
-				t.Fatalf("externalIdentityCreateDisplayName(%q, %q) = %q, want %q", tt.login, tt.hint, got, tt.want)
+			if got := externalIdentityCreateDisplayName(tt.login, tt.requested, tt.hint); got != tt.want {
+				t.Fatalf("externalIdentityCreateDisplayName(%q, %q, %q) = %q, want %q", tt.login, tt.requested, tt.hint, got, tt.want)
 			}
 		})
 	}
@@ -1271,8 +1298,8 @@ func TestAdminDiagnosticsServiceGetSystemInfoRequiresOwner(t *testing.T) {
 	if resp.Msg.GetAssetCleanup() == nil {
 		t.Fatal("AssetCleanup = nil")
 	}
-	if len(resp.Msg.GetDurableWorkers()) != 4 {
-		t.Fatalf("DurableWorkers len = %d, want 4", len(resp.Msg.GetDurableWorkers()))
+	if len(resp.Msg.GetDurableWorkers()) != 7 {
+		t.Fatalf("DurableWorkers len = %d, want 7", len(resp.Msg.GetDurableWorkers()))
 	}
 }
 

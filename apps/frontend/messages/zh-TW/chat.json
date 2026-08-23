@@ -9,7 +9,19 @@
       "time_now": "剛剛",
       "time_minutes": "{count} 分鐘前",
       "time_hours": "{count} 小時前",
-      "time_days": "{count} 天前"
+      "time_days": "{count} 天前",
+      "unread": "未讀",
+      "activity": "新動態",
+      "summary": {
+        "direct_message": "{actor} 傳送了一則私人訊息給你。",
+        "reaction": "{actor} 在 {channel} 中以「{emoji}」回應了你的訊息。",
+        "reaction_group": "{actor} 和其他使用者在 {channel} 中以「{emoji}」回應了你的訊息。",
+        "reply": "{actor} 回覆了你的訊息。",
+        "mention": "{actor} 提及了你。",
+        "followed_thread": "{actor} 回覆了你追蹤的討論串。",
+        "new_message": "{actor} 發布了一則新訊息。",
+        "activity": "{actor} 傳送了一則通知給你。"
+      }
     },
     "sign_out": {
       "title": "登出",
@@ -27,15 +39,11 @@
     },
     "user_menu": {
       "profile": "使用者個人檔案",
-      "send_message": "傳送訊息"
+      "send_message": "傳送訊息",
+      "copy_user_id": "複製使用者 ID"
     },
     "server_gutter": {
       "add_server": "新增伺服器",
-      "account_data_connect": "使用 Authling 同步伺服器清單",
-      "account_data_connecting": "正在連線伺服器清單同步…",
-      "account_data_connected": "伺服器清單正在與 {provider} 同步",
-      "account_data_connected_toast": "你的伺服器清單現已同步。",
-      "account_data_error": "無法同步伺服器清單",
       "version": "版本 {version}",
       "version_unknown": "版本不明",
       "unreachable": "無法連線至伺服器",

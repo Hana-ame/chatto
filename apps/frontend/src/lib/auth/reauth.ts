@@ -23,6 +23,7 @@ import {
   type RegisteredServer
 } from '$lib/state/server/registry.svelte';
 import { serverIdToSegment } from '$lib/navigation';
+import { resumePushRegistrationAfterAuthentication } from '$lib/notifications/pushRegistrationCoordinator';
 import { clearCachedUser } from './loadAuth';
 import { saveReturnUrl } from './returnNavigation';
 
@@ -275,6 +276,7 @@ export async function completeServerOAuthFlow(
       userAvatarUrl: result.user?.avatarUrl ?? null,
       reauthRequiredAt: null
     });
+    resumePushRegistrationAfterAuthentication(existing.id);
     await serverRegistry.getStore(existing.id).serverInfo.init();
     return existing.id;
   }
@@ -289,8 +291,7 @@ export async function completeServerOAuthFlow(
       url: flow.remoteUrl,
       name: flow.serverName || 'Chatto',
       iconUrl: flow.serverIconUrl,
-      addedAt: Date.now(),
-      source: 'local'
+      addedAt: Date.now()
     },
     {
       token: result.access_token,
@@ -301,6 +302,7 @@ export async function completeServerOAuthFlow(
       reauthRequiredAt: null
     }
   );
+  resumePushRegistrationAfterAuthentication(id);
   // Registration creates the retained store immediately, but discovery is
   // otherwise fire-and-forget. Complete server discovery before routing to the
   // new server so the transport coordinator can deterministically include its
@@ -320,18 +322,14 @@ export function oauthClientIdForLocation(
 
 export function startRemoteReauthentication(server: RegisteredServer): Promise<void> {
   const details = getPublicServerInfo(server.url, { signal: AbortSignal.timeout(10000) }).then(
-    async (info) => {
-      const { findAuthlingServerProvider } = await import('$lib/authling/serverProvider');
-      const provider = await findAuthlingServerProvider(info.authProviders).catch(() => null);
-      return {
-        serverInfo: {
-          name: info.name || server.name,
-          authorizeUrl: info.authorizeUrl,
-          iconUrl: info.iconUrl ?? server.iconUrl
-        },
-        providerId: provider?.id ?? null
-      };
-    }
+    (info) => ({
+      serverInfo: {
+        name: info.name || server.name,
+        authorizeUrl: info.authorizeUrl,
+        iconUrl: info.iconUrl ?? server.iconUrl
+      },
+      providerId: null
+    })
   );
   return runServerOAuthFlow(server.url, details);
 }

@@ -2,9 +2,12 @@
 
 Authling is a standalone, self-hostable OpenID Connect identity provider. Its
 experimental runtime currently provides verified-email signup, encrypted local
-credentials, password login, revocable browser sessions, and a small
-Authorization Code OpenID Provider for conventional and CIMD clients. It also
-provides an experimental authenticated TinyBase account-data sync endpoint.
+credentials, password login and reset, verified email change, signed-in
+password change, revocable browser sessions, durable OIDC authorization grants,
+and a small Authorization Code OpenID Provider for conventional and CIMD
+clients. It also stores only
+identity-provider state; application data and synchronization are outside its
+scope.
 
 Contributors must read [`AGENTS.md`](AGENTS.md) before making Authling changes.
 Authling's ADRs, FDRs, architecture inventory, and glossary live under
@@ -80,9 +83,13 @@ mise dev
 ```
 
 The development configuration serves Authling at <http://localhost:8080>, with
-signup at <http://localhost:8080/signup> and login at
-<http://localhost:8080/login>. Mailpit receives SMTP on port 1025 and shows
-captured messages at <http://127.0.0.1:8025>. Set
+signup at <http://localhost:8080/signup>, login at
+<http://localhost:8080/login>, and password reset at
+<http://localhost:8080/password-reset>. Signed-in accounts can change their
+verified email address or password, review or revoke other browser sessions,
+and manage authorized OIDC apps from <http://localhost:8080/account>.
+Mailpit receives SMTP on port 1025 and shows captured messages at
+<http://127.0.0.1:8025>. Set
 `AUTHLING_HTTP_BIND_ADDRESS` to override the Authling listener and
 `AUTHLING_HTTP_PUBLIC_URL` to its externally visible origin. The checked-in
 configuration declares a loopback HTTP origin for local development.
@@ -98,13 +105,10 @@ corpus.
 Authling's HTTP listener does not terminate TLS. Production deployments must
 place it behind an HTTPS reverse proxy and configure an `https://` public URL.
 Plain HTTP is supported only when both the public URL and listener are loopback.
-For fair account-data handshake limits, list the direct proxy networks in
-`http.trusted_proxy_cidrs` or the comma-separated
-`AUTHLING_HTTP_TRUSTED_PROXY_CIDRS` value. A trusted proxy must remove any
-client-supplied `X-Forwarded-For` header and set it to one client IP address.
-Authling ignores forwarded addresses from every other peer and rejects
-ambiguous forwarded chains for admission purposes.
-
+When the proxy overwrites `X-Forwarded-Host` and `X-Forwarded-Proto`, set
+`http.trust_proxy_headers = true` (or `AUTHLING_HTTP_TRUST_PROXY_HEADERS=true`)
+so canonical-host and same-origin checks use that browser-facing origin. Never
+enable this for a listener directly reachable by untrusted clients.
 Authling renders its user interface with templ. Vite compiles Tailwind CSS and
 locally packaged fonts and icons into assets that are embedded in the Go
 binary; Node.js is not needed to run the resulting executable.
@@ -114,9 +118,30 @@ binary; Node.js is not needed to run the resulting executable.
 Authling publishes discovery at `/.well-known/openid-configuration`. The
 initial profile supports Authorization Code, requires `openid` and S256 PKCE
 for every client, signs ID tokens with RS256, and exposes a minimal UserInfo
-response containing only the account ID as `sub`. A client may also request
-`account_data` for read and write synchronization of the user's private global
-account data after explicit consent.
+response containing the account ID as `sub` plus non-empty
+`preferred_username` and `name` identity hints. It exposes no application-data
+scopes.
+
+Authling rotates its RS256 signing key automatically every 90 days. A new
+public key is published before use, and the preceding public key remains in
+JWKS until its ID tokens have expired. Configure a whole-day interval from one
+through 3,650 days with:
+
+```toml
+[oidc]
+signing_key_rotation_interval_days = 90
+```
+
+The equivalent environment variable is
+`AUTHLING_OIDC_SIGNING_KEY_ROTATION_INTERVAL_DAYS`. Rotation runs inside the
+Authling process and therefore works with private embedded NATS. Authling does
+not yet expose a manual emergency-rotation command.
+
+Explicit consent creates a durable authorization grant for the exact client
+ID and `openid` scope. Later covered requests skip repeated consent unless the
+client sends `prompt=consent`. The account page lists and revokes these grants.
+Revocation makes future requests ask again; it does not end already issued
+five-minute tokens or sessions held by the relying party.
 
 CIMD public clients use their HTTPS metadata-document URL directly as
 `client_id`; they need no Authling-side registration. Conventional consumers
@@ -133,11 +158,13 @@ secret = 'replace-with-a-secret-from-your-secret-store'
 ```
 
 CIMD fetches reject private and other special-use destinations by default.
-Controlled development networks such as OrbStack may explicitly list exact
-trusted hostnames with `oidc.cimd_trusted_private_hosts` or
-`AUTHLING_OIDC_CIMD_TRUSTED_PRIVATE_HOSTS`. The exception permits private IP
-addresses for those hosts only; loopback, link-local, multicast, and other
-special-use destinations remain blocked.
+Controlled development environments may explicitly list exact hostnames with
+`oidc.cimd_trusted_private_hosts` or `oidc.cimd_trusted_loopback_hosts`; the
+equivalent environment variables are
+`AUTHLING_OIDC_CIMD_TRUSTED_PRIVATE_HOSTS` and
+`AUTHLING_OIDC_CIMD_TRUSTED_LOOPBACK_HOSTS`. Each exception permits only its
+named address class. Link-local, multicast, and all other special-use
+destinations remain blocked.
 
 Redirect matching is exact. Production redirects require HTTPS; loopback HTTP
 is accepted only when Authling itself is in loopback development mode. The
@@ -149,9 +176,5 @@ Embedded NATS is opt-in and has no TCP listener. For an external NATS
 deployment, configure `nats.client.url` and `nats.client.credentials_file`
 instead. Equivalent `AUTHLING_NATS_*` environment variables override TOML.
 
-The runtime currently has no public account-management or general document
-CRUD API. The experimental `GET /data/sync` WebSocket uses either the signed-in
-browser session or an origin-bound `account_data` access token to select one
-account-owned TinyBase 9.3 data space. See
-[FDR-005](docs/fdr/FDR-005-account-data-sync.md) for its limits and wire
-compatibility policy.
+The runtime currently has no public account-management, application-data,
+document, or synchronization API.

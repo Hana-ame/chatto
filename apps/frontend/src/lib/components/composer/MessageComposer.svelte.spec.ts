@@ -443,6 +443,25 @@ describe('MessageComposer', () => {
       expect(toolbar?.contains(q(container, 'button[aria-label="Send message"]'))).toBe(true);
     });
 
+    it('preserves an editor selection when a mouse drag ends over composer padding', async () => {
+      const { container } = renderMessageComposer({ roomId: 'room-selection-padding' });
+      const editor = await findEditor(container);
+      const surface = q(container, '[data-testid="composer-input-surface"]')!;
+      await typeInEditor(editor, 'keep this selected');
+      await selectEditorContents(editor);
+
+      editor.dispatchEvent(
+        new PointerEvent('pointerdown', { bubbles: true, button: 0, pointerType: 'mouse' })
+      );
+      surface.dispatchEvent(
+        new PointerEvent('pointerup', { bubbles: true, button: 0, pointerType: 'mouse' })
+      );
+      surface.dispatchEvent(new MouseEvent('click', { bubbles: true, button: 0 }));
+      await tick();
+
+      expect(window.getSelection()?.toString()).toBe('keep this selected');
+    });
+
     it('uses the composer width to control labels and keeps formatting controls on one row', async () => {
       const { container } = renderMessageComposer({ roomId: 'room_456' });
 
@@ -1229,9 +1248,10 @@ describe('MessageComposer', () => {
       });
     });
 
-    it('preserves literal HTML-looking text after unmatched backticks', async () => {
+    it('canonically escapes an unmatched backtick while preserving its literal text', async () => {
       const body = '` <b>literal</b>';
       const editedBody = `${body}!`;
+      const serializedBody = `\\${editedBody}`;
       sessionStorage.setItem('chatto:draft:room_unmatched_backtick_draft', body);
 
       const { container } = renderMessageComposer(
@@ -1246,7 +1266,7 @@ describe('MessageComposer', () => {
 
       await vi.waitFor(() =>
         expect(sessionStorage.getItem('chatto:draft:room_unmatched_backtick_draft')).toBe(
-          editedBody
+          serializedBody
         )
       );
     });
@@ -1297,9 +1317,10 @@ describe('MessageComposer', () => {
       expect(editor.querySelector('code')?.textContent).toContain('</b>');
     });
 
-    it('does not treat unmatched closing link syntax as a markdown link destination', async () => {
+    it('canonically escapes an unmatched closing bracket without creating a link', async () => {
       const body = 'not a link](<b>x</b>)';
       const editedBody = `${body}!`;
+      const serializedBody = editedBody.replace(']', '\\]');
       sessionStorage.setItem('chatto:draft:room_fake_link_draft', body);
 
       const { container } = renderMessageComposer(
@@ -1314,7 +1335,7 @@ describe('MessageComposer', () => {
       document.execCommand('insertText', false, '!');
 
       await vi.waitFor(() =>
-        expect(sessionStorage.getItem('chatto:draft:room_fake_link_draft')).toBe(editedBody)
+        expect(sessionStorage.getItem('chatto:draft:room_fake_link_draft')).toBe(serializedBody)
       );
     });
 

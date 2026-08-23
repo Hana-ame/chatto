@@ -38,6 +38,9 @@ generated protobuf clients, Vitest browser tests, Playwright e2e, and Storybook.
   Introduce custom Rolldown chunk groups only for a measured need, and verify
   that they do not pull lazy dependencies into representative initial route
   graphs; Rolldown groups matched modules' dependencies recursively by default.
+- When a frontend change alters imports of interaction components guarded by
+  the production bundle check, run `mise build-frontend`; lint and component
+  tests do not exercise the production route graph.
 - When a host can improve a browser operation, expose a narrow optional
   capability through a focused `$lib/desktop` adapter and feature-detect that
   capability at the point of use. Keep the browser implementation as the
@@ -49,19 +52,37 @@ generated protobuf clients, Vitest browser tests, Playwright e2e, and Storybook.
 - Use runes and Svelte 5 idioms; no legacy reactive statements.
 - Avoid `$effect` unless synchronizing with DOM, subscriptions, timers, network
   calls, or other external systems. Use `$derived` for computed state.
+- Choose the smallest lifecycle owner for reusable browser and DOM behavior:
+  use a Svelte attachment when behavior belongs to one element; use a mountable,
+  possibly headless component when behavior should follow conditional rendering
+  or use Svelte markup lifecycle such as `<svelte:window>` or
+  `<svelte:document>`; use a reactive class when behavior owns complex or shared
+  state, has multiple consumers, or needs a lifecycle independent of the
+  component tree. Prefer attachments and mountable components over a reactive
+  class used only to arrange setup and cleanup.
+- For a simple component-lifetime timer, render the headless
+  `$lib/lifecycle/Interval.svelte` or `$lib/lifecycle/Deadline.svelte` component
+  instead of repeating timer setup and cleanup in a feature `$effect`. Keep
+  debounce timers, request timeouts, animation scheduling, and timers owned by
+  stores or protocol lifecycles with those owners; the headless components are
+  specifically for behavior whose lifetime follows conditional markup.
 - Do not mirror SvelteKit `load` data into stores from component `$effect`; set
   the store in the owner that already has the data.
 - Wrap async/context getters in `$derived` when their result must update.
 - Pass reactive values as getter functions to hooks that read them inside an
   effect; never suppress `state_referenced_locally`.
 - Keep long-lived module state in `<script module>`, not instance `<script>`.
+- Document a component for Svelte Language Server hover text with a markup
+  `<!-- @component ... -->` comment. JSDoc inside `<script>` documents the
+  adjacent JavaScript declaration, not the component itself.
 - Use `Snippet<[Args]>` for reusable layout/render snippets.
 - Prefer attachments (`{@attach}`) over legacy actions for new reusable DOM
   behavior.
 - Prefer Svelte template event attributes such as `onclick` and `onpointerdown`
-  for component-owned DOM event handling. Reserve imperative event listeners for
-  reusable actions, attachments, subscriptions, and external targets such as
-  `window`, `document`, or third-party libraries.
+  for component-owned DOM event handling. Use `<svelte:window>` and
+  `<svelte:document>` for component-owned handlers on those global targets.
+  Reserve imperative event listeners for reusable actions, attachments,
+  subscriptions, and third-party libraries.
 
 ## Routing And Navigation
 
@@ -82,11 +103,10 @@ generated protobuf clients, Vitest browser tests, Playwright e2e, and Storybook.
   `$lib/state/server/serverConnection.svelte.ts` for Connect base URLs,
   `/api/realtime` URLs, bearer tokens, auth-required handling, and
   reconnect/status UI state.
-- Keep the synchronized known-server catalogue, device-local per-server
-  sessions, and the Authling account-data session as separate state owners.
-  Server IDs and origins are immutable after registration. Never serialize
-  Chatto bearer tokens, user summaries, reauthentication state, or other
-  device-local session data into Authling/TinyBase account data.
+- Keep the known-server catalogue and per-server sessions device-local and as
+  separate state owners. Server IDs and origins are immutable after
+  registration. Never serialize Chatto bearer tokens, user summaries, or
+  reauthentication state into a public or shared catalogue.
 - Treat an intentionally dormant inactive-server transport as healthy retained
   state, not as a failed connection. Only actual transport/auth/protocol
   failures should dim its server-gutter entry.
@@ -163,6 +183,8 @@ generated protobuf clients, Vitest browser tests, Playwright e2e, and Storybook.
   structure and placeholders. Add a sparse US English (`en-US`) override when
   spelling or terminology differs; do not duplicate identical base messages.
   Locale identifiers use BCP 47 tags such as `en-GB`. Follow ADR-065.
+- German translations, including regional overlays, must address users with
+  the informal `du`/`dein` forms rather than the formal `Sie`/`Ihr` forms.
 - Import product messages from `$lib/i18n/messages`; keep the framework-neutral
   JSON runtime in `packages/lingua` free of Chatto-specific catalogs and policy.
 - Catalogs are ordinary nested JSON and require no compilation. The British
@@ -201,6 +223,10 @@ generated protobuf clients, Vitest browser tests, Playwright e2e, and Storybook.
   responses cannot update the next resource's form state.
 - Send sparse patches from settings forms: omit unchanged fields so stale form
   values cannot overwrite concurrent updates or emit misleading durable facts.
+- When an interactive edit returns an OCC conflict, do not retry it silently or
+  replace the user's draft. Keep the form state and show a localized,
+  actionable conflict message explaining that the resource changed and must be
+  reloaded before saving again.
 - Checkboxes and similar binary controls in Server Admin should save immediately
   and confirm through toast.
 - Use Save buttons only for multi-field forms that submit together; disable until
@@ -211,6 +237,10 @@ generated protobuf clients, Vitest browser tests, Playwright e2e, and Storybook.
   normal editable assignments.
 
 ## Pagination, Lists, And Realtime UI
+
+- When adapting canonical users or members for avatar-bearing UI, preserve
+  identity fields such as `isBot`; prefer the shared `UserAvatar` and
+  `UserAvatarUserView` shapes over surface-local copies.
 
 - Use automatic "load more" pagination when a scroll/container edge is reached.
 - Use TanStack Query for snapshot-style ConnectRPC reads. Scope private query
@@ -248,6 +278,10 @@ generated protobuf clients, Vitest browser tests, Playwright e2e, and Storybook.
 
 ## Testing
 
+- Review visible frontend changes in a browser using Chrome DevTools MCP.
+- Do not run frontend checks, tests, builds, or other commands that invoke
+  SvelteKit sync concurrently in the same checkout. They share generated
+  `.svelte-kit` state and can produce transient missing-type failures.
 - `mise test-frontend` runs the frontend suite.
 - The server, browser-component, and Storybook Vitest projects run sequentially
   to bound peak memory while still executing the complete suite.

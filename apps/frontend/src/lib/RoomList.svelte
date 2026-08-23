@@ -18,7 +18,6 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
   } from '$lib/navigation/sidebarLinkTarget';
   import { serverRegistry } from '$lib/state/server/registry.svelte';
   import { useServerScope } from '$lib/state/server/scope.svelte';
-  import CollapsibleGroup from '$lib/ui/CollapsibleGroup.svelte';
   import RoomGroupSection from '$lib/components/chat/RoomGroupSection.svelte';
   import EmptyState from '$lib/ui/EmptyState.svelte';
   import { serverStorageKey } from '$lib/storage/serverStorage';
@@ -58,7 +57,6 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
   const activeServerBaseURL = $derived(activeServer?.url ?? null);
   const stores = $derived(serverScope.store);
   const notificationStore = $derived(stores.notifications);
-  const notificationLevelStore = $derived(stores.notificationLevels);
   const activeCallRooms = $derived(stores.activeCallRooms);
   const appUi = getAppUiState();
 
@@ -99,6 +97,16 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
     void markNavigationRoomAsRead(activeServerId, room.id);
   }
 
+  async function handleCopyRoomId(roomId: string): Promise<void> {
+    roomContextMenu = null;
+    try {
+      await navigator.clipboard.writeText(roomId);
+      toast.success(m('common.copied_to_clipboard'));
+    } catch {
+      toast.error(m('common.error.generic'));
+    }
+  }
+
   function handleLeaveRoom(room: RoomsListItem): void {
     roomContextMenu = null;
     pushState('', {
@@ -136,15 +144,33 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
 
   // --- Derived layout helpers ---
 
-  // Channels and DMs are stored together, but rendered as separate groups.
-  // Room sets only apply to channels — DM rooms always render in their
-  // own group below.
+  // Channels and DMs are stored together. Operator-managed room groups only
+  // contain channels, while every visible collection is normalized into the
+  // same collapsible navigation-section presentation below.
   let channels = $derived(navigation.rooms.filter((r) => r.type === RoomKind.CHANNEL));
   let dmRooms = $derived(
     navigation.rooms.filter((r) => r.type === RoomKind.DM && isNavigationVisibleRoom(r))
   );
 
+  let roomMap = $derived(new Map(navigation.rooms.map((r) => [r.id, r])));
   let channelMap = $derived(new Map(channels.map((r) => [r.id, r])));
+
+  type NavigationSection = {
+    id: string;
+    label: string;
+    items: RoomsListGroupItem[];
+    persistKey: string;
+    keepVisibleWhenCollapsed: typeof isGroupItemHighlighted;
+    contextMenuTrigger?: ReturnType<typeof groupMenuTrigger>;
+  };
+
+  function roomItems(rooms: RoomsListItem[]): RoomsListGroupItem[] {
+    return rooms.map((room) => ({
+      id: `room:${room.id}`,
+      type: 'room',
+      roomId: room.id
+    }));
+  }
 
   function getSetItems(set: RoomsListGroup): RoomsListGroupItem[] {
     const items =
@@ -167,6 +193,46 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
   // When no layout exists, display channels alphabetically
   let sortedRooms = $derived([...channels].sort((a, b) => a.name.localeCompare(b.name)));
 
+  // DMs remain outside the operator-managed room-group domain. Treating every
+  // visible collection as a navigation section gives configured groups, the
+  // unconfigured fallback, and DMs identical disclosure and spacing behavior.
+  let navigationSections = $derived.by((): NavigationSection[] => {
+    const sections: NavigationSection[] = [];
+
+    if (navigation.roomGroups.length > 0) {
+      sections.push(
+        ...visibleSets.map((group) => ({
+          id: `group:${group.id}`,
+          label: group.name,
+          items: getSetItems(group),
+          persistKey: serverStorageKey(activeServerId, `collapsible:set:${group.id}`),
+          keepVisibleWhenCollapsed: isGroupItemHighlighted,
+          contextMenuTrigger: groupMenuTrigger(group)
+        }))
+      );
+    } else if (sortedRooms.length > 0) {
+      sections.push({
+        id: 'rooms',
+        label: m('common.rooms'),
+        items: roomItems(sortedRooms),
+        persistKey: serverStorageKey(activeServerId, 'collapsible:rooms'),
+        keepVisibleWhenCollapsed: isGroupItemHighlighted
+      });
+    }
+
+    if (dmRooms.length > 0) {
+      sections.push({
+        id: 'direct-messages',
+        label: m('room_list.direct_messages'),
+        items: roomItems(dmRooms),
+        persistKey: serverStorageKey(activeServerId, 'collapsible:dms'),
+        keepVisibleWhenCollapsed: isGroupItemHighlighted
+      });
+    }
+
+    return sections;
+  });
+
   // The viewer ID and DM members must come from the same server projection.
   // Reading the viewer ID from a global auth context here is unsafe — the
   // [serverId] layout intentionally renders children while the per-instance
@@ -186,6 +252,7 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
       login: participant.login,
       displayName: participant.displayName,
       deleted: false,
+      isBot: participant.isBot,
       avatarUrl: participant.avatarUrl,
       presenceStatus: PresenceStatus.OFFLINE
     };
@@ -203,7 +270,7 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
 
   function isGroupItemHighlighted(item: RoomsListGroupItem): boolean {
     if (item.type === 'link') return false;
-    const room = channelMap.get(item.roomId);
+    const room = roomMap.get(item.roomId);
     return room ? isHighlighted(room) : false;
   }
 
@@ -252,9 +319,13 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
     const target = notificationTarget(notification);
     prepareUiForNotificationTarget(appUi, activeServerId, target);
     if (target.eventId && target.roomId) {
-      stores.pendingHighlights.set(target.roomId, target.threadRootId, target.eventId);
+      stores.pendingHighlights.set(
+        target.roomId,
+        target.threadRootId,
+        target.eventId,
+        notification.id
+      );
     }
-    void notificationStore.dismiss(notification.id);
 
     const path = notificationStore.getCleanPath(activeServerId, notification);
     // eslint-disable-next-line svelte/no-navigation-without-resolve -- getCleanPath() returns a resolved app path
@@ -317,8 +388,7 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
   {@const hasActiveCall = activeCallRooms.has(room.id)}
   {@const hasUnread = roomUnreadStore.roomIsUnread(room.id)}
   {@const isJoined = room.viewerIsMember}
-  {@const isMuted = !isDM && notificationLevelStore.isRoomMuted(room.id)}
-  {@const showUnread = hasUnread && (isDM || (isJoined && !isMuted))}
+  {@const showUnread = hasUnread && (isDM || isJoined)}
   {@const showActiveCall = hasActiveCall && (isDM || isJoined)}
   {@const presentation = isDM ? dmPresentation(room) : null}
   <a
@@ -384,6 +454,7 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
       >
         <NotificationBadge
           count={room.viewerNotificationCount}
+          color={room.viewerImportantNotificationCount > 0 ? 'warning' : 'ambient'}
           testid={isDM ? 'dm-notification-badge' : 'room-notification-badge'}
         />
       </button>
@@ -401,7 +472,7 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
 
 {#snippet sidebarLink(item: RoomsListGroupItem)}
   {#if item.type === 'room'}
-    {@const room = channelMap.get(item.roomId)}
+    {@const room = roomMap.get(item.roomId)}
     {#if room}
       {@render navigationRoomLink(room)}
     {/if}
@@ -431,43 +502,17 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
   </EmptyState>
 {:else}
   <nav class="room-list md:w-full">
-    {#if navigation.roomGroups.length > 0}
-      {#each visibleSets as set, i (set.id)}
-        <RoomGroupSection
-          label={set.name}
-          items={getSetItems(set)}
-          item={sidebarLink}
-          persistKey={serverStorageKey(activeServerId, `collapsible:set:${set.id}`)}
-          keepVisibleWhenCollapsed={isGroupItemHighlighted}
-          contextMenuTrigger={groupMenuTrigger(set)}
-          separated={i > 0}
-        />
-      {/each}
-    {:else if sortedRooms.length > 0}
-      <!-- No layout configured yet — alphabetical fallback. -->
-      <div class="p-2">
-        <CollapsibleGroup
-          label={m('common.rooms')}
-          items={sortedRooms}
-          item={navigationRoomLink}
-          persistKey={serverStorageKey(activeServerId, 'collapsible:rooms')}
-          keepVisibleWhenCollapsed={isHighlighted}
-        />
-      </div>
-    {/if}
-
-    {#if dmRooms.length > 0}
-      <div class="px-2 pb-2">
-        <CollapsibleGroup
-          label={m('room_list.direct_messages')}
-          items={dmRooms}
-          item={navigationRoomLink}
-          persistKey={serverStorageKey(activeServerId, 'collapsible:dms')}
-          keepVisibleWhenCollapsed={isHighlighted}
-          class={visibleSets.length > 0 || sortedRooms.length > 0 ? 'mt-4' : ''}
-        />
-      </div>
-    {/if}
+    {#each navigationSections as section, i (section.id)}
+      <RoomGroupSection
+        label={section.label}
+        items={section.items}
+        item={sidebarLink}
+        persistKey={section.persistKey}
+        keepVisibleWhenCollapsed={section.keepVisibleWhenCollapsed}
+        contextMenuTrigger={section.contextMenuTrigger}
+        separated={i > 0}
+      />
+    {/each}
   </nav>
 {/if}
 
@@ -516,5 +561,19 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
       onConfigure={() => handleConfigureRoom(contextRoom)}
       onLeave={() => handleLeaveRoom(contextRoom)}
     />
+    <div class="menu-section">
+      <nav class="sidebar-nav">
+        <button
+          type="button"
+          class="sidebar-item"
+          onclick={() => void handleCopyRoomId(contextRoom.id)}
+          role="menuitem"
+          data-testid="copy-room-id"
+        >
+          <span class="iconify sidebar-icon icon-[uil--copy]" aria-hidden="true"></span>
+          {m('room_list.copy_room_id')}
+        </button>
+      </nav>
+    </div>
   </ContextMenu>
 {/if}

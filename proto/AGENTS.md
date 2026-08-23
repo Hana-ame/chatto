@@ -31,9 +31,10 @@ For public API packages:
 
 - The public auth, discovery, integration, admin, and realtime `v1` packages
   are experimental while Chatto is pre-1.0. Compatibility is preferred, not
-  guaranteed. Breaking changes require an explicit design benefit,
-  compatibility plan, generated-client/docs updates, release-note guidance,
-  and the `api-breaking-change` PR label.
+  guaranteed. Breaking changes require explicit user approval, an explicit
+  design benefit, a compatibility plan, generated-client/docs updates,
+  release-note guidance, and the `api-breaking-change` PR label. A release
+  milestone does not waive these requirements.
 - Except for projection-owned snapshot payloads described below, do not
   renumber fields that may be persisted or consumed by clients.
 - Except for projection-owned snapshot payloads, do not change a field type at
@@ -115,6 +116,12 @@ For public API packages:
   nested message and add an `exists` boolean to recover that distinction; add a
   scalar existence field only when presence and existence are independent facts.
 - Avoid parallel `*_present` booleans for simple scalar presence.
+- Prefer schema over meta-schema for finite, product-defined concepts. When
+  callers independently configure a closed set of capabilities, model each
+  capability as an explicit field instead of repeated enum-keyed rows. Use
+  keyed rows for intentionally dynamic or externally extensible keyspaces. If
+  an enum mirrors the branches of a `oneof`, treat that as a design smell and
+  document why the mirrored taxonomy is an independent domain concept.
 - Use enums or oneofs only when modeling multiple meaningful availability states
   or mutually exclusive request targets.
 - When one operation targets the same resource by multiple equivalent

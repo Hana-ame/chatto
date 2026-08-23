@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -14,8 +15,89 @@ import (
 	"time"
 
 	liboidc "github.com/zitadel/oidc/v3/pkg/oidc"
+	"github.com/zitadel/oidc/v3/pkg/op"
 	"hmans.de/authling/internal/config"
 )
+
+func TestAccessTokenCryptoAcceptsLegacyTokensAndUsesStableKey(t *testing.T) {
+	var tokenKey, legacyKey [32]byte
+	copy(tokenKey[:], bytes.Repeat([]byte{1}, 32))
+	copy(legacyKey[:], bytes.Repeat([]byte{2}, 32))
+	crypto := accessTokenCrypto(tokenKey, legacyKey, "sig_legacy")
+
+	for name, legacy := range map[string]op.Crypto{
+		"GCM": op.NewAES256GCMCrypto(legacyKey, "sig_legacy"),
+		"AES": op.NewAESCrypto(legacyKey),
+	} {
+		t.Run(name, func(t *testing.T) {
+			raw, err := legacy.Encrypt("token:subject")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got, err := crypto.Decrypt(raw); err != nil || got != "token:subject" {
+				t.Fatalf("decrypt legacy token = %q, %v", got, err)
+			}
+		})
+	}
+
+	raw, err := crypto.Encrypt("new:subject")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := op.NewAES256GCMCrypto(tokenKey, "authling-oidc-token-v1").Decrypt(raw); err != nil || got != "new:subject" {
+		t.Fatalf("new token did not use stable key: %q, %v", got, err)
+	}
+	if _, err := op.NewAES256GCMCrypto(legacyKey, "sig_legacy").Decrypt(raw); err == nil {
+		t.Fatal("new token remained encrypted with legacy signing-derived key")
+	}
+
+	migrating := accessTokenCrypto(legacyKey, legacyKey, "sig_legacy")
+	raw, err = migrating.Encrypt("rolling:subject")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := op.NewAES256GCMCrypto(legacyKey, "sig_legacy").Decrypt(raw); err != nil || got != "rolling:subject" {
+		t.Fatalf("legacy replica could not read seeded stable token: %q, %v", got, err)
+	}
+}
+
+func TestJWKSCacheControlDependsOnResponseStatus(t *testing.T) {
+	tests := []struct {
+		name       string
+		serve      http.HandlerFunc
+		wantStatus int
+		wantCache  string
+	}{
+		{
+			name: "successful response is public",
+			serve: func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(`{"keys":[]}`))
+			},
+			wantStatus: http.StatusOK,
+			wantCache:  "public, max-age=300",
+		},
+		{
+			name: "failed response is not stored",
+			serve: func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Cache-Control", "public, max-age=300")
+				http.Error(w, "key vault unavailable", http.StatusInternalServerError)
+			},
+			wantStatus: http.StatusInternalServerError,
+			wantCache:  "no-store",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			handler := (&Service{}).wrap(test.serve)
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "https://auth.example/oauth/jwks", nil))
+			if response.Code != test.wantStatus || response.Header().Get("Cache-Control") != test.wantCache {
+				t.Fatalf("JWKS status/cache = %d %q, want %d %q", response.Code, response.Header().Get("Cache-Control"), test.wantStatus, test.wantCache)
+			}
+		})
+	}
+}
 
 func TestValidateAuthorizeRequestRequiresExactCodePKCEProfile(t *testing.T) {
 	valid := "https://auth.example/oauth/authorize?client_id=client&redirect_uri=https%3A%2F%2Fclient.example%2Fcallback&response_type=code&scope=openid&code_challenge=" + strings.Repeat("a", 43) + "&code_challenge_method=S256"
@@ -24,8 +106,8 @@ func TestValidateAuthorizeRequestRequiresExactCodePKCEProfile(t *testing.T) {
 		want bool
 	}{
 		{name: "valid", want: true},
-		{name: "account data", want: true},
-		{name: "account data first", want: true},
+		{name: "account data"},
+		{name: "account data first"},
 		{name: "missing PKCE"},
 		{name: "plain PKCE"},
 		{name: "extra scope"},
@@ -83,7 +165,7 @@ func TestCIMDResolverFetchesBoundsAndCachesValidDocuments(t *testing.T) {
 		requests.Add(1)
 		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}, "Cache-Control": {"max-age=60"}}, Body: io.NopCloser(strings.NewReader(document)), Request: request}, nil
 	})}
-	resolver, err := NewCIMDResolver("https://auth.example", client)
+	resolver, err := NewCIMDResolver("https://auth.example", client, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +182,7 @@ func TestCIMDResolverFetchesBoundsAndCachesValidDocuments(t *testing.T) {
 	client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(bytes.NewReader(make([]byte, maxCIMDBytes+1))), Request: request}, nil
 	})
-	uncached, _ := NewCIMDResolver("https://auth.example", client)
+	uncached, _ := NewCIMDResolver("https://auth.example", client, nil, nil)
 	uncached.validateDestination = func(context.Context, string) error { return nil }
 	if _, err := uncached.Resolve(context.Background(), clientID); err == nil || !strings.Contains(err.Error(), "exceeds") {
 		t.Fatalf("oversized CIMD error = %v", err)
@@ -127,7 +209,7 @@ func TestCIMDResolverBoundsConcurrentFetches(t *testing.T) {
 		document := `{"client_id":"` + request.URL.String() + `","redirect_uris":["https://client.example/callback"],"token_endpoint_auth_method":"none"}`
 		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}, "Cache-Control": {"no-store"}}, Body: io.NopCloser(strings.NewReader(document)), Request: request}, nil
 	})}
-	resolver, _ := NewCIMDResolver("https://auth.example", client)
+	resolver, _ := NewCIMDResolver("https://auth.example", client, nil, nil)
 	resolver.validateDestination = func(context.Context, string) error { return nil }
 	errors := make(chan error, 9)
 	for index := range 9 {
@@ -200,6 +282,61 @@ func TestValidateAuthorizeRequestRejectsDuplicateSecurityParameters(t *testing.T
 	}
 }
 
+func TestAuthorizeValidationErrorsRedirectOnlyToValidatedClients(t *testing.T) {
+	valid := "https://auth.example/oauth/authorize?client_id=client&redirect_uri=https%3A%2F%2Fclient.example%2Fcallback&response_type=code&scope=openid&state=opaque-state&code_challenge=" + strings.Repeat("a", 43) + "&code_challenge_method=S256"
+	invalidScope := strings.ReplaceAll(valid, "scope=openid", "scope=openid%20email")
+	service := &Service{storage: &Storage{clients: &Resolver{configured: map[string]*Client{
+		"client": {IDValue: "client", Redirects: []string{"https://client.example/callback"}},
+	}}}}
+	tests := []struct {
+		name       string
+		raw        string
+		wantStatus int
+		wantError  string
+	}{
+		{name: "unsupported scope", raw: invalidScope, wantStatus: http.StatusFound, wantError: "invalid_scope"},
+		{name: "missing PKCE", raw: strings.ReplaceAll(valid, "&code_challenge="+strings.Repeat("a", 43), ""), wantStatus: http.StatusFound, wantError: "invalid_request"},
+		{name: "request object", raw: valid + "&request=opaque", wantStatus: http.StatusFound, wantError: "request_not_supported"},
+		{name: "unsupported response type", raw: strings.ReplaceAll(valid, "response_type=code", "response_type=token"), wantStatus: http.StatusFound, wantError: "unauthorized_client"},
+		{name: "unknown client", raw: strings.ReplaceAll(invalidScope, "client_id=client", "client_id=unknown"), wantStatus: http.StatusBadRequest},
+		{name: "unregistered redirect", raw: strings.ReplaceAll(invalidScope, "client.example%2Fcallback", "attacker.example%2Fcallback"), wantStatus: http.StatusBadRequest},
+		{name: "unsupported response mode", raw: valid + "&response_mode=form_post", wantStatus: http.StatusBadRequest},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			nextCalled := false
+			handler := service.wrap(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { nextCalled = true }))
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, test.raw, nil))
+			if nextCalled {
+				t.Fatal("invalid authorization request reached the provider")
+			}
+			if response.Code != test.wantStatus || response.Header().Get("Cache-Control") != "no-store" {
+				t.Fatalf("status/cache = %d %q, want %d no-store", response.Code, response.Header().Get("Cache-Control"), test.wantStatus)
+			}
+			location, err := response.Result().Location()
+			if test.wantStatus != http.StatusFound {
+				if err == nil {
+					t.Fatalf("unsafe request redirected to %q", location)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parse error redirect: %v", err)
+			}
+			if got := location.Scheme + "://" + location.Host + location.Path; got != "https://client.example/callback" {
+				t.Fatalf("error redirect target = %q", got)
+			}
+			if got := location.Query().Get("error"); got != test.wantError {
+				t.Fatalf("error = %q, want %q", got, test.wantError)
+			}
+			if got := location.Query().Get("state"); got != "opaque-state" {
+				t.Fatalf("state = %q, want opaque-state", got)
+			}
+		})
+	}
+}
+
 func TestValidateCIMDEnforcesPublicCodeClientProfile(t *testing.T) {
 	identifier, err := validateClientIdentifierURL("https://client.example/oidc.json")
 	if err != nil {
@@ -239,26 +376,77 @@ func TestCIMDRejectsSpecialUseNetworksAndUnsafeIdentifiers(t *testing.T) {
 			t.Fatalf("unsafe client identifier %q was accepted", raw)
 		}
 	}
-	for _, raw := range []string{"127.0.0.1", "10.0.0.1", "100.64.0.1", "192.0.2.1", "198.51.100.1", "203.0.113.1", "224.0.0.1", "2001:db8::1"} {
+	for _, raw := range []string{
+		"127.0.0.1", "10.0.0.1", "100.64.0.1", "192.0.2.1", "192.31.196.1", "192.52.193.1", "192.88.99.1", "192.175.48.1", "198.51.100.1", "203.0.113.1", "224.0.0.1",
+		"::ffff:8.8.8.8", "64:ff9b::1", "64:ff9b:1::1", "100::1", "100:0:0:1::1", "2001::1", "2001:db8::1", "2002::1", "2620:4f:8000::1", "3fff::1", "5f00::1",
+	} {
 		if address := netip.MustParseAddr(raw); !blockedCIMDAddress(address) {
 			t.Fatalf("special-use address %s was accepted", address)
+		}
+	}
+	for _, raw := range []string{"8.8.8.8", "2606:4700:4700::1111"} {
+		if address := netip.MustParseAddr(raw); blockedCIMDAddress(address) {
+			t.Fatalf("ordinary public address %s was rejected", address)
 		}
 	}
 }
 
 func TestCIMDPrivateHostTrustAllowsOnlyPrivateAddresses(t *testing.T) {
 	private := netip.MustParseAddr("192.168.1.20")
-	if cimdAddressAllowed(private, false, false) {
+	if cimdAddressAllowed(private, false, false, false) {
 		t.Fatal("private address was allowed without explicit host trust")
 	}
-	if !cimdAddressAllowed(private, false, true) {
+	if !cimdAddressAllowed(private, false, true, false) {
 		t.Fatal("private address was rejected for an explicitly trusted host")
 	}
 	for _, raw := range []string{"127.0.0.1", "169.254.169.254", "224.0.0.1", "100.64.0.1"} {
 		address := netip.MustParseAddr(raw)
-		if cimdAddressAllowed(address, false, true) {
+		if cimdAddressAllowed(address, false, true, false) {
 			t.Fatalf("non-private special-use address %s was allowed by private-host trust", address)
 		}
+	}
+}
+
+func TestCIMDLoopbackHostTrustAllowsOnlyLoopbackAddresses(t *testing.T) {
+	for _, raw := range []string{"127.0.0.1", "::1"} {
+		address := netip.MustParseAddr(raw)
+		if !cimdAddressAllowed(address, false, false, true) {
+			t.Fatalf("loopback address %s was rejected for an explicitly trusted host", address)
+		}
+	}
+	for _, raw := range []string{"10.0.0.1", "169.254.169.254", "224.0.0.1", "100.64.0.1"} {
+		address := netip.MustParseAddr(raw)
+		if cimdAddressAllowed(address, false, false, true) {
+			t.Fatalf("non-loopback special-use address %s was allowed by loopback-host trust", address)
+		}
+	}
+}
+
+func TestCIMDDialFallsBackAcrossValidatedAddresses(t *testing.T) {
+	addresses := []netip.Addr{netip.MustParseAddr("::1"), netip.MustParseAddr("127.0.0.1")}
+	var attempts []string
+	client, server := net.Pipe()
+	t.Cleanup(func() {
+		client.Close()
+		server.Close()
+	})
+
+	connection, err := dialCIMDAddresses(t.Context(), "tcp", "42443", addresses,
+		func(_ context.Context, _, address string) (net.Conn, error) {
+			attempts = append(attempts, address)
+			if len(attempts) == 1 {
+				return nil, fmt.Errorf("IPv6 listener unavailable")
+			}
+			return client, nil
+		})
+	if err != nil {
+		t.Fatalf("dial CIMD addresses: %v", err)
+	}
+	if connection != client {
+		t.Fatal("dial returned an unexpected connection")
+	}
+	if got, want := strings.Join(attempts, ","), "[::1]:42443,127.0.0.1:42443"; got != want {
+		t.Fatalf("dial attempts = %q, want %q", got, want)
 	}
 }
 

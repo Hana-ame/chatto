@@ -6,7 +6,8 @@
       "profile": "Profiil",
       "display": "Ekraan",
       "notifications": "Märguanded",
-      "account": "konto"
+      "account": "konto",
+      "bots": "Botid"
     },
     "profile": {
       "title": "Profiil",
@@ -179,9 +180,7 @@
         "enabling": "Lubamine...",
         "blocked_error": "Tõukemärguanded on teie brauseris või OS-i seadetes blokeeritud.",
         "enable_failed": "Tõukemärguannete lubamine ebaõnnestus. Palun proovi uuesti.",
-        "enable_error": "Tõukemärguannete lubamisel ilmnes viga",
-        "remote_title": "Native push pole kaugserverite jaoks saadaval",
-        "remote_description": "See installitud rakendus saab registreerida brauseri tõukemärguandeid ainult seda teenindanud serveris. Rakendusesisesed märguandemärgid ja helid töötavad selles serveris endiselt, kui Chatto on avatud."
+        "enable_error": "Tõukemärguannete lubamisel ilmnes viga"
       },
       "push_prompt": {
         "title": "Luba tõukemärguanded",
@@ -194,35 +193,6 @@
         "enabling": "Lubamine...",
         "enable": "Luba",
         "dismiss": "Ei aitäh"
-      },
-      "levels": {
-        "loading": "Laadimine...",
-        "load_failed": "Teavituse eelistuste laadimine ebaõnnestus",
-        "server_updated": "Serveri teavituste taset värskendati",
-        "room_updated": "Ruumi teavituste taset värskendati",
-        "update_failed": "Värskendamine ebaõnnestus",
-        "server_title": "Serveri teavituse tase",
-        "server_description": "Määrab, kuidas saate selle serveri kõigi ruumide kohta märguandeid. Üksikud ruumid võivad selle sätte tühistada.",
-        "room_title": "Ruumi alistamised",
-        "room_description": "Alistage üksikute ruumide serveritaseme säte. Vaikimisi seatud ruumid pärivad serveri seaded ({level}).",
-        "room_level_label": "#{room} teavitustase",
-        "effective": "Kehtib: {level}",
-        "default": {
-          "label": "Vaikimisi",
-          "description": "Kasutage päritud vaikeseadet"
-        },
-        "muted": {
-          "label": "Vaigistatud",
-          "description": "Märguandeid ega lugemata markereid pole"
-        },
-        "normal": {
-          "label": "Tavaline",
-          "description": "Lugemata markerid + mainimised, DM-id ja lõime vastused"
-        },
-        "all_messages": {
-          "label": "Kõik sõnumid",
-          "description": "Tavaline + märguanne iga uue sõnumi kohta"
-        }
       },
       "sound": {
         "title": "Teavitusheli",
@@ -272,6 +242,32 @@
           "siren": "Hoiatussireen",
           "dubstep": "Dubstep Drop",
           "circus": "Tsirkus"
+        }
+      },
+      "policy": {
+        "title": "Teavituste reeglid",
+        "description": "Vali, kui tugevalt iga tegevuse liik sinu tähelepanu köidab. Pärimine kasutab serveri vaikeväärtust.",
+        "load_failed": "Teavituste reeglite laadimine ebaõnnestus",
+        "save_failed": "Teavituste reeglite salvestamine ebaõnnestus",
+        "effective": "Kehtiv: {mode}",
+        "delivery_mode": {
+          "inherit": "Päri",
+          "off": "Väljas",
+          "silent": "Vaikne",
+          "alert": "Teavitus"
+        },
+        "reason": {
+          "direct_message": "Otsesõnumid",
+          "direct_mention": "Otsesed mainimised",
+          "reply": "Vastused sinu sõnumitele",
+          "role_mention": "Rollimainimised",
+          "here": "@here mainimised",
+          "all": "@all mainimised",
+          "followed_thread": "Jälgitavad lõimed",
+          "followed_room": "Jälgitavad ruumid",
+          "reaction": "Reaktsioonid sinu sõnumitele",
+          "activity": "Tegevus",
+          "room_invitation": "Ruumide kutsed"
         }
       }
     },
@@ -349,6 +345,52 @@
         "confirm_placeholder": "DELETE",
         "cancel": "Tühista",
         "deleting": "Kustutamine..."
+      }
+    },
+    "bots": {
+      "title": "Botid",
+      "subtitle": "Looge API kontosid ja kontrollige täpselt, mida nad saavad teha",
+      "singular": "bot",
+      "unsupported": "See serveriversioon ei toeta robotikontosid.",
+      "list_title": "Botikontod",
+      "loading": "Bottide laadimine...",
+      "empty_title": "Roboteid veel pole",
+      "empty_body": "Looge robot, kui integratsioon vajab oma identiteeti ja õigusi.",
+      "create_permission_required": "Saate olemasolevaid roboteid hallata, kuid teil pole õigust uut luua.",
+      "create": "Loo robot",
+      "create_title": "Looge roboti konto",
+      "create_failed": "Boti loomine ebaõnnestus",
+      "created": "Bot loodud",
+      "edit": "Muuda",
+      "edit_title": "Muutke robotikontot",
+      "updated": "Botit värskendati",
+      "update_failed": "Boti värskendamine ebaõnnestus",
+      "update_conflict": "Keegi teine värskendas seda boti. Laadi leht uuesti ja proovi veel kord.",
+      "username": "Kasutajanimi",
+      "username_hint": "Boti kasutajanimed peavad lõppema numbriga _bot.",
+      "display_name": "Kuvatav nimi",
+      "owner": "Omanik",
+      "reassign_owner": "Määra omanik ümber",
+      "reassign_owner_warning": "Boti API-võti ja seadistatud õigused jäävad samaks. Kehtivad õigused hakkavad kohe sõltuma uuest omanikust.",
+      "owner_reassigned": "Boti omanik määrati ümber",
+      "owner_reassign_failed": "Boti omaniku ümbermääramine ebaõnnestus",
+      "api_key_title": "Salvesta see API võti",
+      "api_key_warning": "Seda klahvi näidatakse ainult üks kord. Enne selle akna sulgemist hoidke seda kuskil turvalises kohas.",
+      "key_created": "API-võti on loodud",
+      "key_rotated_at": "Viimati pööratud",
+      "key_copied": "API-võti on kopeeritud",
+      "rotate_key": "Pööra klahvi",
+      "rotate_title": "Pööra API-võtit",
+      "rotate_warning": "Praegune võti lakkab kohe töötamast. Iga seda kasutav integratsioon tuleb värskendada.",
+      "key_rotated": "API-võtit pöörati",
+      "rotate_failed": "API võtme pööramine ebaõnnestus",
+      "delete_title": "Kustutage robot",
+      "delete_warning": "Kas kustutada {name}? Selle API võti lakkab kohe töötamast ja kontot ei saa taastada.",
+      "deleted": "Bot kustutatud",
+      "delete_failed": "Boti kustutamine ebaõnnestus",
+      "permissions": {
+        "owner_ceiling": "Vali, mida see bot teha tohib. Saad anda talle ainult õigusi, mis sul endal on. Kui kaotad mõne õiguse, ei saa ka bot seda enam kasutada.",
+        "save_failed": "Boti loa värskendamine ebaõnnestus"
       }
     }
   }

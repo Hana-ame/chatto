@@ -101,12 +101,17 @@ func (c *ChattoCore) IsServerAdmin(ctx context.Context, userID string) (bool, er
 	return c.rbacModel.hasRole(userID, RoleAdmin), nil
 }
 
-// IsServerOwner checks whether a user is an effective server owner. Durable
-// owner-role assignments and configured owners.emails both count so a
-// configured owner cannot be locked out by edited RBAC state.
+// IsServerOwner checks whether a user has the durable owner role. Configured
+// owners.emails entries are materialized into that role at boot and by the
+// durable notification-effects worker after email verification, so live and
+// event-time authorization cannot diverge.
 func (c *ChattoCore) IsServerOwner(ctx context.Context, userID string) (bool, error) {
-	if c.rbacModel.hasRole(userID, RoleOwner) {
-		return true, nil
+	return c.rbacModel.hasRole(userID, RoleOwner), nil
+}
+
+func (c *ChattoCore) isConfiguredOwner(ctx context.Context, userID string) (bool, error) {
+	if len(c.config.Owners.Emails) == 0 {
+		return false, nil
 	}
 	emails, err := c.userModel.verifiedEmails(ctx, userID)
 	if err != nil {
@@ -218,6 +223,9 @@ func (c *ChattoCore) AssignServerRole(ctx context.Context, actorID, userID, role
 	}})
 
 	if _, err := c.appendRoleAssignmentEvent(ctx, userID, false, event, func() error {
+		if kind, _, ok := c.userModel.isBotAndOwner(userID); ok && kind {
+			return ErrHumanAccountRequired
+		}
 		if _, ok := c.rbacModel.role(roleName); !ok {
 			return ErrRoleNotFound
 		}
@@ -253,6 +261,9 @@ func (c *ChattoCore) AssignServerRoleToExistingUser(ctx context.Context, actorID
 	}})
 
 	if _, err := c.appendRoleAssignmentEvent(ctx, userID, true, event, func() error {
+		if kind, _, ok := c.userModel.isBotAndOwner(userID); ok && kind {
+			return ErrHumanAccountRequired
+		}
 		if _, ok := c.rbacModel.role(roleName); !ok {
 			return ErrRoleNotFound
 		}
@@ -291,6 +302,15 @@ func (c *ChattoCore) RevokeServerRole(ctx context.Context, actorID, userID, role
 		if roleName == RoleOwner && actorID == userID {
 			return ErrCannotRevokeSelfAdmin
 		}
+		if roleName == RoleOwner {
+			configured, err := c.isConfiguredOwner(ctx, userID)
+			if err != nil {
+				return err
+			}
+			if configured {
+				return ErrPermissionDenied
+			}
+		}
 		if _, ok := c.rbacModel.role(roleName); !ok {
 			return ErrRoleNotFound
 		}
@@ -322,6 +342,15 @@ func (c *ChattoCore) RevokeServerRoleFromExistingUser(ctx context.Context, actor
 	if _, err := c.appendRoleAssignmentEvent(ctx, userID, true, event, func() error {
 		if roleName == RoleOwner && actorID == userID {
 			return ErrCannotRevokeSelfAdmin
+		}
+		if roleName == RoleOwner {
+			configured, err := c.isConfiguredOwner(ctx, userID)
+			if err != nil {
+				return err
+			}
+			if configured {
+				return ErrPermissionDenied
+			}
 		}
 		if _, ok := c.rbacModel.role(roleName); !ok {
 			return ErrRoleNotFound

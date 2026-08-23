@@ -9,7 +9,19 @@
       "time_now": "Gerade eben",
       "time_minutes": "vor {count} Min.",
       "time_hours": "vor {count} Std.",
-      "time_days": "vor {count} Tg."
+      "time_days": "vor {count} Tg.",
+      "unread": "Ungelesen",
+      "activity": "Neue Aktivität",
+      "summary": {
+        "direct_message": "{actor} hat dir eine Direktnachricht gesendet.",
+        "reaction": "{actor} hat mit „{emoji}“ auf deine Nachricht in {channel} reagiert.",
+        "reaction_group": "{actor} und andere haben mit „{emoji}“ auf deine Nachricht in {channel} reagiert.",
+        "reply": "{actor} hat auf deine Nachricht geantwortet.",
+        "mention": "{actor} hat dich erwähnt.",
+        "followed_thread": "{actor} hat in einem Thread geantwortet, dem du folgst.",
+        "new_message": "{actor} hat eine neue Nachricht gepostet.",
+        "activity": "{actor} hat dir eine Benachrichtigung gesendet."
+      }
     },
     "sign_out": {
       "title": "Abmelden",
@@ -27,15 +39,11 @@
     },
     "user_menu": {
       "profile": "Benutzerprofil",
-      "send_message": "Nachricht senden"
+      "send_message": "Nachricht senden",
+      "copy_user_id": "Benutzer-ID kopieren"
     },
     "server_gutter": {
       "add_server": "Server hinzufügen",
-      "account_data_connect": "Serverliste mit Authling synchronisieren",
-      "account_data_connecting": "Serverlisten-Synchronisierung wird verbunden…",
-      "account_data_connected": "Serverliste wird mit {provider} synchronisiert",
-      "account_data_connected_toast": "Deine Serverliste wird jetzt synchronisiert.",
-      "account_data_error": "Serverliste konnte nicht synchronisiert werden",
       "version": "Version {version}",
       "version_unknown": "Version unbekannt",
       "unreachable": "Server nicht erreichbar",

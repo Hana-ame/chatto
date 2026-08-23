@@ -9,12 +9,15 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"hmans.de/chatto/internal/config"
 	"hmans.de/chatto/internal/core"
+	"hmans.de/chatto/internal/core/subjects"
 	adminv1 "hmans.de/chatto/internal/pb/chatto/admin/v1"
 	apiv1 "hmans.de/chatto/internal/pb/chatto/api/v1"
+	authv1 "hmans.de/chatto/internal/pb/chatto/auth/v1"
 	corev1 "hmans.de/chatto/internal/pb/chatto/core/v1"
 )
 
@@ -705,16 +708,20 @@ func TestConnectServicesRejectDMOutsiders(t *testing.T) {
 	}))
 	checkInaccessible("UnfollowThread", err)
 
-	_, err = env.prefs.GetRoomNotificationPreference(ctx, connect.NewRequest(&apiv1.GetRoomNotificationPreferenceRequest{
-		RoomId: dm.Id,
+	roomID := dm.Id
+	_, err = env.notifications.GetNotificationPolicy(ctx, connect.NewRequest(&apiv1.GetNotificationPolicyRequest{
+		RoomId: &roomID,
 	}))
-	checkInaccessible("GetRoomNotificationPreference", err)
+	checkInaccessible("GetNotificationPolicy", err)
 
-	_, err = env.prefs.UpdateRoomNotificationPreference(ctx, connect.NewRequest(&apiv1.UpdateRoomNotificationPreferenceRequest{
-		RoomId: dm.Id,
-		Level:  apiv1.NotificationLevel_NOTIFICATION_LEVEL_MUTED,
+	_, err = env.notifications.UpdateNotificationPolicy(ctx, connect.NewRequest(&apiv1.UpdateNotificationPolicyRequest{
+		RoomId: &roomID,
+		Overrides: &apiv1.NotificationDeliveryModes{
+			DirectMessages: apiv1.NotificationDeliveryMode_NOTIFICATION_DELIVERY_MODE_OFF.Enum(),
+		},
+		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"direct_messages"}},
 	}))
-	checkInaccessible("UpdateRoomNotificationPreference", err)
+	checkInaccessible("UpdateNotificationPolicy", err)
 }
 
 func TestRoomDirectoryServiceListRoomsVisibilityAndDMs(t *testing.T) {
@@ -1473,188 +1480,585 @@ func TestMyAccountServiceSetAndDeleteCustomStatus(t *testing.T) {
 	}
 }
 
-func TestNotificationServiceListsAndDismissesNotifications(t *testing.T) {
+func TestNotificationServiceOccurrenceLifecycle(t *testing.T) {
 	env := newConnectAPITestEnv(t)
 	ctx := withCaller(env.ctx, env.viewer)
-	room := env.createJoinedRoom("notification-connect-room")
-	actor, err := env.core.CreateUser(env.ctx, core.SystemActorID, "notification-actor", "Notification Actor", "password")
+	actor, err := env.core.CreateUser(env.ctx, core.SystemActorID, "notification-v2-actor", "Notification 2 Actor", "password")
 	if err != nil {
 		t.Fatalf("CreateUser actor: %v", err)
 	}
-	if err := env.core.SetPresence(env.ctx, actor.Id, core.PresenceStatusAway); err != nil {
-		t.Fatalf("SetPresence actor: %v", err)
+	dm, _, err := env.core.FindOrCreateDM(env.ctx, env.viewer.Id, []string{actor.Id})
+	if err != nil {
+		t.Fatalf("FindOrCreateDM: %v", err)
+	}
+	posted, err := env.core.PostMessage(env.ctx, core.KindDM, dm.Id, actor.Id, "hello from v2", nil, "", "", nil, false)
+	if err != nil {
+		t.Fatalf("PostMessage: %v", err)
 	}
 
-	mention, err := env.core.CreateNotification(env.ctx, env.viewer.Id, actor.Id, &corev1.Notification{
-		Notification: &corev1.Notification_Mention{
-			Mention: &corev1.MentionNotification{
-				RoomId:   room.Id,
-				EventId:  "mention-event",
-				InThread: "thread-root",
-			},
+	list, err := env.notifications.ListNotificationOccurrences(ctx, connect.NewRequest(&apiv1.ListNotificationOccurrencesRequest{}))
+	if err != nil {
+		t.Fatalf("ListNotificationOccurrences: %v", err)
+	}
+	if len(list.Msg.GetOccurrences()) != 1 || list.Msg.GetUnreadCount() != 1 || list.Msg.GetImportantUnreadCount() != 1 {
+		t.Fatalf("occurrences = %+v, unread = %d, want one unread occurrence", list.Msg.GetOccurrences(), list.Msg.GetUnreadCount())
+	}
+	if counts := list.Msg.GetRoomUnreadCounts(); len(counts) != 1 || counts[0].GetRoomId() != dm.Id || counts[0].GetUnreadCount() != 1 || counts[0].GetImportantUnreadCount() != 1 {
+		t.Fatalf("room unread-occurrence counts = %+v, want one group for %s", counts, dm.Id)
+	}
+	occurrence := list.Msg.GetOccurrences()[0]
+	if occurrence.GetSignal().GetDirectMessageReceived().GetMessage().GetRoom().GetId() != dm.Id || occurrence.GetSignal().GetDirectMessageReceived().GetMessage().GetEventId() != posted.Id ||
+		!occurrence.GetUnread() || occurrence.GetAttentionLevel() != apiv1.NotificationAttentionLevel_NOTIFICATION_ATTENTION_LEVEL_IMPORTANT {
+		t.Fatalf("occurrence = %+v, want exact unread DM target", occurrence)
+	}
+	got, err := env.notifications.GetNotificationOccurrence(ctx, connect.NewRequest(&apiv1.GetNotificationOccurrenceRequest{
+		NotificationId: occurrence.GetId(),
+	}))
+	if err != nil || got.Msg.GetOccurrence().GetId() != occurrence.GetId() {
+		t.Fatalf("GetNotificationOccurrence = (%+v, %v), want %s", got, err, occurrence.GetId())
+	}
+	if _, err := env.notifications.GetNotificationOccurrence(ctx, connect.NewRequest(&apiv1.GetNotificationOccurrenceRequest{
+		NotificationId: "missing-notification",
+	})); connect.CodeOf(err) != connect.CodeNotFound {
+		t.Fatalf("GetNotificationOccurrence missing code = %v, want not found", connect.CodeOf(err))
+	}
+	batchGet, err := env.notifications.BatchGetNotificationOccurrences(ctx, connect.NewRequest(&apiv1.BatchGetNotificationOccurrencesRequest{
+		NotificationIds: []string{"missing-notification", occurrence.GetId(), occurrence.GetId()},
+	}))
+	if err != nil || len(batchGet.Msg.GetOccurrences()) != 1 || batchGet.Msg.GetOccurrences()[0].GetId() != occurrence.GetId() {
+		t.Fatalf("BatchGetNotificationOccurrences = (%+v, %v), want one de-duplicated occurrence", batchGet, err)
+	}
+
+	if _, err := env.notifications.MarkNotificationRead(ctx, connect.NewRequest(&apiv1.MarkNotificationReadRequest{
+		NotificationId: occurrence.GetId(),
+	})); err != nil {
+		t.Fatalf("MarkNotificationRead: %v", err)
+	}
+	readList, err := env.notifications.ListNotificationOccurrences(ctx, connect.NewRequest(&apiv1.ListNotificationOccurrencesRequest{}))
+	if err != nil || len(readList.Msg.GetOccurrences()) != 1 || readList.Msg.GetOccurrences()[0].GetUnread() || readList.Msg.GetUnreadCount() != 0 {
+		t.Fatalf("ListNotificationOccurrences after read = %+v, %v, want one read occurrence", readList, err)
+	}
+
+	deleted, err := env.notifications.BatchDeleteNotificationOccurrences(ctx, connect.NewRequest(&apiv1.BatchDeleteNotificationOccurrencesRequest{
+		NotificationIds: []string{occurrence.GetId(), occurrence.GetId()},
+	}))
+	if err != nil || deleted.Msg.GetDeletedCount() != 1 {
+		t.Fatalf("BatchDeleteNotificationOccurrences: %v", err)
+	}
+	afterDelete, err := env.notifications.ListNotificationOccurrences(ctx, connect.NewRequest(&apiv1.ListNotificationOccurrencesRequest{}))
+	if err != nil || len(afterDelete.Msg.GetOccurrences()) != 0 {
+		t.Fatalf("list after delete = %+v, %v, want empty", afterDelete, err)
+	}
+	if _, err := env.core.PostMessage(env.ctx, core.KindDM, dm.Id, actor.Id, "dismiss all of this", nil, "", "", nil, false); err != nil {
+		t.Fatalf("PostMessage before DeleteAllNotificationOccurrences: %v", err)
+	}
+	deleteAll, err := env.notifications.DeleteAllNotificationOccurrences(ctx, connect.NewRequest(&apiv1.DeleteAllNotificationOccurrencesRequest{}))
+	if err != nil || deleteAll.Msg.GetDeletedCount() != 1 {
+		t.Fatalf("DeleteAllNotificationOccurrences = (%+v, %v), want one", deleteAll, err)
+	}
+	afterDeleteAll, err := env.notifications.ListNotificationOccurrences(ctx, connect.NewRequest(&apiv1.ListNotificationOccurrencesRequest{}))
+	if err != nil || len(afterDeleteAll.Msg.GetOccurrences()) != 0 {
+		t.Fatalf("list after delete all = %+v, %v, want empty", afterDeleteAll, err)
+	}
+
+	policy, err := env.notifications.UpdateNotificationPolicy(ctx, connect.NewRequest(&apiv1.UpdateNotificationPolicyRequest{
+		Overrides: &apiv1.NotificationDeliveryModes{
+			DirectMentions: apiv1.NotificationDeliveryMode_NOTIFICATION_DELIVERY_MODE_SILENT.Enum(),
 		},
-	})
-	if err != nil {
-		t.Fatalf("CreateNotification mention: %v", err)
-	}
-	dm, err := env.core.CreateNotification(env.ctx, env.viewer.Id, actor.Id, &corev1.Notification{
-		Notification: &corev1.Notification_DmMessage{
-			DmMessage: &corev1.DMMessageNotification{
-				RoomId:  "dm-room",
-				EventId: "dm-event",
-			},
-		},
-	})
-	if err != nil {
-		t.Fatalf("CreateNotification dm: %v", err)
-	}
-
-	if _, err := env.notifications.GetNotification(env.ctx, connect.NewRequest(&apiv1.GetNotificationRequest{NotificationId: mention.Id})); connect.CodeOf(err) != connect.CodeUnauthenticated {
-		t.Fatalf("unauthenticated GetNotification code = %v, want unauthenticated", connect.CodeOf(err))
-	}
-	if _, err := env.notifications.BatchGetNotifications(env.ctx, connect.NewRequest(&apiv1.BatchGetNotificationsRequest{NotificationIds: []string{mention.Id}})); connect.CodeOf(err) != connect.CodeUnauthenticated {
-		t.Fatalf("unauthenticated BatchGetNotifications code = %v, want unauthenticated", connect.CodeOf(err))
-	}
-
-	listResp, err := env.notifications.ListNotifications(ctx, connect.NewRequest(&apiv1.ListNotificationsRequest{Page: &apiv1.PageRequest{Limit: 1}}))
-	if err != nil {
-		t.Fatalf("ListNotifications: %v", err)
-	}
-	if listResp.Msg.GetPage().GetTotalCount() != 2 || !listResp.Msg.GetPage().GetHasMore() || len(listResp.Msg.GetNotifications()) != 1 {
-		t.Fatalf("ListNotifications page = %+v, want total 2, has_more true, one item", listResp.Msg)
-	}
-	item := listResp.Msg.GetNotifications()[0]
-	if item.GetActor().GetDisplayName() != "Notification Actor" || item.GetActor().GetPresenceStatus() != apiv1.PresenceStatus_PRESENCE_STATUS_AWAY {
-		t.Fatalf("notification actor = %+v, want hydrated actor", item.GetActor())
-	}
-
-	getResp, err := env.notifications.GetNotification(ctx, connect.NewRequest(&apiv1.GetNotificationRequest{NotificationId: mention.Id}))
-	if err != nil {
-		t.Fatalf("GetNotification: %v", err)
-	}
-	if got := getResp.Msg.GetNotification(); got.GetId() != mention.Id || got.GetMention().GetEventId() != "mention-event" || got.GetMention().GetThreadRootEventId() != "thread-root" {
-		t.Fatalf("GetNotification item = %+v, want mention", got)
-	}
-	if _, err := env.notifications.GetNotification(ctx, connect.NewRequest(&apiv1.GetNotificationRequest{NotificationId: "missing-notification"})); connect.CodeOf(err) != connect.CodeNotFound {
-		t.Fatalf("missing GetNotification code = %v, want not_found", connect.CodeOf(err))
-	}
-
-	batchResp, err := env.notifications.BatchGetNotifications(ctx, connect.NewRequest(&apiv1.BatchGetNotificationsRequest{
-		NotificationIds: []string{mention.Id, "missing-notification", dm.Id, mention.Id},
+		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"direct_mentions"}},
 	}))
 	if err != nil {
-		t.Fatalf("BatchGetNotifications: %v", err)
+		t.Fatalf("UpdateNotificationPolicy: %v", err)
 	}
-	gotBatch := batchResp.Msg.GetNotifications()
-	if len(gotBatch) != 2 || gotBatch[0].GetId() != mention.Id || gotBatch[1].GetId() != dm.Id {
-		t.Fatalf("BatchGetNotifications items = %+v, want mention,dm", gotBatch)
-	}
-
-	roomResp, err := env.notifications.ListRoomNotifications(ctx, connect.NewRequest(&apiv1.ListRoomNotificationsRequest{RoomId: room.Id}))
-	if err != nil {
-		t.Fatalf("ListRoomNotifications: %v", err)
-	}
-	if roomResp.Msg.GetPage().GetTotalCount() != 1 || len(roomResp.Msg.GetNotifications()) != 1 {
-		t.Fatalf("ListRoomNotifications page = %+v, want one room notification", roomResp.Msg)
-	}
-	mentionItem := roomResp.Msg.GetNotifications()[0]
-	if mentionItem.GetMention().GetRoom().GetId() != room.Id || mentionItem.GetMention().GetThreadRootEventId() != "thread-root" {
-		t.Fatalf("mention payload = %+v, want room/thread payload", mentionItem.GetMention())
-	}
-
-	outsider, err := env.core.CreateUser(env.ctx, core.SystemActorID, "notification-outsider", "Notification Outsider", "password")
-	if err != nil {
-		t.Fatalf("CreateUser outsider: %v", err)
-	}
-	outsiderResp, err := env.notifications.ListRoomNotifications(withCaller(env.ctx, outsider), connect.NewRequest(&apiv1.ListRoomNotificationsRequest{RoomId: room.Id}))
-	if err != nil {
-		t.Fatalf("ListRoomNotifications outsider: %v", err)
-	}
-	if outsiderResp.Msg.GetPage().GetTotalCount() != 0 || len(outsiderResp.Msg.GetNotifications()) != 0 {
-		t.Fatalf("outsider room notifications = %+v, want empty page", outsiderResp.Msg)
-	}
-
-	hasResp, err := env.notifications.HasNotifications(ctx, connect.NewRequest(&apiv1.HasNotificationsRequest{}))
-	if err != nil {
-		t.Fatalf("HasNotifications: %v", err)
-	}
-	if !hasResp.Msg.GetHasNotifications() {
-		t.Fatal("HasNotifications = false, want true")
-	}
-	countsResp, err := env.notifications.ListRoomNotificationCounts(ctx, connect.NewRequest(&apiv1.ListRoomNotificationCountsRequest{}))
-	if err != nil {
-		t.Fatalf("ListRoomNotificationCounts: %v", err)
-	}
-	counts := make(map[string]int32)
-	for _, count := range countsResp.Msg.GetRoomCounts() {
-		counts[count.GetRoomId()] = count.GetTotalCount()
-	}
-	if counts[room.Id] != 1 || counts["dm-room"] != 1 {
-		t.Fatalf("ListRoomNotificationCounts = %+v, want counts for channel and DM rooms", counts)
-	}
-
-	dismissResp, err := env.notifications.DismissNotification(ctx, connect.NewRequest(&apiv1.DismissNotificationRequest{NotificationId: mention.Id}))
-	if err != nil {
-		t.Fatalf("DismissNotification: %v", err)
-	}
-	if !dismissResp.Msg.GetDismissed() {
-		t.Fatal("DismissNotification dismissed = false, want true")
-	}
-	dismissAgainResp, err := env.notifications.DismissNotification(ctx, connect.NewRequest(&apiv1.DismissNotificationRequest{NotificationId: mention.Id}))
-	if err != nil {
-		t.Fatalf("DismissNotification again: %v", err)
-	}
-	if !dismissAgainResp.Msg.GetDismissed() {
-		t.Fatal("DismissNotification again dismissed = false, want idempotent true")
-	}
-	if _, err := env.notifications.GetNotification(ctx, connect.NewRequest(&apiv1.GetNotificationRequest{NotificationId: mention.Id})); connect.CodeOf(err) != connect.CodeNotFound {
-		t.Fatalf("dismissed GetNotification code = %v, want not_found", connect.CodeOf(err))
-	}
-	remainingBatchResp, err := env.notifications.BatchGetNotifications(ctx, connect.NewRequest(&apiv1.BatchGetNotificationsRequest{
-		NotificationIds: []string{mention.Id, dm.Id},
-	}))
-	if err != nil {
-		t.Fatalf("BatchGetNotifications after dismiss: %v", err)
-	}
-	if got := remainingBatchResp.Msg.GetNotifications(); len(got) != 1 || got[0].GetId() != dm.Id {
-		t.Fatalf("BatchGetNotifications after dismiss items = %+v, want dm only", got)
-	}
-
-	dismissAllResp, err := env.notifications.DismissAllNotifications(ctx, connect.NewRequest(&apiv1.DismissAllNotificationsRequest{}))
-	if err != nil {
-		t.Fatalf("DismissAllNotifications: %v", err)
-	}
-	if dismissAllResp.Msg.GetDismissedCount() != 1 {
-		t.Fatalf("DismissAllNotifications count = %d, want 1", dismissAllResp.Msg.GetDismissedCount())
+	if policy.Msg.GetPolicy().GetOverrides().GetDirectMentions() != apiv1.NotificationDeliveryMode_NOTIFICATION_DELIVERY_MODE_SILENT ||
+		policy.Msg.GetPolicy().GetEffective().GetDirectMentions() != apiv1.NotificationDeliveryMode_NOTIFICATION_DELIVERY_MODE_SILENT {
+		t.Fatalf("notification policy = %+v, want direct mention Silent", policy.Msg.GetPolicy())
 	}
 }
 
-func TestNotificationPreferencesServiceServerLevelPreference(t *testing.T) {
+func TestNotificationServiceDeleteOccurrenceIsIdempotent(t *testing.T) {
 	env := newConnectAPITestEnv(t)
 	ctx := withCaller(env.ctx, env.viewer)
+	actor, err := env.core.CreateUser(env.ctx, core.SystemActorID, "notification-delete-actor", "Notification Delete Actor", "password")
+	if err != nil {
+		t.Fatalf("CreateUser actor: %v", err)
+	}
+	dm, _, err := env.core.FindOrCreateDM(env.ctx, env.viewer.Id, []string{actor.Id})
+	if err != nil {
+		t.Fatalf("FindOrCreateDM: %v", err)
+	}
+	if _, err := env.core.PostMessage(env.ctx, core.KindDM, dm.Id, actor.Id, "delete exactly this", nil, "", "", nil, false); err != nil {
+		t.Fatalf("PostMessage: %v", err)
+	}
+	inbox, err := env.notifications.ListNotificationOccurrences(ctx, connect.NewRequest(&apiv1.ListNotificationOccurrencesRequest{}))
+	if err != nil || len(inbox.Msg.GetOccurrences()) != 1 {
+		t.Fatalf("ListNotificationOccurrences = (%+v, %v), want one occurrence", inbox, err)
+	}
+	notificationID := inbox.Msg.GetOccurrences()[0].GetId()
+	first, err := env.notifications.DeleteNotificationOccurrence(ctx, connect.NewRequest(&apiv1.DeleteNotificationOccurrenceRequest{
+		NotificationId: notificationID,
+	}))
+	if err != nil || !first.Msg.GetDeleted() {
+		t.Fatalf("first DeleteNotificationOccurrence = (%+v, %v), want deleted", first, err)
+	}
+	second, err := env.notifications.DeleteNotificationOccurrence(ctx, connect.NewRequest(&apiv1.DeleteNotificationOccurrenceRequest{
+		NotificationId: notificationID,
+	}))
+	if err != nil || second.Msg.GetDeleted() {
+		t.Fatalf("second DeleteNotificationOccurrence = (%+v, %v), want idempotent deleted=false", second, err)
+	}
+	after, err := env.notifications.ListNotificationOccurrences(ctx, connect.NewRequest(&apiv1.ListNotificationOccurrencesRequest{}))
+	if err != nil || len(after.Msg.GetOccurrences()) != 0 {
+		t.Fatalf("ListNotificationOccurrences after delete = (%+v, %v), want empty", after, err)
+	}
+}
 
-	if _, err := env.prefs.UpdateServerNotificationPreference(env.ctx, connect.NewRequest(&apiv1.UpdateServerNotificationPreferenceRequest{
-		Level: apiv1.NotificationLevel_NOTIFICATION_LEVEL_MUTED,
-	})); connect.CodeOf(err) != connect.CodeUnauthenticated {
-		t.Fatalf("unauthenticated UpdateServerNotificationPreference code = %v, want unauthenticated", connect.CodeOf(err))
+func TestNotificationServiceRejectsRetractedTargetsBeforeCleanup(t *testing.T) {
+	env := newConnectAPITestEnv(t)
+	ctx := withCaller(env.ctx, env.viewer)
+	actor, err := env.core.CreateUser(env.ctx, core.SystemActorID, "notification-stale-actor", "Notification Stale Actor", "password")
+	if err != nil {
+		t.Fatalf("CreateUser actor: %v", err)
+	}
+	dm, _, err := env.core.FindOrCreateDM(env.ctx, env.viewer.Id, []string{actor.Id})
+	if err != nil {
+		t.Fatalf("FindOrCreateDM: %v", err)
+	}
+	posted, err := env.core.PostMessage(env.ctx, core.KindDM, dm.Id, actor.Id, "soon retracted", nil, "", "", nil, false)
+	if err != nil {
+		t.Fatalf("PostMessage: %v", err)
+	}
+	sequence, err := env.core.GetEventSequence(env.ctx, core.KindDM, dm.Id, posted.Id)
+	if err != nil {
+		t.Fatalf("GetEventSequence: %v", err)
+	}
+	if err := env.core.DeleteMessage(env.ctx, actor.Id, core.KindDM, dm.Id, posted.Id); err != nil {
+		t.Fatalf("DeleteMessage: %v", err)
+	}
+	createStale := func(sourceID string) *corev1.NotificationOccurrence {
+		t.Helper()
+		occurrence, created, err := env.core.NotificationOccurrences().Create(env.ctx, core.CreateNotificationOccurrenceInput{
+			RecipientID:          env.viewer.Id,
+			SourceEventID:        sourceID,
+			SourceCreated:        posted.GetCreatedAt().AsTime(),
+			SourceStreamSequence: sequence,
+			ActorID:              actor.Id,
+			Signal:               testNotificationSignal(notificationTestSignalDirectMention, dm.Id, posted.Id),
+			Mode:                 corev1.NotificationDeliveryMode_NOTIFICATION_DELIVERY_MODE_SILENT,
+			AttentionLevel:       corev1.NotificationAttentionLevel_NOTIFICATION_ATTENTION_LEVEL_IMPORTANT,
+			SkipReadLookup:       true,
+		})
+		if err != nil || !created {
+			t.Fatalf("Create stale occurrence = (%v, %v, %v), want created", occurrence, created, err)
+		}
+		return occurrence
+	}
+	createVisible := func(body string) *corev1.NotificationOccurrence {
+		t.Helper()
+		message, err := env.core.PostMessage(env.ctx, core.KindDM, dm.Id, actor.Id, body, nil, "", "", nil, false)
+		if err != nil {
+			t.Fatalf("PostMessage visible occurrence: %v", err)
+		}
+		if err := env.core.NotificationOccurrences().WaitCurrent(env.ctx); err != nil {
+			t.Fatalf("WaitCurrent visible occurrence: %v", err)
+		}
+		occurrences, err := env.core.NotificationOccurrences().List(env.ctx, env.viewer.Id)
+		if err != nil {
+			t.Fatalf("List visible occurrences: %v", err)
+		}
+		for _, occurrence := range occurrences {
+			if occurrence.GetSourceEventId() == message.GetId() {
+				return occurrence
+			}
+		}
+		t.Fatalf("visible occurrence for source %s was not materialized", message.GetId())
+		return nil
 	}
 
-	setResp, err := env.prefs.UpdateServerNotificationPreference(ctx, connect.NewRequest(&apiv1.UpdateServerNotificationPreferenceRequest{
-		Level: apiv1.NotificationLevel_NOTIFICATION_LEVEL_ALL_MESSAGES,
+	createStale("stale-list-" + posted.Id)
+	inbox, err := env.notifications.ListNotificationOccurrences(ctx, connect.NewRequest(&apiv1.ListNotificationOccurrencesRequest{}))
+	if err != nil || len(inbox.Msg.GetOccurrences()) != 0 {
+		t.Fatalf("ListNotificationOccurrences with retracted target = (%+v, %v), want empty", inbox, err)
+	}
+	staleGet := createStale("stale-get-" + posted.Id)
+	if _, err := env.notifications.GetNotificationOccurrence(ctx, connect.NewRequest(&apiv1.GetNotificationOccurrenceRequest{
+		NotificationId: staleGet.GetId(),
+	})); connect.CodeOf(err) != connect.CodeNotFound {
+		t.Fatalf("GetNotificationOccurrence retracted target code = %v, want not found", connect.CodeOf(err))
+	}
+	staleBatchGet := createStale("stale-batch-get-" + posted.Id)
+	visibleBatchGet := createVisible("visible batch-get target")
+	batchGet, err := env.notifications.BatchGetNotificationOccurrences(ctx, connect.NewRequest(&apiv1.BatchGetNotificationOccurrencesRequest{
+		NotificationIds: []string{staleBatchGet.GetId(), visibleBatchGet.GetId(), visibleBatchGet.GetId(), "missing-notification"},
+	}))
+	if err != nil || len(batchGet.Msg.GetOccurrences()) != 1 || batchGet.Msg.GetOccurrences()[0].GetId() != visibleBatchGet.GetId() {
+		t.Fatalf("BatchGetNotificationOccurrences mixed visibility = (%+v, %v), want one visible occurrence", batchGet, err)
+	}
+	if deleted, err := env.notifications.DeleteNotificationOccurrence(ctx, connect.NewRequest(&apiv1.DeleteNotificationOccurrenceRequest{
+		NotificationId: visibleBatchGet.GetId(),
+	})); err != nil || !deleted.Msg.GetDeleted() {
+		t.Fatalf("DeleteNotificationOccurrence batch-get cleanup = (%+v, %v), want deleted", deleted, err)
+	}
+
+	staleUpdate := createStale("stale-update-" + posted.Id)
+	_, err = env.notifications.MarkNotificationRead(ctx, connect.NewRequest(&apiv1.MarkNotificationReadRequest{
+		NotificationId: staleUpdate.GetId(),
+	}))
+	if connect.CodeOf(err) != connect.CodeNotFound {
+		t.Fatalf("MarkNotificationRead retracted target code = %v, want not found", connect.CodeOf(err))
+	}
+
+	staleDelete := createStale("stale-delete-" + posted.Id)
+	deleted, err := env.notifications.DeleteNotificationOccurrence(ctx, connect.NewRequest(&apiv1.DeleteNotificationOccurrenceRequest{
+		NotificationId: staleDelete.GetId(),
+	}))
+	if err != nil || deleted.Msg.GetDeleted() {
+		t.Fatalf("DeleteNotificationOccurrence retracted target = (%+v, %v), want deleted=false", deleted, err)
+	}
+	if _, err := env.core.NotificationOccurrences().Get(env.ctx, env.viewer.Id, staleDelete.GetId()); !errors.Is(err, core.ErrNotFound) {
+		t.Fatalf("stale single-delete occurrence Get error = %v, want visibility tombstone", err)
+	}
+
+	staleBatch := createStale("stale-batch-" + posted.Id)
+	visibleBatch := createVisible("visible batch target")
+	batch, err := env.notifications.BatchDeleteNotificationOccurrences(ctx, connect.NewRequest(&apiv1.BatchDeleteNotificationOccurrencesRequest{
+		NotificationIds: []string{staleBatch.GetId(), visibleBatch.GetId()},
+	}))
+	if err != nil || batch.Msg.GetDeletedCount() != 1 {
+		t.Fatalf("BatchDeleteNotificationOccurrences mixed visibility = (%+v, %v), want one visible deletion", batch, err)
+	}
+	for _, occurrence := range []*corev1.NotificationOccurrence{staleBatch, visibleBatch} {
+		if _, err := env.core.NotificationOccurrences().Get(env.ctx, env.viewer.Id, occurrence.GetId()); !errors.Is(err, core.ErrNotFound) {
+			t.Fatalf("batch-deleted occurrence %s Get error = %v, want not found", occurrence.GetId(), err)
+		}
+	}
+
+	staleAll := createStale("stale-all-" + posted.Id)
+	visibleAll := createVisible("visible delete-all target")
+	all, err := env.notifications.DeleteAllNotificationOccurrences(ctx, connect.NewRequest(&apiv1.DeleteAllNotificationOccurrencesRequest{}))
+	if err != nil || all.Msg.GetDeletedCount() != 1 {
+		t.Fatalf("DeleteAllNotificationOccurrences mixed visibility = (%+v, %v), want one visible deletion", all, err)
+	}
+	for _, occurrence := range []*corev1.NotificationOccurrence{staleAll, visibleAll} {
+		if _, err := env.core.NotificationOccurrences().Get(env.ctx, env.viewer.Id, occurrence.GetId()); !errors.Is(err, core.ErrNotFound) {
+			t.Fatalf("delete-all occurrence %s Get error = %v, want not found", occurrence.GetId(), err)
+		}
+	}
+}
+
+func TestNotificationServiceDeleteRejectsOccurrenceAfterAccessLoss(t *testing.T) {
+	env := newConnectAPITestEnv(t)
+	ctx := withCaller(env.ctx, env.viewer)
+	actor, err := env.core.CreateUser(env.ctx, core.SystemActorID, "notification-access-loss-actor", "Notification Access Loss Actor", "password")
+	if err != nil {
+		t.Fatalf("CreateUser actor: %v", err)
+	}
+	room, err := env.core.CreateRoom(env.ctx, actor.Id, core.KindChannel, "", "notification-access-loss-room", "")
+	if err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+	if _, err := env.core.SetRoomUniversal(env.ctx, actor.Id, core.KindChannel, room.Id, true); err != nil {
+		t.Fatalf("SetRoomUniversal: %v", err)
+	}
+	posted, err := env.core.PostMessage(env.ctx, core.KindChannel, room.Id, actor.Id, "access loss target", nil, "", "", nil, false)
+	if err != nil {
+		t.Fatalf("PostMessage: %v", err)
+	}
+	sequence, err := env.core.GetEventSequence(env.ctx, core.KindChannel, room.Id, posted.Id)
+	if err != nil {
+		t.Fatalf("GetEventSequence: %v", err)
+	}
+	if err := env.core.DenyUserRoomPermission(env.ctx, core.SystemActorID, room.Id, env.viewer.Id, core.PermRoomJoin); err != nil {
+		t.Fatalf("DenyUserRoomPermission: %v", err)
+	}
+	input := core.CreateNotificationOccurrenceInput{
+		RecipientID:          env.viewer.Id,
+		SourceEventID:        "notification-access-loss-source",
+		SourceCreated:        posted.GetCreatedAt().AsTime(),
+		SourceStreamSequence: sequence,
+		ActorID:              actor.Id,
+		Signal:               testNotificationSignal(notificationTestSignalDirectMention, room.Id, posted.Id),
+		Mode:                 corev1.NotificationDeliveryMode_NOTIFICATION_DELIVERY_MODE_SILENT,
+		AttentionLevel:       corev1.NotificationAttentionLevel_NOTIFICATION_ATTENTION_LEVEL_IMPORTANT,
+		SkipReadLookup:       true,
+	}
+	occurrence, created, err := env.core.NotificationOccurrences().Create(env.ctx, input)
+	if err != nil || !created {
+		t.Fatalf("Create stale occurrence = (%+v, %v, %v), want created", occurrence, created, err)
+	}
+
+	deleted, err := env.notifications.DeleteNotificationOccurrence(ctx, connect.NewRequest(&apiv1.DeleteNotificationOccurrenceRequest{
+		NotificationId: occurrence.GetId(),
+	}))
+	if err != nil || deleted.Msg.GetDeleted() {
+		t.Fatalf("DeleteNotificationOccurrence after access loss = (%+v, %v), want deleted=false", deleted, err)
+	}
+	if recreated, created, err := env.core.NotificationOccurrences().Create(env.ctx, input); err != nil || created || recreated != nil {
+		t.Fatalf("Create after visibility tombstone = (%+v, %v, %v), want nil, false, nil", recreated, created, err)
+	}
+}
+
+func TestNotificationServiceVisibilityFilteringFillsOffsetPages(t *testing.T) {
+	env := newConnectAPITestEnv(t)
+	ctx := withCaller(env.ctx, env.viewer)
+	actor, err := env.core.CreateUser(env.ctx, core.SystemActorID, "notification-page-filter-actor", "Notification Page Filter Actor", "password")
+	if err != nil {
+		t.Fatalf("CreateUser actor: %v", err)
+	}
+	baseTime := time.Now().UTC().Add(-time.Minute)
+	created := make([]*corev1.NotificationOccurrence, 0, 3)
+	for index := 0; index < 3; index++ {
+		room, err := env.core.CreateRoom(env.ctx, core.SystemActorID, core.KindChannel, "", fmt.Sprintf("notification-page-filter-%d", index), "")
+		if err != nil {
+			t.Fatalf("CreateRoom %d: %v", index, err)
+		}
+		for _, userID := range []string{env.viewer.Id, actor.Id} {
+			if _, err := env.core.JoinRoom(env.ctx, userID, core.KindChannel, userID, room.Id); err != nil {
+				t.Fatalf("JoinRoom %d for %s: %v", index, userID, err)
+			}
+		}
+		posted, err := env.core.PostMessage(env.ctx, core.KindChannel, room.Id, actor.Id, fmt.Sprintf("page target %d", index), nil, "", "", nil, false)
+		if err != nil {
+			t.Fatalf("PostMessage %d: %v", index, err)
+		}
+		sequence, err := env.core.GetEventSequence(env.ctx, core.KindChannel, room.Id, posted.Id)
+		if err != nil {
+			t.Fatalf("GetEventSequence %d: %v", index, err)
+		}
+		if index == 0 {
+			if err := env.core.DeleteMessage(env.ctx, actor.Id, core.KindChannel, room.Id, posted.Id); err != nil {
+				t.Fatalf("DeleteMessage: %v", err)
+			}
+		}
+		occurrence, wasCreated, err := env.core.NotificationOccurrences().Create(env.ctx, core.CreateNotificationOccurrenceInput{
+			RecipientID:          env.viewer.Id,
+			SourceEventID:        fmt.Sprintf("page-filter-source-%d", index),
+			SourceCreated:        baseTime.Add(-time.Duration(index) * time.Second),
+			SourceStreamSequence: sequence,
+			ActorID:              actor.Id,
+			Signal:               testNotificationSignal(notificationTestSignalDirectMention, room.Id, posted.Id),
+			Mode:                 corev1.NotificationDeliveryMode_NOTIFICATION_DELIVERY_MODE_SILENT,
+			AttentionLevel:       corev1.NotificationAttentionLevel_NOTIFICATION_ATTENTION_LEVEL_IMPORTANT,
+			SkipReadLookup:       true,
+		})
+		if err != nil || !wasCreated {
+			t.Fatalf("Create occurrence %d = (%v, %v, %v), want created", index, occurrence, wasCreated, err)
+		}
+		created = append(created, occurrence)
+	}
+
+	first, err := env.notifications.ListNotificationOccurrences(ctx, connect.NewRequest(&apiv1.ListNotificationOccurrencesRequest{
+		Page: &apiv1.PageRequest{Limit: 1},
+	}))
+	if err != nil || len(first.Msg.GetOccurrences()) != 1 || !first.Msg.GetPage().GetHasMore() || first.Msg.GetPage().GetTotalCount() != 2 {
+		t.Fatalf("first filtered page = (%+v, %v), want one of two with more", first, err)
+	}
+	second, err := env.notifications.ListNotificationOccurrences(ctx, connect.NewRequest(&apiv1.ListNotificationOccurrencesRequest{
+		Page: &apiv1.PageRequest{Limit: 1, Offset: 1},
+	}))
+	if err != nil || len(second.Msg.GetOccurrences()) != 1 || second.Msg.GetPage().GetHasMore() {
+		t.Fatalf("second filtered page = (%+v, %v), want final row", second, err)
+	}
+	if first.Msg.GetOccurrences()[0].GetId() == second.Msg.GetOccurrences()[0].GetId() {
+		t.Fatalf("filtered pages repeated occurrence %s", first.Msg.GetOccurrences()[0].GetId())
+	}
+	if _, err := env.core.NotificationOccurrences().Get(env.ctx, env.viewer.Id, created[0].GetId()); !errors.Is(err, core.ErrNotFound) {
+		t.Fatalf("stale occurrence Get error = %v, want not found after visibility purge", err)
+	}
+}
+
+func TestNotificationServiceSummaryExcludesImplicitMembershipLossOutsidePage(t *testing.T) {
+	env := newConnectAPITestEnv(t)
+	ctx := withCaller(env.ctx, env.viewer)
+	actor, err := env.core.CreateUser(env.ctx, core.SystemActorID, "notification-implicit-actor", "Notification Implicit Actor", "password")
+	if err != nil {
+		t.Fatalf("CreateUser actor: %v", err)
+	}
+	baseTime := time.Now().UTC().Add(-time.Minute)
+	createOccurrence := func(room *corev1.Room, sourceID string, sourceCreated time.Time) *corev1.NotificationOccurrence {
+		t.Helper()
+		posted, err := env.core.PostMessage(env.ctx, core.KindChannel, room.Id, actor.Id, sourceID, nil, "", "", nil, false)
+		if err != nil {
+			t.Fatalf("PostMessage %s: %v", sourceID, err)
+		}
+		sequence, err := env.core.GetEventSequence(env.ctx, core.KindChannel, room.Id, posted.Id)
+		if err != nil {
+			t.Fatalf("GetEventSequence %s: %v", sourceID, err)
+		}
+		occurrence, created, err := env.core.NotificationOccurrences().Create(env.ctx, core.CreateNotificationOccurrenceInput{
+			RecipientID:          env.viewer.Id,
+			SourceEventID:        sourceID,
+			SourceCreated:        sourceCreated,
+			SourceStreamSequence: sequence,
+			ActorID:              actor.Id,
+			Signal:               testNotificationSignal(notificationTestSignalDirectMention, room.Id, posted.Id),
+			Mode:                 corev1.NotificationDeliveryMode_NOTIFICATION_DELIVERY_MODE_SILENT,
+			AttentionLevel:       corev1.NotificationAttentionLevel_NOTIFICATION_ATTENTION_LEVEL_IMPORTANT,
+			SkipReadLookup:       true,
+		})
+		if err != nil || !created {
+			t.Fatalf("Create occurrence %s = (%+v, %v, %v), want created", sourceID, occurrence, created, err)
+		}
+		return occurrence
+	}
+
+	implicitRoom, err := env.core.CreateRoom(env.ctx, actor.Id, core.KindChannel, "", "notification-implicit-old", "")
+	if err != nil {
+		t.Fatalf("CreateRoom implicit: %v", err)
+	}
+	if _, err := env.core.SetRoomUniversal(env.ctx, actor.Id, core.KindChannel, implicitRoom.Id, true); err != nil {
+		t.Fatalf("SetRoomUniversal true: %v", err)
+	}
+	stale := createOccurrence(implicitRoom, "implicit-old-source", baseTime)
+
+	for index := 0; index < 3; index++ {
+		room, err := env.core.CreateRoom(env.ctx, actor.Id, core.KindChannel, "", fmt.Sprintf("notification-explicit-new-%d", index), "")
+		if err != nil {
+			t.Fatalf("CreateRoom explicit %d: %v", index, err)
+		}
+		if _, err := env.core.JoinRoom(env.ctx, env.viewer.Id, core.KindChannel, env.viewer.Id, room.Id); err != nil {
+			t.Fatalf("JoinRoom explicit %d: %v", index, err)
+		}
+		createOccurrence(room, fmt.Sprintf("explicit-new-source-%d", index), baseTime.Add(time.Duration(index+1)*time.Second))
+	}
+	if _, err := env.core.SetRoomUniversal(env.ctx, actor.Id, core.KindChannel, implicitRoom.Id, false); err != nil {
+		t.Fatalf("SetRoomUniversal false: %v", err)
+	}
+
+	response, err := env.notifications.ListNotificationOccurrences(ctx, connect.NewRequest(&apiv1.ListNotificationOccurrencesRequest{
+		Page: &apiv1.PageRequest{Limit: 1},
 	}))
 	if err != nil {
-		t.Fatalf("UpdateServerNotificationPreference: %v", err)
+		t.Fatalf("ListNotificationOccurrences: %v", err)
 	}
-	if setResp.Msg.GetPreference().GetLevel() != apiv1.NotificationLevel_NOTIFICATION_LEVEL_ALL_MESSAGES || setResp.Msg.GetPreference().GetEffectiveLevel() != apiv1.NotificationLevel_NOTIFICATION_LEVEL_ALL_MESSAGES {
-		t.Fatalf("UpdateServerNotificationPreference response = %+v, want all/all", setResp.Msg)
+	if len(response.Msg.GetOccurrences()) != 1 || response.Msg.GetPage().GetTotalCount() != 3 ||
+		response.Msg.GetUnreadCount() != 3 || len(response.Msg.GetRoomUnreadCounts()) != 3 {
+		t.Fatalf("summary after implicit membership loss = %+v, want three visible groups", response.Msg)
+	}
+	if _, err := env.core.NotificationOccurrences().Get(env.ctx, env.viewer.Id, stale.GetId()); !errors.Is(err, core.ErrNotFound) {
+		t.Fatalf("stale off-page occurrence Get error = %v, want not found", err)
+	}
+}
+
+func TestNotificationServiceBoundsOccurrencePage(t *testing.T) {
+	env := newConnectAPITestEnv(t)
+	ctx := withCaller(env.ctx, env.viewer)
+	actor, err := env.core.CreateUser(env.ctx, core.SystemActorID, "notification-v2-page-actor", "Notification Page Actor", "password")
+	if err != nil {
+		t.Fatalf("CreateUser actor: %v", err)
+	}
+	dm, _, err := env.core.FindOrCreateDM(env.ctx, env.viewer.Id, []string{actor.Id})
+	if err != nil {
+		t.Fatalf("FindOrCreateDM: %v", err)
+	}
+	for index := 0; index < defaultNotificationLimit+5; index++ {
+		if _, err := env.core.PostMessage(env.ctx, core.KindDM, dm.Id, actor.Id, fmt.Sprintf("message %d", index), nil, "", "", nil, false); err != nil {
+			t.Fatalf("PostMessage %d: %v", index, err)
+		}
 	}
 
-	getResp, err := env.prefs.GetServerNotificationPreference(ctx, connect.NewRequest(&apiv1.GetServerNotificationPreferenceRequest{}))
-	if err != nil {
-		t.Fatalf("GetServerNotificationPreference: %v", err)
+	inbox, err := env.notifications.ListNotificationOccurrences(ctx, connect.NewRequest(&apiv1.ListNotificationOccurrencesRequest{}))
+	if err != nil || len(inbox.Msg.GetOccurrences()) != defaultNotificationLimit {
+		t.Fatalf("ListNotificationOccurrences = %+v, %v, want one bounded page", inbox, err)
 	}
-	if getResp.Msg.GetPreference().GetLevel() != apiv1.NotificationLevel_NOTIFICATION_LEVEL_ALL_MESSAGES || getResp.Msg.GetPreference().GetEffectiveLevel() != apiv1.NotificationLevel_NOTIFICATION_LEVEL_ALL_MESSAGES {
-		t.Fatalf("GetServerNotificationPreference response = %+v, want all/all", getResp.Msg)
+	if inbox.Msg.GetPage().GetTotalCount() != int64(defaultNotificationLimit+5) ||
+		!inbox.Msg.GetPage().GetHasMore() ||
+		inbox.Msg.GetUnreadCount() != int32(defaultNotificationLimit+5) ||
+		inbox.Msg.GetImportantUnreadCount() != int32(defaultNotificationLimit+5) ||
+		inbox.Msg.GetNextExpiryAt() == nil {
+		t.Fatalf("bounded occurrence metadata = %+v", inbox.Msg)
+	}
+	if counts := inbox.Msg.GetRoomUnreadCounts(); len(counts) != 1 ||
+		counts[0].GetRoomId() != dm.Id ||
+		counts[0].GetUnreadCount() != int32(defaultNotificationLimit+5) ||
+		counts[0].GetImportantUnreadCount() != int32(defaultNotificationLimit+5) {
+		t.Fatalf("bounded room occurrence metadata = %+v", counts)
+	}
+	projection, err := env.api.BuildRealtimeProjectionNotifications(env.ctx, env.viewer.Id)
+	if err != nil ||
+		projection.Occurrences.GetNextExpiryAt() == nil ||
+		projection.Occurrences.GetImportantUnreadCount() != int32(defaultNotificationLimit+5) {
+		t.Fatalf("realtime expiry boundary = %+v, %v", projection, err)
+	}
+
+	live, err := env.nc.SubscribeSync(subjects.LiveSyncUserEvent(env.viewer.Id, "notification_v2"))
+	if err != nil {
+		t.Fatalf("subscribe to notification invalidations: %v", err)
+	}
+	defer live.Unsubscribe()
+	if err := env.nc.Flush(); err != nil {
+		t.Fatalf("flush notification subscription: %v", err)
+	}
+	updated, err := env.notifications.MarkNotificationRead(ctx, connect.NewRequest(&apiv1.MarkNotificationReadRequest{
+		NotificationId: inbox.Msg.GetOccurrences()[0].GetId(),
+	}))
+	if err != nil || updated.Msg.GetOccurrence().GetUnread() {
+		t.Fatalf("MarkNotificationRead = %+v, %v", updated, err)
+	}
+	if _, err := live.NextMsg(2 * time.Second); err != nil {
+		t.Fatalf("wait for coalesced notification invalidation: %v", err)
+	}
+	if _, err := live.NextMsg(200 * time.Millisecond); err == nil {
+		t.Fatal("mark read published more than one notification invalidation")
+	}
+	allOccurrences, err := env.core.NotificationOccurrences().List(env.ctx, env.viewer.Id)
+	if err != nil {
+		t.Fatalf("List occurrences before bulk delete: %v", err)
+	}
+	ids := make([]string, 0, len(allOccurrences))
+	for _, occurrence := range allOccurrences {
+		ids = append(ids, occurrence.GetId())
+	}
+	if deleted, err := env.core.NotificationOccurrences().DeleteMany(env.ctx, env.viewer.Id, ids); err != nil || deleted != len(ids) {
+		t.Fatalf("DeleteMany = (%d, %v), want (%d, nil)", deleted, err, len(ids))
+	}
+	if _, err := live.NextMsg(2 * time.Second); err != nil {
+		t.Fatalf("wait for coalesced bulk-delete invalidation: %v", err)
+	}
+	if _, err := live.NextMsg(200 * time.Millisecond); err == nil {
+		t.Fatal("bulk delete published more than one notification invalidation")
+	}
+}
+
+func TestMarkNotificationReadHydratesBeforeCommitting(t *testing.T) {
+	env := newConnectAPITestEnv(t)
+	ctx := withCaller(env.ctx, env.viewer)
+	actor, err := env.core.CreateUser(env.ctx, core.SystemActorID, "read-hydration-actor", "Read Hydration", "password")
+	if err != nil {
+		t.Fatalf("CreateUser actor: %v", err)
+	}
+	dm, _, err := env.core.FindOrCreateDM(env.ctx, env.viewer.Id, []string{actor.Id})
+	if err != nil {
+		t.Fatalf("FindOrCreateDM: %v", err)
+	}
+	posted, err := env.core.PostMessage(env.ctx, core.KindDM, dm.Id, actor.Id, "hydrate before marking read", nil, "", "", nil, false)
+	if err != nil {
+		t.Fatalf("PostMessage: %v", err)
+	}
+	if err := env.core.NotificationOccurrences().WaitCurrent(env.ctx); err != nil {
+		t.Fatalf("WaitCurrent: %v", err)
+	}
+	occurrences, err := env.core.NotificationOccurrences().List(env.ctx, env.viewer.Id)
+	if err != nil || len(occurrences) != 1 || occurrences[0].GetSourceEventId() != posted.GetId() {
+		t.Fatalf("notification occurrences = (%+v, %v), want posted DM", occurrences, err)
+	}
+	hydrationErr := errors.New("injected notification hydration failure")
+	env.notifications.assembleOccurrence = func(context.Context, *corev1.NotificationOccurrence) (*apiv1.NotificationOccurrence, error) {
+		return nil, hydrationErr
+	}
+
+	_, err = env.notifications.MarkNotificationRead(ctx, connect.NewRequest(&apiv1.MarkNotificationReadRequest{
+		NotificationId: occurrences[0].GetId(),
+	}))
+	if connect.CodeOf(err) != connect.CodeInternal {
+		t.Fatalf("MarkNotificationRead code = %v, want internal", connect.CodeOf(err))
+	}
+	stored, err := env.core.NotificationOccurrences().Get(env.ctx, env.viewer.Id, occurrences[0].GetId())
+	if err != nil {
+		t.Fatalf("Get occurrence after hydration failure: %v", err)
+	}
+	if stored.GetRead() {
+		t.Fatal("occurrence was marked read after hydration failure")
 	}
 }
 
@@ -1685,29 +2089,40 @@ func TestPushNotificationServiceSubscribeAndUnsubscribe(t *testing.T) {
 		VAPIDSubject:    "mailto:admin@example.com",
 	}
 	if _, err := env.push.Subscribe(ctx, connect.NewRequest(&apiv1.SubscribePushRequest{
-		Endpoint: "http://127.0.0.1/internal",
+		Endpoint: "https://push.example.test/client-host-required",
 		P256Dh:   "p256dh-key",
 		Auth:     "auth-secret",
+	})); connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("missing client host Subscribe code = %v, want invalid_argument", connect.CodeOf(err))
+	}
+	if _, err := env.push.Subscribe(ctx, connect.NewRequest(&apiv1.SubscribePushRequest{
+		Endpoint:     "http://127.0.0.1/internal",
+		P256Dh:       "p256dh-key",
+		Auth:         "auth-secret",
+		ClientHost:   "app.example.test",
+		CleanupToken: "0123456789abcdef0123456789abcdef",
 	})); connect.CodeOf(err) != connect.CodeInvalidArgument {
 		t.Fatalf("unsafe endpoint Subscribe code = %v, want invalid_argument", connect.CodeOf(err))
 	}
 	subResp, err := env.push.Subscribe(ctx, connect.NewRequest(&apiv1.SubscribePushRequest{
-		Endpoint:  "https://push.example.test/sub",
-		P256Dh:    "p256dh-key",
-		Auth:      "auth-secret",
-		UserAgent: stringPtr("test-agent"),
+		Endpoint:     "https://push.example.test/sub",
+		P256Dh:       "p256dh-key",
+		Auth:         "auth-secret",
+		UserAgent:    stringPtr("test-agent"),
+		ClientHost:   "app.example.test",
+		CleanupToken: "0123456789abcdef0123456789abcdef",
 	}))
 	if err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
 	if !subResp.Msg.GetSubscribed() {
-		t.Fatal("Subscribe subscribed = false, want true")
+		t.Fatalf("Subscribe response = %+v, want subscription acknowledgement", subResp.Msg)
 	}
 	subs, err := env.core.GetUserPushSubscriptions(env.ctx, env.viewer.Id)
 	if err != nil {
 		t.Fatalf("GetUserPushSubscriptions: %v", err)
 	}
-	if len(subs) != 1 || subs[0].GetEndpoint() != "https://push.example.test/sub" || subs[0].GetUserAgent() != "test-agent" {
+	if len(subs) != 1 || subs[0].GetEndpoint() != "https://push.example.test/sub" || subs[0].GetUserAgent() != "test-agent" || subs[0].GetClientHost() != "app.example.test" || subs[0].GetCleanupToken() != "0123456789abcdef0123456789abcdef" {
 		t.Fatalf("stored subscriptions = %+v, want one saved subscription", subs)
 	}
 
@@ -1752,6 +2167,26 @@ func TestPushNotificationServiceSubscribeAndUnsubscribe(t *testing.T) {
 		Endpoint: "https://push.example.test/sub",
 	})); err != nil {
 		t.Fatalf("idempotent Unsubscribe: %v", err)
+	}
+
+	capabilityEndpoint := "https://push.example.test/capability-cleanup"
+	capabilityToken := "0123456789abcdef0123456789abcdef"
+	if _, err := env.core.SavePushSubscriptionWithCleanupToken(env.ctx, env.viewer.Id, capabilityEndpoint, "p256dh-key", "capability-auth", "test-agent", capabilityToken); err != nil {
+		t.Fatalf("save capability cleanup fixture: %v", err)
+	}
+	cleanupResp, err := env.pushCleanup.DeleteSubscription(context.Background(), connect.NewRequest(&authv1.DeleteSubscriptionRequest{
+		Endpoint:     capabilityEndpoint,
+		Auth:         "capability-auth",
+		CleanupToken: capabilityToken,
+	}))
+	if err != nil {
+		t.Fatalf("capability-authenticated DeleteSubscription: %v", err)
+	}
+	if !cleanupResp.Msg.GetCompleted() {
+		t.Fatal("DeleteSubscription completed = false, want true")
+	}
+	if owned, err := env.core.PushSubscriptionOwnedByUser(env.ctx, env.viewer.Id, capabilityEndpoint); err != nil || owned {
+		t.Fatalf("capability cleanup ownership = %t, err = %v", owned, err)
 	}
 }
 

@@ -6,7 +6,8 @@
       "profile": "Profile",
       "display": "Display",
       "notifications": "Notifications",
-      "account": "Account"
+      "account": "Account",
+      "bots": "Bots"
     },
     "profile": {
       "title": "Profile",
@@ -179,9 +180,7 @@
         "enabling": "Enabling...",
         "blocked_error": "Push notifications are blocked in your browser or OS settings.",
         "enable_failed": "Failed to enable push notifications. Please try again.",
-        "enable_error": "An error occurred while enabling push notifications",
-        "remote_title": "Native push is unavailable for remote servers",
-        "remote_description": "This installed app can only register browser push notifications with the server that served it. In-app notification badges and sounds still work for this server while Chatto is open."
+        "enable_error": "An error occurred while enabling push notifications"
       },
       "push_prompt": {
         "title": "Enable push notifications",
@@ -194,35 +193,6 @@
         "enabling": "Enabling...",
         "enable": "Enable",
         "dismiss": "No thanks"
-      },
-      "levels": {
-        "loading": "Loading...",
-        "load_failed": "Failed to load notification preferences",
-        "server_updated": "Server notification level updated",
-        "room_updated": "Room notification level updated",
-        "update_failed": "Failed to update",
-        "server_title": "Server Notification Level",
-        "server_description": "Controls how you receive notifications for all rooms in this server. Individual rooms can override this setting.",
-        "room_title": "Room Overrides",
-        "room_description": "Override the server-level setting for individual rooms. Rooms set to \"Default\" inherit the server setting ({level}).",
-        "room_level_label": "Notification level for #{room}",
-        "effective": "Effective: {level}",
-        "default": {
-          "label": "Default",
-          "description": "Use the inherited default"
-        },
-        "muted": {
-          "label": "Muted",
-          "description": "No notifications or unread markers"
-        },
-        "normal": {
-          "label": "Normal",
-          "description": "Unread markers + mentions, DMs, and thread replies"
-        },
-        "all_messages": {
-          "label": "All Messages",
-          "description": "Normal + notification for every new message"
-        }
       },
       "sound": {
         "title": "Notification Sound",
@@ -272,6 +242,32 @@
           "siren": "Alert Siren",
           "dubstep": "Dubstep Drop",
           "circus": "Circus"
+        }
+      },
+      "policy": {
+        "title": "Notification policy",
+        "description": "Choose how strongly each kind of activity should get your attention. Inherit uses the server default.",
+        "load_failed": "Failed to load notification policy",
+        "save_failed": "Failed to save notification policy",
+        "effective": "Effective: {mode}",
+        "delivery_mode": {
+          "inherit": "Inherit",
+          "off": "Off",
+          "silent": "Silent",
+          "alert": "Alert"
+        },
+        "reason": {
+          "direct_message": "Direct messages",
+          "direct_mention": "Direct mentions",
+          "reply": "Replies to your messages",
+          "role_mention": "Role mentions",
+          "here": "@here mentions",
+          "all": "@all mentions",
+          "followed_thread": "Followed threads",
+          "followed_room": "Followed rooms",
+          "reaction": "Reactions to your messages",
+          "activity": "Activity",
+          "room_invitation": "Room invitations"
         }
       }
     },
@@ -349,6 +345,52 @@
         "confirm_placeholder": "DELETE",
         "cancel": "Cancel",
         "deleting": "Deleting..."
+      }
+    },
+    "bots": {
+      "title": "Bots",
+      "subtitle": "Create API accounts and control exactly what they can do",
+      "singular": "bot",
+      "unsupported": "This server version does not support bot accounts.",
+      "list_title": "Bot Accounts",
+      "loading": "Loading bots...",
+      "empty_title": "No bots yet",
+      "empty_body": "Create a bot when an integration needs its own identity and permissions.",
+      "create_permission_required": "You can manage existing bots, but you do not have permission to create one.",
+      "create": "Create Bot",
+      "create_title": "Create Bot Account",
+      "create_failed": "Failed to create bot",
+      "created": "Bot created",
+      "edit": "Edit",
+      "edit_title": "Edit Bot Account",
+      "updated": "Bot updated",
+      "update_failed": "Failed to update bot",
+      "update_conflict": "Someone else updated this bot. Reload the page and try again.",
+      "username": "Username",
+      "username_hint": "Bot usernames must end in _bot.",
+      "display_name": "Display Name",
+      "owner": "Owner",
+      "reassign_owner": "Reassign owner",
+      "reassign_owner_warning": "The bot's API key and configured permissions will stay the same. Effective permissions will immediately follow the new owner.",
+      "owner_reassigned": "Bot owner reassigned",
+      "owner_reassign_failed": "Failed to reassign bot owner",
+      "api_key_title": "Save This API Key",
+      "api_key_warning": "This key is shown only once. Store it somewhere secure before closing this window.",
+      "key_created": "API key created",
+      "key_rotated_at": "Last rotated",
+      "key_copied": "API key copied",
+      "rotate_key": "Rotate Key",
+      "rotate_title": "Rotate API Key",
+      "rotate_warning": "The current key will stop working immediately. Any integration using it must be updated.",
+      "key_rotated": "API key rotated",
+      "rotate_failed": "Failed to rotate API key",
+      "delete_title": "Delete Bot",
+      "delete_warning": "Delete {name}? Its API key will stop working immediately and the account cannot be recovered.",
+      "deleted": "Bot deleted",
+      "delete_failed": "Failed to delete bot",
+      "permissions": {
+        "owner_ceiling": "Choose what your bot can do. You can only give it permissions you have yourself. If you lose a permission, your bot loses it too.",
+        "save_failed": "Failed to update bot permission"
       }
     }
   }

@@ -19,12 +19,14 @@ const mocks = vi.hoisted(() => {
     get isAuthenticated() {
       return originCurrentUser.user !== undefined;
     },
+    voiceCall: { isInAnyCall: false },
     serverInfo: { supportsRealtimeProjection: true },
     realtimeSync: { serverId: 'origin-sync' }
   };
   const remoteStore = {
     currentUser: remoteCurrentUser,
     isAuthenticated: true,
+    voiceCall: { isInAnyCall: false },
     serverInfo: { supportsRealtimeProjection: true },
     realtimeSync: { serverId: 'remote-sync' }
   };
@@ -98,6 +100,13 @@ vi.mock('$app/paths', () => ({
 
 vi.mock('$lib/navigation', () => ({
   serverIdToSegment: (serverId: string) => `${serverId}.example.test`
+}));
+
+vi.mock('$lib/notifications/pushNotifications', () => ({
+  getPushRegistrationTargets: () =>
+    mocks.originCurrentUser.user
+      ? [{ serverId: 'origin', userId: 'origin-user', vapidPublicKey: 'origin-vapid' }]
+      : [{ serverId: 'remote', userId: 'remote-user', vapidPublicKey: 'remote-vapid' }]
 }));
 
 vi.mock('$lib/hooks/useEvent.svelte', () => ({
@@ -311,7 +320,7 @@ describe('ChatRoot', () => {
       PresenceStatus.AWAY
     );
     expect(container.querySelector('[data-testid="chat-root-child"]')).not.toBeNull();
-    expect(container.querySelectorAll('[data-testid="chat-root-component-stub"]')).toHaveLength(1);
+    expect(container.querySelectorAll('[data-testid="chat-root-component-stub"]')).toHaveLength(3);
 
     unmount();
 

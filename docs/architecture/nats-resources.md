@@ -17,8 +17,9 @@ inventories.
 | Type         | Name                | Storage | Backup | Description                                                                 |
 | ------------ | ------------------- | ------- | ------ | --------------------------------------------------------------------------- |
 | Stream       | `EVT`               | File    | Yes    | Event-sourcing log for durable `corev1.Event` facts on `evt.>`              |
-| KV bucket    | `RUNTIME_STATE`     | File    | Yes    | Persisted latest-value runtime state, auth/session tokens, notifications, wrapped app DEKs, encrypted snapshot pointers |
-| KV bucket    | `MEMORY_CACHE`      | Memory  | No     | Volatile presence, worker leases and cooldowns, and reconciliation counters; recreated automatically after a full NATS restart |
+| Stream       | `NOTIFICATIONS`     | File    | Yes    | Replicated bounded event log for 90-day notification signals, reads, removals, and alert outcomes; per-message TTL adds a 24-hour physical-cleanup grace |
+| KV bucket    | `RUNTIME_STATE`     | File    | Yes    | Persisted latest-value runtime state, auth/session tokens, notification read/visibility boundaries, wrapped app DEKs, encrypted snapshot pointers |
+| KV bucket    | `MEMORY_CACHE`      | Memory  | No     | Volatile presence, worker leases and cooldowns, reconciliation counters, and worker health heartbeats; recreated automatically after a full NATS restart |
 | KV bucket    | `ENCRYPTION_KEYS`   | File    | No     | KMS key-encryption keys and per-call LiveKit E2EE keys; excluded from backups |
 | Object store | `SERVER_ASSETS`     | File    | Yes    | Default/legacy NATS-backed persisted asset binaries                         |
 | Object store | `PROJECTION_SNAPSHOTS` | File | Yes    | Optional encrypted projection snapshot objects; configurable TTL defaults to seven days |
@@ -32,22 +33,33 @@ inventories.
 | ------ | -------- | ------ | ------------ | ----- |
 | `EVT` | `chatto-asset-processing-v1` | `evt.asset.*.asset_processing_started`, legacy `evt.room.*.asset_processing_started` | Explicit ack after a terminal asset outcome is projected; interrupted work is redelivered | Shared `asset-processing` runtime-unit replicas |
 | `EVT` | `chatto-user-key-shredding-v1` | `evt.user.*.user_key_shredding_requested` | Explicit ack after idempotent key deletion and projected `UserKeyShreddedEvent`; interrupted or failed work is redelivered | Shared `ChattoCore` replicas |
+| `EVT` | `chatto-user-push-subscription-cleanup-v1` | `evt.user.*.account_deleted` | Explicit ack after idempotent owner-first removal of the account's known push credentials; interrupted or partially failed cleanup is redelivered. The permanent exact deletion fact also fences registration, and a leased global reconciliation pass repairs late writes and orphan owners without rescanning all owners for every historical delivery | Shared `ChattoCore` replicas through `events.DurableWorker` |
 | `EVT` | `chatto-call-key-cleanup-v1` | `evt.room.*.call_ended` | Explicit ack after idempotent call-key shredding; interrupted or failed work is redelivered | Shared `ChattoCore` replicas |
 | `EVT` | `chatto-asset-cleanup-v1` | `evt.asset.*.asset_deleted` | Explicit ack after idempotent binary and transform-cache deletion; interrupted or failed work is redelivered | Shared `ChattoCore` replicas |
+| `EVT` | `chatto-notification-materializer-v1` | Existing message, reaction, membership, room-layout, RBAC, account, and configured-owner facts; the name/filter pair is one immutable capability generation | Confirmed double ack only after exact-sequence derivation and idempotent lifecycle facts reach `NOTIFICATIONS`, with privacy boundaries persisted where required; interrupted, partially completed, failed, or schema-unsupported work is redelivered rather than discarded. New source schemas require a new consumer generation | Shared `ChattoCore` replicas through `events.DurableWorker` |
+| `NOTIFICATIONS` | `chatto-notification-alert-delivery-v1` | `notifications.signalled` | Explicit ack after the projected occurrence has a terminal delivered/suppressed state; transient provider failures are redelivered within the immutable two-minute delivery horizon | Shared `ChattoCore` replicas through `events.DurableWorker` |
 
-All consumers use file-backed durable consumer state inherited from `EVT` and
-do not introduce separate work streams. Replaying older facts is safe:
-asset-processing workers acknowledge projected terminal outcomes, while
-key-shredding and cleanup workers repeat idempotent deletion; user-key workers
-additionally acknowledge an existing physical-completion fact.
+All consumers use file-backed durable consumer state. Most consume domain facts
+from `EVT`: replaying those facts is safe because asset-processing workers
+acknowledge projected terminal outcomes, key-shredding and cleanup workers
+repeat idempotent deletion, push cleanup is fenced against late registration,
+and user-key workers additionally acknowledge an existing physical-completion
+fact. Alert delivery instead consumes the bounded
+notification lifecycle log directly; projected terminal state is its
+idempotency fence.
 
 The consumer names are versioned persisted resource contracts. Required effect
 consumers have no inactivity cleanup and survive worker shutdown or
-scale-to-zero; `EVT` backups include their consumer state. Chatto currently has
-no retired durable effect consumers. A future removal or incompatible contract
-change follows ADR-069's explicit drain, rollout, and deletion lifecycle.
+scale-to-zero; normal backups include both durable streams and their consumer
+state. Backups snapshot `EVT` before `RUNTIME_STATE`, then `NOTIFICATIONS`.
+The materializer's durable EVT consumer position and deterministic output make
+an in-flight cross-stream handoff recoverable at either backup boundary.
+Restored alert deliveries still obey
+their immutable source-time deadline, so restoring an old backup cannot renew
+interruptive work. Chatto currently has no retired durable
+effect consumers. A future removal or incompatible contract change follows
+ADR-069's explicit drain, rollout, and deletion lifecycle.
 If a required consumer disappears while its worker is running, the stale worker
-returns an error. Main-app lifecycle replacement or the embedded runtime-unit
 supervisor then recreates the declared consumer through its application-owned
 configuration; the shared worker framework never creates it.
 
@@ -61,3 +73,12 @@ normal updates and backups, and changes it when the stream is recreated.
 format. Projector restore resolves it from the same fresh stream-info snapshot
 as the relevant sequence bounds; projection persistence treats the validated
 result as opaque.
+
+## NOTIFICATIONS stream identity
+
+`NOTIFICATIONS` metadata key `chatto.notifications.incarnation` stores a
+versioned identity with the `notifications-incarnation-v1:` format. The
+`internal/notificationstream` adapter creates and validates it independently
+from `EVT`. Notification projection snapshots bind to this identity and the
+notification stream sequence, allowing the shared snapshot framework to
+support more than one application-owned event log without mixing coordinates.

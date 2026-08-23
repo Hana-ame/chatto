@@ -63,15 +63,12 @@ const { mocks } = vi.hoisted(() => {
       threadPaneModuleLoaded: vi.fn(),
       roomSidebarModuleLoaded: vi.fn(),
       pendingHighlightConsume: vi.fn(
-        (_roomId: string, _threadRootId: string | null): string | null => null
+        (
+          _roomId: string,
+          _threadRootId: string | null
+        ): { eventId: string; notificationId: string | null } | null => null
       ),
-      notifications: {
-        notifications: [] as Array<{ id: string }>,
-        dismissDMNotifications: vi.fn().mockResolvedValue({ byRoom: {} }),
-        dismissMentionNotifications: vi.fn().mockResolvedValue({ byRoom: {} }),
-        dismissRoomReplyNotifications: vi.fn().mockResolvedValue({ byRoom: {} }),
-        dismissRoomMessageNotifications: vi.fn().mockResolvedValue({ byRoom: {} })
-      },
+      markOccurrenceRead: vi.fn().mockResolvedValue(undefined),
       messagesForRoom: vi.fn(),
       restoreProjectedRoomWindow: vi.fn(),
       nextServerRestoreProjectedRoomWindow: vi.fn(),
@@ -213,9 +210,11 @@ vi.mock('$lib/state/server/registry.svelte', () => ({
         status: { state: MessageSearchState.READY },
         ensureStatus: vi.fn()
       },
-      notifications: mocks.notifications,
       pendingHighlights: {
         consume: mocks.pendingHighlightConsume
+      },
+      notifications: {
+        markOccurrenceRead: mocks.markOccurrenceRead
       },
       activeCallRooms: {
         has: vi.fn((roomId: string) => mocks.activeCallRoomIds.has(roomId))
@@ -410,16 +409,13 @@ beforeEach(() => {
   mocks.canPostInThread = true;
   mocks.pendingHighlightConsume.mockReset();
   mocks.pendingHighlightConsume.mockReturnValue(null);
+  mocks.markOccurrenceRead.mockReset();
+  mocks.markOccurrenceRead.mockResolvedValue(undefined);
   appUi = new AppUiState();
   appUi.setActiveRoomScope('server-1', 'room-1');
   mocks.getAppUiState.mockReturnValue(appUi);
   mocks.activeCallRoomIds.clear();
   mocks.joinedCallRoomIds.clear();
-  mocks.notifications.notifications = [];
-  mocks.notifications.dismissDMNotifications.mockResolvedValue({ byRoom: {} });
-  mocks.notifications.dismissMentionNotifications.mockResolvedValue({ byRoom: {} });
-  mocks.notifications.dismissRoomReplyNotifications.mockResolvedValue({ byRoom: {} });
-  mocks.notifications.dismissRoomMessageNotifications.mockResolvedValue({ byRoom: {} });
   scopeState.set('serverId', 'server-1');
   stubMatchMedia(true);
 });
@@ -562,7 +558,10 @@ describe('Room local message echo', () => {
   });
 
   it('keeps root message-link highlights pending until the jump completes', async () => {
-    mocks.pendingHighlightConsume.mockReturnValueOnce('msg-linked');
+    mocks.pendingHighlightConsume.mockReturnValueOnce({
+      eventId: 'msg-linked',
+      notificationId: 'notification-linked'
+    });
     mocks.timeline.getRoomEventsAround.mockResolvedValue({
       events: [roomMessageEvent('msg-before'), roomMessageEvent('msg-linked')],
       startCursor: 'tl:before',
@@ -592,12 +591,18 @@ describe('Room local message echo', () => {
     await expect
       .element(q(container, '[data-testid="pending-highlight-id"]'))
       .toHaveTextContent('');
+    await vi.waitFor(() => {
+      expect(mocks.markOccurrenceRead).toHaveBeenCalledWith('notification-linked');
+    });
   });
 
   it('clears an unresolved root highlight after switching rooms', async () => {
     type AroundPage = Awaited<ReturnType<RoomTimelineAPI['getRoomEventsAround']>>;
     let resolveAround: ((page: AroundPage) => void) | undefined;
-    mocks.pendingHighlightConsume.mockReturnValueOnce('msg-linked');
+    mocks.pendingHighlightConsume.mockReturnValueOnce({
+      eventId: 'msg-linked',
+      notificationId: 'notification-linked'
+    });
     mocks.timeline.getRoomEventsAround.mockReturnValue(
       new Promise((resolve) => {
         resolveAround = resolve;
@@ -611,6 +616,7 @@ describe('Room local message echo', () => {
     await expect
       .element(q(rendered.container, '[data-testid="pending-highlight-id"]'))
       .toHaveTextContent('');
+    expect(mocks.markOccurrenceRead).not.toHaveBeenCalled();
 
     resolveAround?.({
       events: [roomMessageEvent('msg-linked')],
@@ -626,7 +632,10 @@ describe('Room local message echo', () => {
   });
 
   it('clears root message-link highlights when the jump target cannot be loaded', async () => {
-    mocks.pendingHighlightConsume.mockReturnValueOnce('msg-missing-from-window');
+    mocks.pendingHighlightConsume.mockReturnValueOnce({
+      eventId: 'msg-missing-from-window',
+      notificationId: 'notification-missing'
+    });
     mocks.timeline.getRoomEventsAround.mockResolvedValue({
       events: [roomMessageEvent('msg-other')],
       startCursor: 'tl:other',
@@ -647,6 +656,7 @@ describe('Room local message echo', () => {
     await expect
       .element(q(container, '[data-testid="pending-highlight-id"]'))
       .toHaveTextContent('');
+    expect(mocks.markOccurrenceRead).not.toHaveBeenCalled();
   });
 
   it('inserts a returned main-room post into the same store rendered by the room timeline', async () => {
@@ -1006,17 +1016,6 @@ describe('Room local message echo', () => {
     await expect.element(maximizeButton).toHaveAttribute('data-maximized', 'true');
     expect(roomRegion.className).toContain('lg:hidden');
     expect(desktopSidebarPane.className).toContain('flex-1');
-  });
-
-  it('does not directly dismiss room notifications on room entry', async () => {
-    render(Room, { props: { roomId: 'room-1' } });
-
-    await tick();
-
-    expect(mocks.notifications.dismissDMNotifications).not.toHaveBeenCalled();
-    expect(mocks.notifications.dismissMentionNotifications).not.toHaveBeenCalled();
-    expect(mocks.notifications.dismissRoomReplyNotifications).not.toHaveBeenCalled();
-    expect(mocks.notifications.dismissRoomMessageNotifications).not.toHaveBeenCalled();
   });
 
   it('refreshes the visible room window after a local link-preview deletion succeeds', async () => {

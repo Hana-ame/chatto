@@ -201,6 +201,36 @@ func (s *HTTPServer) serveRealtimeWebSocket(parent context.Context, conn *websoc
 		}()
 	}
 
+	var botAPIKeyInvalidated <-chan struct{}
+	stopBotAPIKeyWatch := func() {}
+	if credential, ok := authctx.CredentialForContext(ctx); ok &&
+		credential.Kind == authctx.RuntimeCredentialKindBotAPIKey && len(credential.BotAPIKeyVerifier) > 0 {
+		botAPIKeyInvalidated, stopBotAPIKeyWatch = s.core.WatchBotAPIKeyInvalidated(credential.UserID, credential.BotAPIKeyVerifier)
+	}
+	defer stopBotAPIKeyWatch()
+	if botAPIKeyInvalidated != nil {
+		botAPIKeyWatcherDone := make(chan struct{})
+		go func() {
+			defer close(botAPIKeyWatcherDone)
+			select {
+			case <-botAPIKeyInvalidated:
+				terminateRealtimeForBotAPIKeyInvalidation(cancel, writeFrame, func() {
+					_ = conn.WriteControl(
+						websocket.CloseMessage,
+						websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "authentication required"),
+						time.Now().Add(time.Second),
+					)
+					_ = conn.Close()
+				})
+			case <-ctx.Done():
+			}
+		}()
+		defer func() {
+			cancel()
+			<-botAPIKeyWatcherDone
+		}()
+	}
+
 	if err := writeFrame(&realtimev1.RealtimeServerFrame{Frame: &realtimev1.RealtimeServerFrame_Hello{
 		Hello: &realtimev1.RealtimeServerHello{
 			ProtocolVersion:          realtimeProtocolVersion,
@@ -512,6 +542,25 @@ func terminateRealtimeForOAuthClientBlock(
 	closeConnection()
 }
 
+// terminateRealtimeForBotAPIKeyInvalidation cancels authorized work before
+// writing a terminal frame. The key generation is watched through the durable
+// user-auth projection, so rotation reaches sockets on every replica.
+func terminateRealtimeForBotAPIKeyInvalidation(
+	cancel context.CancelFunc,
+	writeFrame func(*realtimev1.RealtimeServerFrame) error,
+	closeConnection func(),
+) {
+	cancel()
+	_ = writeFrame(&realtimev1.RealtimeServerFrame{Frame: &realtimev1.RealtimeServerFrame_Close{
+		Close: &realtimev1.RealtimeClose{
+			Code:      "authentication_required",
+			Message:   "the bot API key has been rotated",
+			Reconnect: false,
+		},
+	}})
+	closeConnection()
+}
+
 func (s *HTTPServer) readRealtimeControlFrames(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, writeFrame func(*realtimev1.RealtimeServerFrame) error, hydrateRooms chan<- string) {
 	defer cancel()
 	for {
@@ -647,12 +696,6 @@ func (s *HTTPServer) mapRealtimeLive(ctx context.Context, viewerID string, envel
 		envelope.Event = &realtimev1.RealtimeEventEnvelope_PresenceChanged{PresenceChanged: &realtimev1.RealtimePresenceChangedEvent{
 			UserId: event.GetActorId(), Status: apiPresenceStatus(payload.PresenceChanged.GetStatus()),
 		}}
-	case *corev1.LiveEvent_MentionNotification:
-		mention := payload.MentionNotification
-		envelope.Event = &realtimev1.RealtimeEventEnvelope_MentionNotification{MentionNotification: s.realtimeMentionNotification(ctx, viewerID, mention)}
-	case *corev1.LiveEvent_NewDirectMessageNotification:
-		dm := payload.NewDirectMessageNotification
-		envelope.Event = &realtimev1.RealtimeEventEnvelope_NewDirectMessageNotification{NewDirectMessageNotification: s.realtimeNewDirectMessageNotification(ctx, viewerID, dm)}
 	case *corev1.LiveEvent_SessionTerminated:
 		envelope.Event = &realtimev1.RealtimeEventEnvelope_SessionTerminated{SessionTerminated: &realtimev1.RealtimeSessionTerminatedEvent{
 			Reason: payload.SessionTerminated.GetReason(),
@@ -668,44 +711,6 @@ func optionalRealtimeString(value string) *string {
 		return nil
 	}
 	return proto.String(value)
-}
-
-func (s *HTTPServer) realtimeMentionNotification(ctx context.Context, viewerID string, mention *corev1.MentionNotificationEvent) *realtimev1.RealtimeMentionNotificationEvent {
-	out := &realtimev1.RealtimeMentionNotificationEvent{
-		RoomId:      mention.GetRoomId(),
-		ActorUserId: mention.GetMentionedByUserId(),
-	}
-	if s == nil || s.core == nil {
-		return out
-	}
-	if room, err := s.core.FindRoomByID(ctx, mention.GetRoomId()); err == nil && s.viewerCanReadRealtimeRoomLabel(ctx, viewerID, room) {
-		out.RoomName = proto.String(room.GetName())
-	}
-	if actor, err := s.core.GetUser(ctx, mention.GetMentionedByUserId()); err == nil {
-		out.ActorDisplayName = proto.String(actor.GetDisplayName())
-	}
-	return out
-}
-
-func (s *HTTPServer) realtimeNewDirectMessageNotification(ctx context.Context, viewerID string, dm *corev1.NewDirectMessageNotificationEvent) *realtimev1.RealtimeNewDirectMessageNotificationEvent {
-	out := &realtimev1.RealtimeNewDirectMessageNotificationEvent{
-		RoomId:   dm.GetRoomId(),
-		SenderId: dm.GetSenderId(),
-	}
-	if s == nil || s.core == nil {
-		return out
-	}
-	if ok, err := s.core.RoomMembershipExists(ctx, core.KindDM, viewerID, dm.GetRoomId()); viewerID != "" && (err != nil || !ok) {
-		return out
-	}
-	if sender, err := s.core.GetUser(ctx, dm.GetSenderId()); err == nil {
-		out.SenderDisplayName = proto.String(sender.GetDisplayName())
-		if avatarURL, err := s.core.GetUserAvatarURL(ctx, sender.GetId(), nil, nil, ""); err == nil {
-			out.SenderAvatarUrl = proto.String(avatarURL)
-		}
-	}
-	out.ConversationName = proto.String(s.realtimeDMConversationName(ctx, viewerID, dm.GetRoomId()))
-	return out
 }
 
 func (s *HTTPServer) realtimeDMConversationName(ctx context.Context, viewerID, roomID string) string {

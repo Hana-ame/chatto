@@ -99,6 +99,7 @@ export default defineConfig({
           label: "Integrations",
           items: [
             "guides/integrations/chatto-api",
+            "guides/integrations/bot-accounts",
             "guides/integrations/api-compatibility",
             "guides/integrations/external-login-providers",
             "guides/integrations/community-shields",
@@ -120,7 +121,10 @@ export default defineConfig({
             "reference/connectrpc-api",
             {
               label: "chatto.auth.v1",
-              items: ["reference/connectrpc-api/external-identity-auth"],
+              items: [
+                "reference/connectrpc-api/external-identity-auth",
+                "reference/connectrpc-api/push-subscription-cleanup",
+              ],
             },
             {
               label: "chatto.discovery.v1",
@@ -131,10 +135,10 @@ export default defineConfig({
               items: [
                 "reference/connectrpc-api/assets",
                 "reference/connectrpc-api/asset-uploads",
+                "reference/connectrpc-api/bots",
                 "reference/connectrpc-api/messages",
                 "reference/connectrpc-api/message-search",
                 "reference/connectrpc-api/account",
-                "reference/connectrpc-api/notification-preferences",
                 "reference/connectrpc-api/notifications",
                 "reference/connectrpc-api/push-notifications",
                 "reference/connectrpc-api/roles",

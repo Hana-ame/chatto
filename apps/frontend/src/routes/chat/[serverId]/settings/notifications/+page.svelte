@@ -2,7 +2,7 @@
   import { useServerScope } from '$lib/state/server/scope.svelte';
   import { ChoiceRow, PaneHeader, Hint, FormSection } from '$lib/ui';
   import { Button, RangeField } from '$lib/ui/form';
-  import NotificationLevelSettings from '$lib/components/settings/NotificationLevelSettings.svelte';
+  import NotificationPolicySettings from '$lib/components/settings/NotificationPolicySettings.svelte';
   import { userPreferences } from '$lib/state/userPreferences.svelte';
   import {
     notificationSounds,
@@ -14,19 +14,19 @@
   } from '$lib/audio/notificationSounds';
   import {
     ensureRegistered,
+    isBrowserWebPushRuntime,
     getPushCapability,
     getPermission,
     isSubscribed as checkPushSubscription,
+    refreshPushSubscriptions,
     sendTestNotification
   } from '$lib/notifications/pushNotifications';
-  import { serverRegistry } from '$lib/state/server/registry.svelte';
   import { m } from '$lib/i18n/messages';
 
   const serverScope = useServerScope();
 
   const activeServerId = $derived(serverScope.serverId);
   const serverInfo = $derived(serverScope.store.serverInfo);
-  const isOriginServer = $derived(serverRegistry.isOriginServer(activeServerId));
 
   function selectSound(soundId: NotificationSoundId) {
     userPreferences.notificationSound = soundId;
@@ -163,8 +163,7 @@
 
   // Push notifications state
   let pushEnabled = $derived(serverInfo.pushNotificationsEnabled);
-  let showOriginPushControls = $derived(pushEnabled && isOriginServer);
-  let showRemotePushNotice = $derived(pushEnabled && !isOriginServer);
+  let showPushControls = $derived(isBrowserWebPushRuntime() && pushEnabled);
   const pushCapability = getPushCapability();
   const pushSupported = pushCapability === 'supported';
   const needsIosHomeScreen = pushCapability === 'ios_home_screen_required';
@@ -174,18 +173,34 @@
   let pushError = $state<string | null>(null);
   let pushTestLoading = $state(false);
   let pushTestStatus = $state<'sent' | 'failed' | null>(null);
+  let pushSubscriptionGeneration = 0;
+  let pushEnableGeneration = 0;
+  let pushTestGeneration = 0;
 
   // Check push subscription status on mount
   $effect(() => {
-    if (showOriginPushControls && pushSupported) {
+    const serverId = activeServerId;
+    const generation = ++pushSubscriptionGeneration;
+    ++pushEnableGeneration;
+    ++pushTestGeneration;
+    pushSubscribed = false;
+    pushLoading = false;
+    pushError = null;
+    pushTestLoading = false;
+    pushTestStatus = null;
+    if (showPushControls && pushSupported) {
       pushPermission = getPermission();
-      checkPushSubscription().then((subscribed) => {
-        pushSubscribed = subscribed;
+      checkPushSubscription(serverId).then((subscribed) => {
+        if (activeServerId === serverId && pushSubscriptionGeneration === generation) {
+          pushSubscribed = subscribed;
+        }
       });
     }
   });
 
   async function handleEnablePush() {
+    const serverId = activeServerId;
+    const generation = ++pushEnableGeneration;
     const vapidKey = serverInfo.vapidPublicKey;
     if (!vapidKey) {
       pushError = m('settings.notifications.push.not_configured');
@@ -196,10 +211,12 @@
     pushError = null;
 
     try {
-      const success = await ensureRegistered(vapidKey, { prompt: true });
+      const success = await ensureRegistered(serverId, vapidKey, { prompt: true });
+      if (activeServerId !== serverId || pushEnableGeneration !== generation) return;
       pushPermission = getPermission();
       if (success) {
         pushSubscribed = true;
+        void refreshPushSubscriptions().catch(() => undefined);
       } else {
         pushError =
           pushPermission === 'denied'
@@ -207,21 +224,32 @@
             : m('settings.notifications.push.enable_failed');
       }
     } catch {
-      pushError = m('settings.notifications.push.enable_error');
+      if (activeServerId === serverId && pushEnableGeneration === generation) {
+        pushError = m('settings.notifications.push.enable_error');
+      }
     } finally {
-      pushLoading = false;
+      if (activeServerId === serverId && pushEnableGeneration === generation) pushLoading = false;
     }
   }
 
   async function handleTestPush() {
+    const serverId = activeServerId;
+    const generation = ++pushTestGeneration;
     pushTestLoading = true;
     pushTestStatus = null;
     try {
-      pushTestStatus = (await sendTestNotification()) ? 'sent' : 'failed';
+      const sent = await sendTestNotification(serverId);
+      if (activeServerId === serverId && pushTestGeneration === generation) {
+        pushTestStatus = sent ? 'sent' : 'failed';
+      }
     } catch {
-      pushTestStatus = 'failed';
+      if (activeServerId === serverId && pushTestGeneration === generation) {
+        pushTestStatus = 'failed';
+      }
     } finally {
-      pushTestLoading = false;
+      if (activeServerId === serverId && pushTestGeneration === generation) {
+        pushTestLoading = false;
+      }
     }
   }
 </script>
@@ -233,24 +261,10 @@
 />
 
 <div class="flex flex-col gap-6 overflow-y-auto p-6">
-  <NotificationLevelSettings />
+  <NotificationPolicySettings />
 
   <!-- Push Notifications Section (only show if enabled on server) -->
-  {#if showRemotePushNotice}
-    <div class="max-w-lg">
-      <h3 class="mb-4 text-sm font-semibold text-muted">
-        {m('settings.notifications.push.title')}
-      </h3>
-      <Hint tone="info">
-        <div>
-          <p class="font-medium">{m('settings.notifications.push.remote_title')}</p>
-          <p class="mt-1 text-sm text-muted">
-            {m('settings.notifications.push.remote_description')}
-          </p>
-        </div>
-      </Hint>
-    </div>
-  {:else if showOriginPushControls}
+  {#if showPushControls}
     <div class="max-w-lg">
       <h3 class="mb-4 text-sm font-semibold text-muted">
         {m('settings.notifications.push.title')}

@@ -25,69 +25,77 @@ repository once it no longer needs frequent atomic changes with the shared
 [data-cryptography primitives](pkg/datacrypto/README.md), and
 [application-configuration loader](pkg/appconfig/README.md).
 
-## Complete Local Stack
+## Local Development Stack
 
-The root [`compose.yml`](compose.yml) runs Chatto, Authling, Mailpit, LiveKit,
-Storybook, and the Chatto docs website together on
-[OrbStack](https://docs.orbstack.dev/docker/domains). It builds every
-repository-owned service from the current checkout. Chatto, Authling, and
-Storybook run from bind-mounted project files with container-native dependency
-volumes and live reloads. The stack gives Chatto and Authling separate
-persistent embedded-NATS storage and configures Chatto to use Authling as an
-OpenID Connect provider through Chatto's public Client ID Metadata Document,
-without preregistering Chatto in Authling. Compose derives the project name
-from the checkout directory, keeping containers and OrbStack domains isolated
-between worktrees.
+The root `mise dev` task runs the services needed for regular development as
+native processes: the Chatto backend and Vite frontend, Authling, Mailpit, and
+LiveKit. [Portless](https://portless.sh/) gives each browser-facing process a
+stable, worktree-aware HTTPS URL. The Portless-backed mise tasks pin it as an
+isolated npm tool and run it with Node.js 24 without changing the Node.js 22
+version used by the rest of the repository.
 
 ```sh
-docker compose up --build
+mise trust
+mise install
+mise setup
+(cd authling && mise trust && mise install && mise deps)
+mise dev
 ```
 
-Vite, Storybook, and the Go development processes reload ordinary source
-changes themselves. Add Compose's optional watch mode to restart services when
-dependency manifests change and rebuild the shared development image when its
-Dockerfile changes:
+`mise dev` starts all five processes in one supervised process group and
+prefixes their combined output. Vite reloads frontend source changes itself;
+restart `mise dev` after changing Chatto or Authling Go code. The shared API
+types and Lingua packages are built once by `mise setup` instead of running
+permanent package watchers. Chatto and Authling keep separate embedded-NATS
+state: Chatto uses the worktree-local `cli/data/`, while Authling
+uses `.context/dev-portless/<workspace>/nested/authling/` because its issuer is
+bound to the workspace hostname.
 
-```sh
-docker compose up --build --watch
-```
+The useful browser endpoints use the Conductor workspace name on the shared
+Portless development proxy port `42444`:
 
-For a checkout in a directory named `<project>`, open these OrbStack-managed
-HTTPS origins:
+- Chatto: `https://chatto.<workspace>.localhost:42444`
+- Authling: `https://authling.<workspace>.localhost:42444`
+- Mailpit: `https://mailpit.<workspace>.localhost:42444`
+- LiveKit: `https://livekit.<workspace>.localhost:42444`
 
-- Chatto: `https://chatto.<project>.orb.local`
-- Authling: `https://authling.<project>.orb.local`
-- Mailpit: `https://mailpit.<project>.orb.local`
-- LiveKit signaling: `https://livekit.<project>.orb.local`
-- Storybook: `https://storybook.<project>.orb.local`
-- Docs website: `https://docs-website.<project>.orb.local`
+Conductor still allocates ten ports to every local workspace. With base port
+`$CONDUCTOR_PORT`, the processes bind only to their allocated loopback ports:
+Chatto uses
+the base port for Vite, `+1` for its backend, and `+4` for embedded NATS;
+Authling uses `+2`; LiveKit uses `+5` through `+7`; and Mailpit uses `+8` and
+`+9`. Portless terminates trusted development HTTPS and proxies each worktree
+hostname to the corresponding listener. Outside Conductor, the listener layout
+falls back to base port `4000`.
 
 Create an Authling account, read its verification code in Mailpit, then choose
 **Authling** on Chatto's login screen. Chatto asks for a username on the first
 login because Authling's initial OIDC profile intentionally shares only its
-stable account ID. The stack also bootstraps a Chatto owner named
-`compose-admin` with the development-only password `compose-admin`.
+stable account ID. The development issuer uses CIMD and has no pre-registered
+conventional OIDC client. The stack also bootstraps Chatto owner `alice` and
+member `bob`; both use the development-only password `foobar123`.
 
-After login, select the cloud button below the server list. Authling asks for
-separate permission to read and write account data. The cloud turns green when
-the TinyBase connection is active. Chatto then stores the public server list in
-Authling. Server URLs, names, icons, and registration times synchronize; Chatto
-login tokens and user details stay only in that browser. The frontend shows a
-trusted Authling sign-in action and can use the resulting browser session to
-start login on Chatto servers that advertise the same issuer. The frontend and
-each Chatto server still receive separate tokens and scopes.
+Authling is configured as an ordinary OIDC provider for the development Chatto
+server. Chatto's server catalogue, login tokens, and cached user details stay
+on the current device; Authling stores identity-provider state only.
 
-The frontend reads its Authling issuer from `/client-config.json`. The Compose
-stack sets `CHATTO_FRONTEND_AUTHLING_ISSUER`, so the bundled Chatto server
-publishes that document and a separate frontend CIMD identity automatically.
-A standalone web, desktop, or mobile client can publish or inject the same
-versioned JSON contract from its own trusted application origin.
+The checked-in credentials and bootstrap accounts are for local development
+only. Stop the attached run command to stop the workspace's processes and
+unregister its Portless routes. Remove `cli/data/` while the stack is stopped to
+delete Chatto's local data. Remove
+`.context/dev-portless/<workspace>/nested/authling/` to delete that workspace's
+Authling identity and establish a fresh issuer on the next start. Changing the
+Conductor workspace name changes the HTTPS issuer and selects a fresh Authling
+state namespace. Portless generates and trusts a development CA on its first run. If
+the non-interactive run cannot request macOS authorization, run
+`mise x node@24 npm:portless@0.15.5 -- portless trust` once in an
+interactive terminal. The services' internal listener and webhook
+connections remain on plain-HTTP loopback. This is not a production deployment
+example.
 
-The checked-in credentials and bootstrap account are for local development
-only. Stop the stack with `docker compose down`; add `--volumes` to delete both
-products' data and establish a fresh Authling issuer on the next start. The
-stack relies on OrbStack's default Compose domains, automatic HTTPS proxy, and
-container CA installation; it is not a production deployment example.
+State from the former plain-HTTP, unnamespaced development setup is not reused
+by this HTTPS setup and may be removed from `.context/dev/authling/` and
+`.context/dev/chatto/` when it is no longer needed.
 
 ## License
 

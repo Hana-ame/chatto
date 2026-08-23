@@ -9,7 +9,19 @@
       "time_now": "Tikai tagad",
       "time_minutes": "Pirms {count}min",
       "time_hours": "Pirms {count}h",
-      "time_days": "Pirms {count}d"
+      "time_days": "Pirms {count}d",
+      "unread": "Nelasīts",
+      "activity": "Jauna aktivitāte",
+      "summary": {
+        "direct_message": "{actor} nosūtīja jums tiešu ziņu.",
+        "reaction": "{actor} reaģēja ar “{emoji}” uz jūsu ziņu kanālā {channel}.",
+        "reaction_group": "{actor} un citi reaģēja ar “{emoji}” uz jūsu ziņu kanālā {channel}.",
+        "reply": "{actor} atbildēja uz jūsu ziņu.",
+        "mention": "{actor} pieminēja jūs.",
+        "followed_thread": "{actor} atbildēja pavedienā, kuram sekojat.",
+        "new_message": "{actor} publicēja jaunu ziņu.",
+        "activity": "{actor} nosūtīja jums paziņojumu."
+      }
     },
     "sign_out": {
       "title": "Izrakstīties",
@@ -27,15 +39,11 @@
     },
     "user_menu": {
       "profile": "Lietotāja profils",
-      "send_message": "Nosūtīt ziņu"
+      "send_message": "Nosūtīt ziņu",
+      "copy_user_id": "Kopēt lietotāja ID"
     },
     "server_gutter": {
       "add_server": "Pievienot serveri",
-      "account_data_connect": "Sinhronizējiet serveru sarakstu ar Authling",
-      "account_data_connecting": "Notiek savienojuma izveide ar serveru saraksta sinhronizāciju…",
-      "account_data_connected": "Serveru saraksts ir sinhronizēts ar {provider}",
-      "account_data_connected_toast": "Jūsu serveru saraksts tagad ir sinhronizēts.",
-      "account_data_error": "Nevarēja sinhronizēt serveru sarakstu",
       "version": "Versija {version}",
       "version_unknown": "Versija nav zināma",
       "unreachable": "Serveris nav sasniedzams",

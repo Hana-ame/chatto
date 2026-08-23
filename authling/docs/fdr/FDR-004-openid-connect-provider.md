@@ -1,7 +1,7 @@
 # FDR-004: OpenID Connect Provider
 
 **Status:** Experimental
-**Last reviewed:** 2026-08-01
+**Last reviewed:** 2026-08-21
 
 ## Overview
 
@@ -15,27 +15,25 @@ to the relying party with an Authorization Code.
 - Discovery is available at `/.well-known/openid-configuration`; public keys
   are published at the advertised JWKS endpoint.
 - Authling advertises and accepts only Authorization Code. Every request
-  requires `openid` and S256 PKCE, including confidential clients. A client may
-  also request `account_data` for the access recorded in FDR-005.
+  requires exactly `openid` and S256 PKCE, including confidential clients.
 - Redirect URI matching is exact. Authorization errors are sent to a client
   only after that client and redirect have been validated.
 - A signed-out person is sent through local login and then resumes the pending
-  consent screen. The screen identifies the client and explains that the
-  stable account identifier will be shared.
-- Consent is requested for every authorization. Allowing binds the request to
-  the current account; denying returns `access_denied` and the original state
-  to the validated redirect URI.
+  consent decision. When consent is required, the screen identifies the
+  signed-in account and client and explains that the stable account identifier
+  will be shared.
+- Allowing creates or renews a durable exact-client authorization grant and
+  binds the request to the current account. Later requests covered by that
+  grant skip the consent screen unless they use `prompt=consent`. Denying
+  returns `access_denied` and the original state to the validated redirect URI.
 - The authorization code expires with its ten-minute request, is bound to the
   client, redirect, and PKCE verifier, and succeeds in at most one concurrent
   exchange.
 - Successful exchange returns a five-minute RS256 ID token and opaque bearer
-  access token. The issuer is Authling's immutable public URL and `sub` is the
-  Authling account ID. UserInfo returns only `sub`. Access-token state also
-  binds the client, granted scopes, and authorization callback origin.
-- A Chatto frontend can use its own authorization as the global client session,
-  then start a separate Chatto-server authorization through a provider that
-  advertises the same issuer. Authling's browser session is reused, but each
-  client receives only its own code, token, redirect, and granted scopes.
+  access token. The issuer is Authling's immutable public URL, `sub` is the
+  Authling account ID, and local accounts also receive their non-empty durable
+  `preferred_username` and `name` identity hints. UserInfo returns the same
+  claims. Access-token state also binds the client and granted scopes.
 - Protocol state and token records are encrypted at rest and stored under
   non-reversible runtime keys. Raw codes and tokens are not durable keys and
   are never logged.
@@ -59,10 +57,10 @@ ignore proxy configuration, and have strict concurrency, response-size,
 timeout, and cache bounds. Invalid responses are never cached.
 
 Special-use destinations are rejected by default. Operators may explicitly
-trust exact CIMD hostnames that resolve to private addresses for controlled
-development networks. That exception admits only private addresses for the
-named hosts and never loopback, link-local, multicast, or other special-use
-destinations.
+trust exact CIMD hostnames that resolve to private or loopback addresses in
+controlled development environments. Private-host and loopback-host trust are
+separate exceptions, and each admits only its named address class. Neither
+permits link-local, multicast, or other special-use destinations.
 
 ## Security and Failure Behavior
 
@@ -74,6 +72,9 @@ destinations.
   are resolved server-side and cannot carry an arbitrary return URL.
 - A storage conflict during approval or code claim fails the operation instead
   of creating two grants.
+- Grant creation and revocation use account-subject OCC and wait for the grant
+  projection. Revocation controls future consent reuse, not already issued
+  short-lived tokens or relying-party sessions.
 - Failure responses do not reveal client secrets, codes, tokens, account IDs,
   email addresses, or complete request URLs.
 
@@ -81,14 +82,17 @@ destinations.
 
 - Only local password authentication and the `pwd` authentication-method
   reference exist.
-- Refresh tokens, token revocation, RP-initiated logout, further scopes and
-  claims, persistent consent, application grouping, key rotation, and official
-  conformance-suite automation are not implemented.
+- Refresh tokens, token revocation, RP-initiated logout, further identity
+  scopes and claims beyond `preferred_username` and `name`, relying-party
+  grouping, and official conformance-suite automation are not implemented.
 - CIMD remains an Internet-Draft. Authling implements the reviewed draft-02
   profile and may need an explicit migration as the document evolves.
 
 ## Related
 
 - **ADR:** [ADR-004](../adr/ADR-004-cimd-native-openid-provider.md)
-- **Delegated account data:** [ADR-006](../adr/ADR-006-oidc-authorized-account-data.md)
+- **Product boundary:** [ADR-007](../adr/ADR-007-limit-authling-to-identity-provider.md)
 - **Features:** [FDR-003](FDR-003-local-login-and-browser-sessions.md)
+- **Authorization grants:** [FDR-010](FDR-010-oidc-authorization-grants.md)
+- **Profiles:** [FDR-011](FDR-011-account-profile.md)
+- **Signing-key rotation:** [FDR-012](FDR-012-automatic-oidc-signing-key-rotation.md)

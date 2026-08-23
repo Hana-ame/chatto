@@ -1,7 +1,7 @@
 # FDR-003: Local Login and Browser Sessions
 
 **Status:** Experimental
-**Last reviewed:** 2026-07-31
+**Last reviewed:** 2026-08-20
 
 ## Overview
 
@@ -29,12 +29,25 @@ experience.
 - Signing out invalidates the current session on the server and removes its
   browser cookie. It does not sign out other browsers or relying-party
   sessions.
+- The account page lists the account's active browser sessions, identifies the
+  current browser, and can sign out one or all other browsers. It stores no
+  browser name, IP address, or location for this purpose; FDR-009 owns the
+  enumeration and remote-revocation behavior.
+- Signed-in Authling pages identify the active account by its current verified
+  email address in the shared site header.
 - Sessions remain valid across an Authling process restart when the browser
   still has its session cookie and runtime storage remains available.
+- Sessions carry the account's durable authentication version. Password reset,
+  signed-in password change, and verified email change advance that version
+  and invalidate every older Authling browser session, including across
+  process restarts; the completing browser receives a new session.
 - Protected pages reject absent, expired, malformed, forged, and revoked
   sessions. Cross-origin login and logout submissions are rejected.
 - The configured public origin is canonical: requests for another host are
   rejected, and unsafe browser requests must carry that exact origin.
+- Deployments may explicitly trust sanitized `X-Forwarded-Host` and
+  `X-Forwarded-Proto` from their sole reverse proxy. The listener must not be
+  directly reachable by untrusted clients when that option is enabled.
 
 ## Design Decisions
 
@@ -43,8 +56,9 @@ experience.
 **Decision:** The browser carries only an opaque random bearer; the account and
 lifetime state remain in expiring Authling runtime storage.
 
-**Why:** Server-side state makes logout and expiry authoritative, reveals no
-account data in the cookie, and leaves room for future account-wide revocation.
+**Why:** Server-side state makes logout, expiry, password-reset invalidation,
+and email-change invalidation authoritative and reveals no account data in the
+cookie.
 
 **Tradeoff:** Every authenticated browser request depends on runtime-storage
 availability.
@@ -94,11 +108,7 @@ attempt budget.
 
 ## Limitations
 
-- There is no "remember me", session list, remote session revocation,
-  password-change revocation, or user-visible authentication history yet.
-- The first slice does not accept return URLs. OIDC authorization will add
-  integrity-protected continuation state rather than an open redirect
-  parameter.
+- There is no "remember me" or user-visible authentication history yet.
 - Password-only login is a single-factor authentication ceremony. Authling
   does not yet implement MFA or phishing-resistant authenticators.
 - Authling's listener does not terminate TLS. Production operators must expose
@@ -111,7 +121,11 @@ attempt budget.
   [ADR-002](../adr/ADR-002-hierarchical-keys-and-cryptographic-erasure.md),
   [ADR-003](../adr/ADR-003-server-rendered-templ-ui.md)
 - **Features:** [FDR-001](FDR-001-standalone-account-runtime.md),
-  [FDR-002](FDR-002-verified-email-signup.md)
+  [FDR-002](FDR-002-verified-email-signup.md),
+  [FDR-006](FDR-006-password-reset.md),
+  [FDR-007](FDR-007-verified-email-change.md),
+  [FDR-008](FDR-008-signed-in-password-change.md),
+  [FDR-009](FDR-009-browser-session-management.md)
 - **Security baseline:** [NIST SP 800-63B](https://pages.nist.gov/800-63-4/sp800-63b.html),
   [OWASP Authentication](https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html),
   and [OWASP Session Management](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html)

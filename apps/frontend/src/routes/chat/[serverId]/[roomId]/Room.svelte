@@ -255,7 +255,7 @@
 
     const pending = stores.pendingHighlights.consume(roomId, threadId ?? null);
     if (pending) {
-      applyHighlight(pending);
+      applyHighlight(pending.eventId, pending.notificationId);
       return;
     }
 
@@ -277,7 +277,7 @@
     applyHighlight(fromUrl);
   });
 
-  function applyHighlight(eventId: string): void {
+  function applyHighlight(eventId: string, notificationId: string | null = null): void {
     const requestId = navigation.beginHighlight(eventId, !!threadId);
     if (requestId === null) return;
     const targetRoomId = roomId;
@@ -285,6 +285,11 @@
     tick().then(async () => {
       const jumped = await jumpState.jumpToMessage(eventId);
       if (!serverScope.isCurrent() || targetRoomId !== roomId) return;
+      if (jumped && notificationId) {
+        void stores.notifications.markOccurrenceRead(notificationId).catch((error) => {
+          console.error('Failed to mark displayed notification read:', error);
+        });
+      }
       if (!jumped && navigation.failMainHighlight(requestId, eventId)) {
         toast.error(m('room.jump_failed'));
       }
@@ -509,7 +514,7 @@
     openFileMessage(messageEventId, threadRootEventId, closeMobile);
   }
 
-  // Drop zone state for drag-and-drop image uploads
+  // Drop zone state for drag-and-drop uploads
   let isDraggingFiles = $state(false);
   let composerApi = $state<MessageComposerApi | null>(null);
 
@@ -518,8 +523,7 @@
     room.roomData?.canPostMessage && room.roomData?.canAttach
       ? dropZone({
           onDrop: (files) => composerApi?.addFiles(files),
-          onDragStateChange: (dragging) => (isDraggingFiles = dragging),
-          acceptedTypes: ['image/*', 'video/*', 'audio/*']
+          onDragStateChange: (dragging) => (isDraggingFiles = dragging)
         })
       : undefined
   );

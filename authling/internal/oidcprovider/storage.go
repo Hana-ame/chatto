@@ -51,6 +51,7 @@ type authRequestState struct {
 	ResponseMode  liboidc.ResponseMode        `json:"response_mode,omitempty"`
 	CodeChallenge string                      `json:"code_challenge"`
 	CodeMethod    liboidc.CodeChallengeMethod `json:"code_challenge_method"`
+	ForceConsent  bool                        `json:"force_consent,omitempty"`
 	Subject       string                      `json:"subject,omitempty"`
 	Authorized    bool                        `json:"authorized"`
 	AuthTime      time.Time                   `json:"auth_time,omitempty"`
@@ -89,15 +90,14 @@ type tokenState struct {
 	ClientID string    `json:"client_id"`
 	Subject  string    `json:"subject"`
 	Scopes   []string  `json:"scopes"`
-	Origin   string    `json:"origin"`
 	Expires  time.Time `json:"expires"`
 }
 
 // ConsentRequest contains the non-sensitive metadata shown to an authenticated user.
 type ConsentRequest struct {
-	ID, ClientName, ClientHost, RedirectOrigin string
-	Scopes                                     []string
-	AccountData                                bool
+	ID, ClientID, ClientName, ClientHost, RedirectOrigin string
+	Scopes                                               []string
+	ForceConsent                                         bool
 }
 
 // Storage persists OIDC protocol state in Authling's encrypted runtime bucket.
@@ -108,10 +108,11 @@ type Storage struct {
 	clients *Resolver
 	issuer  *issuer.Service
 	now     func() time.Time
+	profile func(context.Context, string) (string, string, error)
 }
 
-func NewStorage(kv jetstream.KeyValue, js jetstream.JetStream, key []byte, clients *Resolver, issuerService *issuer.Service) *Storage {
-	return &Storage{kv: kv, js: js, key: append([]byte(nil), key...), clients: clients, issuer: issuerService, now: time.Now}
+func NewStorage(kv jetstream.KeyValue, js jetstream.JetStream, key []byte, clients *Resolver, issuerService *issuer.Service, profile func(context.Context, string) (string, string, error)) *Storage {
+	return &Storage{kv: kv, js: js, key: append([]byte(nil), key...), clients: clients, issuer: issuerService, now: time.Now, profile: profile}
 }
 
 func (s *Storage) CreateAuthRequest(ctx context.Context, request *liboidc.AuthRequest, _ string) (op.AuthRequest, error) {
@@ -130,6 +131,7 @@ func (s *Storage) CreateAuthRequest(ctx context.Context, request *liboidc.AuthRe
 		State: request.State, Nonce: request.Nonce, Scopes: append([]string(nil), request.Scopes...),
 		ResponseType: request.ResponseType, ResponseMode: request.ResponseMode,
 		CodeChallenge: request.CodeChallenge, CodeMethod: request.CodeChallengeMethod,
+		ForceConsent: len(request.Prompt) == 1 && request.Prompt[0] == liboidc.PromptConsent,
 	}
 	if err := s.create(ctx, s.requestKey(id), state, authRequestLifetime); err != nil {
 		return nil, err
@@ -210,9 +212,10 @@ func (s *Storage) Consent(ctx context.Context, id string) (ConsentRequest, error
 		return ConsentRequest{}, errOIDCStateNotFound
 	}
 	return ConsentRequest{
-		ID: state.ID, ClientName: state.ClientName, ClientHost: state.ClientHost,
+		ID: state.ID, ClientID: state.ClientID, ClientName: state.ClientName, ClientHost: state.ClientHost,
 		RedirectOrigin: redirectOrigin,
-		Scopes:         append([]string(nil), state.Scopes...), AccountData: hasScope(state.Scopes, ScopeAccountData),
+		Scopes:         append([]string(nil), state.Scopes...),
+		ForceConsent:   state.ForceConsent,
 	}, nil
 }
 
@@ -266,46 +269,14 @@ func (s *Storage) CreateAccessToken(ctx context.Context, request op.TokenRequest
 	}
 	expires := s.now().UTC().Add(accessTokenLifetime)
 	clientID := ""
-	origin := ""
 	if auth, ok := request.(op.AuthRequest); ok {
 		clientID = auth.GetClientID()
-		redirect, parseErr := url.Parse(auth.GetRedirectURI())
-		if parseErr != nil || redirect.Scheme == "" || redirect.Host == "" {
-			return "", time.Time{}, fmt.Errorf("resolve access-token origin")
-		}
-		origin, parseErr = canonicalOrigin(auth.GetRedirectURI())
-		if parseErr != nil {
-			return "", time.Time{}, fmt.Errorf("resolve access-token origin")
-		}
 	}
-	state := tokenState{ClientID: clientID, Subject: request.GetSubject(), Scopes: request.GetScopes(), Origin: origin, Expires: expires}
+	state := tokenState{ClientID: clientID, Subject: request.GetSubject(), Scopes: request.GetScopes(), Expires: expires}
 	if err := s.create(ctx, s.tokenKey(id), state, accessTokenLifetime); err != nil {
 		return "", time.Time{}, err
 	}
 	return id, expires, nil
-}
-
-// AccountDataGrant resolves a stored token only when its subject, scope,
-// callback origin, and expiry all remain valid.
-func (s *Storage) AccountDataGrant(ctx context.Context, tokenID, subject, origin string) (AccessGrant, error) {
-	var state tokenState
-	if err := s.read(s.tokenKey(tokenID), ctx, &state); err != nil ||
-		state.Subject != subject || state.ClientID == "" || state.Origin != origin ||
-		!state.Expires.After(s.now().UTC()) || !hasScope(state.Scopes, ScopeAccountData) {
-		return AccessGrant{}, errOIDCStateNotFound
-	}
-	return AccessGrant{
-		AccountID: state.Subject, ClientID: state.ClientID, Origin: state.Origin, Expires: state.Expires,
-	}, nil
-}
-
-func hasScope(scopes []string, required string) bool {
-	for _, scope := range scopes {
-		if scope == required {
-			return true
-		}
-	}
-	return false
 }
 
 func canonicalOrigin(raw string) (string, error) {
@@ -372,7 +343,17 @@ func (s *Storage) GetClientByClientID(ctx context.Context, id string) (op.Client
 func (s *Storage) AuthorizeClientIDSecret(ctx context.Context, id, secret string) error {
 	return s.clients.AuthorizeSecret(ctx, id, secret)
 }
-func (*Storage) SetUserinfoFromScopes(context.Context, *liboidc.UserInfo, string, string, []string) error {
+func (s *Storage) SetUserinfoFromScopes(ctx context.Context, info *liboidc.UserInfo, subject, _ string, _ []string) error {
+	info.Subject = subject
+	if s.profile == nil {
+		return nil
+	}
+	username, name, err := s.profile(ctx, subject)
+	if err != nil {
+		return err
+	}
+	info.PreferredUsername = username
+	info.Name = name
 	return nil
 }
 func (s *Storage) SetUserinfoFromToken(ctx context.Context, info *liboidc.UserInfo, tokenID, subject, _ string) error {
@@ -381,13 +362,38 @@ func (s *Storage) SetUserinfoFromToken(ctx context.Context, info *liboidc.UserIn
 		return errOIDCStateNotFound
 	}
 	info.Subject = subject
+	if s.profile != nil {
+		username, name, err := s.profile(ctx, subject)
+		if err != nil {
+			return err
+		}
+		info.PreferredUsername = username
+		info.Name = name
+	}
 	return nil
 }
 func (*Storage) SetIntrospectionFromToken(context.Context, *liboidc.IntrospectionResponse, string, string, string) error {
 	return errOIDCStateNotFound
 }
-func (*Storage) GetPrivateClaimsFromScopes(context.Context, string, string, []string) (map[string]any, error) {
-	return map[string]any{}, nil
+func (s *Storage) GetPrivateClaimsFromScopes(ctx context.Context, subject, _ string, _ []string) (map[string]any, error) {
+	if s.profile == nil {
+		return map[string]any{}, nil
+	}
+	username, name, err := s.profile(ctx, subject)
+	if err != nil {
+		return nil, err
+	}
+	claims := map[string]any{}
+	if username != "" {
+		claims["preferred_username"] = username
+	}
+	if name != "" {
+		claims["name"] = name
+	}
+	if len(claims) == 0 {
+		return map[string]any{}, nil
+	}
+	return claims, nil
 }
 func (*Storage) GetKeyByIDAndClientID(context.Context, string, string) (*jose.JSONWebKey, error) {
 	return nil, errOIDCStateNotFound
@@ -416,22 +422,26 @@ func (publicKey) Algorithm() jose.SignatureAlgorithm { return jose.RS256 }
 func (publicKey) Use() string                        { return "sig" }
 func (k publicKey) Key() any                         { return k.key }
 
-func (s *Storage) SigningKey(context.Context) (op.SigningKey, error) {
-	key, ok := s.issuer.SigningKey()
-	if !ok {
-		return nil, fmt.Errorf("OIDC issuer is not initialized")
+func (s *Storage) SigningKey(ctx context.Context) (op.SigningKey, error) {
+	key, err := s.issuer.SigningKey(ctx)
+	if err != nil {
+		return nil, err
 	}
 	return signingKey{key: key.Private, id: key.ID}, nil
 }
 func (*Storage) SignatureAlgorithms(context.Context) ([]jose.SignatureAlgorithm, error) {
 	return []jose.SignatureAlgorithm{jose.RS256}, nil
 }
-func (s *Storage) KeySet(context.Context) ([]op.Key, error) {
-	key, ok := s.issuer.SigningKey()
-	if !ok {
-		return nil, fmt.Errorf("OIDC issuer is not initialized")
+func (s *Storage) KeySet(ctx context.Context) ([]op.Key, error) {
+	keys, err := s.issuer.VerificationKeys(ctx)
+	if err != nil {
+		return nil, err
 	}
-	return []op.Key{publicKey{key: &key.Private.PublicKey, id: key.ID}}, nil
+	public := make([]op.Key, 0, len(keys))
+	for _, key := range keys {
+		public = append(public, publicKey{key: &key.Private.PublicKey, id: key.ID})
+	}
+	return public, nil
 }
 
 func (s *Storage) readRequest(ctx context.Context, id string) (jetstream.KeyValueEntry, *authRequestState, error) {

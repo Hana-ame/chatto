@@ -6,7 +6,8 @@
       "profile": "Profilo",
       "display": "Montru",
       "notifications": "Sciigoj",
-      "account": "Konto"
+      "account": "Konto",
+      "bots": "Botoj"
     },
     "profile": {
       "title": "Profilo",
@@ -179,9 +180,7 @@
         "enabling": "Ebligante...",
         "blocked_error": "Puŝaj sciigoj estas blokitaj en via retumilo aŭ OS-agordoj.",
         "enable_failed": "Malsukcesis ebligi puŝajn sciigojn. Bonvolu provi denove.",
-        "enable_error": "Okazis eraro dum ebligado de puŝaj sciigoj",
-        "remote_title": "Indiĝena puŝo ne disponeblas por foraj serviloj",
-        "remote_description": "Ĉi tiu instalita aplikaĵo povas nur registri retumilajn puŝajn sciigojn ĉe la servilo, kiu servis ĝin. Insignoj kaj sonoj pri sciigo en la aplikaĵo daŭre funkcias por ĉi tiu servilo dum Chatto estas malfermita."
+        "enable_error": "Okazis eraro dum ebligado de puŝaj sciigoj"
       },
       "push_prompt": {
         "title": "Ebligu puŝajn sciigojn",
@@ -194,35 +193,6 @@
         "enabling": "Ebligante...",
         "enable": "Ebligu",
         "dismiss": "Ne dankon"
-      },
-      "levels": {
-        "loading": "Ŝarĝante...",
-        "load_failed": "Malsukcesis ŝargi sciigajn preferojn",
-        "server_updated": "Servila sciiga nivelo ĝisdatigita",
-        "room_updated": "Ĉambra sciiga nivelo ĝisdatigita",
-        "update_failed": "Malsukcesis ĝisdatigi",
-        "server_title": "Servila Sciiga Nivelo",
-        "server_description": "Kontrolas kiel vi ricevas sciigojn por ĉiuj ĉambroj en ĉi tiu servilo. Individuaj ĉambroj povas anstataŭi ĉi tiun agordon.",
-        "room_title": "Ĉambro Anstataŭigoj",
-        "room_description": "Anstataŭigi la servilnivelan agordon por individuaj ĉambroj. Ĉambroj fiksitaj al \"Defaŭlta\" heredas la servilan agordon ({level}).",
-        "room_level_label": "Sciiga nivelo por #{room}",
-        "effective": "Efika: {level}",
-        "default": {
-          "label": "Defaŭlte",
-          "description": "Uzu la hereditan defaŭlton"
-        },
-        "muted": {
-          "label": "Silentita",
-          "description": "Neniuj sciigoj aŭ nelegitaj markiloj"
-        },
-        "normal": {
-          "label": "Normala",
-          "description": "Nelegitaj markiloj + mencioj, DM-oj kaj fadenaj respondoj"
-        },
-        "all_messages": {
-          "label": "Ĉiuj Mesaĝoj",
-          "description": "Normala + sciigo por ĉiu nova mesaĝo"
-        }
       },
       "sound": {
         "title": "Sciiga Sono",
@@ -272,6 +242,32 @@
           "siren": "Alerta Sireno",
           "dubstep": "Dubstep Drop",
           "circus": "Cirko"
+        }
+      },
+      "policy": {
+        "title": "Sciiga politiko",
+        "description": "Elektu kiom forte ĉiu speco de aktiveco atentigu vin. Heredi uzas la servilan aprioron.",
+        "load_failed": "Ne eblis ŝargi la sciigan politikon",
+        "save_failed": "Ne eblis konservi la sciigan politikon",
+        "effective": "Efektiva: {mode}",
+        "delivery_mode": {
+          "inherit": "Heredi",
+          "off": "Malŝaltita",
+          "silent": "Silenta",
+          "alert": "Alarmo"
+        },
+        "reason": {
+          "direct_message": "Rektaj mesaĝoj",
+          "direct_mention": "Rektaj mencioj",
+          "reply": "Respondoj al viaj mesaĝoj",
+          "role_mention": "Rolmencioj",
+          "here": "@here-mencioj",
+          "all": "@all-mencioj",
+          "followed_thread": "Sekvataj fadenoj",
+          "followed_room": "Sekvataj ĉambroj",
+          "reaction": "Reagoj al viaj mesaĝoj",
+          "activity": "Aktiveco",
+          "room_invitation": "Invitoj al ĉambroj"
         }
       }
     },
@@ -349,6 +345,52 @@
         "confirm_placeholder": "DELETE",
         "cancel": "Nuligi",
         "deleting": "Forigante..."
+      }
+    },
+    "bots": {
+      "title": "Botoj",
+      "subtitle": "Kreu API-kontojn kaj kontrolu precize kion ili povas fari",
+      "singular": "bot",
+      "unsupported": "Ĉi tiu servila versio ne subtenas botkontojn.",
+      "list_title": "Bot-Kontoj",
+      "loading": "Ŝarĝante robotojn...",
+      "empty_title": "Ankoraŭ neniuj bots",
+      "empty_body": "Krei roboton kiam integriĝo bezonas sian propran identecon kaj permesojn.",
+      "create_permission_required": "Vi povas administri ekzistantajn robotojn, sed vi ne havas permeson krei novan.",
+      "create": "Krei Bot",
+      "create_title": "Krei Bot-Konton",
+      "create_failed": "Malsukcesis krei bot",
+      "created": "Bot kreita",
+      "edit": "Redakti",
+      "edit_title": "Redakti Bot-Konton",
+      "updated": "Bot ĝisdatigita",
+      "update_failed": "Malsukcesis ĝisdatigi bot",
+      "update_conflict": "Iu alia ĝisdatigis ĉi tiun roboton. Reŝargu la paĝon kaj provu denove.",
+      "username": "Uzantnomo",
+      "username_hint": "Bot uzantnomoj devas finiĝi per _bot.",
+      "display_name": "Montra nomo",
+      "owner": "Posedanto",
+      "reassign_owner": "Reasigni posedanton",
+      "reassign_owner_warning": "La API-ŝlosilo kaj agorditaj permesoj de la roboto restos samaj. Efikaj permesoj tuj sekvos la novan posedanton.",
+      "owner_reassigned": "Robotposedanto reasignita",
+      "owner_reassign_failed": "Ne eblis reasigni robotposedanton",
+      "api_key_title": "Konservu Ĉi tiun API-Ŝlosilon",
+      "api_key_warning": "Ĉi tiu ŝlosilo montriĝas nur unufoje. Konservu ĝin ie sekure antaŭ ol fermi ĉi tiun fenestron.",
+      "key_created": "API-ŝlosilo kreita",
+      "key_rotated_at": "Laste turnita",
+      "key_copied": "API-ŝlosilo kopiita",
+      "rotate_key": "Rotaciu Ŝlosilon",
+      "rotate_title": "Rotacii API-Ŝlosilon",
+      "rotate_warning": "La nuna ŝlosilo tuj ĉesos funkcii. Ĉiu integriĝo uzanta ĝin devas esti ĝisdatigita.",
+      "key_rotated": "API-ŝlosilo turniĝis",
+      "rotate_failed": "Malsukcesis turni API-ŝlosilon",
+      "delete_title": "Forigi Bot",
+      "delete_warning": "Ĉu forigi {name}? Ĝia API-ŝlosilo tuj ĉesos funkcii kaj la konto ne povas esti reakirita.",
+      "deleted": "Bot forigita",
+      "delete_failed": "Malsukcesis forigi bot",
+      "permissions": {
+        "owner_ceiling": "Elektu, kion ĉi tiu roboto rajtas fari. Vi povas doni al ĝi nur permesojn, kiujn vi mem havas. Se vi perdas permeson, ankaŭ la roboto ne plu povos uzi ĝin.",
+        "save_failed": "Malsukcesis ĝisdatigi bot-permeson"
       }
     }
   }

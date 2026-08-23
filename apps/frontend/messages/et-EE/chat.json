@@ -9,7 +9,19 @@
       "time_now": "Just praegu",
       "time_minutes": "{count}min tagasi",
       "time_hours": "{count}h tagasi",
-      "time_days": "{count}p tagasi"
+      "time_days": "{count}p tagasi",
+      "unread": "Lugemata",
+      "activity": "Uus tegevus",
+      "summary": {
+        "direct_message": "{actor} saatis sulle otsesõnumi.",
+        "reaction": "{actor} reageeris emotikoniga „{emoji}” sinu sõnumile kanalis {channel}.",
+        "reaction_group": "{actor} ja teised reageerisid emotikoniga „{emoji}” sinu sõnumile kanalis {channel}.",
+        "reply": "{actor} vastas sinu sõnumile.",
+        "mention": "{actor} mainis sind.",
+        "followed_thread": "{actor} vastas lõimes, mida jälgid.",
+        "new_message": "{actor} postitas uue sõnumi.",
+        "activity": "{actor} saatis sulle teavituse."
+      }
     },
     "sign_out": {
       "title": "Logi välja",
@@ -27,15 +39,11 @@
     },
     "user_menu": {
       "profile": "Kasutajaprofiil",
-      "send_message": "Saada sõnum"
+      "send_message": "Saada sõnum",
+      "copy_user_id": "Kopeeri kasutaja ID"
     },
     "server_gutter": {
       "add_server": "Lisa server",
-      "account_data_connect": "Serverite loendi sünkroonimine Authlingiga",
-      "account_data_connecting": "Serveriloendi sünkroonimise ühendamine…",
-      "account_data_connected": "Serverite loend on sünkroonitud {provider}-ga",
-      "account_data_connected_toast": "Teie serveriloend on nüüd sünkroonitud.",
-      "account_data_error": "Serverite loendit ei saanud sünkroonida",
       "version": "Versioon {version}",
       "version_unknown": "Versioon teadmata",
       "unreachable": "Server pole kättesaadav",

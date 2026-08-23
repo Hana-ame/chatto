@@ -19,10 +19,12 @@ import (
 
 var publicReflectionServiceNames = []string{
 	authv1connect.ExternalIdentityAuthServiceName,
+	authv1connect.PushSubscriptionCleanupServiceName,
 	discoveryv1connect.ServerDiscoveryServiceName,
 	apiv1connect.MyAccountServiceName,
 	apiv1connect.AssetServiceName,
 	apiv1connect.AssetUploadServiceName,
+	apiv1connect.BotServiceName,
 	adminv1connect.AdminDiagnosticsServiceName,
 	adminv1connect.AdminEventLogServiceName,
 	adminv1connect.AdminInviteLinkServiceName,
@@ -33,7 +35,6 @@ var publicReflectionServiceNames = []string{
 	adminv1connect.AdminServerServiceName,
 	apiv1connect.MessageServiceName,
 	apiv1connect.MessageSearchServiceName,
-	apiv1connect.NotificationPreferencesServiceName,
 	apiv1connect.NotificationServiceName,
 	apiv1connect.PushNotificationServiceName,
 	apiv1connect.RoleServiceName,

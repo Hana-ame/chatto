@@ -17,10 +17,11 @@ import { NavigationStore } from './rooms.svelte';
 
 function navigationFor(
   projection: ServerProjectionStore,
-  sync = new RealtimeProjectionSyncState()
+  sync = new RealtimeProjectionSyncState(),
+  notificationCounts = { roomUnreadCounts: {}, roomImportantUnreadCounts: {} }
 ): { navigation: NavigationStore; sync: RealtimeProjectionSyncState } {
   sync.markCaughtUp(undefined);
-  return { navigation: new NavigationStore(projection, sync), sync };
+  return { navigation: new NavigationStore(projection, sync, notificationCounts), sync };
 }
 
 function projectedRoom(
@@ -28,13 +29,11 @@ function projectedRoom(
   {
     kind = RoomKind.CHANNEL,
     member = true,
-    count = 0,
     memberUserIds = [],
     hasMessageHistory
   }: {
     kind?: RoomKind;
     member?: boolean;
-    count?: number;
     memberUserIds?: string[];
     hasMessageHistory?: boolean;
   } = {}
@@ -51,7 +50,6 @@ function projectedRoom(
       })
     }),
     memberUserIds,
-    viewerNotificationCount: count,
     hasMessageHistory
   });
 }
@@ -72,14 +70,16 @@ describe('NavigationStore', () => {
       'dm',
       projectedRoom('dm', {
         kind: RoomKind.DM,
-        count: 3,
         memberUserIds: ['U2'],
         hasMessageHistory: true
       })
     );
     projection.rooms.set('managed', projectedRoom('managed'));
 
-    const { navigation } = navigationFor(projection);
+    const { navigation } = navigationFor(projection, undefined, {
+      roomUnreadCounts: { dm: 3 },
+      roomImportantUnreadCounts: { dm: 2 }
+    });
 
     expect(navigation.currentUserId).toBe('U1');
     expect(navigation.isInitialLoading).toBe(false);
@@ -88,6 +88,7 @@ describe('NavigationStore', () => {
         id: 'dm',
         type: RoomKind.DM,
         viewerNotificationCount: 3,
+        viewerImportantNotificationCount: 2,
         hasMessageHistory: true,
         members: [{ id: 'U2', displayName: 'Ada' }]
       },
@@ -125,6 +126,20 @@ describe('NavigationStore', () => {
     expect(navigation.rooms.map((room) => room.id)).toEqual(['newer']);
   });
 
+  it('treats a missing Important count as zero after the last Important occurrence is read', () => {
+    const projection = new ServerProjectionStore();
+    projection.rooms.set('ambient', projectedRoom('ambient'));
+    const { navigation } = navigationFor(projection, undefined, {
+      roomUnreadCounts: { ambient: 1 },
+      roomImportantUnreadCounts: {}
+    });
+
+    expect(navigation.rooms[0]).toMatchObject({
+      viewerNotificationCount: 1,
+      viewerImportantNotificationCount: 0
+    });
+  });
+
   it('becomes empty immediately when the canonical projection resets', () => {
     const projection = new ServerProjectionStore();
     projection.viewer = new GetViewerResponse();
@@ -147,7 +162,10 @@ describe('NavigationStore', () => {
       user: new ViewerUser({ profile: new User({ id: 'U1' }) })
     });
     projection.rooms.set('R1', projectedRoom('R1'));
-    const navigation = new NavigationStore(projection, sync);
+    const navigation = new NavigationStore(projection, sync, {
+      roomUnreadCounts: {},
+      roomImportantUnreadCounts: {}
+    });
 
     expect(navigation.isInitialLoading).toBe(true);
     expect(navigation.currentUserId).toBeNull();

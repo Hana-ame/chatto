@@ -2,7 +2,7 @@
 
 **Date:** 2026-05-27
 
-**Updated:** 2026-07-27
+**Updated:** 2026-08-21
 
 ## Context
 
@@ -59,8 +59,11 @@ Current occupants include:
 
 - Room read cursors: `read.room.{userId}.{roomId}`.
 - Thread read cursors: `read.thread.{userId}.{roomId}.{threadRootEventId}`.
-- Pending notifications: `notification.{userId}.{notificationId}`, with per-key
-  90-day TTL.
+- Bounded notification read-boundary and visibility-boundary records used to
+  coordinate read reconciliation and persistent privacy boundaries between
+  `EVT` and the separate `NOTIFICATIONS` event stream. Notification derivation
+  work, occurrences, and lifecycle facts do not live in `RUNTIME_STATE`; see
+  ADR-076.
 - Web Push subscriptions: `push_subscription.{userId}.{endpointHash}`.
 - Runtime credential verifiers: `session.{hmac}`, with per-key
   `auth.token_ttl` sliding-window expiry. Values include credential kind
@@ -68,15 +71,6 @@ Current occupants include:
   `cookie`), source, safe request metadata, fresh-auth metadata, and the user
   auth generation they were issued against. User-wide cleanup scans these
   records and deletes entries whose stored user ID matches.
-- Legacy embedded-SPA cookie-session records:
-  `cookie_session.{userId}.{sessionHmac}`. Current code no longer writes this
-  shape, and the keyspace is deprecated. Chatto still validates and cleans it up
-  during the typed runtime credential rollout so upgrades do not invalidate
-  existing sessions. The value is a `CookieSession` protobuf containing
-  `user_id`, `created_at`, `expires_at`, source, safe request metadata, and the
-  user auth generation it was issued against. Remove this compatibility path
-  after existing sessions have exceeded the configured auth token TTL or after a
-  documented pre-1.0 compatibility cutoff.
 - OAuth authorization-code verifiers: `grant.{hmac}`, with per-key 5-minute
   TTL. Values include the user auth generation they were issued against.
 - Account workflow credential verifiers: `email_otp.{hmac(subject)}.{hmac(code)}`,
@@ -96,6 +90,13 @@ that snapshot is applied. KV remains authoritative, writes retain revision OCC,
 and write paths wait for the watcher to observe their successful revision when
 they require local read-your-writes.
 
+`NotificationBoundaryIndex` applies the same process-wide filtered-watcher
+pattern to notification read and visibility boundaries. Core startup waits for
+its initial snapshot. Writes retain KV revision OCC and wait for the successful
+revision to reach the index when local read-your-writes matters. One owning
+model therefore serves all requests and background repair without creating a
+watcher per request, user, or WebSocket.
+
 The HMAC keys for runtime credential handles, OAuth codes, and account workflow
 tokens are derived with `[core].secret_key` from the raw token/code plus a
 per-flow scope string. `RUNTIME_STATE` is included in backups, so active
@@ -112,9 +113,9 @@ The current video processor does not write new runtime progress or claim state;
 legacy `SERVER_RUNTIME video.*` records are historical pre-0.1 state and are
 not written by current code.
 
-Mention flags are not a target runtime-state model. Orange-dot behavior derives
-from pending notifications instead of preserving `room_mention_status.*` as
-canonical state.
+Mention flags are not a target runtime-state model. Attention indicators derive
+from exact unread notification occurrences instead of preserving
+`room_mention_status.*` as canonical state.
 
 ## Consequences
 
@@ -124,6 +125,8 @@ canonical state.
 - Hot read-state assembly avoids one KV round trip per room or thread, at the
   cost of process memory proportional to the persisted marker count and one
   process-wide filtered watcher per replica.
+- Notification read and visibility reconciliation gets the same bounded,
+  process-wide watcher and startup/read-your-writes guarantees.
 - The old `SERVER_RUNTIME` bucket is historical pre-0.1 storage, not a place
   for new state.
 - Runtime values in `RUNTIME_STATE` are not replayable from `EVT`; backup and
@@ -154,3 +157,5 @@ canonical state.
   event-sourced content/domain boundary.
 - [ADR-028](ADR-028-event-id-keyed-read-state.md) — defines the read-cursor
   shape that now lives in `RUNTIME_STATE`.
+- [ADR-076](ADR-076-deterministic-notification-occurrences.md) — defines the
+  bounded notification log and its cross-log runtime boundaries.

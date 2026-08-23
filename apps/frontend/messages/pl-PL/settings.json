@@ -6,7 +6,8 @@
       "profile": "Profil",
       "display": "Wyświetlacz",
       "notifications": "Powiadomienia",
-      "account": "Konto"
+      "account": "Konto",
+      "bots": "Boty"
     },
     "profile": {
       "title": "Profil",
@@ -179,9 +180,7 @@
         "enabling": "Włączam...",
         "blocked_error": "Powiadomienia push są blokowane w ustawieniach przeglądarki lub systemu operacyjnego.",
         "enable_failed": "Nie udało się włączyć powiadomień push. Spróbuj ponownie.",
-        "enable_error": "Wystąpił błąd podczas włączania powiadomień push",
-        "remote_title": "Natywny push jest niedostępny dla serwerów zdalnych",
-        "remote_description": "Ta zainstalowana aplikacja może rejestrować powiadomienia push przeglądarki tylko na serwerze, który ją obsługiwał. Plakietki i dźwięki powiadomień w aplikacji nadal działają na tym serwerze, gdy Chatto jest otwarty."
+        "enable_error": "Wystąpił błąd podczas włączania powiadomień push"
       },
       "push_prompt": {
         "title": "Włącz powiadomienia push",
@@ -194,35 +193,6 @@
         "enabling": "Włączam...",
         "enable": "Włącz",
         "dismiss": "Nie, dziękuję"
-      },
-      "levels": {
-        "loading": "Ładowanie...",
-        "load_failed": "Nie udało się załadować preferencji powiadomień",
-        "server_updated": "Zaktualizowano poziom powiadamiania serwera",
-        "room_updated": "Zaktualizowano poziom powiadamiania o pokoju",
-        "update_failed": "Nie udało się zaktualizować",
-        "server_title": "Poziom powiadamiania serwera",
-        "server_description": "Kontroluje sposób otrzymywania powiadomień dla wszystkich pokoi na tym serwerze. Poszczególne pokoje mogą zastąpić to ustawienie.",
-        "room_title": "Zastąpienia pokoju",
-        "room_description": "Zastąp ustawienia na poziomie serwera dla poszczególnych pokoi. Pokoje ustawione na „Domyślne” dziedziczą ustawienia serwera ({level}).",
-        "room_level_label": "Poziom powiadomień dla #{room}",
-        "effective": "Obowiązuje: {level}",
-        "default": {
-          "label": "Domyślnie",
-          "description": "Użyj odziedziczonej wartości domyślnej"
-        },
-        "muted": {
-          "label": "Wyciszony",
-          "description": "Brak powiadomień i nieprzeczytanych znaczników"
-        },
-        "normal": {
-          "label": "Normalny",
-          "description": "Nieprzeczytane znaczniki + wzmianki, DM i odpowiedzi w wątkach"
-        },
-        "all_messages": {
-          "label": "Wszystkie wiadomości",
-          "description": "Normalny + powiadomienie o każdej nowej wiadomości"
-        }
       },
       "sound": {
         "title": "Dźwięk powiadomienia",
@@ -272,6 +242,32 @@
           "siren": "Syrena alarmowa",
           "dubstep": "Dubstepowy spadek",
           "circus": "Cyrk"
+        }
+      },
+      "policy": {
+        "title": "Zasady powiadomień",
+        "description": "Wybierz, jak mocno każdy rodzaj aktywności ma zwracać Twoją uwagę. Dziedziczenie używa ustawienia serwera.",
+        "load_failed": "Nie udało się wczytać zasad powiadomień",
+        "save_failed": "Nie udało się zapisać zasad powiadomień",
+        "effective": "Obowiązuje: {mode}",
+        "delivery_mode": {
+          "inherit": "Dziedzicz",
+          "off": "Wyłączone",
+          "silent": "Cicho",
+          "alert": "Alert"
+        },
+        "reason": {
+          "direct_message": "Wiadomości bezpośrednie",
+          "direct_mention": "Bezpośrednie wzmianki",
+          "reply": "Odpowiedzi na Twoje wiadomości",
+          "role_mention": "Wzmianki o rolach",
+          "here": "Wzmianki @here",
+          "all": "Wzmianki @all",
+          "followed_thread": "Obserwowane wątki",
+          "followed_room": "Obserwowane pokoje",
+          "reaction": "Reakcje na Twoje wiadomości",
+          "activity": "Aktywność",
+          "room_invitation": "Zaproszenia do pokoi"
         }
       }
     },
@@ -349,6 +345,52 @@
         "confirm_placeholder": "DELETE",
         "cancel": "Anuluj",
         "deleting": "Usuwanie..."
+      }
+    },
+    "bots": {
+      "title": "Boty",
+      "subtitle": "Twórz konta API i dokładnie kontroluj ich możliwości",
+      "singular": "bot",
+      "unsupported": "Ta wersja serwera nie obsługuje kont botów.",
+      "list_title": "Konta botów",
+      "loading": "Ładowanie botów...",
+      "empty_title": "Nie ma jeszcze botów",
+      "empty_body": "Utwórz bota, gdy integracja wymaga własnej tożsamości i uprawnień.",
+      "create_permission_required": "Możesz zarządzać istniejącymi botami, ale nie masz uprawnień do utworzenia nowego.",
+      "create": "Utwórz bota",
+      "create_title": "Utwórz konto bota",
+      "create_failed": "Nie udało się utworzyć bota",
+      "created": "Bot został utworzony",
+      "edit": "Edytuj",
+      "edit_title": "Edytuj konto bota",
+      "updated": "Bot zaktualizowany",
+      "update_failed": "Nie udało się zaktualizować bota",
+      "update_conflict": "Ktoś inny zaktualizował tego bota. Odśwież stronę i spróbuj ponownie.",
+      "username": "Nazwa użytkownika",
+      "username_hint": "Nazwy użytkowników botów muszą kończyć się na _bot.",
+      "display_name": "Nazwa wyświetlana",
+      "owner": "Właściciel",
+      "reassign_owner": "Przypisz właściciela ponownie",
+      "reassign_owner_warning": "Klucz API bota i skonfigurowane uprawnienia pozostaną bez zmian. Efektywne uprawnienia natychmiast zaczną zależeć od nowego właściciela.",
+      "owner_reassigned": "Właściciel bota został przypisany ponownie",
+      "owner_reassign_failed": "Nie udało się ponownie przypisać właściciela bota",
+      "api_key_title": "Zapisz ten klucz API",
+      "api_key_warning": "Ten klucz jest wyświetlany tylko raz. Przed zamknięciem tego okna przechowuj go w bezpiecznym miejscu.",
+      "key_created": "Utworzono klucz API",
+      "key_rotated_at": "Ostatnia rotacja",
+      "key_copied": "Klucz API został skopiowany",
+      "rotate_key": "Obróć klawisz",
+      "rotate_title": "Obróć klucz API",
+      "rotate_warning": "Bieżący klucz natychmiast przestanie działać. Każda integracja korzystająca z niego musi zostać zaktualizowana.",
+      "key_rotated": "Klucz API został zmieniony",
+      "rotate_failed": "Nie udało się obrócić klucza API",
+      "delete_title": "Usuń bota",
+      "delete_warning": "Usunąć {name}? Jego klucz API natychmiast przestanie działać i konta nie będzie można odzyskać.",
+      "deleted": "Bot usunięty",
+      "delete_failed": "Nie udało się usunąć bota",
+      "permissions": {
+        "owner_ceiling": "Wybierz, co ten bot może robić. Możesz nadać mu tylko uprawnienia, które masz samodzielnie. Jeśli utracisz uprawnienie, bot również nie będzie mógł go używać.",
+        "save_failed": "Nie udało się zaktualizować uprawnień bota"
       }
     }
   }

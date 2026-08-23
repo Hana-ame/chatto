@@ -20,6 +20,11 @@ func TestProjectionSubjectPolicy(t *testing.T) {
 			want: []string{evtstream.RoomSubjectFilter()},
 		},
 		{
+			name: "notification visibility uses focused authorization state facts",
+			got:  NewNotificationDecisionProjection().Subjects(),
+			want: notificationDecisionProjectionSubjects(),
+		},
+		{
 			name: "room membership uses room aggregate namespace",
 			got:  NewRoomMembershipProjection().Subjects(),
 			want: []string{evtstream.RoomSubjectFilter()},
@@ -116,6 +121,9 @@ func TestProjectionSubjectPolicy(t *testing.T) {
 				evtstream.UserEventTypeFilter(evtstream.EventUserAccountDeleted),
 				evtstream.UserEventTypeFilter(evtstream.EventUserKeyShreddingRequested),
 				evtstream.UserEventTypeFilter(evtstream.EventUserKeyShredded),
+				evtstream.UserEventTypeFilter(evtstream.EventBotAPIKeyCreated),
+				evtstream.UserEventTypeFilter(evtstream.EventBotAPIKeyRotated),
+				evtstream.UserEventTypeFilter(evtstream.EventBotOwnerReassigned),
 			},
 		},
 		{

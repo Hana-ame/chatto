@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestReadEmbeddedConfigWithEnvironmentOverride(t *testing.T) {
@@ -22,6 +23,8 @@ data_dir = "/var/lib/authling"
 	wantDataDir := filepath.Join(t.TempDir(), "nats")
 	t.Setenv("AUTHLING_NATS_EMBEDDED_DATA_DIR", wantDataDir)
 	t.Setenv("AUTHLING_AUTHENTICATION_PASSWORD_MINIMUM_LENGTH", "12")
+	t.Setenv("AUTHLING_HTTP_TRUST_PROXY_HEADERS", "true")
+	t.Setenv("AUTHLING_OIDC_SIGNING_KEY_ROTATION_INTERVAL_DAYS", "30")
 
 	cfg, err := Read(path)
 	if err != nil {
@@ -35,6 +38,12 @@ data_dir = "/var/lib/authling"
 	}
 	if got := cfg.Authentication.PasswordMinimumLengthOrDefault(); got != 12 {
 		t.Fatalf("password minimum length = %d, want 12", got)
+	}
+	if !cfg.HTTP.TrustProxyHeaders {
+		t.Fatal("trusted proxy headers are disabled, want environment override enabled")
+	}
+	if got := cfg.OIDC.SigningKeyRotationInterval(); got != 30*24*time.Hour {
+		t.Fatalf("signing-key rotation interval = %s, want 30 days", got)
 	}
 }
 
@@ -121,22 +130,6 @@ func TestValidateAllowsPlainHTTPPublicURLOnlyOnLoopback(t *testing.T) {
 	}
 }
 
-func TestValidateTrustedProxyCIDRs(t *testing.T) {
-	validNATS := NATSConfig{Embedded: EmbeddedNATSConfig{Enabled: true, DataDir: t.TempDir()}}
-	cfg := Config{HTTP: HTTPConfig{TrustedProxyCIDRs: []string{"192.0.2.10/24", "2001:db8::/32"}}, NATS: validNATS}
-	if err := cfg.Validate(); err != nil {
-		t.Fatalf("valid trusted proxies: %v", err)
-	}
-	trusted := cfg.HTTP.TrustedProxies()
-	if len(trusted) != 2 || trusted[0].String() != "192.0.2.0/24" || trusted[1].String() != "2001:db8::/32" {
-		t.Fatalf("trusted proxies = %v", trusted)
-	}
-	cfg.HTTP.TrustedProxyCIDRs = []string{"192.0.2.1", "not-a-network"}
-	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "http.trusted_proxy_cidrs") {
-		t.Fatalf("invalid trusted proxies error = %v", err)
-	}
-}
-
 func TestValidateSMTPRequiresSafeCompleteConfiguration(t *testing.T) {
 	cfg := Config{NATS: NATSConfig{Embedded: EmbeddedNATSConfig{Enabled: true, DataDir: t.TempDir()}}, SMTP: SMTPConfig{Enabled: true, TLS: "plaintext"}}
 	err := cfg.Validate()
@@ -157,6 +150,19 @@ func TestValidatePasswordMinimumLength(t *testing.T) {
 	}
 	if cfg := (Config{NATS: validNATS}); cfg.Authentication.PasswordMinimumLengthOrDefault() != DefaultPasswordMinimumLength {
 		t.Fatalf("default password minimum = %d, want %d", cfg.Authentication.PasswordMinimumLengthOrDefault(), DefaultPasswordMinimumLength)
+	}
+}
+
+func TestValidateSigningKeyRotationInterval(t *testing.T) {
+	validNATS := NATSConfig{Embedded: EmbeddedNATSConfig{Enabled: true, DataDir: t.TempDir()}}
+	for _, days := range []int{-1, 3651} {
+		cfg := Config{NATS: validNATS, OIDC: OIDCConfig{SigningKeyRotationIntervalDays: days}}
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "oidc.signing_key_rotation_interval_days") {
+			t.Fatalf("Validate rotation interval %d error = %v, want interval error", days, err)
+		}
+	}
+	if got := (OIDCConfig{}).SigningKeyRotationInterval(); got != 90*24*time.Hour {
+		t.Fatalf("default signing-key rotation interval = %s, want 90 days", got)
 	}
 }
 
@@ -211,18 +217,31 @@ func TestValidateOIDCConventionalClients(t *testing.T) {
 
 func TestValidateCIMDTrustedPrivateHosts(t *testing.T) {
 	validNATS := NATSConfig{Embedded: EmbeddedNATSConfig{Enabled: true, DataDir: t.TempDir()}}
-	cfg := Config{NATS: validNATS, OIDC: OIDCConfig{CIMDTrustedPrivateHosts: []string{"Chatto.Dev.Orb.Local."}}}
+	cfg := Config{NATS: validNATS, OIDC: OIDCConfig{
+		CIMDTrustedPrivateHosts:  []string{"Chatto.Dev.Orb.Local."},
+		CIMDTrustedLoopbackHosts: []string{"Chatto-Dev.Localhost."},
+	}}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("valid trusted private host: %v", err)
 	}
 	if got := cfg.OIDC.TrustedPrivateCIMDHosts(); len(got) != 1 || got[0] != "chatto.dev.orb.local" {
 		t.Fatalf("normalized trusted hosts = %#v", got)
 	}
+	if got := cfg.OIDC.TrustedLoopbackCIMDHosts(); len(got) != 1 || got[0] != "chatto-dev.localhost" {
+		t.Fatalf("normalized trusted loopback hosts = %#v", got)
+	}
 
 	for _, host := range []string{"https://chatto.example", "chatto.example:443", "chatto.example/path", ""} {
 		cfg.OIDC.CIMDTrustedPrivateHosts = []string{host}
+		cfg.OIDC.CIMDTrustedLoopbackHosts = nil
 		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "cimd_trusted_private_hosts") {
 			t.Fatalf("trusted host %q validation error = %v", host, err)
 		}
+	}
+
+	cfg.OIDC.CIMDTrustedPrivateHosts = []string{"chatto-dev.localhost"}
+	cfg.OIDC.CIMDTrustedLoopbackHosts = []string{"CHATTO-DEV.LOCALHOST."}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "cimd_trusted_loopback_hosts") {
+		t.Fatalf("cross-list duplicate validation error = %v", err)
 	}
 }

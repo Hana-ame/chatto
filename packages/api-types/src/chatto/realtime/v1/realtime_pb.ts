@@ -13,7 +13,7 @@ import { RoomGroup, RoomViewerState, RoomWithViewerState } from "../../api/v1/ro
 import { PresenceStatus } from "../../api/v1/presence_pb.js";
 import { ThreadViewerState } from "../../api/v1/message_types_pb.js";
 import { RoomTimelineEvent, RoomTimelineIncludes, RoomTimelinePage } from "../../api/v1/room_timeline_pb.js";
-import { ListNotificationsResponse, RoomNotificationCount } from "../../api/v1/notifications_pb.js";
+import { ListNotificationOccurrencesResponse } from "../../api/v1/notifications_pb.js";
 import { ActiveCall } from "../../api/v1/voice_calls_pb.js";
 
 /**
@@ -40,34 +40,6 @@ proto3.util.setEnumType(RealtimeProjectionPinnedMessageAction, "chatto.realtime.
   { no: 0, name: "REALTIME_PROJECTION_PINNED_MESSAGE_ACTION_UNSPECIFIED" },
   { no: 1, name: "REALTIME_PROJECTION_PINNED_MESSAGE_ACTION_CREATED" },
   { no: 2, name: "REALTIME_PROJECTION_PINNED_MESSAGE_ACTION_DELETED" },
-]);
-
-/**
- * Kind of live notification transition.
- *
- * @generated from enum chatto.realtime.v1.RealtimeProjectionNotificationAction
- */
-export enum RealtimeProjectionNotificationAction {
-  /**
-   * @generated from enum value: REALTIME_PROJECTION_NOTIFICATION_ACTION_UNSPECIFIED = 0;
-   */
-  UNSPECIFIED = 0,
-
-  /**
-   * @generated from enum value: REALTIME_PROJECTION_NOTIFICATION_ACTION_CREATED = 1;
-   */
-  CREATED = 1,
-
-  /**
-   * @generated from enum value: REALTIME_PROJECTION_NOTIFICATION_ACTION_DISMISSED = 2;
-   */
-  DISMISSED = 2,
-}
-// Retrieve enum metadata with: proto3.getEnumType(RealtimeProjectionNotificationAction)
-proto3.util.setEnumType(RealtimeProjectionNotificationAction, "chatto.realtime.v1.RealtimeProjectionNotificationAction", [
-  { no: 0, name: "REALTIME_PROJECTION_NOTIFICATION_ACTION_UNSPECIFIED" },
-  { no: 1, name: "REALTIME_PROJECTION_NOTIFICATION_ACTION_CREATED" },
-  { no: 2, name: "REALTIME_PROJECTION_NOTIFICATION_ACTION_DISMISSED" },
 ]);
 
 /**
@@ -803,14 +775,6 @@ export class RealtimeProjectionOperation extends Message<RealtimeProjectionOpera
     case: "roomTimelineEventRemove";
   } | {
     /**
-     * Replaces the viewer's current pending-notification page and room counts.
-     *
-     * @generated from field: chatto.realtime.v1.RealtimeProjectionNotificationsReplace notifications_replace = 13;
-     */
-    value: RealtimeProjectionNotificationsReplace;
-    case: "notificationsReplace";
-  } | {
-    /**
      * Replaces one room's current viewer state without
      * retransmitting room metadata or membership.
      *
@@ -855,6 +819,16 @@ export class RealtimeProjectionOperation extends Message<RealtimeProjectionOpera
      */
     value: RealtimeProjectionRoomActivity;
     case: "roomActivity";
+  } | {
+    /**
+     * Replaces the viewer's current notification-occurrence page and exact
+     * unread occurrence counts. This uses a new top-level operation tag rather
+     * than reinterpreting the released Notifications 1.0 replacement.
+     *
+     * @generated from field: chatto.realtime.v1.RealtimeProjectionNotificationOccurrencesReplace notification_occurrences_replace = 19;
+     */
+    value: RealtimeProjectionNotificationOccurrencesReplace;
+    case: "notificationOccurrencesReplace";
   } | { case: undefined; value?: undefined } = { case: undefined };
 
   constructor(data?: PartialMessage<RealtimeProjectionOperation>) {
@@ -877,12 +851,12 @@ export class RealtimeProjectionOperation extends Message<RealtimeProjectionOpera
     { no: 10, name: "room_timeline_event_upsert", kind: "message", T: RealtimeProjectionRoomTimelineEventUpsert, oneof: "operation" },
     { no: 11, name: "server_state_upsert", kind: "message", T: RealtimeProjectionServerState, oneof: "operation" },
     { no: 12, name: "room_timeline_event_remove", kind: "message", T: RealtimeProjectionRoomTimelineEventRemove, oneof: "operation" },
-    { no: 13, name: "notifications_replace", kind: "message", T: RealtimeProjectionNotificationsReplace, oneof: "operation" },
     { no: 14, name: "room_viewer_state_replace", kind: "message", T: RealtimeProjectionRoomViewerStateReplace, oneof: "operation" },
     { no: 15, name: "active_calls_replace", kind: "message", T: RealtimeProjectionActiveCallsReplace, oneof: "operation" },
     { no: 16, name: "presences_replace", kind: "message", T: RealtimeProjectionPresencesReplace, oneof: "operation" },
     { no: 17, name: "thread_viewer_states_replace", kind: "message", T: RealtimeProjectionThreadViewerStatesReplace, oneof: "operation" },
     { no: 18, name: "room_activity", kind: "message", T: RealtimeProjectionRoomActivity, oneof: "operation" },
+    { no: 19, name: "notification_occurrences_replace", kind: "message", T: RealtimeProjectionNotificationOccurrencesReplace, oneof: "operation" },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): RealtimeProjectionOperation {
@@ -1069,13 +1043,6 @@ export class RealtimeProjectionRoom extends Message<RealtimeProjectionRoom> {
   memberUserIds: string[] = [];
 
   /**
-   * Current pending notifications targeting this room for the viewer.
-   *
-   * @generated from field: uint32 viewer_notification_count = 3;
-   */
-  viewerNotificationCount = 0;
-
-  /**
    * Whether this DM room has ever received a root message. False means the
    * durable room exists only so its initiator can compose the first message.
    * Once true, message deletion does not reset it. Absent for channel rooms
@@ -1095,7 +1062,6 @@ export class RealtimeProjectionRoom extends Message<RealtimeProjectionRoom> {
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
     { no: 1, name: "room", kind: "message", T: RoomWithViewerState },
     { no: 2, name: "member_user_ids", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
-    { no: 3, name: "viewer_notification_count", kind: "scalar", T: 13 /* ScalarType.UINT32 */ },
     { no: 4, name: "has_message_history", kind: "scalar", T: 8 /* ScalarType.BOOL */, opt: true },
   ]);
 
@@ -1610,114 +1576,50 @@ export class RealtimeProjectionRoomTimelineEventRemove extends Message<RealtimeP
 /**
  * Finite current notification state emitted on bootstrap and every resume.
  *
- * @generated from message chatto.realtime.v1.RealtimeProjectionNotificationsReplace
+ * @generated from message chatto.realtime.v1.RealtimeProjectionNotificationOccurrencesReplace
  */
-export class RealtimeProjectionNotificationsReplace extends Message<RealtimeProjectionNotificationsReplace> {
+export class RealtimeProjectionNotificationOccurrencesReplace extends Message<RealtimeProjectionNotificationOccurrencesReplace> {
   /**
-   * Newest pending notifications and total pending count.
+   * True only when this live replacement should produce a one-shot local
+   * notification sound. Bootstrap and reconciliation replacements are false.
    *
-   * @generated from field: chatto.api.v1.ListNotificationsResponse page = 1;
+   * @generated from field: bool play_notification_sound = 1;
    */
-  page?: ListNotificationsResponse;
+  playNotificationSound = false;
 
   /**
-   * Complete current counts for rooms with pending notifications.
+   * Authoritative Notifications 2.0 occurrences and exact unread count.
    *
-   * @generated from field: repeated chatto.api.v1.RoomNotificationCount room_counts = 2;
+   * @generated from field: chatto.api.v1.ListNotificationOccurrencesResponse occurrences = 2;
    */
-  roomCounts: RoomNotificationCount[] = [];
+  occurrences?: ListNotificationOccurrencesResponse;
 
-  /**
-   * Live transition that caused this replacement, when one exists. Bootstrap,
-   * replay reconciliation, and compacted reset replacements omit this field.
-   *
-   * @generated from field: optional chatto.realtime.v1.RealtimeProjectionNotificationChange change = 3;
-   */
-  change?: RealtimeProjectionNotificationChange;
-
-  constructor(data?: PartialMessage<RealtimeProjectionNotificationsReplace>) {
+  constructor(data?: PartialMessage<RealtimeProjectionNotificationOccurrencesReplace>) {
     super();
     proto3.util.initPartial(data, this);
   }
 
   static readonly runtime: typeof proto3 = proto3;
-  static readonly typeName = "chatto.realtime.v1.RealtimeProjectionNotificationsReplace";
+  static readonly typeName = "chatto.realtime.v1.RealtimeProjectionNotificationOccurrencesReplace";
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
-    { no: 1, name: "page", kind: "message", T: ListNotificationsResponse },
-    { no: 2, name: "room_counts", kind: "message", T: RoomNotificationCount, repeated: true },
-    { no: 3, name: "change", kind: "message", T: RealtimeProjectionNotificationChange, opt: true },
+    { no: 1, name: "play_notification_sound", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+    { no: 2, name: "occurrences", kind: "message", T: ListNotificationOccurrencesResponse },
   ]);
 
-  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): RealtimeProjectionNotificationsReplace {
-    return new RealtimeProjectionNotificationsReplace().fromBinary(bytes, options);
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): RealtimeProjectionNotificationOccurrencesReplace {
+    return new RealtimeProjectionNotificationOccurrencesReplace().fromBinary(bytes, options);
   }
 
-  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): RealtimeProjectionNotificationsReplace {
-    return new RealtimeProjectionNotificationsReplace().fromJson(jsonValue, options);
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): RealtimeProjectionNotificationOccurrencesReplace {
+    return new RealtimeProjectionNotificationOccurrencesReplace().fromJson(jsonValue, options);
   }
 
-  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): RealtimeProjectionNotificationsReplace {
-    return new RealtimeProjectionNotificationsReplace().fromJsonString(jsonString, options);
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): RealtimeProjectionNotificationOccurrencesReplace {
+    return new RealtimeProjectionNotificationOccurrencesReplace().fromJsonString(jsonString, options);
   }
 
-  static equals(a: RealtimeProjectionNotificationsReplace | PlainMessage<RealtimeProjectionNotificationsReplace> | undefined, b: RealtimeProjectionNotificationsReplace | PlainMessage<RealtimeProjectionNotificationsReplace> | undefined): boolean {
-    return proto3.util.equals(RealtimeProjectionNotificationsReplace, a, b);
-  }
-}
-
-/**
- * One live notification transition accompanying authoritative current state.
- *
- * This metadata exists for one-shot presentation effects such as sounds. The
- * enclosing replacement remains the canonical notification state.
- *
- * @generated from message chatto.realtime.v1.RealtimeProjectionNotificationChange
- */
-export class RealtimeProjectionNotificationChange extends Message<RealtimeProjectionNotificationChange> {
-  /**
-   * @generated from field: chatto.realtime.v1.RealtimeProjectionNotificationAction action = 1;
-   */
-  action = RealtimeProjectionNotificationAction.UNSPECIFIED;
-
-  /**
-   * @generated from field: string notification_id = 2;
-   */
-  notificationId = "";
-
-  /**
-   * True when a created notification must not produce an alert.
-   *
-   * @generated from field: bool silent = 3;
-   */
-  silent = false;
-
-  constructor(data?: PartialMessage<RealtimeProjectionNotificationChange>) {
-    super();
-    proto3.util.initPartial(data, this);
-  }
-
-  static readonly runtime: typeof proto3 = proto3;
-  static readonly typeName = "chatto.realtime.v1.RealtimeProjectionNotificationChange";
-  static readonly fields: FieldList = proto3.util.newFieldList(() => [
-    { no: 1, name: "action", kind: "enum", T: proto3.getEnumType(RealtimeProjectionNotificationAction) },
-    { no: 2, name: "notification_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
-    { no: 3, name: "silent", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
-  ]);
-
-  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): RealtimeProjectionNotificationChange {
-    return new RealtimeProjectionNotificationChange().fromBinary(bytes, options);
-  }
-
-  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): RealtimeProjectionNotificationChange {
-    return new RealtimeProjectionNotificationChange().fromJson(jsonValue, options);
-  }
-
-  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): RealtimeProjectionNotificationChange {
-    return new RealtimeProjectionNotificationChange().fromJsonString(jsonString, options);
-  }
-
-  static equals(a: RealtimeProjectionNotificationChange | PlainMessage<RealtimeProjectionNotificationChange> | undefined, b: RealtimeProjectionNotificationChange | PlainMessage<RealtimeProjectionNotificationChange> | undefined): boolean {
-    return proto3.util.equals(RealtimeProjectionNotificationChange, a, b);
+  static equals(a: RealtimeProjectionNotificationOccurrencesReplace | PlainMessage<RealtimeProjectionNotificationOccurrencesReplace> | undefined, b: RealtimeProjectionNotificationOccurrencesReplace | PlainMessage<RealtimeProjectionNotificationOccurrencesReplace> | undefined): boolean {
+    return proto3.util.equals(RealtimeProjectionNotificationOccurrencesReplace, a, b);
   }
 }
 
@@ -2193,22 +2095,6 @@ export class RealtimeEventEnvelope extends Message<RealtimeEventEnvelope> {
     case: "presenceChanged";
   } | {
     /**
-     * The current user was mentioned in a room.
-     *
-     * @generated from field: chatto.realtime.v1.RealtimeMentionNotificationEvent mention_notification = 88;
-     */
-    value: RealtimeMentionNotificationEvent;
-    case: "mentionNotification";
-  } | {
-    /**
-     * The current user received a new direct message.
-     *
-     * @generated from field: chatto.realtime.v1.RealtimeNewDirectMessageNotificationEvent new_direct_message_notification = 89;
-     */
-    value: RealtimeNewDirectMessageNotificationEvent;
-    case: "newDirectMessageNotification";
-  } | {
-    /**
      * The current user's session was terminated.
      *
      * @generated from field: chatto.realtime.v1.RealtimeSessionTerminatedEvent session_terminated = 90;
@@ -2230,8 +2116,6 @@ export class RealtimeEventEnvelope extends Message<RealtimeEventEnvelope> {
     { no: 3, name: "actor_id", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
     { no: 30, name: "user_typing", kind: "message", T: RealtimeTypingEvent, oneof: "event" },
     { no: 31, name: "presence_changed", kind: "message", T: RealtimePresenceChangedEvent, oneof: "event" },
-    { no: 88, name: "mention_notification", kind: "message", T: RealtimeMentionNotificationEvent, oneof: "event" },
-    { no: 89, name: "new_direct_message_notification", kind: "message", T: RealtimeNewDirectMessageNotificationEvent, oneof: "event" },
     { no: 90, name: "session_terminated", kind: "message", T: RealtimeSessionTerminatedEvent, oneof: "event" },
   ]);
 
@@ -2353,153 +2237,6 @@ export class RealtimePresenceChangedEvent extends Message<RealtimePresenceChange
 
   static equals(a: RealtimePresenceChangedEvent | PlainMessage<RealtimePresenceChangedEvent> | undefined, b: RealtimePresenceChangedEvent | PlainMessage<RealtimePresenceChangedEvent> | undefined): boolean {
     return proto3.util.equals(RealtimePresenceChangedEvent, a, b);
-  }
-}
-
-/**
- * Mention attention signal for the connected user.
- *
- * Inline names are display hints. Hydrate referenced rooms through
- * `RoomDirectoryService.BatchGetRooms` and users through
- * `UserService.BatchGetUsers` when local caches are missing or stale.
- *
- * @generated from message chatto.realtime.v1.RealtimeMentionNotificationEvent
- */
-export class RealtimeMentionNotificationEvent extends Message<RealtimeMentionNotificationEvent> {
-  /**
-   * Room where the mention occurred.
-   *
-   * @generated from field: string room_id = 1;
-   */
-  roomId = "";
-
-  /**
-   * Author user ID.
-   *
-   * @generated from field: string actor_user_id = 2;
-   */
-  actorUserId = "";
-
-  /**
-   * Display name of the room where the mention occurred, when hydrated for the caller.
-   *
-   * @generated from field: optional string room_name = 3;
-   */
-  roomName?: string;
-
-  /**
-   * Display name of the author who mentioned the connected user, when hydrated.
-   *
-   * @generated from field: optional string actor_display_name = 4;
-   */
-  actorDisplayName?: string;
-
-  constructor(data?: PartialMessage<RealtimeMentionNotificationEvent>) {
-    super();
-    proto3.util.initPartial(data, this);
-  }
-
-  static readonly runtime: typeof proto3 = proto3;
-  static readonly typeName = "chatto.realtime.v1.RealtimeMentionNotificationEvent";
-  static readonly fields: FieldList = proto3.util.newFieldList(() => [
-    { no: 1, name: "room_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
-    { no: 2, name: "actor_user_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
-    { no: 3, name: "room_name", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
-    { no: 4, name: "actor_display_name", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
-  ]);
-
-  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): RealtimeMentionNotificationEvent {
-    return new RealtimeMentionNotificationEvent().fromBinary(bytes, options);
-  }
-
-  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): RealtimeMentionNotificationEvent {
-    return new RealtimeMentionNotificationEvent().fromJson(jsonValue, options);
-  }
-
-  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): RealtimeMentionNotificationEvent {
-    return new RealtimeMentionNotificationEvent().fromJsonString(jsonString, options);
-  }
-
-  static equals(a: RealtimeMentionNotificationEvent | PlainMessage<RealtimeMentionNotificationEvent> | undefined, b: RealtimeMentionNotificationEvent | PlainMessage<RealtimeMentionNotificationEvent> | undefined): boolean {
-    return proto3.util.equals(RealtimeMentionNotificationEvent, a, b);
-  }
-}
-
-/**
- * New-DM attention signal for the connected user.
- *
- * Inline names and avatar URLs are display hints. Hydrate the DM room through
- * `RoomDirectoryService.GetRoom` or `RoomDirectoryService.BatchGetRooms`, and
- * the sender through `UserService.GetUser` or `UserService.BatchGetUsers` when
- * local caches are missing or stale.
- *
- * @generated from message chatto.realtime.v1.RealtimeNewDirectMessageNotificationEvent
- */
-export class RealtimeNewDirectMessageNotificationEvent extends Message<RealtimeNewDirectMessageNotificationEvent> {
-  /**
-   * DM room ID.
-   *
-   * @generated from field: string room_id = 1;
-   */
-  roomId = "";
-
-  /**
-   * Sender user ID.
-   *
-   * @generated from field: string sender_id = 2;
-   */
-  senderId = "";
-
-  /**
-   * Display name of the sender, when hydrated.
-   *
-   * @generated from field: optional string sender_display_name = 3;
-   */
-  senderDisplayName?: string;
-
-  /**
-   * Avatar URL of the sender, when one is available.
-   *
-   * @generated from field: optional string sender_avatar_url = 4;
-   */
-  senderAvatarUrl?: string;
-
-  /**
-   * Display name for the DM conversation from the connected user's perspective, when hydrated.
-   *
-   * @generated from field: optional string conversation_name = 5;
-   */
-  conversationName?: string;
-
-  constructor(data?: PartialMessage<RealtimeNewDirectMessageNotificationEvent>) {
-    super();
-    proto3.util.initPartial(data, this);
-  }
-
-  static readonly runtime: typeof proto3 = proto3;
-  static readonly typeName = "chatto.realtime.v1.RealtimeNewDirectMessageNotificationEvent";
-  static readonly fields: FieldList = proto3.util.newFieldList(() => [
-    { no: 1, name: "room_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
-    { no: 2, name: "sender_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
-    { no: 3, name: "sender_display_name", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
-    { no: 4, name: "sender_avatar_url", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
-    { no: 5, name: "conversation_name", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
-  ]);
-
-  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): RealtimeNewDirectMessageNotificationEvent {
-    return new RealtimeNewDirectMessageNotificationEvent().fromBinary(bytes, options);
-  }
-
-  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): RealtimeNewDirectMessageNotificationEvent {
-    return new RealtimeNewDirectMessageNotificationEvent().fromJson(jsonValue, options);
-  }
-
-  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): RealtimeNewDirectMessageNotificationEvent {
-    return new RealtimeNewDirectMessageNotificationEvent().fromJsonString(jsonString, options);
-  }
-
-  static equals(a: RealtimeNewDirectMessageNotificationEvent | PlainMessage<RealtimeNewDirectMessageNotificationEvent> | undefined, b: RealtimeNewDirectMessageNotificationEvent | PlainMessage<RealtimeNewDirectMessageNotificationEvent> | undefined): boolean {
-    return proto3.util.equals(RealtimeNewDirectMessageNotificationEvent, a, b);
   }
 }
 

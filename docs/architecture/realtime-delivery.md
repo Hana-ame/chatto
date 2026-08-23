@@ -35,6 +35,14 @@ application, so a block racing connection setup cannot leave an authorized
 socket behind. Cookie sessions, first-party bearer sessions, and OAuth sessions
 issued to other clients are unaffected.
 
+Bot API-key connections similarly retain only the non-secret HMAC verifier
+generation accepted during the hello. Each connection registers atomically
+with the durable user-auth projection. When a key-rotation fact reaches a
+replica, that projection closes watchers for the superseded generation; the
+handler cancels authorized work, sends a terminal `authentication_required`
+close when possible, and tears down the socket. The raw API key is not retained
+in request or connection context.
+
 The `chatto.realtime.v1` package name is the protobuf namespace, not the
 behavioural protocol version. Protocol 2 is the server-scoped projection
 stream. It uses `RealtimeProjectionEvent`, an optional resume cursor on
@@ -94,7 +102,8 @@ idempotent operations:
   visible room-group layout; DM participant references remain eager;
 - complete channel membership and the latest 50 renderable timeline events only
   for rooms named as retained by the subscribing client;
-- the newest finite pending-notification page and complete per-room counts;
+- the newest finite Notifications 2.0 occurrences, exact total and Important
+  unread-occurrence counts, and complete per-room counterparts;
 - every active call visible to the viewer; and
 - a complete latest-value presence map for the projected user directory.
 
@@ -243,8 +252,8 @@ windows (3,200 recent rows), bounding decryption and transient response memory.
 
 Every subscription emits one finite latest-value reconciliation before
 `caught_up`. It replaces the viewer resource; the complete followed-thread
-viewer-state set, including RUNTIME_STATE unread markers; pending notifications
-and room counts; and the server directory's current presence. Missing
+viewer-state set, including RUNTIME_STATE unread markers; notification
+occurrences and room counts; and the server directory's current presence. Missing
 followed-thread entries authoritatively clear follow/unread state on retained
 thread roots.
 
@@ -281,6 +290,17 @@ state, so catch-up retries rather than converging to a lossy replacement.
 Room/thread marker hydration reads the process-wide `ReadStateModel` index,
 which is initialized and maintained by one filtered `RUNTIME_STATE` watcher;
 realtime subscriptions do not create their own marker watchers.
+
+Notification invalidations carry no transition state. A creation hint may name
+one opaque alert candidate. Before assembling a finite replacement, the
+serving replica waits for its `NOTIFICATIONS` projection to become current and
+revalidates that candidate. It sends only the authoritative replacement and a
+positive `play_notification_sound` instruction when the occurrence is still
+unread, inside its alert deadline, allowed by current policy and DND state,
+currently visible, and present in that same finite replacement. A newer read,
+removal, policy/access change, or lifecycle mutation therefore prevents sound
+while the replacement remains authoritative. The client deduplicates this
+one-shot effect by the stable enclosing projection-event ID.
 
 This operation set closes the parts of client state that an EVT gap alone
 cannot reconstruct, without a ConnectRPC side read or a second bootstrap
@@ -332,9 +352,13 @@ retaining the room timeline. Retained clients refresh the room's canonical pin
 page in event order. Older protocol-2 clients ignore the unknown nested field
 while continuing to process the known top-level operation.
 
-RBAC facts are fanned through the shared hub. The mapper responds with a
-reconnecting `projection_reset_required` close so the next subscription starts
-from current authorization.
+RBAC facts are fanned through the shared hub. The mapper normally responds with
+a reconnecting `projection_reset_required` close so the next subscription
+starts from current authorization. A human viewer's own direct permission
+mutation targeting a bot cannot change that viewer's authorization, so their
+connection instead receives an empty projection envelope and advances its
+cursor without rebuilding the page. Other viewers, including the target bot,
+still receive the reset.
 
 ## Process-wide live ingress
 
@@ -374,7 +398,7 @@ canonical-reply deletion from direct echo removal.
 
 Room-read signals emit a `RoomViewerStateReplace` for the affected room and a
 finite `NotificationsReplace`. This keeps the retained canonical room row,
-pending-notification state, and both sidebar indicators in step, so a later
+notification occurrence state, and both sidebar indicators in step, so a later
 mutation cannot restore stale unread or mention state. Root-message activity
 operations advance the affected room even when its timeline is not retained;
 later viewer-state replacements therefore cannot undo DM sorting.
@@ -403,10 +427,19 @@ reloaded during reset.
 
 Typing, presence transitions, mention/new-DM attention hints, and session
 termination continue as `RealtimeEventEnvelope` frames on the same WebSocket.
-Notification create/dismiss signals instead assemble an authoritative
-`notifications_replace`; a live replacement may carry transition metadata for
+Notification occurrence create/update/delete signals instead assemble an
+authoritative `notification_occurrences_replace` containing occurrences plus exact total
+and Important counts. A live replacement may carry transition metadata for
 one-shot presentation effects, while replay and finite reconciliation omit it.
-
+The internal signal carries no stream coordinate. Before emitting the
+replacement at that live cursor, the serving replica waits until the
+notification projection is current, preventing a cross-replica invalidation
+from advancing the cursor with stale state. Replacements contain at most 50 exact occurrences plus
+complete aggregate totals and the next list expiry boundary. Clients refresh
+at that boundary and use the separately paginated ConnectRPC read for older
+occurrences. They also quietly reconcile the first page once per minute, which
+bounds count staleness if a best-effort Core NATS invalidation is lost while a
+tab remains connected.
 Viewer preferences, thread follow/read state, profile changes, server layout,
 and member removal likewise mutate the client only through projection
 operations. Active calls converge through `active_calls_replace` in the
@@ -415,7 +448,7 @@ changes the set visible to the viewer. Call-started and call-ended facts pair
 that replacement with a timeline-event upsert for clients retaining the room,
 so the call state and lifecycle row advance under one projection cursor.
 
-Transient frames have no durable cursor. Finite pending-notification and
+Transient frames have no durable cursor. Finite notification-list and
 presence state are reconciled explicitly on every subscription. The
 process-wide PresenceHub retains current presence and fans out later
 transitions.

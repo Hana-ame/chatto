@@ -3,30 +3,25 @@
 package web
 
 import (
-	"bytes"
-	"context"
+	"crypto/tls"
 	"embed"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
-	"net"
 	"net/http"
-	"net/netip"
 	"net/url"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/a-h/templ"
-	"github.com/coder/websocket"
 	"hmans.de/authling/internal/accounts"
 	"hmans.de/authling/internal/authentication"
+	"hmans.de/authling/internal/authorizations"
+	"hmans.de/authling/internal/emailchange"
 	"hmans.de/authling/internal/oidcprovider"
+	"hmans.de/authling/internal/passwordreset"
 	"hmans.de/authling/internal/registration"
 	"hmans.de/authling/internal/sessions"
-	"hmans.de/authling/internal/tinybasesync"
 )
 
 //go:embed assets
@@ -45,12 +40,16 @@ type Dependencies struct {
 	Accounts       *accounts.Service
 	Authentication *authentication.Service
 	Registration   *registration.Service
+	PasswordReset  *passwordreset.Service
+	EmailChange    *emailchange.Service
 	Sessions       *sessions.Service
+	Authorizations *authorizations.Service
 	OIDC           *oidcprovider.Service
-	AccountSync    *tinybasesync.Hub
 	SecureCookies  bool
 	PublicURL      string
-	TrustedProxies []netip.Prefix
+	// TrustProxyHeaders treats X-Forwarded-Host and X-Forwarded-Proto as the
+	// browser-facing origin. Enable it only behind a proxy that overwrites them.
+	TrustProxyHeaders bool
 }
 
 // Handler returns Authling's public HTTP handler. Its pages are rendered on
@@ -69,7 +68,6 @@ func Handler(dependencies ...Dependencies) http.Handler {
 		}
 	}
 	mux := http.NewServeMux()
-	accountSyncAuthenticationAdmission := newAccountSyncAuthenticationAdmission()
 	assets, err := fs.Sub(embeddedAssets, "assets")
 	if err != nil {
 		panic("open embedded web assets: " + err.Error())
@@ -124,6 +122,109 @@ func Handler(dependencies ...Dependencies) http.Handler {
 		}
 		redirect(w, r, "/account")
 	})
+	mux.HandleFunc("GET /password-reset", func(w http.ResponseWriter, r *http.Request) {
+		requestID := r.URL.Query().Get("id")
+		if requestID != "" && (deps.OIDC == nil || !validConsentRequest(r, deps.OIDC, requestID)) {
+			http.Error(w, "authorization request unavailable", http.StatusBadRequest)
+			return
+		}
+		render(w, r, http.StatusOK, passwordResetPage("", requestID))
+	})
+	mux.HandleFunc("POST /password-reset", func(w http.ResponseWriter, r *http.Request) {
+		if deps.PasswordReset == nil {
+			http.Error(w, "password reset unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		if !sameOrigin(r, publicOrigin) {
+			http.Error(w, "cross-origin request rejected", http.StatusForbidden)
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+		if err := r.ParseForm(); err != nil {
+			render(w, r, http.StatusBadRequest, passwordResetPage("Invalid form submission.", ""))
+			return
+		}
+		requestID := r.FormValue("oidc_request")
+		if requestID != "" && (deps.OIDC == nil || !validConsentRequest(r, deps.OIDC, requestID)) {
+			http.Error(w, "authorization request unavailable", http.StatusBadRequest)
+			return
+		}
+		flow, err := deps.PasswordReset.Start(r.Context(), r.FormValue("email"))
+		if err != nil {
+			render(w, r, http.StatusUnprocessableEntity, passwordResetPage(publicPasswordResetStartError(err), requestID))
+			return
+		}
+		render(w, r, http.StatusOK, passwordResetCodePage(flow, "", requestID))
+	})
+	mux.HandleFunc("POST /password-reset/verify", func(w http.ResponseWriter, r *http.Request) {
+		if deps.PasswordReset == nil {
+			http.Error(w, "password reset unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		if !sameOrigin(r, publicOrigin) {
+			http.Error(w, "cross-origin request rejected", http.StatusForbidden)
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "invalid form", http.StatusBadRequest)
+			return
+		}
+		requestID := r.FormValue("oidc_request")
+		if requestID != "" && (deps.OIDC == nil || !validConsentRequest(r, deps.OIDC, requestID)) {
+			http.Error(w, "authorization request unavailable", http.StatusBadRequest)
+			return
+		}
+		flow := r.FormValue("flow")
+		if err := deps.PasswordReset.Verify(r.Context(), flow, r.FormValue("code")); err != nil {
+			render(w, r, http.StatusUnprocessableEntity, passwordResetCodePage(flow, passwordreset.ErrInvalidCode.Error(), requestID))
+			return
+		}
+		render(w, r, http.StatusOK, newPasswordPage(flow, "", deps.PasswordReset.PasswordMinimumLength(), requestID))
+	})
+	mux.HandleFunc("POST /password-reset/complete", func(w http.ResponseWriter, r *http.Request) {
+		if deps.PasswordReset == nil {
+			http.Error(w, "password reset unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		if !sameOrigin(r, publicOrigin) {
+			http.Error(w, "cross-origin request rejected", http.StatusForbidden)
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "invalid form", http.StatusBadRequest)
+			return
+		}
+		requestID := r.FormValue("oidc_request")
+		if requestID != "" && (deps.OIDC == nil || !validConsentRequest(r, deps.OIDC, requestID)) {
+			http.Error(w, "authorization request unavailable", http.StatusBadRequest)
+			return
+		}
+		flow := r.FormValue("flow")
+		account, err := deps.PasswordReset.Complete(r.Context(), flow, r.FormValue("password"))
+		if errors.Is(err, accounts.ErrInvalidPassword) {
+			render(w, r, http.StatusUnprocessableEntity, newPasswordPage(flow, err.Error(), deps.PasswordReset.PasswordMinimumLength(), requestID))
+			return
+		}
+		if err != nil {
+			render(w, r, http.StatusUnprocessableEntity, passwordResetPage(passwordreset.ErrInvalidFlow.Error(), requestID))
+			return
+		}
+		if deps.Sessions == nil {
+			render(w, r, http.StatusOK, passwordResetCompletePage())
+			return
+		}
+		if err := establishSession(w, r, deps, account.ID); err != nil {
+			render(w, r, http.StatusServiceUnavailable, passwordResetCompletePage())
+			return
+		}
+		if requestID != "" {
+			redirect(w, r, "/oidc/consent?id="+url.QueryEscape(requestID))
+			return
+		}
+		redirect(w, r, "/account")
+	})
 	mux.HandleFunc("GET /oidc/consent", func(w http.ResponseWriter, r *http.Request) {
 		if deps.OIDC == nil {
 			http.Error(w, "OIDC unavailable", http.StatusServiceUnavailable)
@@ -135,15 +236,28 @@ func Handler(dependencies ...Dependencies) http.Handler {
 			http.Error(w, "authorization request unavailable", http.StatusBadRequest)
 			return
 		}
-		if _, err := authenticatedAccount(r, deps); errors.Is(err, sessions.ErrNotFound) {
+		account, err := authenticatedAccount(r, deps)
+		if errors.Is(err, sessions.ErrNotFound) {
 			redirect(w, r, "/login?id="+url.QueryEscape(requestID))
 			return
 		} else if err != nil {
 			http.Error(w, "account unavailable", http.StatusServiceUnavailable)
 			return
 		}
+		if target, authorized, err := deps.OIDC.TryAuthorize(r.Context(), requestID, account.ID); err != nil {
+			http.Error(w, "authorization request unavailable", http.StatusServiceUnavailable)
+			return
+		} else if authorized {
+			redirect(w, r, target)
+			return
+		}
+		email, err := deps.Accounts.EmailAddress(r.Context(), account.ID)
+		if err != nil {
+			http.Error(w, "account unavailable", http.StatusServiceUnavailable)
+			return
+		}
 		w.Header().Set("Content-Security-Policy", contentSecurityPolicy(consent.RedirectOrigin))
-		render(w, r, http.StatusOK, consentPage(consent))
+		render(w, r, http.StatusOK, consentPage(consent, email))
 	})
 	mux.HandleFunc("POST /oidc/consent", func(w http.ResponseWriter, r *http.Request) {
 		if deps.OIDC == nil {
@@ -184,6 +298,66 @@ func Handler(dependencies ...Dependencies) http.Handler {
 		redirect(w, r, target)
 	})
 	mux.HandleFunc("GET /account", func(w http.ResponseWriter, r *http.Request) {
+		account, token, err := authenticatedAccountAndToken(r, deps, true)
+		if errors.Is(err, sessions.ErrNotFound) {
+			clearSessionCookie(w, deps.SecureCookies)
+			redirect(w, r, "/login")
+			return
+		}
+		if err != nil {
+			http.Error(w, "account unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		email, err := deps.Accounts.EmailAddress(r.Context(), account.ID)
+		if err != nil {
+			http.Error(w, "account unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		browserSessions, err := deps.Sessions.List(r.Context(), account.ID, token)
+		if errors.Is(err, sessions.ErrNotFound) {
+			clearSessionCookie(w, deps.SecureCookies)
+			redirect(w, r, "/login")
+			return
+		} else if err != nil {
+			http.Error(w, "browser sessions unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		var authorizationGrants []authorizations.Grant
+		if deps.Authorizations != nil {
+			authorizationGrants, err = deps.Authorizations.List(r.Context(), account.ID)
+			if err != nil {
+				http.Error(w, "authorized apps unavailable", http.StatusServiceUnavailable)
+				return
+			}
+		}
+		emailChanged := r.URL.Query().Get("email_changed") == "1"
+		passwordChanged := r.URL.Query().Get("password_changed") == "1"
+		render(w, r, http.StatusOK, accountPage(
+			account.ID,
+			email,
+			browserSessions,
+			authorizationGrants,
+			passwordChanged,
+			emailChanged,
+			r.URL.Query().Get("profile_updated") == "1",
+			emailChanged && r.URL.Query().Get("email_notice_failed") == "1",
+			r.URL.Query().Get("session_revoked") == "1",
+			r.URL.Query().Get("other_sessions_revoked") == "1",
+			r.URL.Query().Get("session_missing") == "1",
+			r.URL.Query().Get("app_revoked") == "1",
+			r.URL.Query().Get("app_missing") == "1",
+		))
+	})
+	mux.HandleFunc("POST /account/authorizations/revoke", func(w http.ResponseWriter, r *http.Request) {
+		if deps.Authorizations == nil {
+			http.Error(w, "authorized app management unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		if !sameOrigin(r, publicOrigin) {
+			http.Error(w, "cross-origin request rejected", http.StatusForbidden)
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
 		account, err := authenticatedAccount(r, deps)
 		if errors.Is(err, sessions.ErrNotFound) {
 			clearSessionCookie(w, deps.SecureCookies)
@@ -194,7 +368,373 @@ func Handler(dependencies ...Dependencies) http.Handler {
 			http.Error(w, "account unavailable", http.StatusServiceUnavailable)
 			return
 		}
-		render(w, r, http.StatusOK, accountPage(account.ID))
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "invalid form", http.StatusBadRequest)
+			return
+		}
+		err = deps.Authorizations.Revoke(r.Context(), account.ID, r.FormValue("grant_id"))
+		switch {
+		case errors.Is(err, authorizations.ErrNotFound):
+			redirect(w, r, "/account?app_missing=1")
+		case err != nil:
+			http.Error(w, "authorized app management unavailable", http.StatusServiceUnavailable)
+		default:
+			redirect(w, r, "/account?app_revoked=1")
+		}
+	})
+	mux.HandleFunc("POST /account/sessions/revoke", func(w http.ResponseWriter, r *http.Request) {
+		if deps.Sessions == nil {
+			http.Error(w, "browser session management unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		if !sameOrigin(r, publicOrigin) {
+			http.Error(w, "cross-origin request rejected", http.StatusForbidden)
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
+		account, token, err := authenticatedAccountAndToken(r, deps, true)
+		if errors.Is(err, sessions.ErrNotFound) {
+			clearSessionCookie(w, deps.SecureCookies)
+			redirect(w, r, "/login")
+			return
+		}
+		if err != nil {
+			http.Error(w, "account unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "invalid form", http.StatusBadRequest)
+			return
+		}
+		err = deps.Sessions.RevokeSession(r.Context(), account.ID, r.FormValue("session_id"), token)
+		switch {
+		case errors.Is(err, sessions.ErrNotFound):
+			redirect(w, r, "/account?session_missing=1")
+		case errors.Is(err, sessions.ErrCurrentSession):
+			http.Error(w, "use sign out to end this browser session", http.StatusUnprocessableEntity)
+		case err != nil:
+			http.Error(w, "browser session management unavailable", http.StatusServiceUnavailable)
+		default:
+			redirect(w, r, "/account?session_revoked=1")
+		}
+	})
+	mux.HandleFunc("POST /account/sessions/revoke-others", func(w http.ResponseWriter, r *http.Request) {
+		if deps.Sessions == nil {
+			http.Error(w, "browser session management unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		if !sameOrigin(r, publicOrigin) {
+			http.Error(w, "cross-origin request rejected", http.StatusForbidden)
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "invalid form", http.StatusBadRequest)
+			return
+		}
+		account, token, err := authenticatedAccountAndToken(r, deps, true)
+		if errors.Is(err, sessions.ErrNotFound) {
+			clearSessionCookie(w, deps.SecureCookies)
+			redirect(w, r, "/login")
+			return
+		}
+		if err != nil {
+			http.Error(w, "account unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		if _, err := deps.Sessions.RevokeOtherSessions(r.Context(), account.ID, token); err != nil {
+			http.Error(w, "browser session management unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		redirect(w, r, "/account?other_sessions_revoked=1")
+	})
+	mux.HandleFunc("GET /account/profile", func(w http.ResponseWriter, r *http.Request) {
+		account, err := authenticatedAccount(r, deps)
+		if errors.Is(err, sessions.ErrNotFound) {
+			clearSessionCookie(w, deps.SecureCookies)
+			redirect(w, r, "/login")
+			return
+		}
+		if err != nil {
+			http.Error(w, "account unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		profile, err := deps.Accounts.Profile(r.Context(), account.ID)
+		if err != nil {
+			http.Error(w, "profile unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		email, err := deps.Accounts.EmailAddress(r.Context(), account.ID)
+		if err != nil {
+			http.Error(w, "account unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		render(w, r, http.StatusOK, profilePage(profile, "", email))
+	})
+	mux.HandleFunc("POST /account/profile", func(w http.ResponseWriter, r *http.Request) {
+		if deps.Accounts == nil {
+			http.Error(w, "profile unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		if !sameOrigin(r, publicOrigin) {
+			http.Error(w, "cross-origin request rejected", http.StatusForbidden)
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
+		account, err := authenticatedAccount(r, deps)
+		if errors.Is(err, sessions.ErrNotFound) {
+			clearSessionCookie(w, deps.SecureCookies)
+			redirect(w, r, "/login")
+			return
+		}
+		if err != nil {
+			http.Error(w, "account unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		email, err := deps.Accounts.EmailAddress(r.Context(), account.ID)
+		if err != nil {
+			http.Error(w, "account unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		if err := r.ParseForm(); err != nil {
+			render(w, r, http.StatusBadRequest, profilePage(accounts.Profile{}, "Invalid form submission.", email))
+			return
+		}
+		input := accounts.Profile{PreferredUsername: r.FormValue("preferred_username"), FullName: r.FormValue("full_name")}
+		_, err = deps.Accounts.UpdateProfile(r.Context(), account.ID, input.PreferredUsername, input.FullName)
+		if errors.Is(err, accounts.ErrInvalidProfile) {
+			render(w, r, http.StatusUnprocessableEntity, profilePage(input, "Enter a preferred username between 2 and 64 characters and a full name no longer than 128 characters.", email))
+			return
+		}
+		if err != nil {
+			render(w, r, http.StatusServiceUnavailable, profilePage(input, "We couldn't update your profile. Please try again later.", email))
+			return
+		}
+		redirect(w, r, "/account?profile_updated=1")
+	})
+	mux.HandleFunc("GET /account/password", func(w http.ResponseWriter, r *http.Request) {
+		account, err := authenticatedAccount(r, deps)
+		if errors.Is(err, sessions.ErrNotFound) {
+			clearSessionCookie(w, deps.SecureCookies)
+			redirect(w, r, "/login")
+			return
+		} else if err != nil {
+			http.Error(w, "account unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		if deps.Accounts == nil {
+			http.Error(w, "password change unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		email, err := deps.Accounts.EmailAddress(r.Context(), account.ID)
+		if err != nil {
+			http.Error(w, "account unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		render(w, r, http.StatusOK, passwordChangePage("", deps.Accounts.PasswordMinimumLength(), email))
+	})
+	mux.HandleFunc("POST /account/password", func(w http.ResponseWriter, r *http.Request) {
+		if deps.Accounts == nil || deps.Authentication == nil || deps.Sessions == nil {
+			http.Error(w, "password change unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		if !sameOrigin(r, publicOrigin) {
+			http.Error(w, "cross-origin request rejected", http.StatusForbidden)
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+		account, err := authenticatedAccount(r, deps)
+		if errors.Is(err, sessions.ErrNotFound) {
+			clearSessionCookie(w, deps.SecureCookies)
+			redirect(w, r, "/login")
+			return
+		}
+		if err != nil {
+			http.Error(w, "account unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		email, err := deps.Accounts.EmailAddress(r.Context(), account.ID)
+		if err != nil {
+			http.Error(w, "account unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		if err := r.ParseForm(); err != nil {
+			render(w, r, http.StatusBadRequest, passwordChangePage("Invalid form submission.", deps.Accounts.PasswordMinimumLength(), email))
+			return
+		}
+		newPassword := r.FormValue("new_password")
+		if newPassword != r.FormValue("new_password_confirmation") {
+			render(w, r, http.StatusUnprocessableEntity, passwordChangePage("New passwords do not match.", deps.Accounts.PasswordMinimumLength(), email))
+			return
+		}
+		changed, err := deps.Authentication.ChangePassword(r.Context(), account.ID, r.FormValue("current_password"), newPassword)
+		switch {
+		case errors.Is(err, accounts.ErrInvalidCredentials):
+			render(w, r, http.StatusUnprocessableEntity, passwordChangePage("The current password is incorrect.", deps.Accounts.PasswordMinimumLength(), email))
+			return
+		case errors.Is(err, accounts.ErrInvalidPassword), errors.Is(err, accounts.ErrPasswordUnchanged):
+			render(w, r, http.StatusUnprocessableEntity, passwordChangePage(err.Error(), deps.Accounts.PasswordMinimumLength(), email))
+			return
+		case errors.Is(err, accounts.ErrCredentialChanged):
+			clearSessionCookie(w, deps.SecureCookies)
+			redirect(w, r, "/login")
+			return
+		case err != nil:
+			render(w, r, http.StatusServiceUnavailable, passwordChangePage("We couldn't change your password. Please try again later.", deps.Accounts.PasswordMinimumLength(), email))
+			return
+		}
+		if err := establishSessionAtAuthenticationVersion(w, r, deps, changed.ID, changed.AuthenticationVersion); err != nil {
+			clearSessionCookie(w, deps.SecureCookies)
+			http.Error(w, "password changed, but a new session could not be established", http.StatusServiceUnavailable)
+			return
+		}
+		redirect(w, r, "/account?password_changed=1")
+	})
+	mux.HandleFunc("GET /account/email", func(w http.ResponseWriter, r *http.Request) {
+		account, err := authenticatedAccount(r, deps)
+		if errors.Is(err, sessions.ErrNotFound) {
+			clearSessionCookie(w, deps.SecureCookies)
+			redirect(w, r, "/login")
+			return
+		} else if err != nil {
+			http.Error(w, "account unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		email, err := deps.Accounts.EmailAddress(r.Context(), account.ID)
+		if err != nil {
+			http.Error(w, "account unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		render(w, r, http.StatusOK, emailChangePage("", email))
+	})
+	mux.HandleFunc("POST /account/email", func(w http.ResponseWriter, r *http.Request) {
+		if deps.EmailChange == nil {
+			http.Error(w, "email change unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		if !sameOrigin(r, publicOrigin) {
+			http.Error(w, "cross-origin request rejected", http.StatusForbidden)
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+		account, err := authenticatedAccount(r, deps)
+		if errors.Is(err, sessions.ErrNotFound) {
+			clearSessionCookie(w, deps.SecureCookies)
+			redirect(w, r, "/login")
+			return
+		}
+		if err != nil {
+			http.Error(w, "account unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		email, err := deps.Accounts.EmailAddress(r.Context(), account.ID)
+		if err != nil {
+			http.Error(w, "account unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		if err := r.ParseForm(); err != nil {
+			render(w, r, http.StatusBadRequest, emailChangePage("Invalid form submission.", email))
+			return
+		}
+		flow, err := deps.EmailChange.Start(r.Context(), account.ID, r.FormValue("password"), r.FormValue("email"))
+		switch {
+		case errors.Is(err, emailchange.ErrInvalidEmail), errors.Is(err, accounts.ErrEmailUnchanged):
+			render(w, r, http.StatusUnprocessableEntity, emailChangePage(err.Error(), email))
+			return
+		case errors.Is(err, accounts.ErrInvalidCredentials):
+			render(w, r, http.StatusUnprocessableEntity, emailChangePage("The current password is incorrect.", email))
+			return
+		case err != nil:
+			render(w, r, http.StatusServiceUnavailable, emailChangePage("We couldn't send an email change code. Please try again later.", email))
+			return
+		}
+		render(w, r, http.StatusOK, emailChangeCodePage(flow, "", email))
+	})
+	mux.HandleFunc("POST /account/email/verify", func(w http.ResponseWriter, r *http.Request) {
+		if deps.EmailChange == nil {
+			http.Error(w, "email change unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		if !sameOrigin(r, publicOrigin) {
+			http.Error(w, "cross-origin request rejected", http.StatusForbidden)
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "invalid form", http.StatusBadRequest)
+			return
+		}
+		account, err := authenticatedAccount(r, deps)
+		if errors.Is(err, sessions.ErrNotFound) {
+			clearSessionCookie(w, deps.SecureCookies)
+			redirect(w, r, "/login")
+			return
+		}
+		if err != nil {
+			http.Error(w, "account unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		email, err := deps.Accounts.EmailAddress(r.Context(), account.ID)
+		if err != nil {
+			http.Error(w, "account unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		flow := r.FormValue("flow")
+		if err := deps.EmailChange.Verify(r.Context(), account.ID, flow, r.FormValue("code")); err != nil {
+			render(w, r, http.StatusUnprocessableEntity, emailChangeCodePage(flow, emailchange.ErrInvalidCode.Error(), email))
+			return
+		}
+		render(w, r, http.StatusOK, emailChangeConfirmPage(flow, "", email))
+	})
+	mux.HandleFunc("POST /account/email/complete", func(w http.ResponseWriter, r *http.Request) {
+		if deps.EmailChange == nil {
+			http.Error(w, "email change unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		if !sameOrigin(r, publicOrigin) {
+			http.Error(w, "cross-origin request rejected", http.StatusForbidden)
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "invalid form", http.StatusBadRequest)
+			return
+		}
+		account, err := authenticatedAccount(r, deps)
+		if errors.Is(err, sessions.ErrNotFound) {
+			clearSessionCookie(w, deps.SecureCookies)
+			redirect(w, r, "/login")
+			return
+		}
+		if err != nil {
+			http.Error(w, "account unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		email, err := deps.Accounts.EmailAddress(r.Context(), account.ID)
+		if err != nil {
+			http.Error(w, "account unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		flow := r.FormValue("flow")
+		completion, err := deps.EmailChange.Complete(r.Context(), account.ID, flow)
+		if errors.Is(err, emailchange.ErrInvalidFlow) {
+			render(w, r, http.StatusUnprocessableEntity, emailChangePage("We couldn't change that email address. Start again.", email))
+			return
+		}
+		if err != nil {
+			render(w, r, http.StatusServiceUnavailable, emailChangeConfirmPage(flow, "We couldn't change your email address. Please try again.", email))
+			return
+		}
+		if err := establishSessionAtAuthenticationVersion(w, r, deps, completion.Account.ID, completion.AuthenticationVersion); err != nil {
+			clearSessionCookie(w, deps.SecureCookies)
+			http.Error(w, "email changed, but a new session could not be established", http.StatusServiceUnavailable)
+			return
+		}
+		target := "/account?email_changed=1"
+		if completion.OldAddressNotificationFailed {
+			target += "&email_notice_failed=1"
+		}
+		redirect(w, r, target)
 	})
 	mux.HandleFunc("POST /logout", func(w http.ResponseWriter, r *http.Request) {
 		if deps.Sessions == nil {
@@ -217,43 +757,6 @@ func Handler(dependencies ...Dependencies) http.Handler {
 		}
 		clearSessionCookie(w, deps.SecureCookies)
 		redirect(w, r, "/login")
-	})
-	mux.HandleFunc("GET /data/sync", func(w http.ResponseWriter, r *http.Request) {
-		if deps.AccountSync == nil {
-			http.Error(w, "account sync unavailable", http.StatusServiceUnavailable)
-			return
-		}
-		if requestsSubprotocol(r, accountSyncTokenSubprotocol) {
-			serveTokenAccountSync(w, r, deps, accountSyncAuthenticationAdmission)
-			return
-		}
-		if !sameOrigin(r, publicOrigin) {
-			http.Error(w, "cross-origin request rejected", http.StatusForbidden)
-			return
-		}
-		account, err := authenticatedAccount(r, deps)
-		if errors.Is(err, sessions.ErrNotFound) {
-			http.Error(w, "authentication required", http.StatusUnauthorized)
-			return
-		}
-		if err != nil {
-			http.Error(w, "account unavailable", http.StatusServiceUnavailable)
-			return
-		}
-		connection, err := deps.AccountSync.Connect(r.Context(), account.ID)
-		if errors.Is(err, tinybasesync.ErrConnectionLimit) || errors.Is(err, tinybasesync.ErrCapacityLimit) {
-			http.Error(w, "account sync connection limit reached", http.StatusTooManyRequests)
-			return
-		}
-		if err != nil {
-			http.Error(w, "account sync unavailable", http.StatusServiceUnavailable)
-			return
-		}
-		defer connection.Close()
-		serveAccountSync(w, r, connection, func(ctx context.Context, active bool) bool {
-			current, err := authenticatedAccountMode(r.WithContext(ctx), deps, active)
-			return err == nil && current.ID == account.ID
-		})
 	})
 	mux.HandleFunc("GET /signup", func(w http.ResponseWriter, r *http.Request) { render(w, r, http.StatusOK, signupPage("")) })
 	mux.HandleFunc("POST /signup", func(w http.ResponseWriter, r *http.Request) {
@@ -313,7 +816,12 @@ func Handler(dependencies ...Dependencies) http.Handler {
 			return
 		}
 		flow := r.FormValue("flow")
-		account, err := deps.Registration.Complete(r.Context(), flow, r.FormValue("password"))
+		password := r.FormValue("password")
+		if password != r.FormValue("password_confirmation") {
+			render(w, r, http.StatusUnprocessableEntity, passwordPage(flow, "Passwords do not match.", deps.Registration.PasswordMinimumLength()))
+			return
+		}
+		account, err := deps.Registration.Complete(r.Context(), flow, password)
 		if errors.Is(err, accounts.ErrInvalidPassword) {
 			render(w, r, http.StatusUnprocessableEntity, passwordPage(flow, err.Error(), deps.Registration.PasswordMinimumLength()))
 			return
@@ -335,309 +843,39 @@ func Handler(dependencies ...Dependencies) http.Handler {
 	if deps.OIDC != nil {
 		mux.Handle("/", deps.OIDC)
 	}
-	return securityHeaders(requireCanonicalHost(mux, publicOrigin))
-}
-
-const (
-	accountSyncAuthCheckInterval            = 30 * time.Second
-	accountSyncAuthenticationTimeout        = 2 * time.Second
-	accountSyncTokenSubprotocol             = "authling.account-data.v1"
-	maxAccountSyncAuthenticationMessageSize = 8 << 10
-	maxPendingAccountSyncAuthentications    = 64
-	maxPendingAccountSyncAuthPerSource      = 8
-)
-
-type accountSyncAuthentication struct {
-	Type        string `json:"type"`
-	AccessToken string `json:"access_token"`
-}
-
-type accountSyncAuthenticationAdmission struct {
-	mu       sync.Mutex
-	slots    chan struct{}
-	bySource map[string]int
-}
-
-func newAccountSyncAuthenticationAdmission() *accountSyncAuthenticationAdmission {
-	return &accountSyncAuthenticationAdmission{
-		slots: make(chan struct{}, maxPendingAccountSyncAuthentications), bySource: map[string]int{},
+	handler := requireCanonicalHost(mux, publicOrigin)
+	if deps.TrustProxyHeaders {
+		handler = useTrustedProxyOrigin(handler)
 	}
+	return securityHeaders(handler)
 }
 
-func (admission *accountSyncAuthenticationAdmission) acquire(source string) bool {
-	admission.mu.Lock()
-	defer admission.mu.Unlock()
-	if admission.bySource[source] >= maxPendingAccountSyncAuthPerSource {
-		return false
-	}
-	select {
-	case admission.slots <- struct{}{}:
-		admission.bySource[source]++
-		return true
-	default:
-		return false
-	}
-}
-
-func (admission *accountSyncAuthenticationAdmission) release(source string) {
-	admission.mu.Lock()
-	if admission.bySource[source] == 1 {
-		delete(admission.bySource, source)
-	} else {
-		admission.bySource[source]--
-	}
-	admission.mu.Unlock()
-	<-admission.slots
-}
-
-func monitorAccountSyncAuthorization(ctx context.Context, interval time.Duration, authorized func(context.Context, bool) bool, expire func()) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
+func useTrustedProxyOrigin(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		forwardedHosts := r.Header.Values("X-Forwarded-Host")
+		forwardedProtos := r.Header.Values("X-Forwarded-Proto")
+		forwardedHost := strings.Join(forwardedHosts, ",")
+		forwardedProto := strings.Join(forwardedProtos, ",")
+		if forwardedHost == "" && forwardedProto == "" {
+			next.ServeHTTP(w, r)
 			return
-		case <-ticker.C:
-			if !authorized(ctx, false) {
-				expire()
-				return
-			}
 		}
-	}
-}
-
-func serveAccountSync(w http.ResponseWriter, r *http.Request, syncConnection *tinybasesync.Connection, authorized func(context.Context, bool) bool) {
-	connection, err := websocket.Accept(w, r, &websocket.AcceptOptions{CompressionMode: websocket.CompressionDisabled})
-	if err != nil {
-		return
-	}
-	runAccountSync(r.Context(), connection, syncConnection, authorized)
-}
-
-func serveTokenAccountSync(w http.ResponseWriter, r *http.Request, deps Dependencies, admission *accountSyncAuthenticationAdmission) {
-	if deps.OIDC == nil || deps.Accounts == nil {
-		http.Error(w, "account sync authentication unavailable", http.StatusServiceUnavailable)
-		return
-	}
-	origin, ok := accountSyncRequestOrigin(r)
-	if !ok {
-		http.Error(w, "account sync origin rejected", http.StatusForbidden)
-		return
-	}
-	connection, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		Subprotocols: []string{accountSyncTokenSubprotocol}, CompressionMode: websocket.CompressionDisabled,
-		// The access token is bound to the validated Origin below. The library's
-		// host-pattern check cannot express origins discovered at runtime.
-		InsecureSkipVerify: true,
+		forwardedOrigin, err := url.Parse(forwardedProto + "://" + forwardedHost)
+		if len(forwardedHosts) != 1 || len(forwardedProtos) != 1 ||
+			err != nil || (forwardedProto != "http" && forwardedProto != "https") ||
+			forwardedOrigin.Host == "" || forwardedOrigin.User != nil ||
+			forwardedOrigin.Path != "" || forwardedOrigin.RawQuery != "" || forwardedOrigin.Fragment != "" {
+			http.Error(w, "invalid trusted proxy origin", http.StatusBadRequest)
+			return
+		}
+		r.Host = forwardedOrigin.Host
+		if forwardedProto == "https" {
+			r.TLS = &tls.ConnectionState{}
+		} else {
+			r.TLS = nil
+		}
+		next.ServeHTTP(w, r)
 	})
-	if err != nil {
-		return
-	}
-	source := accountSyncNetworkSource(r, deps.TrustedProxies)
-	if !admission.acquire(source) {
-		_ = connection.Close(websocket.StatusPolicyViolation, "account sync authentication limit reached")
-		return
-	}
-	slotHeld := true
-	defer func() {
-		if slotHeld {
-			admission.release(source)
-		}
-	}()
-	connection.SetReadLimit(maxAccountSyncAuthenticationMessageSize)
-	authContext, cancel := context.WithTimeout(r.Context(), accountSyncAuthenticationTimeout)
-	messageType, data, err := connection.Read(authContext)
-	cancel()
-	if err != nil || messageType != websocket.MessageText {
-		_ = connection.Close(websocket.StatusPolicyViolation, "authentication required")
-		return
-	}
-	authentication, ok := decodeAccountSyncAuthentication(data)
-	if !ok {
-		_ = connection.Close(websocket.StatusPolicyViolation, "authentication failed")
-		return
-	}
-	grant, err := deps.OIDC.AuthorizeAccountDataToken(r.Context(), authentication.AccessToken, origin)
-	if err != nil {
-		_ = connection.Close(websocket.StatusPolicyViolation, "authentication failed")
-		return
-	}
-	if _, exists := deps.Accounts.Get(grant.AccountID); !exists {
-		_ = connection.Close(websocket.StatusPolicyViolation, "authentication failed")
-		return
-	}
-	syncConnection, err := deps.AccountSync.Connect(r.Context(), grant.AccountID)
-	if errors.Is(err, tinybasesync.ErrConnectionLimit) || errors.Is(err, tinybasesync.ErrCapacityLimit) {
-		_ = connection.Close(websocket.StatusPolicyViolation, "account sync connection limit reached")
-		return
-	}
-	if err != nil {
-		_ = connection.Close(websocket.StatusInternalError, "sync unavailable")
-		return
-	}
-	defer syncConnection.Close()
-	slotHeld = false
-	admission.release(source)
-	readyContext, readyCancel := context.WithTimeout(r.Context(), accountSyncAuthenticationTimeout)
-	err = connection.Write(readyContext, websocket.MessageText, []byte(`{"type":"ready"}`))
-	readyCancel()
-	if err != nil {
-		syncConnection.Close()
-		connection.CloseNow()
-		return
-	}
-	runAccountSync(r.Context(), connection, syncConnection, func(ctx context.Context, _ bool) bool {
-		current, err := deps.OIDC.AuthorizeAccountDataToken(ctx, authentication.AccessToken, origin)
-		if err != nil || current.AccountID != grant.AccountID || current.ClientID != grant.ClientID {
-			return false
-		}
-		_, exists := deps.Accounts.Get(current.AccountID)
-		return exists
-	})
-}
-
-func accountSyncNetworkSource(r *http.Request, trustedProxies []netip.Prefix) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil || host == "" {
-		host = r.RemoteAddr
-	}
-	direct, err := netip.ParseAddr(host)
-	if err != nil {
-		if host != "" {
-			return host
-		}
-		return "unknown"
-	}
-	direct = direct.Unmap()
-	for _, prefix := range trustedProxies {
-		if !prefix.Contains(direct) {
-			continue
-		}
-		values := r.Header.Values("X-Forwarded-For")
-		if len(values) == 1 && !strings.Contains(values[0], ",") {
-			if forwarded, parseErr := netip.ParseAddr(strings.TrimSpace(values[0])); parseErr == nil {
-				return forwarded.Unmap().String()
-			}
-		}
-		break
-	}
-	return direct.String()
-}
-
-func runAccountSync(ctx context.Context, connection *websocket.Conn, syncConnection *tinybasesync.Connection, authorized func(context.Context, bool) bool) {
-	defer connection.CloseNow()
-	connection.SetReadLimit(tinybasesync.MaxWireMessageSize)
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	writeErrors := make(chan error, 1)
-	go func() {
-		for {
-			message, err := syncConnection.Next(ctx)
-			if err == nil && !authorized(ctx, false) {
-				_ = connection.Close(websocket.StatusPolicyViolation, "authentication expired")
-				writeErrors <- errors.New("account sync authorization expired")
-				return
-			}
-			if err != nil {
-				if ctx.Err() == nil {
-					_ = connection.Close(websocket.StatusInternalError, "sync unavailable")
-				}
-				writeErrors <- err
-				return
-			}
-			encoded, err := tinybasesync.EncodeWireMessage(message)
-			if err == nil {
-				err = connection.Write(ctx, websocket.MessageText, encoded)
-			}
-			if err != nil {
-				writeErrors <- err
-				return
-			}
-		}
-	}()
-	go func() {
-		monitorAccountSyncAuthorization(ctx, accountSyncAuthCheckInterval, authorized, func() {
-			_ = connection.Close(websocket.StatusPolicyViolation, "authentication expired")
-			cancel()
-		})
-	}()
-	for {
-		messageType, data, err := connection.Read(ctx)
-		if err != nil {
-			return
-		}
-		if messageType != websocket.MessageText {
-			_ = connection.Close(websocket.StatusUnsupportedData, "text messages required")
-			return
-		}
-		message, err := tinybasesync.DecodeWireMessage(data)
-		if err != nil {
-			_ = connection.Close(websocket.StatusPolicyViolation, "invalid sync message")
-			return
-		}
-		if !authorized(ctx, true) {
-			_ = connection.Close(websocket.StatusPolicyViolation, "authentication expired")
-			return
-		}
-		if err := syncConnection.Handle(ctx, message); errors.Is(err, tinybasesync.ErrRateLimit) {
-			_ = connection.Close(websocket.StatusPolicyViolation, "sync rate limit exceeded")
-			return
-		} else if err != nil {
-			_ = connection.Close(websocket.StatusInternalError, "sync unavailable")
-			return
-		}
-		select {
-		case <-writeErrors:
-			return
-		default:
-		}
-	}
-}
-
-func decodeAccountSyncAuthentication(data []byte) (accountSyncAuthentication, bool) {
-	var authentication accountSyncAuthentication
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&authentication); err != nil {
-		return accountSyncAuthentication{}, false
-	}
-	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		return accountSyncAuthentication{}, false
-	}
-	return authentication, authentication.Type == "authenticate" && authentication.AccessToken != ""
-}
-
-func requestsSubprotocol(r *http.Request, expected string) bool {
-	for _, value := range r.Header.Values("Sec-WebSocket-Protocol") {
-		for protocol := range strings.SplitSeq(value, ",") {
-			if strings.TrimSpace(protocol) == expected {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func accountSyncRequestOrigin(r *http.Request) (string, bool) {
-	values := r.Header.Values("Origin")
-	if len(values) != 1 {
-		return "", false
-	}
-	origin := values[0]
-	parsed, err := url.Parse(origin)
-	if err != nil || parsed.User != nil || parsed.Host == "" || parsed.Path != "" ||
-		parsed.RawQuery != "" || parsed.Fragment != "" {
-		return "", false
-	}
-	if strings.EqualFold(parsed.Scheme, "https") {
-		return origin, true
-	}
-	if !strings.EqualFold(parsed.Scheme, "http") {
-		return "", false
-	}
-	host := strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
-	address := net.ParseIP(host)
-	return origin, host == "localhost" || strings.HasSuffix(host, ".localhost") || address != nil && address.IsLoopback()
 }
 
 func validConsentRequest(r *http.Request, service *oidcprovider.Service, id string) bool {
@@ -660,7 +898,21 @@ func redirect(w http.ResponseWriter, r *http.Request, target string) {
 }
 
 func establishSession(w http.ResponseWriter, r *http.Request, deps Dependencies, accountID string) error {
-	token, _, err := deps.Sessions.Create(r.Context(), accountID)
+	return establishSessionForAuthenticationVersion(w, r, deps, accountID, nil)
+}
+
+func establishSessionAtAuthenticationVersion(w http.ResponseWriter, r *http.Request, deps Dependencies, accountID string, authenticationVersion uint64) error {
+	return establishSessionForAuthenticationVersion(w, r, deps, accountID, &authenticationVersion)
+}
+
+func establishSessionForAuthenticationVersion(w http.ResponseWriter, r *http.Request, deps Dependencies, accountID string, authenticationVersion *uint64) error {
+	var token string
+	var err error
+	if authenticationVersion == nil {
+		token, _, err = deps.Sessions.Create(r.Context(), accountID)
+	} else {
+		token, _, err = deps.Sessions.CreateAtAuthenticationVersion(r.Context(), accountID, *authenticationVersion)
+	}
 	if err != nil {
 		return err
 	}
@@ -693,15 +945,20 @@ func authenticatedAccount(r *http.Request, deps Dependencies) (accounts.Account,
 }
 
 func authenticatedAccountMode(r *http.Request, deps Dependencies, active bool) (accounts.Account, error) {
+	account, _, err := authenticatedAccountAndToken(r, deps, active)
+	return account, err
+}
+
+func authenticatedAccountAndToken(r *http.Request, deps Dependencies, active bool) (accounts.Account, string, error) {
 	if deps.Accounts == nil || deps.Sessions == nil {
-		return accounts.Account{}, fmt.Errorf("session services unavailable")
+		return accounts.Account{}, "", fmt.Errorf("session services unavailable")
 	}
 	cookie, err := sessionCookie(r, deps.SecureCookies)
 	if errors.Is(err, http.ErrNoCookie) {
-		return accounts.Account{}, sessions.ErrNotFound
+		return accounts.Account{}, "", sessions.ErrNotFound
 	}
 	if err != nil {
-		return accounts.Account{}, err
+		return accounts.Account{}, "", err
 	}
 	var state sessions.Session
 	if active {
@@ -710,14 +967,14 @@ func authenticatedAccountMode(r *http.Request, deps Dependencies, active bool) (
 		state, err = deps.Sessions.Inspect(r.Context(), cookie.Value)
 	}
 	if err != nil {
-		return accounts.Account{}, err
+		return accounts.Account{}, "", err
 	}
 	account, ok := deps.Accounts.Get(state.AccountID)
 	if !ok {
 		_ = deps.Sessions.Revoke(r.Context(), cookie.Value)
-		return accounts.Account{}, sessions.ErrNotFound
+		return accounts.Account{}, "", sessions.ErrNotFound
 	}
-	return account, nil
+	return account, cookie.Value, nil
 }
 
 func clearSessionCookie(w http.ResponseWriter, secure bool) {
@@ -762,6 +1019,13 @@ func publicStartError(err error) string {
 		return registration.ErrInvalidEmail.Error()
 	}
 	return "We couldn't send a verification code. Please try again later."
+}
+
+func publicPasswordResetStartError(err error) string {
+	if errors.Is(err, passwordreset.ErrInvalidEmail) {
+		return passwordreset.ErrInvalidEmail.Error()
+	}
+	return "We couldn't send a password reset code. Please try again later."
 }
 
 func sameOrigin(r *http.Request, expected *url.URL) bool {

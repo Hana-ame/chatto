@@ -145,8 +145,12 @@ func TestChattoCore_ExternalIdentityWithoutEmailCreatesVerifiedAccount(t *testin
 func TestChattoCore_PendingExternalIdentityLinkStart(t *testing.T) {
 	core, _ := setupTestCore(t)
 	ctx := testContext(t)
+	user, err := core.CreateUser(ctx, SystemActorID, "link-start-user", "Link Start User", "password")
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
 
-	token, err := core.CreatePendingExternalIdentityLinkStart(ctx, "github-main", "/chat/-/settings/account", "U1")
+	token, err := core.CreatePendingExternalIdentityLinkStart(ctx, "github-main", "/chat/-/settings/account", user.GetId())
 	if err != nil {
 		t.Fatalf("CreatePendingExternalIdentityLinkStart: %v", err)
 	}
@@ -162,7 +166,7 @@ func TestChattoCore_PendingExternalIdentityLinkStart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ConsumePendingExternalIdentityLinkStart: %v", err)
 	}
-	if start.ProviderID != "github-main" || start.BoundUserID != "U1" || start.RedirectPath != "/chat/-/settings/account" {
+	if start.ProviderID != "github-main" || start.BoundUserID != user.GetId() || start.RedirectPath != "/chat/-/settings/account" {
 		t.Fatalf("link start = %+v", start)
 	}
 	if _, err := core.ConsumePendingExternalIdentityLinkStart(ctx, token); !errors.Is(err, ErrExternalIdentityFlowNotFound) {
@@ -457,8 +461,8 @@ func TestChattoCore_DisconnectExternalIdentity(t *testing.T) {
 	if _, err := core.ValidateAuthToken(ctx, token); !errors.Is(err, ErrAuthTokenNotFound) {
 		t.Fatalf("ValidateAuthToken after disconnect err = %v, want ErrAuthTokenNotFound", err)
 	}
-	if _, err := core.ValidateCookieSession(ctx, user.Id, sessionID); !errors.Is(err, ErrCookieSessionNotFound) {
-		t.Fatalf("ValidateCookieSession after disconnect err = %v, want ErrCookieSessionNotFound", err)
+	if _, err := core.ValidateCookieCredential(ctx, sessionID); !errors.Is(err, ErrCookieSessionNotFound) {
+		t.Fatalf("ValidateCookieCredential after disconnect err = %v, want ErrCookieSessionNotFound", err)
 	}
 	if _, err := core.CreateAuthTokenWithSourceGeneration(ctx, user.Id, "external_identity_login", authGeneration); !errors.Is(err, ErrAuthTokenNotFound) {
 		t.Fatalf("CreateAuthTokenWithSourceGeneration old generation err = %v, want ErrAuthTokenNotFound", err)

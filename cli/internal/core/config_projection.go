@@ -31,8 +31,8 @@ type serverConfigState struct {
 type userConfigState struct {
 	timezone        *string
 	timeFormat      *corev1.TimeFormat
-	serverLevel     *corev1.NotificationLevel
-	roomLevelByRoom map[string]corev1.NotificationLevel
+	serverModes     *corev1.NotificationDeliveryModes
+	roomModesByRoom map[string]*corev1.NotificationDeliveryModes
 }
 
 func NewConfigProjection() *ConfigProjection {
@@ -86,21 +86,22 @@ func (p *ConfigProjection) Apply(event *corev1.Event, _ uint64) error {
 		u.timeFormat = &tf
 	case *corev1.Event_UserTimeFormatCleared:
 		p.ensureUserLocked(e.UserTimeFormatCleared.GetUserId()).timeFormat = nil
-	case *corev1.Event_UserServerNotificationLevelSet:
-		u := p.ensureUserLocked(e.UserServerNotificationLevelSet.GetUserId())
-		level := e.UserServerNotificationLevelSet.GetLevel()
-		u.serverLevel = &level
-	case *corev1.Event_UserServerNotificationLevelCleared:
-		p.ensureUserLocked(e.UserServerNotificationLevelCleared.GetUserId()).serverLevel = nil
-	case *corev1.Event_UserRoomNotificationLevelSet:
-		u := p.ensureUserLocked(e.UserRoomNotificationLevelSet.GetUserId())
-		if u.roomLevelByRoom == nil {
-			u.roomLevelByRoom = make(map[string]corev1.NotificationLevel)
+	case *corev1.Event_UserNotificationPolicyChanged:
+		policy := e.UserNotificationPolicyChanged
+		u := p.ensureUserLocked(policy.GetUserId())
+		modes := cloneNotificationDeliveryModes(policy.GetOverrides())
+		if policy.RoomId == nil {
+			u.serverModes = modes
+			break
 		}
-		u.roomLevelByRoom[e.UserRoomNotificationLevelSet.GetRoomId()] = e.UserRoomNotificationLevelSet.GetLevel()
-	case *corev1.Event_UserRoomNotificationLevelCleared:
-		if u := p.users[e.UserRoomNotificationLevelCleared.GetUserId()]; u != nil {
-			delete(u.roomLevelByRoom, e.UserRoomNotificationLevelCleared.GetRoomId())
+		if u.roomModesByRoom == nil {
+			u.roomModesByRoom = make(map[string]*corev1.NotificationDeliveryModes)
+		}
+		roomID := policy.GetRoomId()
+		if notificationDeliveryModesEmpty(modes) {
+			delete(u.roomModesByRoom, roomID)
+		} else {
+			u.roomModesByRoom[roomID] = modes
 		}
 	case *corev1.Event_UserServerPreferencesChanged:
 		p.applyLegacyUserPreferencesLocked(e.UserServerPreferencesChanged)

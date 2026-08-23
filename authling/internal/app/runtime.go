@@ -11,21 +11,22 @@ import (
 	"time"
 
 	"golang.org/x/sync/errgroup"
-	"hmans.de/authling/internal/accountdata"
 	"hmans.de/authling/internal/accounts"
 	"hmans.de/authling/internal/authentication"
+	"hmans.de/authling/internal/authorizations"
 	"hmans.de/authling/internal/config"
 	"hmans.de/authling/internal/email"
+	"hmans.de/authling/internal/emailchange"
 	"hmans.de/authling/internal/evtstream"
 	"hmans.de/authling/internal/issuer"
 	"hmans.de/authling/internal/keyvault"
 	"hmans.de/authling/internal/logging"
 	"hmans.de/authling/internal/natsruntime"
 	"hmans.de/authling/internal/oidcprovider"
+	"hmans.de/authling/internal/passwordreset"
 	"hmans.de/authling/internal/registration"
 	"hmans.de/authling/internal/sessions"
 	"hmans.de/authling/internal/storage"
-	"hmans.de/authling/internal/tinybasesync"
 	"hmans.de/authling/internal/web"
 	"hmans.de/chatto/pkg/events"
 )
@@ -41,14 +42,18 @@ type Runtime struct {
 	Accounts *accounts.Service
 	// Registration owns the verified-email signup workflow.
 	Registration *registration.Service
+	// PasswordReset owns verified-email password recovery.
+	PasswordReset *passwordreset.Service
+	// EmailChange owns signed-in verified email-address replacement.
+	EmailChange *emailchange.Service
 	// Authentication owns local login throttling and credential verification.
 	Authentication *authentication.Service
 	// Sessions owns first-party browser session runtime state.
 	Sessions *sessions.Service
+	// Authorizations owns durable account grants to OIDC clients.
+	Authorizations *authorizations.Service
 	// OIDC provides standards-based identity to configured and CIMD clients.
 	OIDC *oidcprovider.Service
-	// AccountSync synchronizes the authenticated account-owned data space.
-	AccountSync *tinybasesync.Hub
 }
 
 // New creates Authling's storage and model wiring without starting background
@@ -62,6 +67,18 @@ func New(
 }
 
 func newRuntime(ctx context.Context, cfg config.Config, logger events.Logger, sender email.Sender) (*Runtime, error) {
+	return newRuntimeWithEmailChangeOptions(ctx, cfg, logger, sender)
+}
+
+func newRuntimeWithEmailChangeOptions(ctx context.Context, cfg config.Config, logger events.Logger, sender email.Sender, emailChangeOptions ...emailchange.Option) (*Runtime, error) {
+	return newRuntimeWithOptions(ctx, cfg, logger, sender, emailChangeOptions, nil)
+}
+
+func newRuntimeWithIssuerOptions(ctx context.Context, cfg config.Config, logger events.Logger, sender email.Sender, issuerOptions ...issuer.Option) (*Runtime, error) {
+	return newRuntimeWithOptions(ctx, cfg, logger, sender, nil, issuerOptions)
+}
+
+func newRuntimeWithOptions(ctx context.Context, cfg config.Config, logger events.Logger, sender email.Sender, emailChangeOptions []emailchange.Option, issuerOptions []issuer.Option) (*Runtime, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -106,28 +123,44 @@ func newRuntime(ctx context.Context, cfg config.Config, logger events.Logger, se
 	if err != nil {
 		return closeOnError(fmt.Errorf("open account service: %w", err))
 	}
-	sessionService := sessions.New(stores.RuntimeState, js, workflowKey)
+	sessionService := sessions.New(stores.RuntimeState, js, workflowKey, accountService.AuthenticationVersion)
 	issuerProjection := issuer.NewProjection()
 	issuerHandle := events.NewDecodedProjectionHandle(js, stream, issuerProjection, evtstream.Decode, logger)
-	issuerService := issuer.NewService(publisher, issuerHandle, vault, cfg.HTTP.PublicURLOrDefault())
-	cimd, err := oidcprovider.NewCIMDResolver(cfg.HTTP.PublicURLOrDefault(), nil, cfg.OIDC.TrustedPrivateCIMDHosts()...)
+	issuerService := issuer.NewService(publisher, issuerHandle, vault, cfg.HTTP.PublicURLOrDefault(), cfg.OIDC.SigningKeyRotationInterval(), issuerOptions...)
+	authorizationProjection := authorizations.NewProjection()
+	authorizationHandle := events.NewDecodedProjectionHandle(js, stream, authorizationProjection, evtstream.Decode, logger)
+	authorizationService, err := authorizations.NewService(publisher, authorizationHandle, workflowKey)
+	if err != nil {
+		return closeOnError(fmt.Errorf("open authorization grant service: %w", err))
+	}
+	cimd, err := oidcprovider.NewCIMDResolver(
+		cfg.HTTP.PublicURLOrDefault(),
+		nil,
+		cfg.OIDC.TrustedPrivateCIMDHosts(),
+		cfg.OIDC.TrustedLoopbackCIMDHosts(),
+	)
 	if err != nil {
 		return closeOnError(fmt.Errorf("construct CIMD resolver: %w", err))
 	}
 	clients := oidcprovider.NewResolver(cfg, cimd)
-	oidcStorage := oidcprovider.NewStorage(stores.RuntimeState, js, workflowKey, clients, issuerService)
-	oidcService := oidcprovider.New(cfg, issuerService, oidcStorage)
-	accountData := accountdata.New(stores.UserData, vault, accountService, workflowKey)
+	oidcStorage := oidcprovider.NewStorage(stores.RuntimeState, js, workflowKey, clients, issuerService, func(ctx context.Context, accountID string) (string, string, error) {
+		profile, err := accountService.Profile(ctx, accountID)
+		return profile.PreferredUsername, profile.FullName, err
+	})
+	oidcService := oidcprovider.New(cfg, issuerService, oidcStorage, authorizationService, vault)
+	authenticationService := authentication.New(stores.RuntimeState, js, workflowKey, accountService)
 	return &Runtime{
 		connection:     connection,
-		projectors:     []*events.Projector{handle.Projector(), issuerHandle.Projector()},
+		projectors:     []*events.Projector{handle.Projector(), issuerHandle.Projector(), authorizationHandle.Projector()},
 		issuer:         issuerService,
 		Accounts:       accountService,
 		Registration:   registration.New(stores.RuntimeState, js, workflowKey, sender, accountService),
-		Authentication: authentication.New(stores.RuntimeState, js, workflowKey, accountService),
+		PasswordReset:  passwordreset.New(stores.RuntimeState, js, workflowKey, sender, accountService),
+		EmailChange:    emailchange.New(stores.RuntimeState, js, workflowKey, sender, accountService, authenticationService, emailChangeOptions...),
+		Authentication: authenticationService,
 		Sessions:       sessionService,
+		Authorizations: authorizationService,
 		OIDC:           oidcService,
-		AccountSync:    tinybasesync.NewHub(accountData),
 	}, nil
 }
 
@@ -139,6 +172,8 @@ func (r *Runtime) Run(ctx context.Context) error {
 		projector := projector
 		group.Go(func() error { return projector.Run(groupContext) })
 	}
+	group.Go(func() error { return r.issuer.Run(groupContext) })
+	group.Go(func() error { return r.Sessions.RunInventory(groupContext) })
 	return group.Wait()
 }
 
@@ -150,10 +185,13 @@ func (r *Runtime) WaitReady(ctx context.Context) error {
 			return err
 		}
 	}
+	if err := r.Sessions.WaitForInventoryStartup(ctx); err != nil {
+		return err
+	}
 	if err := r.issuer.Initialize(ctx); err != nil {
 		return err
 	}
-	return r.OIDC.Initialize()
+	return r.OIDC.Initialize(ctx)
 }
 
 // Close releases Authling's NATS client and any embedded server. Run must have
@@ -196,22 +234,23 @@ func Serve(ctx context.Context, cfg config.Config, logger *slog.Logger) (serveEr
 	}
 	httpServer := &http.Server{
 		Handler: web.Handler(web.Dependencies{
-			Accounts:       runtime.Accounts,
-			Authentication: runtime.Authentication,
-			Registration:   runtime.Registration,
-			Sessions:       runtime.Sessions,
-			OIDC:           runtime.OIDC,
-			AccountSync:    runtime.AccountSync,
-			SecureCookies:  cfg.HTTP.SecureCookies(),
-			PublicURL:      cfg.HTTP.PublicURLOrDefault(),
-			TrustedProxies: cfg.HTTP.TrustedProxies(),
+			Accounts:          runtime.Accounts,
+			Authentication:    runtime.Authentication,
+			Registration:      runtime.Registration,
+			PasswordReset:     runtime.PasswordReset,
+			EmailChange:       runtime.EmailChange,
+			Sessions:          runtime.Sessions,
+			Authorizations:    runtime.Authorizations,
+			OIDC:              runtime.OIDC,
+			SecureCookies:     cfg.HTTP.SecureCookies(),
+			PublicURL:         cfg.HTTP.PublicURLOrDefault(),
+			TrustProxyHeaders: cfg.HTTP.TrustProxyHeaders,
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       time.Minute,
 	}
-	httpServer.RegisterOnShutdown(runtime.AccountSync.Close)
 	httpErrors := make(chan error, 1)
 	go func() {
 		httpErrors <- httpServer.Serve(listener)

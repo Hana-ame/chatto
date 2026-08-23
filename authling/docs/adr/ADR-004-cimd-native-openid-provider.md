@@ -32,8 +32,8 @@ OIDC `sub`.
 
 The provider profile supports discovery, JWKS, Authorization Code, ID-token
 issuance, bearer access tokens, and UserInfo. It requires `openid`, `code` as
-the response type, and S256 PKCE for every client. ADR-006 adds the optional
-`account_data` scope.
+the response type, and S256 PKCE for every client. ADR-007 limits the provider
+to identity scopes; the initial profile accepts exactly `openid`.
 Authorization codes are short-lived, single-use through JetStream optimistic
 concurrency, and bound to the exact client and redirect URI. The first slice
 does not support refresh tokens, implicit or hybrid flow, request objects,
@@ -51,26 +51,33 @@ Authling supports two client sources behind the same protocol boundary:
    dialing; requires the document's `client_id` to exactly equal its URL; and
    accepts only the initial public Authorization Code profile.
 
-Private-network CIMD destinations remain denied by default. An operator may
-explicitly trust exact hostnames for controlled development networks. That
-exception permits only private addresses for those names; loopback,
-link-local, multicast, and all other special-use destinations stay blocked.
+Special-use CIMD destinations remain denied by default. An operator may
+explicitly trust exact hostnames for controlled development environments.
+Private-host and loopback-host trust are separate capabilities, and each
+permits only its named address class. Link-local, multicast, and all other
+special-use destinations stay blocked.
 
 The implementation tracks
 [draft-ietf-oauth-client-id-metadata-document-02](https://datatracker.ietf.org/doc/draft-ietf-oauth-client-id-metadata-document/02/).
 Draft evolution must be treated as a compatibility and security review, not an
 automatic dependency update.
 
-The RS256 signing key is generated once in Authling's key store. Its stable
-public-key fingerprint is the `kid`; the private key never enters events or
-runtime state. The issuer and signing-key reference are established by an EVT
-event. Pending requests, authorization-code mappings, and access-token records
-are authenticated-encrypted in the expiring runtime-state bucket beneath
-HMAC-derived keys.
+The initial RS256 signing key is generated in Authling's key store. A key's
+stable public-key fingerprint is its `kid`; private keys never enter events or
+runtime state. The issuer and initial signing-key reference are established by
+an EVT event. [ADR-008](ADR-008-automatic-oidc-signing-key-rotation.md)
+supersedes the initial single-key lifecycle with automatic pre-publication,
+activation, overlap, and retirement. Pending requests, authorization-code
+mappings, and access-token records are authenticated-encrypted in the expiring
+runtime-state bucket beneath HMAC-derived keys.
 
-Authling always asks for per-request consent. A signed-out browser resumes the
+Authling records explicit consent as a durable, account-owned authorization
+grant for one exact client ID and scope set. A covered later request may reuse
+that grant; `prompt=consent` always asks again. A signed-out browser resumes the
 request through its opaque server-side request ID after login. Client redirect
-URIs never become general-purpose return parameters.
+URIs never become general-purpose return parameters. Grant behavior and its
+future extension boundary are recorded in
+[FDR-010](../fdr/FDR-010-oidc-authorization-grants.md).
 
 ## Consequences
 
@@ -87,6 +94,5 @@ CIMD adds a tightly constrained outbound HTTPS fetcher and its associated
 SSRF, DNS rebinding, availability, and draft-compatibility responsibilities.
 Configured clients remain the fallback for consumers that do not use CIMD.
 
-The initial key has no rotation or retirement lifecycle, and the initial token
-profile is deliberately small. Those are explicit follow-up features rather
-than implicit behavior in this decision.
+The token and claim profile remains deliberately small. Signing-key lifecycle
+is defined separately by ADR-008.

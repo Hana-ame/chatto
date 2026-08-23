@@ -32,6 +32,12 @@ const categories = [
         slug: 'external-identity-auth',
         title: 'External Identity Auth',
         description: 'Public external-identity confirmation and capability-token auth-flow RPCs.'
+      },
+      {
+        name: 'PushSubscriptionCleanupService',
+        slug: 'push-subscription-cleanup',
+        title: 'Push Subscription Cleanup',
+        description: 'Public capability-authenticated cleanup for exact browser push subscriptions.'
       }
     ]
   },
@@ -62,6 +68,12 @@ const categories = [
         description: 'Chunked room-scoped attachment upload RPCs.'
       },
       {
+        name: 'BotService',
+        slug: 'bots',
+        title: 'Bots',
+        description: 'Bot account lifecycle and API-key management RPCs.'
+      },
+      {
         name: 'MessageService',
         slug: 'messages',
         title: 'Messages',
@@ -80,16 +92,11 @@ const categories = [
         description: 'Self-service account, profile, avatar, presence, status, external identity, and settings RPCs for the authenticated user.'
       },
       {
-        name: 'NotificationPreferencesService',
-        slug: 'notification-preferences',
-        title: 'Notification Preferences',
-        description: 'Server and room notification preference RPCs.'
-      },
-      {
         name: 'NotificationService',
         slug: 'notifications',
         title: 'Notifications',
-        description: 'Notification listing, counts, checks, and dismissal RPCs.'
+        description:
+          'Exact notification occurrence listing, read, deletion, and per-signal-class policy RPCs.'
       },
       {
         name: 'PushNotificationService',
@@ -471,6 +478,8 @@ function renderLanding() {
     '',
     'Successful unary JSON calls return the protobuf response message as JSON. Field names use protobuf JSON casing, such as `publicProfile` and `directRegistrationEnabled`.',
     '',
+    'ProtoJSON integrations that need to tolerate future additive oneof variants must configure their decoder to ignore unknown fields. In particular, Notifications 2.0 may add new `NotificationSignal` variants; strict generated JSON clients must be regenerated before receiving such a variant. Binary protobuf is recommended when forward-compatible unknown-field retention is required.',
+    '',
     'Successful binary protobuf calls return the serialized protobuf response message with `Content-Type: application/proto`.',
     '',
     'Failed calls return Connect errors with stable codes. Common codes include:',
@@ -479,6 +488,7 @@ function renderLanding() {
     '- `permission_denied` - the user is authenticated but lacks the required permission.',
     '- `not_found` - a singular lookup target does not exist.',
     '- `invalid_argument` - the request message failed validation.',
+    '- `unimplemented` - the serving version does not understand a requested resource variant.',
     '',
     'Generated clients expose those codes through their Connect client error helpers. Plain HTTP tools receive a Connect error response with an HTTP status mapped from the Connect code.',
     '',

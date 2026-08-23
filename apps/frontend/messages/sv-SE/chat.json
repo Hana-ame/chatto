@@ -9,7 +9,19 @@
       "time_now": "Just nu",
       "time_minutes": "{count}m sedan",
       "time_hours": "{count}h sedan",
-      "time_days": "{count}d sedan"
+      "time_days": "{count}d sedan",
+      "unread": "Oläst",
+      "activity": "Ny aktivitet",
+      "summary": {
+        "direct_message": "{actor} har skickat ett direktmeddelande till dig.",
+        "reaction": "{actor} reagerade med ”{emoji}” på ditt meddelande i {channel}.",
+        "reaction_group": "{actor} och andra reagerade med ”{emoji}” på ditt meddelande i {channel}.",
+        "reply": "{actor} svarade på ditt meddelande.",
+        "mention": "{actor} nämnde dig.",
+        "followed_thread": "{actor} svarade i en tråd som du följer.",
+        "new_message": "{actor} publicerade ett nytt meddelande.",
+        "activity": "{actor} skickade en avisering till dig."
+      }
     },
     "sign_out": {
       "title": "Logga ut",
@@ -27,15 +39,11 @@
     },
     "user_menu": {
       "profile": "Användarprofil",
-      "send_message": "Skicka meddelande"
+      "send_message": "Skicka meddelande",
+      "copy_user_id": "Kopiera användar-ID"
     },
     "server_gutter": {
       "add_server": "Lägg till server",
-      "account_data_connect": "Synkronisera serverlistan med Authling",
-      "account_data_connecting": "Ansluter synkronisering av serverlistan…",
-      "account_data_connected": "Serverlistan synkroniseras med {provider}",
-      "account_data_connected_toast": "Din serverlista synkroniseras nu.",
-      "account_data_error": "Det gick inte att synkronisera serverlistan",
       "version": "Version {version}",
       "version_unknown": "Okänd version",
       "unreachable": "Servern kan inte nås",

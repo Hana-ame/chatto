@@ -47,7 +47,14 @@ func (s *pushNotificationService) Subscribe(ctx context.Context, req *connect.Re
 	if req.Msg.UserAgent != nil {
 		userAgent = req.Msg.GetUserAgent()
 	}
-	if _, err := s.api.core.SavePushSubscription(ctx, caller.UserID, req.Msg.GetEndpoint(), req.Msg.GetP256Dh(), req.Msg.GetAuth(), userAgent); err != nil {
+	if req.Msg.GetClientHost() == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("client host is required"))
+	}
+	if req.Msg.GetCleanupToken() == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("cleanup token is required"))
+	}
+
+	if _, err := s.api.core.SavePushSubscriptionForClientWithCleanupToken(ctx, caller.UserID, req.Msg.GetEndpoint(), req.Msg.GetP256Dh(), req.Msg.GetAuth(), userAgent, req.Msg.GetClientHost(), req.Msg.GetCleanupToken()); err != nil {
 		return nil, connectError(err)
 	}
 

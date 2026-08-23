@@ -12,7 +12,7 @@ COPY authling/web web
 COPY authling/internal/web internal/web
 RUN pnpm --dir web build
 
-FROM golang:1.26.2-bookworm AS builder
+FROM golang:1.26.7-bookworm AS builder
 
 WORKDIR /src
 COPY go.work go.work.sum ./
@@ -41,3 +41,4 @@ USER authling
 WORKDIR /data
 EXPOSE 8080
 ENTRYPOINT ["/authling"]
+CMD ["run"]

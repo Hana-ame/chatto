@@ -34,22 +34,19 @@ to its own repository.
   identity protocol while OIDC satisfies the requirement.
 - Chatto server operators explicitly choose which OIDC issuers they trust.
   Authling must not imply a global issuer or automatic trust.
-- Authling may store a user's server registrations and other light,
-  user-controlled metadata. It must not create a "home server" concept or make
-  one Chatto server authoritative for the user's identity or server list.
-- Authling's account-data service may grow into a general-purpose personal data
-  server in the future. Keep its ownership, storage, synchronization, and
-  portability boundaries open to that evolution. Do not adopt AT Protocol,
-  claim AT Protocol compatibility, or add speculative PDS machinery for the
-  current product slices.
+- Authling stores identity-provider state only: accounts, credentials, browser
+  sessions, issuer and signing-key material, and short-lived OIDC protocol
+  state. Application preferences, server catalogues, documents, and generic
+  synchronization are outside the product boundary.
 - `chatto.id` may run a convenient hosted Authling instance, while self-hosted
   issuers remain first-class.
 - The current experimental runtime persists and replays local accounts,
   exposes server-rendered verified-email signup, password login, browser
-  sessions, and logout, and provides the narrow OpenID Connect surface recorded
-  in FDR-004, including explicitly consented global account-data access, and
-  provides the experimental account-data synchronization slice recorded in
-  FDR-005. It has no public account-management or general document CRUD API. Do
+  sessions and session management, password reset, signed-in password change,
+  verified email change, and logout. It provides durable exact-client OIDC
+  authorization grants, automatic signing-key rotation, and the narrow OpenID
+  Connect surface recorded in FDR-004, FDR-010, FDR-011, and FDR-012. It has no public
+  account-management, application-data, document, or synchronization API. Do
   not document other planned identity-provider behavior as implemented.
 
 ## Code And Dependency Boundaries
@@ -134,6 +131,46 @@ repository skills as non-product infrastructure.
 - Default to least privilege and fail closed when identity, key, issuer, or
   authorization state is unavailable.
 
+## Identity Events And Recovery
+
+- Treat `authling.core.v1.Event` and every reachable event payload as a
+  persisted storage contract. Existing fields and oneof tags must never be
+  removed, renumbered, reused, or incompatibly retyped. New event variants
+  require historical-replay and mixed-version rollout reasoning.
+- Durable, PII-free identity and security facts belong in `AUTHLING_EVT`.
+  Expiring OTP digests, recovery bearers, attempt counters, delivery limits,
+  and other workflow coordination belong in encrypted
+  `AUTHLING_RUNTIME_STATE`, not permanent event history.
+- Never put raw email addresses, login identifiers, provider subjects, IP
+  addresses, user agents, OTPs, recovery bearers, reset links, or equivalent
+  sensitive material in event envelopes, event payloads, subjects, runtime
+  keys, URLs, or logs. Correlate related durable facts with opaque identifiers.
+- When auditability requires an event before an external effect, commit the
+  event before creating the dependent workflow or performing that effect.
+  State precisely what the event proves, such as request acceptance rather
+  than successful email delivery.
+- Commands that append to an existing aggregate must use subject-level OCC.
+  After a conflict, wait for and re-read the authoritative projection, then
+  decide from the command's semantic preconditions. An audit-only event may
+  advance an aggregate tail without changing its credential or identity state.
+- A command whose semantic precondition can be advanced by events on multiple
+  subjects must capture and wait for every relevant projection boundary before
+  evaluating that precondition. If an atomic cross-subject batch materializes
+  in stages, the command must also reject the interval while dependent state is
+  staged but not yet active. Add an adversarial interleaving test that proves
+  the command cannot commit history that fails ordered live projection or cold
+  replay.
+- Projectors must validate and deterministically replay every historical event.
+  An audit-only event may intentionally leave the materialized account model
+  unchanged, but it must not be silently ignored or weaken replay validation.
+- Account recovery and identity mutations must explicitly define their effect
+  on stable account IDs and OIDC `sub` values, verified identifiers, Authling
+  browser sessions, issued OIDC tokens, and relying-party sessions.
+- Enumeration resistance covers the complete observable flow, including HTTP
+  status, browser copy, delivery behavior, storage failures, and timing where
+  practical. Do not preserve attacker-controlled failures permanently merely
+  to make them auditable; use bounded operational or runtime state instead.
+
 ## Releases And Compatibility
 
 - Authling's Release Please component is `authling/`, its version source is
@@ -150,10 +187,25 @@ repository skills as non-product infrastructure.
 
 ## Tooling And Verification
 
+### Browser UI And Tailwind
+
+- Define reusable browser UI patterns as Tailwind component classes in
+  `web/src/app.css` under `@layer components`. Compose a low-level base class
+  with variants where appropriate, such as `button` plus `button-primary`,
+  instead of repeating the same utility bundle across templ pages.
+- Keep one-off layout and spacing utilities directly in templ markup. Extract a
+  class when it represents a reusable component or interaction pattern, not
+  merely to shorten a single class attribute.
+- Shared interactive classes must cover the relevant pointer, hover,
+  `focus-visible`, disabled, and light/dark states so links and native controls
+  behave consistently. Regenerate committed templ output after changing templ
+  source.
+
 Run Authling's own `mise` tasks from the `authling/` directory:
 
 ```sh
 cd authling
+mise codegen
 mise test
 mise test-e2e
 mise build
@@ -170,3 +222,8 @@ protocol tests when behavior crosses HTTP, OIDC, NATS, JetStream, cryptographic,
 or process-lifecycle boundaries. Browser end-to-end tests use a dedicated
 Authling process, Mailpit process, port range, and temporary data directory per
 test; do not point them at development state or share a process across tests.
+Persisted-event and recovery changes require relevant malformed-event,
+historical replay or restart, OCC conflict, enumeration-resistance, and
+PII/recovery-material leakage tests. Regenerate and commit derived protobuf or
+templ output after changing its source. Review visible Authling browser changes
+with Chrome DevTools MCP in addition to running the relevant automated tests.

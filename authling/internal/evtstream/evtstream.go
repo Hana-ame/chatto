@@ -4,6 +4,7 @@ package evtstream
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"strings"
 
@@ -42,6 +43,15 @@ func AccountRegistrySubject() string { return accountRegistrySubject }
 // AccountRegistryTail returns the current OCC token for local account claims.
 func (p *Publisher) AccountRegistryTail(ctx context.Context) (uint64, error) {
 	return p.log.LastSubjectSeq(ctx, accountRegistrySubject)
+}
+
+// AccountTail returns the current OCC token for one account aggregate.
+func (p *Publisher) AccountTail(ctx context.Context, accountID string) (uint64, error) {
+	subject, err := AccountSubject(accountID)
+	if err != nil {
+		return 0, err
+	}
+	return p.log.LastSubjectSeq(ctx, subject)
 }
 
 // AppendRegisteredAccount commits a local account against a previously read
@@ -104,6 +114,184 @@ func (p *Publisher) AppendAccountCreated(
 	return events.SubjectPosition(subject, sequence), nil
 }
 
+// AppendPasswordChanged replaces a credential at an explicitly observed
+// account tail so concurrent reset flows cannot overwrite each other.
+func (p *Publisher) AppendPasswordChanged(
+	ctx context.Context,
+	event *corev1.Event,
+	expectedTail uint64,
+) (events.StreamPosition, error) {
+	payload := event.GetPasswordChanged()
+	if payload == nil {
+		return events.StreamPosition{}, fmt.Errorf("append password changed: event payload is not password_changed")
+	}
+	subject, err := AccountSubject(payload.GetAccountId())
+	if err != nil {
+		return events.StreamPosition{}, err
+	}
+	record, err := encode(event)
+	if err != nil {
+		return events.StreamPosition{}, err
+	}
+	sequence, err := p.log.AppendAt(ctx, subject, record, expectedTail)
+	if err != nil {
+		return events.StreamPosition{}, err
+	}
+	return events.SubjectPosition(subject, sequence), nil
+}
+
+// AppendProfileUpdated replaces profile hints at an explicitly observed
+// account tail.
+func (p *Publisher) AppendProfileUpdated(ctx context.Context, event *corev1.Event, expectedTail uint64) (events.StreamPosition, error) {
+	payload := event.GetProfileUpdated()
+	if payload == nil {
+		return events.StreamPosition{}, fmt.Errorf("append profile updated: event payload is not profile_updated")
+	}
+	subject, err := AccountSubject(payload.GetAccountId())
+	if err != nil {
+		return events.StreamPosition{}, err
+	}
+	record, err := encode(event)
+	if err != nil {
+		return events.StreamPosition{}, err
+	}
+	sequence, err := p.log.AppendAt(ctx, subject, record, expectedTail)
+	if err != nil {
+		return events.StreamPosition{}, err
+	}
+	return events.SubjectPosition(subject, sequence), nil
+}
+
+// AppendPasswordResetRequested records an accepted recovery request at an
+// explicitly observed account tail.
+func (p *Publisher) AppendPasswordResetRequested(
+	ctx context.Context,
+	event *corev1.Event,
+	expectedTail uint64,
+) (events.StreamPosition, error) {
+	payload := event.GetPasswordResetRequested()
+	if payload == nil {
+		return events.StreamPosition{}, fmt.Errorf("append password reset requested: event payload is not password_reset_requested")
+	}
+	subject, err := AccountSubject(payload.GetAccountId())
+	if err != nil {
+		return events.StreamPosition{}, err
+	}
+	record, err := encode(event)
+	if err != nil {
+		return events.StreamPosition{}, err
+	}
+	sequence, err := p.log.AppendAt(ctx, subject, record, expectedTail)
+	if err != nil {
+		return events.StreamPosition{}, err
+	}
+	return events.SubjectPosition(subject, sequence), nil
+}
+
+// AppendEmailChangeRequested records successful reauthentication for an email
+// change at an explicitly observed account tail.
+func (p *Publisher) AppendEmailChangeRequested(
+	ctx context.Context,
+	event *corev1.Event,
+	expectedTail uint64,
+) (events.StreamPosition, error) {
+	payload := event.GetEmailChangeRequested()
+	if payload == nil {
+		return events.StreamPosition{}, fmt.Errorf("append email change requested: event payload is not email_change_requested")
+	}
+	subject, err := AccountSubject(payload.GetAccountId())
+	if err != nil {
+		return events.StreamPosition{}, err
+	}
+	record, err := encode(event)
+	if err != nil {
+		return events.StreamPosition{}, err
+	}
+	sequence, err := p.log.AppendAt(ctx, subject, record, expectedTail)
+	if err != nil {
+		return events.StreamPosition{}, err
+	}
+	return events.SubjectPosition(subject, sequence), nil
+}
+
+// AppendEmailChanged atomically stages an encrypted replacement address on the
+// account aggregate and activates its PII-free global claim.
+func (p *Publisher) AppendEmailChanged(
+	ctx context.Context,
+	changeEvent, claimEvent *corev1.Event,
+	expectedAccount, expectedRegistry uint64,
+) (events.StreamPosition, error) {
+	change := changeEvent.GetEmailChanged()
+	claim := claimEvent.GetEmailClaimed()
+	if change == nil || claim == nil || change.GetAccountId() != claim.GetAccountId() || claim.GetCredentialEventId() != changeEvent.GetId() {
+		return events.StreamPosition{}, fmt.Errorf("append email changed: matching email_changed and email_claimed payloads are required")
+	}
+	accountSubject, err := AccountSubject(change.GetAccountId())
+	if err != nil {
+		return events.StreamPosition{}, err
+	}
+	changeRecord, err := encode(changeEvent)
+	if err != nil {
+		return events.StreamPosition{}, err
+	}
+	claimRecord, err := encode(claimEvent)
+	if err != nil {
+		return events.StreamPosition{}, err
+	}
+	sequences, err := p.log.AppendBatch(ctx, []events.EncodedBatchEntry{
+		{Subject: accountSubject, Record: changeRecord, ExpectedSeq: expectedAccount, HasOCC: true},
+		{Subject: accountRegistrySubject, Record: claimRecord, ExpectedSeq: expectedRegistry, HasOCC: true},
+	})
+	if err != nil {
+		return events.StreamPosition{}, err
+	}
+	return events.SubjectPosition(accountRegistrySubject, sequences[1]), nil
+}
+
+// AppendOIDCGrantAuthorized records a new or explicitly renewed OIDC grant at
+// an observed account tail.
+func (p *Publisher) AppendOIDCGrantAuthorized(ctx context.Context, event *corev1.Event, expectedTail uint64) (events.StreamPosition, error) {
+	payload := event.GetOidcGrantAuthorized()
+	if payload == nil {
+		return events.StreamPosition{}, fmt.Errorf("append OIDC grant authorized: event payload is not oidc_grant_authorized")
+	}
+	subject, err := AccountSubject(payload.GetAccountId())
+	if err != nil {
+		return events.StreamPosition{}, err
+	}
+	record, err := encode(event)
+	if err != nil {
+		return events.StreamPosition{}, err
+	}
+	sequence, err := p.log.AppendAt(ctx, subject, record, expectedTail)
+	if err != nil {
+		return events.StreamPosition{}, err
+	}
+	return events.SubjectPosition(subject, sequence), nil
+}
+
+// AppendOIDCGrantRevoked records revocation of an active OIDC grant at an
+// observed account tail.
+func (p *Publisher) AppendOIDCGrantRevoked(ctx context.Context, event *corev1.Event, expectedTail uint64) (events.StreamPosition, error) {
+	payload := event.GetOidcGrantRevoked()
+	if payload == nil {
+		return events.StreamPosition{}, fmt.Errorf("append OIDC grant revoked: event payload is not oidc_grant_revoked")
+	}
+	subject, err := AccountSubject(payload.GetAccountId())
+	if err != nil {
+		return events.StreamPosition{}, err
+	}
+	record, err := encode(event)
+	if err != nil {
+		return events.StreamPosition{}, err
+	}
+	sequence, err := p.log.AppendAt(ctx, subject, record, expectedTail)
+	if err != nil {
+		return events.StreamPosition{}, err
+	}
+	return events.SubjectPosition(subject, sequence), nil
+}
+
 // AppendIssuerEstablished creates the singleton issuer aggregate.
 func (p *Publisher) AppendIssuerEstablished(ctx context.Context, event *corev1.Event) (events.StreamPosition, error) {
 	if event.GetIssuerEstablished() == nil {
@@ -114,6 +302,29 @@ func (p *Publisher) AppendIssuerEstablished(ctx context.Context, event *corev1.E
 		return events.StreamPosition{}, err
 	}
 	sequence, err := p.log.AppendAt(ctx, issuerSubject, record, 0)
+	if err != nil {
+		return events.StreamPosition{}, err
+	}
+	return events.SubjectPosition(issuerSubject, sequence), nil
+}
+
+// AppendIssuerLifecycle records a signing-key transition at an explicitly
+// observed issuer tail so concurrent replicas cannot advance different keys.
+func (p *Publisher) AppendIssuerLifecycle(ctx context.Context, event *corev1.Event, expectedTail uint64) (events.StreamPosition, error) {
+	switch event.GetEvent().(type) {
+	case *corev1.Event_OidcSigningKeyRotationRequested,
+		*corev1.Event_OidcSigningKeyPrepared,
+		*corev1.Event_OidcSigningKeyActivated,
+		*corev1.Event_OidcSigningKeyRetirementRequested,
+		*corev1.Event_OidcSigningKeyRetired:
+	default:
+		return events.StreamPosition{}, fmt.Errorf("append issuer lifecycle: event payload is not a signing-key lifecycle event")
+	}
+	record, err := encode(event)
+	if err != nil {
+		return events.StreamPosition{}, err
+	}
+	sequence, err := p.log.AppendAt(ctx, issuerSubject, record, expectedTail)
 	if err != nil {
 		return events.StreamPosition{}, err
 	}
@@ -150,6 +361,9 @@ func validate(event *corev1.Event) error {
 	if strings.TrimSpace(event.GetId()) == "" {
 		return fmt.Errorf("Authling event id is required")
 	}
+	if !validSubjectToken(event.GetId()) {
+		return fmt.Errorf("Authling event id is invalid")
+	}
 	if event.GetCreatedAt() == nil {
 		return fmt.Errorf("Authling event created_at is required")
 	}
@@ -162,7 +376,11 @@ func validate(event *corev1.Event) error {
 			return err
 		}
 		credential := payload.AccountCreated
-		hasCredential := credential.GetCredentialEnvelopeVersion() != 0 || credential.GetUserKeyRef() != "" || credential.GetCredentialKeyRef() != "" || len(credential.GetEmailNonce()) != 0 || len(credential.GetEmailCiphertext()) != 0 || len(credential.GetPasswordVerifierNonce()) != 0 || len(credential.GetPasswordVerifierCiphertext()) != 0
+		hasPreferredUsername := len(credential.GetPreferredUsernameNonce()) != 0 || len(credential.GetPreferredUsernameCiphertext()) != 0
+		if hasPreferredUsername && (len(credential.GetPreferredUsernameNonce()) == 0 || len(credential.GetPreferredUsernameCiphertext()) == 0) {
+			return fmt.Errorf("account preferred username envelope is incomplete")
+		}
+		hasCredential := credential.GetCredentialEnvelopeVersion() != 0 || credential.GetUserKeyRef() != "" || credential.GetCredentialKeyRef() != "" || len(credential.GetEmailNonce()) != 0 || len(credential.GetEmailCiphertext()) != 0 || len(credential.GetPasswordVerifierNonce()) != 0 || len(credential.GetPasswordVerifierCiphertext()) != 0 || hasPreferredUsername
 		if hasCredential {
 			if credential.GetCredentialEnvelopeVersion() != 1 || !validSubjectToken(credential.GetUserKeyRef()) || !validSubjectToken(credential.GetCredentialKeyRef()) || len(credential.GetEmailNonce()) == 0 || len(credential.GetEmailCiphertext()) == 0 || len(credential.GetPasswordVerifierNonce()) == 0 || len(credential.GetPasswordVerifierCiphertext()) == 0 {
 				return fmt.Errorf("account credential envelope is incomplete or unsupported")
@@ -172,14 +390,122 @@ func validate(event *corev1.Event) error {
 		if !validSubjectToken(payload.EmailClaimed.GetAccountId()) {
 			return fmt.Errorf("invalid account id")
 		}
+		if credentialEventID := payload.EmailClaimed.GetCredentialEventId(); credentialEventID != "" && !validSubjectToken(credentialEventID) {
+			return fmt.Errorf("email claim credential event id is invalid")
+		}
+	case *corev1.Event_PasswordChanged:
+		credential := payload.PasswordChanged
+		if !validSubjectToken(credential.GetAccountId()) || credential.GetCredentialEnvelopeVersion() != 1 || !validSubjectToken(credential.GetUserKeyRef()) || !validSubjectToken(credential.GetCredentialKeyRef()) || len(credential.GetPasswordVerifierNonce()) == 0 || len(credential.GetPasswordVerifierCiphertext()) == 0 {
+			return fmt.Errorf("password credential envelope is incomplete or unsupported")
+		}
+		if requestID := credential.GetPasswordResetRequestEventId(); requestID != "" && !validSubjectToken(requestID) {
+			return fmt.Errorf("password reset request event id is invalid")
+		}
+		if priorID := credential.GetPriorCredentialEventId(); priorID != "" && !validSubjectToken(priorID) {
+			return fmt.Errorf("password prior credential event id is invalid")
+		}
+		switch credential.GetKind() {
+		case corev1.PasswordChangeKind_PASSWORD_CHANGE_KIND_UNSPECIFIED:
+			// Historical events predate explicit ceremony correlation.
+		case corev1.PasswordChangeKind_PASSWORD_CHANGE_KIND_RECOVERY:
+			if !validSubjectToken(credential.GetPasswordResetRequestEventId()) || !validSubjectToken(credential.GetPriorCredentialEventId()) {
+				return fmt.Errorf("recovery password change correlation is incomplete")
+			}
+		case corev1.PasswordChangeKind_PASSWORD_CHANGE_KIND_SIGNED_IN:
+			if credential.GetPasswordResetRequestEventId() != "" || !validSubjectToken(credential.GetPriorCredentialEventId()) {
+				return fmt.Errorf("signed-in password change correlation is invalid")
+			}
+		default:
+			return fmt.Errorf("password change kind is unsupported")
+		}
+	case *corev1.Event_PasswordResetRequested:
+		request := payload.PasswordResetRequested
+		if !validSubjectToken(request.GetAccountId()) || !validSubjectToken(request.GetCredentialEventId()) {
+			return fmt.Errorf("password reset request is incomplete")
+		}
+	case *corev1.Event_EmailChangeRequested:
+		request := payload.EmailChangeRequested
+		if !validSubjectToken(request.GetAccountId()) || !validSubjectToken(request.GetCredentialEventId()) {
+			return fmt.Errorf("email change request is incomplete")
+		}
+	case *corev1.Event_EmailChanged:
+		credential := payload.EmailChanged
+		if !validSubjectToken(credential.GetAccountId()) || credential.GetCredentialEnvelopeVersion() != 1 || !validSubjectToken(credential.GetUserKeyRef()) || !validSubjectToken(credential.GetCredentialKeyRef()) || len(credential.GetEmailNonce()) == 0 || len(credential.GetEmailCiphertext()) == 0 || !validSubjectToken(credential.GetEmailChangeRequestEventId()) || !validSubjectToken(credential.GetPriorCredentialEventId()) {
+			return fmt.Errorf("email credential envelope is incomplete or unsupported")
+		}
+	case *corev1.Event_ProfileUpdated:
+		profile := payload.ProfileUpdated
+		if !validSubjectToken(profile.GetAccountId()) || profile.GetProfileEnvelopeVersion() != 1 || !validSubjectToken(profile.GetUserKeyRef()) || !validSubjectToken(profile.GetCredentialKeyRef()) || len(profile.GetPreferredUsernameNonce()) == 0 || len(profile.GetPreferredUsernameCiphertext()) == 0 || len(profile.GetFullNameNonce()) == 0 || len(profile.GetFullNameCiphertext()) == 0 {
+			return fmt.Errorf("profile envelope is incomplete or unsupported")
+		}
+	case *corev1.Event_OidcGrantAuthorized:
+		grant := payload.OidcGrantAuthorized
+		if !validSubjectToken(grant.GetAccountId()) || !validSubjectToken(grant.GetGrantId()) || len(grant.GetClientIdDigest()) != sha256.Size || strings.TrimSpace(grant.GetClientName()) == "" || len(grant.GetClientName()) > 256 || strings.TrimSpace(grant.GetClientHost()) == "" || len(grant.GetClientHost()) > 256 || !validScopes(grant.GetScopes()) {
+			return fmt.Errorf("OIDC grant authorization is incomplete or invalid")
+		}
+		if priorID := grant.GetPriorAuthorizationEventId(); priorID != "" && !validSubjectToken(priorID) {
+			return fmt.Errorf("OIDC grant prior authorization event id is invalid")
+		}
+	case *corev1.Event_OidcGrantRevoked:
+		grant := payload.OidcGrantRevoked
+		if !validSubjectToken(grant.GetAccountId()) || !validSubjectToken(grant.GetGrantId()) || !validSubjectToken(grant.GetAuthorizationEventId()) {
+			return fmt.Errorf("OIDC grant revocation is incomplete or invalid")
+		}
 	case *corev1.Event_IssuerEstablished:
 		if payload.IssuerEstablished.GetIssuer() == "" || payload.IssuerEstablished.GetSigningKeyRef() == "" || payload.IssuerEstablished.GetSigningKeyId() == "" {
 			return fmt.Errorf("issuer establishment is incomplete")
+		}
+	case *corev1.Event_OidcSigningKeyRotationRequested:
+		if !validSigningKeyRef(payload.OidcSigningKeyRotationRequested.GetSigningKeyRef()) {
+			return fmt.Errorf("OIDC signing-key rotation request is invalid")
+		}
+	case *corev1.Event_OidcSigningKeyPrepared:
+		prepared := payload.OidcSigningKeyPrepared
+		if !validSigningKeyRef(prepared.GetSigningKeyRef()) || !validSubjectToken(prepared.GetSigningKeyId()) || prepared.GetActivateAt() == nil {
+			return fmt.Errorf("OIDC signing-key preparation is incomplete")
+		}
+		if err := prepared.GetActivateAt().CheckValid(); err != nil || !prepared.GetActivateAt().AsTime().After(event.GetCreatedAt().AsTime()) {
+			return fmt.Errorf("OIDC signing-key activation time is invalid")
+		}
+	case *corev1.Event_OidcSigningKeyActivated:
+		activated := payload.OidcSigningKeyActivated
+		if !validSigningKeyRef(activated.GetSigningKeyRef()) || !validSubjectToken(activated.GetSigningKeyId()) || !validSigningKeyRef(activated.GetPreviousSigningKeyRef()) || !validSubjectToken(activated.GetPreviousSigningKeyId()) || activated.GetRetireAfter() == nil {
+			return fmt.Errorf("OIDC signing-key activation is incomplete")
+		}
+		if err := activated.GetRetireAfter().CheckValid(); err != nil || !activated.GetRetireAfter().AsTime().After(event.GetCreatedAt().AsTime()) {
+			return fmt.Errorf("OIDC signing-key retirement time is invalid")
+		}
+	case *corev1.Event_OidcSigningKeyRetirementRequested:
+		retiring := payload.OidcSigningKeyRetirementRequested
+		if !validSigningKeyRef(retiring.GetSigningKeyRef()) || !validSubjectToken(retiring.GetSigningKeyId()) {
+			return fmt.Errorf("OIDC signing-key retirement request is invalid")
+		}
+	case *corev1.Event_OidcSigningKeyRetired:
+		retired := payload.OidcSigningKeyRetired
+		if !validSigningKeyRef(retired.GetSigningKeyRef()) || !validSubjectToken(retired.GetSigningKeyId()) {
+			return fmt.Errorf("OIDC signing-key retirement is invalid")
 		}
 	default:
 		return fmt.Errorf("Authling event payload is required")
 	}
 	return nil
+}
+
+func validScopes(scopes []string) bool {
+	if len(scopes) == 0 || len(scopes) > 32 {
+		return false
+	}
+	seen := make(map[string]struct{}, len(scopes))
+	for _, scope := range scopes {
+		if scope == "" || len(scope) > 256 || strings.ContainsAny(scope, " \t\r\n") {
+			return false
+		}
+		if _, exists := seen[scope]; exists {
+			return false
+		}
+		seen[scope] = struct{}{}
+	}
+	return true
 }
 
 // AccountSubject returns the durable subject for one account aggregate.
@@ -200,6 +526,23 @@ func validSubjectToken(value string) bool {
 			char >= '0' && char <= '9' ||
 			char == '_' ||
 			char == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func validSigningKeyRef(value string) bool {
+	if !strings.HasPrefix(value, "system.oidc-signing.") || len(value) > 256 {
+		return false
+	}
+	suffix := strings.TrimPrefix(value, "system.oidc-signing.")
+	if suffix == "" {
+		return false
+	}
+	for _, char := range suffix {
+		if char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char >= '0' && char <= '9' || char == '_' || char == '-' {
 			continue
 		}
 		return false

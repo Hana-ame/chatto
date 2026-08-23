@@ -4,11 +4,11 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"net/netip"
 	"net/url"
 	"strings"
 	"testing"
-	"time"
+
+	"github.com/a-h/templ"
 )
 
 func TestHandlerRendersHomePageWithoutScripts(t *testing.T) {
@@ -23,6 +23,9 @@ func TestHandlerRendersHomePageWithoutScripts(t *testing.T) {
 	body := response.Body.String()
 	if !strings.Contains(body, "Identity, under your control.") {
 		t.Fatalf("body does not contain the Authling heading: %q", body)
+	}
+	if !strings.Contains(body, `<meta name="description" content="Authling is a self-hosted OpenID Connect identity provider."`) {
+		t.Fatalf("body does not contain the Authling description: %q", body)
 	}
 	if strings.Contains(body, "<script") {
 		t.Fatalf("body unexpectedly contains a script: %q", body)
@@ -41,8 +44,53 @@ func TestLoginPageAutofocusesEmail(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
 	}
-	if body := response.Body.String(); !strings.Contains(body, `name="email" autocomplete="email" autofocus`) {
+	body := response.Body.String()
+	if !strings.Contains(body, `name="email" autocomplete="email" autofocus`) {
 		t.Fatalf("login page email input does not have autofocus: %q", body)
+	}
+	if !strings.Contains(body, `href="/password-reset"`) || !strings.Contains(body, "Forgot your password?") {
+		t.Fatalf("login page does not link to password reset: %q", body)
+	}
+}
+
+func TestPasswordResetPageRendersWithoutAccountDisclosure(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "/password-reset", nil)
+	response := httptest.NewRecorder()
+
+	Handler().ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
+	}
+	body := response.Body.String()
+	if !strings.Contains(body, "Reset your password") || !strings.Contains(body, `action="/password-reset"`) {
+		t.Fatalf("body does not contain the password reset form: %q", body)
+	}
+	if strings.Contains(body, "account exists") || strings.Contains(body, "account not found") || strings.Contains(body, "<script") {
+		t.Fatalf("password reset page has disclosure or script content: %q", body)
+	}
+}
+
+func TestOneTimeCodeInputsDisableOnePassword(t *testing.T) {
+	tests := []struct {
+		name string
+		page templ.Component
+	}{
+		{name: "signup", page: codePage("flow", "")},
+		{name: "password reset", page: passwordResetCodePage("flow", "", "")},
+		{name: "email change", page: emailChangeCodePage("flow", "", "person@example.com")},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var body strings.Builder
+			if err := test.page.Render(context.Background(), &body); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(body.String(), `autocomplete="one-time-code" data-1p-ignore="true"`) {
+				t.Fatalf("one-time code input does not opt out of 1Password: %q", body.String())
+			}
+		})
 	}
 }
 
@@ -60,6 +108,17 @@ func TestHandlerServesEmbeddedStylesheet(t *testing.T) {
 	}
 	if response.Body.Len() == 0 {
 		t.Fatal("embedded stylesheet is empty")
+	}
+}
+
+func TestHandlerDoesNotExposeAccountDataSync(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "/data/sync", nil)
+	response := httptest.NewRecorder()
+
+	Handler().ServeHTTP(response, request)
+
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusNotFound)
 	}
 }
 
@@ -154,120 +213,62 @@ func TestHandlerAcceptsCanonicalHostWithImplicitDefaultPort(t *testing.T) {
 	}
 }
 
-func TestAccountSyncAuthorizationMonitorExpiresIdleConnection(t *testing.T) {
-	expired := make(chan struct{})
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	go monitorAccountSyncAuthorization(ctx, time.Millisecond, func(context.Context, bool) bool {
-		return false
-	}, func() {
-		close(expired)
-	})
-	select {
-	case <-expired:
-	case <-time.After(time.Second):
-		t.Fatal("idle connection authorization was not checked")
-	}
-}
-
-func TestAccountSyncAuthenticationAdmissionIsFairAcrossNetworkSources(t *testing.T) {
-	admission := newAccountSyncAuthenticationAdmission()
-	for attempt := range maxPendingAccountSyncAuthPerSource {
-		if !admission.acquire("192.0.2.1") {
-			t.Fatalf("source admission %d was rejected", attempt)
-		}
-	}
-	if admission.acquire("192.0.2.1") {
-		t.Fatal("source above its pending limit was accepted")
-	}
-	if !admission.acquire("198.51.100.2") {
-		t.Fatal("one saturated source excluded another source")
-	}
-	admission.release("192.0.2.1")
-	if !admission.acquire("192.0.2.1") {
-		t.Fatal("source did not recover after one authentication ended")
-	}
-}
-
-func TestAccountSyncNetworkSourceUsesForwardingOnlyFromTrustedProxy(t *testing.T) {
-	request := httptest.NewRequest(http.MethodGet, "https://auth.example/data/sync", nil)
-	request.RemoteAddr = "192.0.2.10:54321"
-	request.Header.Set("X-Forwarded-For", "198.51.100.20")
-	if got := accountSyncNetworkSource(request, nil); got != "192.0.2.10" {
-		t.Fatalf("network source = %q, want direct peer address", got)
-	}
-	trusted := []netip.Prefix{netip.MustParsePrefix("192.0.2.0/24")}
-	if got := accountSyncNetworkSource(request, trusted); got != "198.51.100.20" {
-		t.Fatalf("trusted-proxy source = %q, want forwarded client address", got)
-	}
-	request.Header.Set("X-Forwarded-For", "198.51.100.20, 192.0.2.10")
-	if got := accountSyncNetworkSource(request, trusted); got != "192.0.2.10" {
-		t.Fatalf("ambiguous forwarded source = %q, want direct peer address", got)
-	}
-}
-
-func TestTrustedProxyClientsReceiveIndependentAuthenticationAdmission(t *testing.T) {
-	trusted := []netip.Prefix{netip.MustParsePrefix("192.0.2.0/24")}
-	request := func(client string) *http.Request {
-		candidate := httptest.NewRequest(http.MethodGet, "https://auth.example/data/sync", nil)
-		candidate.RemoteAddr = "192.0.2.10:54321"
-		candidate.Header.Set("X-Forwarded-For", client)
-		return candidate
-	}
-	admission := newAccountSyncAuthenticationAdmission()
-	attacker := accountSyncNetworkSource(request("198.51.100.1"), trusted)
-	for range maxPendingAccountSyncAuthPerSource {
-		if !admission.acquire(attacker) {
-			t.Fatal("attacker allowance ended early")
-		}
-	}
-	legitimate := accountSyncNetworkSource(request("203.0.113.2"), trusted)
-	if !admission.acquire(legitimate) {
-		t.Fatal("one forwarded client excluded another forwarded client")
-	}
-}
-
-func TestAccountSyncRequestOriginAllowsHTTPSAndLoopbackDevelopment(t *testing.T) {
-	tests := []struct {
-		origin string
-		want   bool
+func TestHandlerUsesForwardedOriginOnlyWhenExplicitlyTrusted(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		trust bool
+		want  int
 	}{
-		{origin: "https://client.example", want: true},
-		{origin: "http://localhost:5173", want: true},
-		{origin: "http://app.localhost:5173", want: true},
-		{origin: "http://127.0.0.1:5173", want: true},
-		{origin: "http://client.example"},
-		{origin: "https://client.example/path"},
-		{origin: "null"},
-		{origin: "file://client"},
-	}
-	for _, test := range tests {
-		t.Run(test.origin, func(t *testing.T) {
-			request := httptest.NewRequest(http.MethodGet, "https://auth.example/data/sync", nil)
-			request.Header.Set("Origin", test.origin)
-			got, ok := accountSyncRequestOrigin(request)
-			if ok != test.want || ok && got != test.origin {
-				t.Fatalf("accountSyncRequestOrigin = %q, %v; want %q, %v", got, ok, test.origin, test.want)
+		{name: "disabled", want: http.StatusMisdirectedRequest},
+		{name: "enabled", trust: true, want: http.StatusOK},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, "http://localhost:8080/", nil)
+			request.Header.Set("X-Forwarded-Host", "auth.example:42443")
+			request.Header.Set("X-Forwarded-Proto", "https")
+			response := httptest.NewRecorder()
+
+			Handler(Dependencies{
+				PublicURL: "https://auth.example:42443", TrustProxyHeaders: test.trust,
+			}).ServeHTTP(response, request)
+
+			if response.Code != test.want {
+				t.Fatalf("status = %d, want %d", response.Code, test.want)
 			}
 		})
 	}
 }
 
-func TestDecodeAccountSyncAuthenticationRejectsInvalidEnvelopes(t *testing.T) {
-	valid := `{"type":"authenticate","access_token":"opaque"}`
-	if got, ok := decodeAccountSyncAuthentication([]byte(valid)); !ok || got.AccessToken != "opaque" {
-		t.Fatalf("valid authentication = %+v, %v", got, ok)
+func TestHandlerRejectsMalformedTrustedProxyOrigins(t *testing.T) {
+	tests := []struct {
+		name   string
+		hosts  []string
+		protos []string
+	}{
+		{name: "missing host", protos: []string{"https"}},
+		{name: "missing protocol", hosts: []string{"auth.example:42443"}},
+		{name: "unsupported protocol", hosts: []string{"auth.example:42443"}, protos: []string{"ftp"}},
+		{name: "forwarded host chain", hosts: []string{"attacker.example", "auth.example:42443"}, protos: []string{"https"}},
+		{name: "forwarded protocol chain", hosts: []string{"auth.example:42443"}, protos: []string{"http", "https"}},
 	}
-	for _, invalid := range []string{
-		`{}`,
-		`{"type":"other","access_token":"opaque"}`,
-		`{"type":"authenticate","access_token":""}`,
-		`{"type":"authenticate","access_token":"opaque","extra":true}`,
-		valid + `{}`,
-		`["authenticate","opaque"]`,
-	} {
-		if _, ok := decodeAccountSyncAuthentication([]byte(invalid)); ok {
-			t.Fatalf("invalid authentication %s was accepted", invalid)
-		}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, "http://localhost:8080/", nil)
+			for _, host := range test.hosts {
+				request.Header.Add("X-Forwarded-Host", host)
+			}
+			for _, protocol := range test.protos {
+				request.Header.Add("X-Forwarded-Proto", protocol)
+			}
+			response := httptest.NewRecorder()
+
+			Handler(Dependencies{
+				PublicURL: "https://auth.example:42443", TrustProxyHeaders: true,
+			}).ServeHTTP(response, request)
+
+			if response.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d", response.Code, http.StatusBadRequest)
+			}
+		})
 	}
 }

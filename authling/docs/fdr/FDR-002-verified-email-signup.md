@@ -1,7 +1,7 @@
 # FDR-002: Verified Email Signup
 
 **Status:** Experimental
-**Last reviewed:** 2026-08-01
+**Last reviewed:** 2026-08-21
 
 ## Overview
 
@@ -24,17 +24,22 @@ durable account and starts the browser session defined by FDR-003.
    work. At most four password completions run concurrently per process.
 5. A correct code moves the same expiring flow to a verified state. It still
    does not create an account.
-6. The person chooses a password whose minimum length is configured by the
-   operator and whose maximum is 1,024 UTF-8 bytes. The default minimum is ten
-   Unicode characters; operators may select a value from eight through 128.
-   Authling rejects exact, case-insensitive matches from a small built-in list
-   of commonly chosen passwords. It does not reject a longer password merely
-   because that password contains a listed value.
+6. The person enters and confirms a password whose minimum length is configured
+   by the operator and whose maximum is 1,024 UTF-8 bytes. Authling requires
+   both entries to match before attempting account creation. The default
+   minimum is ten Unicode characters; operators may select a value from eight
+   through 128. Authling rejects exact, case-insensitive matches from a small
+   built-in list of commonly chosen passwords. It does not reject a longer
+   password merely because that password contains a listed value.
    Authling uses Argon2id with a random salt and stores only the verifier in its
    own encrypted credential field.
 7. Authling atomically creates the per-account history and claims the
    normalized address through a separate registry event. The flow is consumed
    after both facts become visible in the serving projection.
+   Account creation also derives a preferred username from the normalized
+   email local part, removes characters unsuitable for a portable username,
+   and falls back to `user` when fewer than two characters remain. The value
+   is an identity hint, not a login credential or an Authling-wide unique name.
 8. Authling creates a fresh browser session and takes the person to the signed-in
    account page. If session storage is unavailable, the account remains created
    and the person can sign in later.
@@ -54,6 +59,8 @@ reservation.
   `AUTHLING_RUNTIME_STATE` KV bucket and expire with the flow.
 - Durable normalized email and password verifier values are encrypted as
   separately authenticated fields with a random credential data key. The
+  preferred username is protected by the same key hierarchy as a distinct
+  authenticated field. The
   projection decrypts only the email field needed for its lookup index. The
   data key is wrapped by a per-account user key;
   both key records live in the separate `AUTHLING_KEYS` bucket.

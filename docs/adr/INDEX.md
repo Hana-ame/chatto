@@ -1,6 +1,9 @@
 # Architecture Decision Records
 
-This directory contains Architecture Decision Records (ADRs) for the Chatto project. ADRs document significant architectural decisions along with their context and consequences.
+This directory contains Architecture Decision Records (ADRs) for Chatto and
+for explicitly repository-wide monorepo or shared-framework decisions. ADRs
+document significant architectural decisions along with their context and
+consequences.
 
 For more about ADRs, see [Michael Nygard's article](https://cognitect.com/blog/2011/11/15/documenting-architecture-decisions).
 
@@ -45,7 +48,7 @@ replace part of their original design.
 | [ADR-031](ADR-031-room-group-centric-acl.md) | Room-Group-Centric ACL for Room-Scope Permissions | Accepted | 2026-05-13 |
 | [ADR-032](ADR-032-signed-attachment-locator-urls.md) | Self-Describing Signed Attachment URLs | Superseded | 2026-05-23 |
 | [ADR-033](ADR-033-event-sourced-state-with-projections.md) | Event-Sourced State with Derived Projections | Accepted | 2026-05-24 |
-| [ADR-034](ADR-034-single-event-stream.md) | Single Event Stream with Event-Type Subject Lanes | Accepted | 2026-05-24 |
+| [ADR-034](ADR-034-single-event-stream.md) | Single Domain Event Stream with Event-Type Subject Lanes | Accepted | 2026-05-24 |
 | [ADR-035](ADR-035-per-aggregate-phased-migration.md) | Per-Aggregate Phased Migration to Event Sourcing | Accepted | 2026-05-24 |
 | [ADR-036](ADR-036-runtime-state-kv-boundary.md) | Persist Runtime State in RUNTIME_STATE | Accepted | 2026-05-27 |
 | [ADR-037](ADR-037-dm-access-via-membership.md) | DM Access via Membership, Not a Read Permission | Accepted | 2026-05-31 |
@@ -75,7 +78,7 @@ replace part of their original design.
 | [ADR-061](ADR-061-application-neutral-configuration-loading.md) | Extract Application-Neutral Configuration Loading | Accepted | 2026-07-31 |
 | [ADR-062](ADR-062-tanstack-query-for-snapshot-reads.md) | TanStack Query for Snapshot-Style Frontend Reads | Accepted | 2026-07-31 |
 | [ADR-063](ADR-063-deno-desktop-cef-client.md) | Package Chatto Desktop with Deno Desktop and CEF | Superseded | 2026-08-02 |
-| [ADR-064](ADR-064-separate-server-catalog-and-sessions.md) | Separate the Frontend Server Catalogue from Device Sessions | Accepted | 2026-08-02 |
+| [ADR-064](ADR-064-separate-server-catalog-and-sessions.md) | Separate the Frontend Server Catalogue from Device Sessions | Superseded | 2026-08-02 |
 | [ADR-065](ADR-065-runtime-json-client-internationalization.md) | Runtime JSON Client Internationalization | Accepted | 2026-08-05 |
 | [ADR-066](ADR-066-durable-asset-processing-runtime-unit.md) | Durable Asset Processing as a Runtime Unit | Accepted | 2026-08-08 |
 | [ADR-067](ADR-067-electron-desktop-client.md) | Package Chatto Desktop with Electron | Partially superseded | 2026-08-08 |
@@ -84,3 +87,9 @@ replace part of their original design.
 | [ADR-070](ADR-070-deterministic-invite-link-capabilities.md) | Derive Invite-Link Capabilities from Durable EVT Identity | Accepted | 2026-08-11 |
 | [ADR-071](ADR-071-cimd-identified-open-oauth-clients.md) | Identify Open OAuth Clients through CIMD | Accepted | 2026-08-11 |
 | [ADR-072](ADR-072-optional-host-capabilities-in-the-shared-frontend.md) | Optional Host Capabilities in the Shared Frontend | Accepted | 2026-08-13 |
+| [ADR-073](ADR-073-define-the-loom-architecture.md) | Define the Loom Architecture | Accepted | 2026-08-14 |
+| [ADR-074](ADR-074-keep-server-catalogue-device-local.md) | Keep the Frontend Server Catalogue Device-Local | Accepted | 2026-08-14 |
+| [ADR-075](ADR-075-native-pitchfork-development-stack.md) | Run the Regular Development Stack Natively with Pitchfork | Superseded | 2026-08-17 |
+| [ADR-076](ADR-076-deterministic-notification-occurrences.md) | Store Notification Lifecycle Facts in a Bounded Event Stream | Accepted | 2026-08-10 |
+| [ADR-077](ADR-077-persistent-notification-list.md) | Present Notifications as One Persistent Occurrence List | Accepted | 2026-08-10 |
+| [ADR-078](ADR-078-portless-native-development-stack.md) | Route the Native Development Stack with Portless | Accepted | 2026-08-21 |

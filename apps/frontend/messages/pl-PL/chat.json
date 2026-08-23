@@ -9,7 +9,19 @@
       "time_now": "Właśnie teraz",
       "time_minutes": "{count}m temu",
       "time_hours": "{count}h temu",
-      "time_days": "{count}d temu"
+      "time_days": "{count}d temu",
+      "unread": "Nieprzeczytane",
+      "activity": "Nowa aktywność",
+      "summary": {
+        "direct_message": "Masz nową wiadomość bezpośrednią od {actor}.",
+        "reaction": "Osoba {actor} zareagowała „{emoji}” na Twoją wiadomość w {channel}.",
+        "reaction_group": "Osoba {actor} i inni zareagowali „{emoji}” na Twoją wiadomość w {channel}.",
+        "reply": "Osoba {actor} odpowiedziała na Twoją wiadomość.",
+        "mention": "Osoba {actor} wspomniała o Tobie.",
+        "followed_thread": "Osoba {actor} odpowiedziała w obserwowanym przez Ciebie wątku.",
+        "new_message": "Osoba {actor} opublikowała nową wiadomość.",
+        "activity": "Masz nowe powiadomienie od {actor}."
+      }
     },
     "sign_out": {
       "title": "Wyloguj się",
@@ -27,15 +39,11 @@
     },
     "user_menu": {
       "profile": "Profil użytkownika",
-      "send_message": "Wyślij wiadomość"
+      "send_message": "Wyślij wiadomość",
+      "copy_user_id": "Kopiuj identyfikator użytkownika"
     },
     "server_gutter": {
       "add_server": "Dodaj serwer",
-      "account_data_connect": "Synchronizuj listę serwerów z Authling",
-      "account_data_connecting": "Łączenie synchronizacji listy serwerów…",
-      "account_data_connected": "Lista serwerów jest synchronizowana z {provider}",
-      "account_data_connected_toast": "Twoja lista serwerów jest teraz synchronizowana.",
-      "account_data_error": "Nie udało się zsynchronizować listy serwerów",
       "version": "Wersja {version}",
       "version_unknown": "Nieznana wersja",
       "unreachable": "Serwer jest niedostępny",

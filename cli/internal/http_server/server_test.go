@@ -704,6 +704,41 @@ func TestAuthRoutes_Login_Success(t *testing.T) {
 	}
 }
 
+func TestAuthRoutes_Login_DisabledReturns403BeforeCredentialValidation(t *testing.T) {
+	disabled := false
+	ts, client, chattoCore := setupTestHTTPServerWithHook(t, func(server *HTTPServer) {
+		server.config.Auth.DirectLogin = &disabled
+	})
+	ctx := testContext(t)
+	if _, err := chattoCore.CreateUser(ctx, "system", "disabledlogin", "Disabled Login", "password123"); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	body, _ := json.Marshal(map[string]string{
+		"login":    "disabledlogin",
+		"password": "definitely-wrong",
+	})
+	resp, err := client.Post(ts.URL+"/auth/login", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST /auth/login: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+	var responseBody map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&responseBody); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if responseBody["error"] != "Password login is disabled" {
+		t.Fatalf("error = %q, want password-login-disabled response", responseBody["error"])
+	}
+	if cookies := client.Jar.Cookies(resp.Request.URL); len(cookies) != 0 {
+		t.Fatalf("disabled login created cookies: %+v", cookies)
+	}
+}
+
 func TestAuthRoutes_Login_WithIdentifier(t *testing.T) {
 	ts, client, chattoCore := setupTestHTTPServer(t)
 	ctx := testContext(t)
@@ -2744,7 +2779,7 @@ func TestAuthRoutes_LoginStaleBearerTokenIssuanceIsInvalidCredentials(t *testing
 
 	ts, client, chattoCore := setupTestHTTPServerWithHook(t, func(s *HTTPServer) {
 		s.passwordLoginSessionCreatedHook = func(c *gin.Context, userID string, _ uint64) {
-			cookieCredential, ok := cookieCredentialFromSession(sessions.Default(c))
+			cookieCredentialID, ok := cookieCredentialIDFromSession(sessions.Default(c))
 
 			capture.Lock()
 			defer capture.Unlock()
@@ -2753,13 +2788,8 @@ func TestAuthRoutes_LoginStaleBearerTokenIssuanceIsInvalidCredentials(t *testing
 				capture.err = errors.New("cookie session was not saved before hook")
 				return
 			}
-			if cookieCredential.userID != "" {
-				capture.err = errors.New("new cookie session should not duplicate user ID")
-				return
-			}
-
 			capture.userID = userID
-			capture.sessionID = cookieCredential.sessionID
+			capture.sessionID = cookieCredentialID
 			capture.err = s.core.SetPasswordHash(c.Request.Context(), userID, "newpassword456")
 		}
 	})
@@ -2805,8 +2835,8 @@ func TestAuthRoutes_LoginStaleBearerTokenIssuanceIsInvalidCredentials(t *testing
 		t.Fatal("Stale login response should not include a bearer token")
 	}
 
-	if _, err := chattoCore.ValidateCookieSession(ctx, capturedUserID, capturedSessionID); !errors.Is(err, core.ErrCookieSessionNotFound) {
-		t.Fatalf("ValidateCookieSession err = %v, want ErrCookieSessionNotFound", err)
+	if _, err := chattoCore.ValidateCookieCredential(ctx, capturedSessionID); !errors.Is(err, core.ErrCookieSessionNotFound) {
+		t.Fatalf("ValidateCookieCredential err = %v, want ErrCookieSessionNotFound", err)
 	}
 }
 
@@ -2819,14 +2849,14 @@ func TestAuthRoutes_LoginBearerTokenFailureRevokesCookieSession(t *testing.T) {
 
 	ts, client, chattoCore := setupTestHTTPServerWithHook(t, func(s *HTTPServer) {
 		s.passwordLoginSessionCreatedHook = func(c *gin.Context, userID string, _ uint64) {
-			cookieCredential, ok := cookieCredentialFromSession(sessions.Default(c))
+			cookieCredentialID, ok := cookieCredentialIDFromSession(sessions.Default(c))
 
 			capture.Lock()
 			defer capture.Unlock()
 
 			if ok {
 				capture.userID = userID
-				capture.sessionID = cookieCredential.sessionID
+				capture.sessionID = cookieCredentialID
 			}
 			s.core.EventPublisher = nil
 		}
@@ -2869,8 +2899,8 @@ func TestAuthRoutes_LoginBearerTokenFailureRevokesCookieSession(t *testing.T) {
 		t.Fatal("Failed login response should not include a bearer token")
 	}
 
-	if _, err := chattoCore.ValidateCookieSession(ctx, capturedUserID, capturedSessionID); !errors.Is(err, core.ErrCookieSessionNotFound) {
-		t.Fatalf("ValidateCookieSession err = %v, want ErrCookieSessionNotFound", err)
+	if _, err := chattoCore.ValidateCookieCredential(ctx, capturedSessionID); !errors.Is(err, core.ErrCookieSessionNotFound) {
+		t.Fatalf("ValidateCookieCredential err = %v, want ErrCookieSessionNotFound", err)
 	}
 }
 

@@ -3,13 +3,25 @@
     "notifications": {
       "title": "Notifications",
       "subtitle": "Here's what's new",
-      "clear_all": "Clear all",
+      "clear_all": "Dismiss all",
       "empty_title": "No notifications",
       "empty_body": "You're all caught up!",
       "time_now": "Just now",
       "time_minutes": "{count}m ago",
       "time_hours": "{count}h ago",
-      "time_days": "{count}d ago"
+      "time_days": "{count}d ago",
+      "unread": "Unread",
+      "activity": "New activity",
+      "summary": {
+        "direct_message": "{actor} has sent you a direct message.",
+        "reaction": "{actor} reacted with '{emoji}' to your message in {channel}.",
+        "reaction_group": "{actor} and others reacted with '{emoji}' to your message in {channel}.",
+        "reply": "{actor} replied to your message.",
+        "mention": "{actor} mentioned you.",
+        "followed_thread": "{actor} replied in a thread you follow.",
+        "new_message": "{actor} posted a new message.",
+        "activity": "{actor} sent you a notification."
+      }
     },
     "sign_out": {
       "title": "Sign Out",
@@ -27,15 +39,11 @@
     },
     "user_menu": {
       "profile": "User profile",
-      "send_message": "Send Message"
+      "send_message": "Send Message",
+      "copy_user_id": "Copy User ID"
     },
     "server_gutter": {
       "add_server": "Add Server",
-      "account_data_connect": "Sync server list with Authling",
-      "account_data_connecting": "Connecting server-list sync…",
-      "account_data_connected": "Server list is synced with {provider}",
-      "account_data_connected_toast": "Your server list is now synced.",
-      "account_data_error": "Could not sync the server list",
       "version": "Version {version}",
       "version_unknown": "Version unknown",
       "unreachable": "Server unreachable",

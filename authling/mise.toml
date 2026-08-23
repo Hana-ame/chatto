@@ -1,6 +1,6 @@
 [tools]
 buf = "latest"
-go = "1.26.2"
+go = "1.26.7"
 node = "22"
 "aqua:axllent/mailpit" = "latest"
 
@@ -85,59 +85,38 @@ outputs = ["bin/authling"]
 
 [tasks.test]
 description = "Run Authling tests standalone and in the repository workspace"
-depends = ["deps-go", "codegen-templates", "build-web", "test-sync-poc"]
+depends = ["deps-go", "codegen-templates", "build-web"]
 run = [
     "GOWORK=off go test -trimpath ./...",
     "go test -trimpath ./...",
 ]
 sources = ["go.mod", "go.sum", "**/*.go"]
 
-[tasks.build-tinybase-test-peer]
-description = "Build the private Go peer used by the TinyBase compatibility proof"
-depends = ["deps-go"]
-run = "GOWORK=off go build -trimpath -o bin/tinybase-test-peer ./internal/tinybasesync/testpeer"
-sources = ["go.mod", "go.sum", "internal/tinybasesync/**/*.go"]
-outputs = ["bin/tinybase-test-peer"]
-
-[tasks.test-sync-poc]
-description = "Test TinyBase 9.3 interoperability with the experimental Go peer"
-depends = ["deps-web", "build-tinybase-test-peer"]
-env = { AUTHLING_TINYBASE_TEST_PEER = "{{config_root}}/bin/tinybase-test-peer" }
-run = "pnpm run test:sync-poc"
-sources = ["package.json", "pnpm-lock.yaml", "sync-poc/**/*.mjs", "internal/tinybasesync/**/*.go"]
-
 [tasks.test-e2e]
 description = "Run Authling browser end-to-end tests with isolated processes"
-depends = ["build", "build-e2e-client"]
+depends = ["build"]
 env = { AUTHLING_E2E_SKIP_BUILD = "1" }
 run = [
     "pnpm run check:e2e",
     "pnpm exec playwright test",
 ]
 
-[tasks.build-e2e-client]
-description = "Bundle the private TinyBase browser client used by E2E tests"
-depends = ["deps-web"]
-run = "pnpm exec esbuild e2e/fixtures/tinybase-client.ts --bundle --format=iife --platform=browser --outfile=e2e/.generated/tinybase-client.js"
-sources = ["package.json", "pnpm-lock.yaml", "e2e/fixtures/tinybase-client.ts"]
-outputs = ["e2e/.generated/tinybase-client.js"]
-
 [tasks.authling]
 description = "Build and run the Authling CLI command"
 depends = ["build"]
 raw_args = true
 env = {
-  AUTHLING_HTTP_BIND_ADDRESS = "127.0.0.1:{{env.CONDUCTOR_PORT | default(value=env.PASEO_PORT | default(value='8080'))}}",
-  AUTHLING_HTTP_PUBLIC_URL = "http://localhost:{{env.CONDUCTOR_PORT | default(value=env.PASEO_PORT | default(value='8080'))}}",
-  AUTHLING_SMTP_PORT = "{% if env.CONDUCTOR_PORT is defined and env.CONDUCTOR_PORT != '' %}{{env.CONDUCTOR_PORT | int + 8}}{% elif env.PASEO_PORT is defined and env.PASEO_PORT != '' %}{{env.PASEO_PORT | int + 8}}{% else %}1025{% endif %}",
+  AUTHLING_HTTP_BIND_ADDRESS = "127.0.0.1:{{env.CONDUCTOR_PORT | default(value='8080')}}",
+  AUTHLING_HTTP_PUBLIC_URL = "http://localhost:{{env.CONDUCTOR_PORT | default(value='8080')}}",
+  AUTHLING_SMTP_PORT = "{% if env.CONDUCTOR_PORT is defined and env.CONDUCTOR_PORT != '' %}{{env.CONDUCTOR_PORT | int + 8}}{% else %}1025{% endif %}",
 }
 run = "exec bin/authling"
 
 [tasks.mailpit]
 description = "Run Mailpit for Authling development email"
 env = {
-  AUTHLING_DEV_MAILPIT_SMTP_PORT = "{% if env.CONDUCTOR_PORT is defined and env.CONDUCTOR_PORT != '' %}{{env.CONDUCTOR_PORT | int + 8}}{% elif env.PASEO_PORT is defined and env.PASEO_PORT != '' %}{{env.PASEO_PORT | int + 8}}{% else %}1025{% endif %}",
-  AUTHLING_DEV_MAILPIT_UI_PORT = "{% if env.CONDUCTOR_PORT is defined and env.CONDUCTOR_PORT != '' %}{{env.CONDUCTOR_PORT | int + 9}}{% elif env.PASEO_PORT is defined and env.PASEO_PORT != '' %}{{env.PASEO_PORT | int + 9}}{% else %}8025{% endif %}",
+  AUTHLING_DEV_MAILPIT_SMTP_PORT = "{% if env.CONDUCTOR_PORT is defined and env.CONDUCTOR_PORT != '' %}{{env.CONDUCTOR_PORT | int + 8}}{% else %}1025{% endif %}",
+  AUTHLING_DEV_MAILPIT_UI_PORT = "{% if env.CONDUCTOR_PORT is defined and env.CONDUCTOR_PORT != '' %}{{env.CONDUCTOR_PORT | int + 9}}{% else %}8025{% endif %}",
 }
 run = "exec mailpit --smtp \"127.0.0.1:$AUTHLING_DEV_MAILPIT_SMTP_PORT\" --listen \"127.0.0.1:$AUTHLING_DEV_MAILPIT_UI_PORT\""
 

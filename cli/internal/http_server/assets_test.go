@@ -1274,6 +1274,84 @@ func TestAsset_ServerAsset_FilenameTailURLs(t *testing.T) {
 	}
 }
 
+// 【本地改动 2026-08-23】资产响应禁止携带 Set-Cookie 的回归测试。
+//
+// 发现背景：用户报告登录状态下所有附件请求 cf-cache-status: BYPASS。根因是
+// csrfMiddleware 对携带会话的每个安全方法请求都重发 chatto_csrf cookie，而
+// Cloudflare 等共享缓存对带 Set-Cookie 的响应一律不缓存。修复后 /assets/*
+// 不再下发 CSRF cookie；本测试以已登录客户端断言响应无 Set-Cookie。
+func TestAsset_NoSetCookieForLoggedInAssetFetches(t *testing.T) {
+	env := setupAssetTestServer(t)
+
+	user, err := env.core.CreateUser(env.ctx, "system", "assetcookieuser", "Asset Cookie User", "password123")
+	if err != nil {
+		t.Fatalf("Failed to create user: %v", err)
+	}
+	room, err := env.core.CreateRoom(env.ctx, user.Id, "channel", "", "asset-cookie-room", "Asset Cookie Room")
+	if err != nil {
+		t.Fatalf("Failed to create room: %v", err)
+	}
+	env.login(t, "assetcookieuser", "password123")
+
+	imageData := createAssetTestPNG(t, 64, 64)
+	_, attachment := env.postAssetMessageWithAttachment(t, room.Id, "cacheable", imageData, "cookie-probe.png")
+	assetURL := attachment.GetAssetUrl().GetUrl()
+	if assetURL == "" {
+		t.Fatal("Expected original asset URL")
+	}
+
+	resp, err := env.client.Get(env.server.URL + assetURL)
+	if err != nil {
+		t.Fatalf("Failed to get asset as logged-in user: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("Asset status = %d, want 200", resp.StatusCode)
+	}
+	if setCookie := resp.Header.Get("Set-Cookie"); setCookie != "" {
+		t.Errorf("Asset response carried Set-Cookie %q; shared caches must bypass it", setCookie)
+	}
+}
+
+// 【本地改动 2026-08-23】HEAD 必须与 GET 同路由的回归测试。
+//
+// 发现背景：gin 不会把 HEAD 映射到 GET 路由，源站对所有 /assets/* 的 HEAD
+// 返回 404；Cloudflare 边缘未命中时转发 HEAD 拿到 404+no-store 后把缓存
+// 状态标为 BYPASS。补注册 HEAD 路由后，本测试锁死 HEAD 可用且返回与 GET
+// 相同的缓存语义。
+func TestAsset_HeadRequestsAreRoutedLikeGet(t *testing.T) {
+	env := setupAssetTestServer(t)
+
+	user, err := env.core.CreateUser(env.ctx, "system", "assetheaduser", "Asset Head User", "password123")
+	if err != nil {
+		t.Fatalf("Failed to create user: %v", err)
+	}
+	room, err := env.core.CreateRoom(env.ctx, user.Id, "channel", "", "asset-head-room", "Asset Head Room")
+	if err != nil {
+		t.Fatalf("Failed to create room: %v", err)
+	}
+
+	imageData := createAssetTestPNG(t, 64, 64)
+	_, attachment := env.postAssetMessageWithAttachment(t, room.Id, "head-probe", imageData, "head-probe.png")
+	assetURL := attachment.GetAssetUrl().GetUrl()
+
+	req, err := http.NewRequest(http.MethodHead, env.server.URL+assetURL, nil)
+	if err != nil {
+		t.Fatalf("Failed to build HEAD request: %v", err)
+	}
+	resp, err := env.client.Do(req)
+	if err != nil {
+		t.Fatalf("HEAD request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("HEAD asset status = %d, want 200", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Cache-Control"); got == "" {
+		t.Error("HEAD asset response missing Cache-Control")
+	}
+}
+
 func TestAsset_ServerAssetTransformKeepsDefaultQuality(t *testing.T) {
 	env := setupAssetTestServer(t)
 

@@ -65,6 +65,21 @@ func (s *HTTPServer) setupAssetRoutes() {
 	s.router.GET("/assets/files/:assetID/:filename", s.servePublicStableAttachment)
 	s.router.GET("/assets/files/:assetID/image/:dimensions/:fit", s.serveStableTransformedAttachment)
 	s.router.GET("/assets/files/:assetID/image/:dimensions/:fit/:filename", s.servePublicStableTransformedAttachment)
+	// 【本地改动 2026-08-23】补注册 HEAD：gin 不会把 HEAD 映射到 GET 路由，
+	// 未注册时源站对所有 /assets/* 的 HEAD 一律 404——CF 边缘未命中转发
+	// HEAD 时拿到 404+no-store，缓存状态被标成 BYPASS（2026-08-23 线上定位）。
+	headRoutes := []struct {
+		path    string
+		handler gin.HandlerFunc
+	}{
+		{"/assets/files/:assetID", s.serveStableAttachment},
+		{"/assets/files/:assetID/:filename", s.servePublicStableAttachment},
+		{"/assets/files/:assetID/image/:dimensions/:fit", s.serveStableTransformedAttachment},
+		{"/assets/files/:assetID/image/:dimensions/:fit/:filename", s.servePublicStableTransformedAttachment},
+	}
+	for _, route := range headRoutes {
+		s.router.HEAD(route.path, route.handler)
+	}
 	s.router.GET("/assets/hls/:assetID/master.m3u8", s.serveHLSMasterPlaylist)
 	s.router.GET("/assets/hls/:assetID/renditions/:rendition/playlist.m3u8", s.serveHLSMediaPlaylist)
 	s.router.GET("/assets/hls/:assetID/renditions/:rendition/segments/:segment", s.serveHLSSegment)

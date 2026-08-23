@@ -37,8 +37,14 @@ func (s *HTTPServer) csrfMiddleware() gin.HandlerFunc {
 			}
 		}
 
+		// 【本地改动 2026-08-23】跳过 /assets/*：这些是可被 Cloudflare 等
+		// 共享缓存的二进制/衍生图路由，响应一旦携带 Set-Cookie，缓存层必须
+		// BYPASS——登录用户的所有图片请求都因此永远打不满边缘缓存
+		// （2026-08-23 用户报告 cf-cache-status: BYPASS 定位到此）。
+		// CSRF cookie 由 SPA 页面与其余 GET 响应照常下发；<img> 加载不消费
+		// 它，token 校验只发生在 unsafe 方法上，跳过不影响任何防护。
 		session := sessions.Default(c)
-		if isSafeHTTPMethod(c.Request.Method) && hasCookieCredential(session) {
+		if isSafeHTTPMethod(c.Request.Method) && hasCookieCredential(session) && !isCacheableAssetPath(c.Request.URL.Path) {
 			if err := s.ensureCSRFToken(c); err != nil {
 				if errors.Is(err, errAuthenticationServiceUnavailable) {
 					c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "Authentication service temporarily unavailable"})
@@ -51,6 +57,12 @@ func (s *HTTPServer) csrfMiddleware() gin.HandlerFunc {
 
 		c.Next()
 	}
+}
+
+// isCacheableAssetPath reports whether the path serves shareable binary assets
+// whose responses must stay free of Set-Cookie to remain cacheable.
+func isCacheableAssetPath(path string) bool {
+	return strings.HasPrefix(path, "/assets/")
 }
 
 func (s *HTTPServer) ensureCSRFToken(c *gin.Context) error {

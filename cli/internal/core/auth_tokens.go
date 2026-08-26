@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	corev1 "hmans.de/chatto/internal/pb/chatto/core/v1"
 )
@@ -163,19 +162,25 @@ func (c *ChattoCore) ValidatePresentedRuntimeCredential(ctx context.Context, han
 
 	var tokenData AuthTokenData
 	if err := json.Unmarshal(entry.Value(), &tokenData); err != nil {
-		_ = c.storage.runtimeStateKV.Delete(ctx, key)
+		_ = c.deleteRuntimeStateKey(ctx, key)
 		return ValidatedRuntimeCredential{}, ErrAuthTokenNotFound
 	}
 	if tokenData.presentationOrDefault() != presentation {
 		return ValidatedRuntimeCredential{}, ErrAuthTokenNotFound
 	}
 	if tokenData.UserID == "" {
-		_ = c.storage.runtimeStateKV.Delete(ctx, key)
+		_ = c.deleteRuntimeStateKey(ctx, key)
 		return ValidatedRuntimeCredential{}, ErrAuthTokenNotFound
 	}
 	if presentation == AuthTokenPresentationCookie && tokenData.kindOrDefault() != AuthTokenKindFirstPartySession {
-		_ = c.storage.runtimeStateKV.Delete(ctx, key)
+		_ = c.deleteRuntimeStateKey(ctx, key)
 		return ValidatedRuntimeCredential{}, ErrAuthTokenNotFound
+	}
+	if presentation == AuthTokenPresentationCookie {
+		if tokenData.CreatedAt.IsZero() || tokenData.ExpiresAt.IsZero() || !time.Now().Before(tokenData.ExpiresAt) {
+			_ = c.deleteRuntimeStateKey(ctx, key)
+			return ValidatedRuntimeCredential{}, ErrAuthTokenNotFound
+		}
 	}
 	if presentation == AuthTokenPresentationBearer {
 		now := time.Now()
@@ -222,16 +227,14 @@ func (c *ChattoCore) ValidatePresentedRuntimeCredential(ctx context.Context, han
 		if !errors.Is(err, ErrAuthenticationRevoked) {
 			return ValidatedRuntimeCredential{}, err
 		}
-		_ = c.storage.runtimeStateKV.Delete(ctx, key)
+		_ = c.deleteRuntimeStateKey(ctx, key)
 		return ValidatedRuntimeCredential{}, ErrAuthTokenNotFound
 	}
 	if validation.ShouldPersistAuthGeneration {
 		tokenData.AuthGeneration = validation.AuthGeneration
 		if value, err := json.Marshal(tokenData); err == nil {
-			_, _ = c.updateRuntimeStateTokenTTL(ctx, key, value, entry.Revision(), c.cookieSessionTTL())
+			_, _ = c.updateRuntimeStateUntil(ctx, key, value, entry.Revision(), tokenData.ExpiresAt, time.Now())
 		}
-	} else {
-		_, _ = c.updateRuntimeStateTokenTTL(ctx, key, entry.Value(), entry.Revision(), c.cookieSessionTTL())
 	}
 
 	return validatedRuntimeCredentialFromAuthToken(handle, tokenData), nil
@@ -318,7 +321,8 @@ func (c *ChattoCore) RevokePresentedRuntimeCredentialWithReason(ctx context.Cont
 
 	var tokenData AuthTokenData
 	if err := json.Unmarshal(entry.Value(), &tokenData); err != nil {
-		if deleteErr := c.storage.runtimeStateKV.Delete(ctx, key); deleteErr != nil && !errors.Is(deleteErr, jetstream.ErrKeyNotFound) {
+		deleteErr := c.deleteRuntimeStateKey(ctx, key)
+		if deleteErr != nil && !errors.Is(deleteErr, jetstream.ErrKeyNotFound) {
 			return "", false, fmt.Errorf("failed to revoke malformed runtime credential after unmarshal error %v: %w", err, deleteErr)
 		}
 		return "", true, fmt.Errorf("failed to unmarshal runtime credential for revocation: %w", err)
@@ -337,7 +341,7 @@ func (c *ChattoCore) RevokePresentedRuntimeCredentialWithReason(ctx context.Cont
 		}
 	}
 
-	err = c.storage.runtimeStateKV.Delete(ctx, key)
+	err = c.deleteRuntimeStateKey(ctx, key)
 	if err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
 		return tokenData.UserID, false, fmt.Errorf("failed to revoke runtime credential: %w", err)
 	}
@@ -390,14 +394,11 @@ func (c *ChattoCore) RevokeAllAuthTokensForUserWithReason(ctx context.Context, u
 			continue
 		}
 
-		if err := c.recordBearerTokenRevoked(ctx, userID, reason); err != nil {
-			return revoked, err
-		}
-		if err := c.storage.runtimeStateKV.Delete(ctx, key); err != nil {
-			if errors.Is(err, jetstream.ErrKeyNotFound) {
-				continue
-			}
+		if err := c.deleteRuntimeStateKey(ctx, key); err != nil {
 			return revoked, fmt.Errorf("failed to revoke renewable session: %w", err)
+		}
+		if err := c.recordBearerTokenRevoked(ctx, userID, reason); err != nil {
+			c.logger.Warn("Failed to append bearer-token revocation audit event", "error", err)
 		}
 		revoked++
 	}
@@ -438,31 +439,15 @@ func (c *ChattoCore) RevokeOAuthClientTokens(ctx context.Context, clientID strin
 		if session.Kind != AuthTokenKindOAuthAccessToken || session.ClientID != clientID {
 			continue
 		}
+		if err := c.deleteRuntimeStateKey(ctx, key); err != nil {
+			return revoked, fmt.Errorf("failed to revoke OAuth client token: %w", err)
+		}
 		if session.UserID != "" {
 			if err := c.recordBearerTokenRevoked(ctx, session.UserID, "oauth_client_blocked"); err != nil {
-				return revoked, err
+				c.logger.Warn("Failed to append OAuth token revocation audit event", "error", err)
 			}
-		}
-		if err := c.storage.runtimeStateKV.Delete(ctx, key); err != nil {
-			if errors.Is(err, jetstream.ErrKeyNotFound) {
-				continue
-			}
-			return revoked, fmt.Errorf("failed to revoke OAuth client token: %w", err)
 		}
 		revoked++
 	}
 	return revoked, nil
-}
-
-func (c *ChattoCore) updateRuntimeStateTokenTTL(ctx context.Context, key string, value []byte, revision uint64, ttl time.Duration) (uint64, error) {
-	msg := nats.NewMsg("$KV.RUNTIME_STATE." + key)
-	msg.Data = value
-	ack, err := c.js.PublishMsg(ctx, msg,
-		jetstream.WithExpectLastSequencePerSubject(revision),
-		jetstream.WithMsgTTL(ttl),
-	)
-	if err != nil {
-		return 0, err
-	}
-	return ack.Sequence, nil
 }

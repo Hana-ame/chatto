@@ -152,6 +152,47 @@ func TestImmutableAssetCaching(t *testing.T) {
 	})
 }
 
+func TestImmutableFrontendAssetNeverCarriesAuthenticationCookies(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	chattoCore := setupFrontendTestCoreWithLogo(t)
+	ctx := testContext(t)
+	user, err := chattoCore.CreateUser(ctx, core.SystemActorID, "immutable-cookie-user", "Immutable Cookie User", "password123")
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	sessionID, _, err := chattoCore.CreateCookieSession(ctx, user.GetId(), "password_login")
+	if err != nil {
+		t.Fatalf("CreateCookieSession: %v", err)
+	}
+
+	router := gin.New()
+	store := cookie.NewStore([]byte("test-secret-key-32-bytes-long!!"))
+	router.Use(sessions.Sessions("chatto_session", store))
+	server := &HTTPServer{
+		config: config.ChattoConfig{
+			Webserver: config.WebserverConfig{URL: "https://example.com"},
+		},
+		core:   chattoCore,
+		router: router,
+	}
+	router.Use(server.csrfMiddleware())
+	if err := server.setupFrontendRoutes(); err != nil {
+		t.Fatalf("setupFrontendRoutes: %v", err)
+	}
+
+	assetRequest := httptest.NewRequest(http.MethodGet, "/_app/immutable/entry/start.CxnbWTuF.js", nil)
+	assetRequest.AddCookie(&http.Cookie{Name: browserSessionCookieName, Value: sessionID})
+	assetResponse := httptest.NewRecorder()
+	router.ServeHTTP(assetResponse, assetRequest)
+
+	if values := assetResponse.Header().Values("Set-Cookie"); len(values) != 0 {
+		t.Fatalf("immutable asset Set-Cookie = %v, want none", values)
+	}
+	if got := assetResponse.Header().Get("Cache-Control"); got != cacheControlImmutable {
+		t.Fatalf("immutable asset Cache-Control = %q, want %q", got, cacheControlImmutable)
+	}
+}
+
 func TestServiceWorkerETag(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

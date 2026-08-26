@@ -52,6 +52,20 @@ func TestBrowserCookieAuthenticationIsSameOriginOnly(t *testing.T) {
 	if crossOriginBearerResponse.Code != http.StatusOK || crossOriginBearerResponse.Body.String() != user.Id {
 		t.Fatalf("cross-origin bearer status/body = %d/%q", crossOriginBearerResponse.Code, crossOriginBearerResponse.Body.String())
 	}
+
+	for _, authorization := range []string{"Bearer invalid", "Basic Zm9vOmJhcg=="} {
+		t.Run(authorization, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, "/test/whoami", nil)
+			request.Header.Set("Origin", "https://chatto.example")
+			request.Header.Set("Authorization", authorization)
+			addCookies(request, cookies)
+			response := httptest.NewRecorder()
+			server.router.ServeHTTP(response, request)
+			if response.Code != http.StatusUnauthorized {
+				t.Fatalf("explicit invalid authorization status = %d, want 401", response.Code)
+			}
+		})
+	}
 }
 
 func TestBrowserCookieAuthenticationCanonicalizesDefaultPort(t *testing.T) {
@@ -74,6 +88,29 @@ func TestBrowserCookieAuthenticationCanonicalizesDefaultPort(t *testing.T) {
 	server.router.ServeHTTP(response, request)
 	if response.Code != http.StatusOK || response.Body.String() != user.Id {
 		t.Fatalf("same-origin status/body = %d/%q", response.Code, response.Body.String())
+	}
+}
+
+func TestBrowserCookieAuthenticationAcceptsDirectOriginAlias(t *testing.T) {
+	server := setupOAuthServer(t)
+	server.config.Webserver.URL = "https://configured.example"
+	cookies, user := loginOAuthTestUser(t, server, "same-origin-alias")
+	server.router.GET("/test/alias-whoami", func(c *gin.Context) {
+		request := server.injectUserIntoContext(c)
+		if authenticated := authctx.ForContext(request.Context()); authenticated != nil {
+			c.String(http.StatusOK, authenticated.Id)
+			return
+		}
+		c.Status(http.StatusUnauthorized)
+	})
+
+	request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:4321/test/alias-whoami", nil)
+	request.Header.Set("Origin", "http://127.0.0.1:4321")
+	addCookies(request, cookies)
+	response := httptest.NewRecorder()
+	server.router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || response.Body.String() != user.Id {
+		t.Fatalf("direct alias status/body = %d/%q", response.Code, response.Body.String())
 	}
 }
 

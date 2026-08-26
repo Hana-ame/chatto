@@ -953,6 +953,33 @@ func TestBearerExpiryCancelsAuthorizationAndRequestsReconnect(t *testing.T) {
 	}
 }
 
+func TestCookieRenewalCancelsAuthorizationAndRequestsReconnect(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	var written *realtimev1.RealtimeServerFrame
+	closed := false
+
+	terminateRealtimeForCookieRenewal(
+		cancel,
+		func(frame *realtimev1.RealtimeServerFrame) error {
+			written = frame
+			return nil
+		},
+		func() { closed = true },
+	)
+
+	select {
+	case <-ctx.Done():
+	default:
+		t.Fatal("authorized context remained active at the cookie renewal boundary")
+	}
+	if !closed {
+		t.Fatal("connection remained open at the cookie renewal boundary")
+	}
+	if written.GetClose().GetCode() != "session_renewal_required" || !written.GetClose().GetReconnect() {
+		t.Fatalf("renewal frame = %+v, want reconnecting session_renewal_required", written)
+	}
+}
+
 func TestRealtimeWebSocketBoundsWholeCatchUpDuration(t *testing.T) {
 	env := setupWebSocketTestServer(t)
 	env.httpServer.realtimeCatchUps.timeout = -time.Nanosecond
@@ -2352,6 +2379,136 @@ func TestRealtimeWebSocketAuthenticatesWithCookie(t *testing.T) {
 
 	conn := env.connectRealtime(t)
 	subscribeRealtime(t, conn, "")
+}
+
+func TestRealtimeWebSocketRevalidatesCookieBeforeSubscription(t *testing.T) {
+	env := setupWebSocketTestServer(t)
+	if _, err := env.core.CreateUser(env.ctx, core.SystemActorID, "rt-cookie-subscribe-revoke", "RT Cookie Subscribe Revoke", "password123"); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	env.login(t, "rt-cookie-subscribe-revoke", "password123")
+	var sessionID string
+	for _, cookie := range env.cookieJar.Cookies(mustParseURL(env.server.URL)) {
+		if isBrowserSessionCookieName(cookie.Name) {
+			sessionID = cookie.Value
+		}
+	}
+	if sessionID == "" {
+		t.Fatal("login did not set the browser session cookie")
+	}
+
+	conn := env.connectRealtime(t)
+	sendRealtimeClientFrame(t, conn, &realtimev1.RealtimeClientFrame{Frame: &realtimev1.RealtimeClientFrame_Hello{
+		Hello: &realtimev1.RealtimeClientHello{ProtocolVersion: realtimeProtocolVersion},
+	}})
+	if frame, ok := readRealtimeServerFrame(t, conn, 5*time.Second); !ok || frame.GetHello() == nil {
+		t.Fatalf("hello frame = %+v", frame)
+	}
+	if err := env.core.RevokeCookieSession(env.ctx, sessionID); err != nil {
+		t.Fatalf("RevokeCookieSession: %v", err)
+	}
+
+	sendRealtimeClientFrame(t, conn, &realtimev1.RealtimeClientFrame{Frame: &realtimev1.RealtimeClientFrame_SubscribeEvents{
+		SubscribeEvents: &realtimev1.RealtimeSubscribeEvents{},
+	}})
+	frame, ok := readRealtimeServerFrame(t, conn, 5*time.Second)
+	if !ok || frame.GetError().GetCode() != "authentication_required" || !frame.GetError().GetFatal() {
+		t.Fatalf("post-revocation subscribe frame = %+v, want fatal authentication_required", frame)
+	}
+}
+
+func TestRealtimeWebSocketPeriodicallyRevalidatesCookie(t *testing.T) {
+	env := setupWebSocketTestServer(t)
+	env.httpServer.realtimeCredentialCheckEvery = 25 * time.Millisecond
+	if _, err := env.core.CreateUser(env.ctx, core.SystemActorID, "rt-cookie-periodic-revoke", "RT Cookie Periodic Revoke", "password123"); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	env.login(t, "rt-cookie-periodic-revoke", "password123")
+	var sessionID string
+	for _, cookie := range env.cookieJar.Cookies(mustParseURL(env.server.URL)) {
+		if isBrowserSessionCookieName(cookie.Name) {
+			sessionID = cookie.Value
+		}
+	}
+	if sessionID == "" {
+		t.Fatal("login did not set the browser session cookie")
+	}
+
+	conn := env.connectRealtime(t)
+	subscribeRealtime(t, conn, "")
+	if err := env.core.RevokeCookieSession(env.ctx, sessionID); err != nil {
+		t.Fatalf("RevokeCookieSession: %v", err)
+	}
+
+	frame, ok := readRealtimeServerFrame(t, conn, 2*time.Second)
+	if !ok || frame.GetClose().GetCode() != "authentication_required" || frame.GetClose().GetReconnect() {
+		t.Fatalf("periodic revocation frame = %+v, want terminal authentication_required", frame)
+	}
+}
+
+func TestRealtimeWebSocketDoesNotRenewCookieOnUpgrade(t *testing.T) {
+	env := setupWebSocketTestServer(t)
+	if _, err := env.core.CreateUser(env.ctx, core.SystemActorID, "rt-cookie-renew", "RT Cookie Renew", "password123"); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	env.login(t, "rt-cookie-renew", "password123")
+	env.httpServer.cookieSessionRenewalNow = func() time.Time { return time.Now().Add(89 * 24 * time.Hour) }
+	var sessionID string
+	for _, cookie := range env.cookieJar.Cookies(mustParseURL(env.server.URL)) {
+		if isBrowserSessionCookieName(cookie.Name) {
+			sessionID = cookie.Value
+			break
+		}
+	}
+	if sessionID == "" {
+		t.Fatal("login did not set the browser session cookie")
+	}
+	before, err := env.core.ValidateCookieCredential(env.ctx, sessionID)
+	if err != nil {
+		t.Fatalf("validate cookie before upgrade: %v", err)
+	}
+
+	wsURL := "ws" + strings.TrimPrefix(env.server.URL, "http") + realtimePath
+	header := http.Header{}
+	for _, c := range env.cookieJar.Cookies(mustParseURL(env.server.URL)) {
+		header.Add("Cookie", c.String())
+	}
+	conn, response, err := websocket.DefaultDialer.Dial(wsURL, header)
+	if err != nil {
+		t.Fatalf("Realtime WebSocket dial: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	if response == nil {
+		t.Fatal("WebSocket upgrade did not return an HTTP response")
+	}
+	for _, cookie := range response.Cookies() {
+		if isBrowserSessionCookieName(cookie.Name) || cookie.Name == "chatto_session" {
+			t.Fatalf("WebSocket upgrade unexpectedly rewrote cookie %q", cookie.Name)
+		}
+	}
+	after, err := env.core.ValidateCookieCredential(env.ctx, sessionID)
+	if err != nil {
+		t.Fatalf("validate cookie after upgrade: %v", err)
+	}
+	if !after.GetExpiresAt().AsTime().Equal(before.GetExpiresAt().AsTime()) {
+		t.Fatalf("WebSocket upgrade changed expiry from %v to %v", before.GetExpiresAt().AsTime(), after.GetExpiresAt().AsTime())
+	}
+	subscribeRealtime(t, conn, "")
+}
+
+func TestRealtimeWebSocketCookieSessionStopsAtRenewalBoundary(t *testing.T) {
+	env := setupWebSocketTestServerWithTTLs(t, 0, 2*time.Second)
+	if _, err := env.core.CreateUser(env.ctx, core.SystemActorID, "rt-cookie-deadline", "RT Cookie Deadline", "password123"); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	env.login(t, "rt-cookie-deadline", "password123")
+
+	conn := env.connectRealtime(t)
+	subscribeRealtime(t, conn, "")
+	frame, ok := readRealtimeServerFrame(t, conn, 4*time.Second)
+	if !ok || frame.GetClose().GetCode() != "session_renewal_required" || !frame.GetClose().GetReconnect() {
+		t.Fatalf("cookie deadline frame = %+v, want reconnecting session_renewal_required", frame)
+	}
 }
 
 func TestRealtimeWebSocketRequiresBearerAcrossOrigins(t *testing.T) {

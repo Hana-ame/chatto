@@ -84,9 +84,11 @@ import ReleaseHero from "../../../components/release-notes/ReleaseHero.astro";
   </ReleaseFeatureCard>
 
   <ReleaseFeatureCard title="Bearer sessions renew without another login">
-    Human clients use short-lived access tokens and rotating refresh credentials with a fixed
-    maximum session lifetime. The bundled frontend renews in the background and reconnects
-    realtime in place without reopening OAuth or losing the current route.
+    Human clients use short-lived access tokens and rotating refresh credentials. The bundled
+    frontend renews the session window in the background and reconnects realtime in place
+    without reopening OAuth, showing a manual warning, or losing the current route. The bundled
+    same-origin client uses only its safer HttpOnly cookie and renews it automatically.
+    Separately hosted browser clients use Chatto OAuth for renewable bearer sessions.
   </ReleaseFeatureCard>
 
   <ReleaseFeatureCard title="Faster, leaner restarts">
@@ -119,15 +121,19 @@ import ReleaseHero from "../../../components/release-notes/ReleaseHero.astro";
 
 ## Upgrade Notes
 
-- Browser sessions that still use the retired pre-typed cookie format are not accepted by
-  0.5. Affected users are signed out once and must sign in again; current typed browser
-  sessions stored under `session.*` remain valid.
+- The bundled frontend automatically moves a valid 0.4 typed browser session to
+  the SCS-backed `chatto_auth_*` path. The migration keeps the existing opaque
+  server-side session and does not ask the user to sign in again. An expired,
+  revoked, or older `cookie_session.*` record cannot migrate. Affected users must
+  sign in once. After migration, active browser sessions renew automatically
+  without user action. Chatto 0.6 removes this temporary migration bridge.
 - Pre-renewal bearer records are not accepted by 0.5 servers. Affected users sign in once to
   receive the new access/refresh pair. Upgrade every serving replica and bundled client
   together: older binaries treat new access records as sliding credentials and are not safe
   mixed-version peers or rollback targets after issuance. Custom clients must persist and
-  serialize `/oauth/token` refresh grants, including the same `refresh_request_id` across a
-  lost-response retry.
+  serialize `/oauth/token` refresh grants. Generate one cryptographically random
+  UUID version 4 `refresh_request_id` for each rotation, and keep that same value
+  across a lost-response retry.
 - Before or during the upgrade, grant `message.read` to every existing role or
   account that must keep channel-room message access. A server-level `everyone`
   grant preserves the previous channel-room membership-based behavior. Chatto

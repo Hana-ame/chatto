@@ -1,21 +1,27 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { mockHandleAuthenticationRequired, mockRenewServerAuthentication, mockServers } = vi.hoisted(
-  () => ({
-    mockHandleAuthenticationRequired: vi.fn(),
-    mockRenewServerAuthentication: vi.fn(),
-    mockServers: new Map<
-      string,
-      {
-        id: string;
-        url: string;
-        token: string | null;
-        accessTokenExpiresAt?: number | null;
-        refreshTokenExpiresAt?: number | null;
-      }
-    >()
-  })
-);
+const {
+  mockCsrfFetch,
+  mockHandleAuthenticationRequired,
+  mockRenewServerAuthentication,
+  mockServers
+} = vi.hoisted(() => ({
+  mockCsrfFetch: vi.fn(),
+  mockHandleAuthenticationRequired: vi.fn(),
+  mockRenewServerAuthentication: vi.fn(),
+  mockServers: new Map<
+    string,
+    {
+      id: string;
+      url: string;
+      token: string | null;
+      accessTokenExpiresAt?: number | null;
+      refreshTokenExpiresAt?: number | null;
+    }
+  >()
+}));
+
+vi.mock('$lib/auth/csrf', () => ({ csrfFetch: mockCsrfFetch }));
 
 vi.mock('./registry.svelte', () => ({
   serverRegistry: {
@@ -65,6 +71,7 @@ describe('ServerConnection', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockServers.clear();
+    mockCsrfFetch.mockResolvedValue(new Response(null, { status: 200 }));
     mockRenewServerAuthentication.mockImplementation(async (id: string) => {
       mockHandleAuthenticationRequired(id);
       return null;
@@ -271,6 +278,101 @@ describe('ServerConnection', () => {
     client.dispose();
   });
 
+  it('renews an origin cookie through the dedicated browser endpoint', async () => {
+    mockServers.set('origin', {
+      id: 'origin',
+      url: window.location.origin,
+      token: null
+    });
+    const client = new ServerConnection(makeConfig({ serverId: 'origin' }));
+
+    await expect(client.renewBrowserSession()).resolves.toBe(true);
+
+    expect(mockCsrfFetch).toHaveBeenCalledOnce();
+    expect(mockCsrfFetch).toHaveBeenCalledWith('/auth/browser/session/renew', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Chatto-Authentication-Mode': 'cookie'
+      },
+      body: '{}'
+    });
+    client.dispose();
+  });
+
+  it('coalesces concurrent origin-cookie renewal requests', async () => {
+    mockServers.set('origin', {
+      id: 'origin',
+      url: window.location.origin,
+      token: null
+    });
+    let finishRenewal!: (response: Response) => void;
+    mockCsrfFetch.mockReturnValue(
+      new Promise<Response>((resolve) => {
+        finishRenewal = resolve;
+      })
+    );
+    const client = new ServerConnection(makeConfig({ serverId: 'origin' }));
+
+    const first = client.renewBrowserSession();
+    const second = client.renewBrowserSession();
+    finishRenewal(new Response(null, { status: 200 }));
+
+    await expect(Promise.all([first, second])).resolves.toEqual([true, true]);
+    expect(mockCsrfFetch).toHaveBeenCalledOnce();
+    client.dispose();
+  });
+
+  it('uses the server renewal deadline without requiring realtime transport', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    mockServers.set('origin', {
+      id: 'origin',
+      url: window.location.origin,
+      token: null
+    });
+    mockCsrfFetch
+      .mockResolvedValueOnce(
+        Response.json({ renewAfter: new Date(61_000).toISOString() }, { status: 200 })
+      )
+      .mockResolvedValue(
+        Response.json({ renewAfter: new Date(86_461_000).toISOString() }, { status: 200 })
+      );
+    const client = new ServerConnection(makeConfig({ serverId: 'origin' }));
+
+    await client.renewBrowserSession();
+    await vi.advanceTimersByTimeAsync(59_999);
+    expect(mockCsrfFetch).toHaveBeenCalledOnce();
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(mockCsrfFetch).toHaveBeenCalledTimes(2);
+    client.dispose();
+  });
+
+  it('retries initial browser-session maintenance after a transient failure', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    mockServers.set('origin', {
+      id: 'origin',
+      url: window.location.origin,
+      token: null
+    });
+    mockCsrfFetch
+      .mockRejectedValueOnce(new Error('temporarily unavailable'))
+      .mockResolvedValue(
+        Response.json({ renewAfter: new Date(86_401_000).toISOString() }, { status: 200 })
+      );
+    const client = new ServerConnection(makeConfig({ serverId: 'origin' }));
+
+    client.maintainBrowserSession();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mockCsrfFetch).toHaveBeenCalledOnce();
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(mockCsrfFetch).toHaveBeenCalledTimes(2);
+    client.dispose();
+  });
+
   it('schedules short-lived access renewal before expiry without an immediate loop', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(1_000);
@@ -291,42 +393,44 @@ describe('ServerConnection', () => {
     client.dispose();
   });
 
-  it('does not schedule renewal when access expiry reaches absolute session expiry', async () => {
+  it('renews before the current session window ends', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(1_000);
-    const absoluteExpiry = 31_000;
+    mockRenewServerAuthentication.mockResolvedValue('renewed-token');
+    const currentWindowExpiry = 31_000;
     const client = new ServerConnection(
       makeConfig({
         token: 'my-token',
         serverId: 'remote-1',
-        accessTokenExpiresAt: absoluteExpiry,
-        refreshTokenExpiresAt: absoluteExpiry
+        accessTokenExpiresAt: currentWindowExpiry
       })
     );
 
-    await vi.advanceTimersByTimeAsync(60_000);
+    await vi.advanceTimersByTimeAsync(24_000);
 
-    expect(mockRenewServerAuthentication).not.toHaveBeenCalled();
+    expect(mockRenewServerAuthentication).toHaveBeenCalledOnce();
+    expect(mockRenewServerAuthentication).toHaveBeenCalledWith('remote-1', true);
     client.dispose();
   });
 
-  it('cancels a pending renewal after rotation reaches absolute session expiry', async () => {
+  it('reschedules renewal when rotation reaches the current session window expiry', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(1_000);
-    const absoluteExpiry = 61_000;
+    mockRenewServerAuthentication.mockResolvedValue('renewed-token');
+    const currentWindowExpiry = 61_000;
     const client = new ServerConnection(
       makeConfig({
         token: 'my-token',
         serverId: 'remote-1',
-        accessTokenExpiresAt: 31_000,
-        refreshTokenExpiresAt: absoluteExpiry
+        accessTokenExpiresAt: 31_000
       })
     );
 
-    client.updateBearerSession('rotated-token', absoluteExpiry, absoluteExpiry);
-    await vi.advanceTimersByTimeAsync(60_000);
+    client.updateBearerSession('rotated-token', currentWindowExpiry);
+    await vi.advanceTimersByTimeAsync(48_000);
 
-    expect(mockRenewServerAuthentication).not.toHaveBeenCalled();
+    expect(mockRenewServerAuthentication).toHaveBeenCalledOnce();
+    expect(mockRenewServerAuthentication).toHaveBeenCalledWith('remote-1', true);
     client.dispose();
   });
 });
@@ -344,6 +448,9 @@ describe('ServerConnectionManager', () => {
 
   it('originClient uses relative URL', async () => {
     const mod = await import('./serverConnection.svelte');
+    expect(mod.serverConnectionManager.originConnectBaseUrl).toBe(
+      `${window.location.origin}/api/connect`
+    );
     expect(mod.serverConnectionManager.originClient).toBeDefined();
     expect(mod.serverConnectionManager.originClient.status).toBe('connecting');
   });
@@ -360,7 +467,7 @@ describe('ServerConnectionManager', () => {
     expect(client).toBe(mod.serverConnectionManager.originClient);
   });
 
-  it('originClient uses the registered origin token when present', async () => {
+  it('originClient ignores stored bearer credentials', async () => {
     const mod = await import('./serverConnection.svelte');
     mockServers.set('my-home', {
       id: 'my-home',
@@ -369,7 +476,7 @@ describe('ServerConnectionManager', () => {
     });
 
     mod.serverConnectionManager.destroyClient('my-home');
-    expect(mod.serverConnectionManager.originClient.bearerToken).toBe('origin-token');
+    expect(mod.serverConnectionManager.originClient.bearerToken).toBeNull();
   });
 
   it('getClient throws for unknown instance IDs', async () => {

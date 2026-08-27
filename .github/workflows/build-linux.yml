@@ -70,19 +70,22 @@ jobs:
           echo "=== before prepare ==="
           ls -lh apps/frontend/build/ 2>&1 | head -40
           ls -lh cli/internal/http_server/.client/ 2>&1 | head -40 || echo "no .client"
-          ls -lh cli/internal/http_server/.client/_app/immutable/chunks/ 2>&1 | head -20 || echo "no .client chunks"
-          ls -lh apps/frontend/build/_app/immutable/chunks/ 2>&1 | head -20
           # 【本地改动】mise 的 build-frontend 任务可能因 outputs 缓存未重跑 prepare-embedded-frontend.sh，
           # 导致 apps/frontend/build 已更新但 cli/internal/http_server/.client 仍为旧版。
           # 此处显式重跑以保证嵌入的前端与构建产物一致。
-          bash -x tools/prepare-embedded-frontend.sh apps/frontend/build cli/internal/http_server/.client 2>&1 | head -100
-          echo "=== after prepare ==="
+          # 直接 cp 避免 prepare 脚本的 200.html 检查与 pipefail 干扰，先保证 .client 与 build 一致
+          rm -rf cli/internal/http_server/.client
+          cp -R apps/frontend/build cli/internal/http_server/.client
+          echo "=== after cp ==="
           ls -lh cli/internal/http_server/.client/ 2>&1 | head -40
           ls -lh cli/internal/http_server/.client/_app/immutable/chunks/ 2>&1 | head -20
-          # .client 仅保留 .gz/.br，需解压后校验
+          grep -r "proxy.moonchan.xyz" cli/internal/http_server/.client || (echo "missing proxy in .client" && exit 1)
+          # 再按原脚本清理 raw 保留压缩版（与上游一致，减小二进制体积）
+          bash tools/prepare-embedded-frontend.sh apps/frontend/build cli/internal/http_server/.client
+          echo "=== after prepare (compressed) ==="
+          ls -lh cli/internal/http_server/.client/ 2>&1 | head -40
           if ! find cli/internal/http_server/.client -name "*.gz" -exec gzip -dc {} \; 2>/dev/null | grep -q "proxy.moonchan.xyz"; then
-            echo "missing proxy in .client (gz)"
-            find cli/internal/http_server/.client -name "*.gz" -exec sh -c 'gzip -dc "$1" | grep -q "proxy.moonchan.xyz" && echo "found in $1"' _ {} \;
+            echo "missing proxy in .client (gz) after prepare"
             exit 1
           fi
           echo "frontend proxy verified"

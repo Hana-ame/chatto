@@ -60,6 +60,16 @@ jobs:
           CHATTO_BUILD_VERSION: ${{ steps.version.outputs.version }}
           CHATTO_FRONTEND_PRECOMPRESS: "1"
 
+      - name: Verify frontend contains image proxy
+        run: |
+          set -euo pipefail
+          echo "=== check markdown.ts source ==="
+          grep -q "proxy.moonchan.xyz" apps/frontend/src/lib/markdown.ts
+          echo "=== check built frontend ==="
+          grep -r "proxy.moonchan.xyz" apps/frontend/build || (echo "missing proxy in apps/frontend/build" && exit 1)
+          grep -r "proxy.moonchan.xyz" cli/internal/http_server/.client || (echo "missing proxy in .client" && exit 1)
+          echo "frontend proxy verified"
+
       - name: Build Linux binary
         run: |
           set -euo pipefail

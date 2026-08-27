@@ -291,8 +291,24 @@ function escapeGfmTablesForEditor(markdown: string): string {
   );
 }
 
+function escapeImagesForEditor(markdown: string): string {
+  // 【本地改动】编辑框没有 image 节点：把 `![alt](url)` 直接交给 tiptap-markdown 解析会被当成图片 token 丢弃，
+  // 导致「编辑含内联图的消息」时图丢失。目的：编辑/草稿回填/粘贴含 ![]() 的消息时，让它在编辑框里以纯文本
+  // 保留、保存后照常渲染。思路：在 `](` 之间插入零宽连字符 \u2060 破坏 image/link 的 `](` 边界，解析器于是
+  // 当作普通文本；序列化时由 normalizeSerializedImages 还原。复用 GFM 表格「隐形字符保护」的套路。边界：
+  // 只影响 composer 的进出往返，渲染路径（lib/markdown.ts）不受影响；普通链接 [alt](url) 与引用式 ![alt][1] 不触碰。
+  return transformMarkdownOutsideCode(markdown, (text) =>
+    // The composer intentionally has no image node. Keep `![alt](url)` as
+    // editable prose by inserting an invisible word joiner right after the
+    // opening paren of the destination, so TipTap's markdown parser no longer
+    // treats it as an image (or link) token. The character is removed again
+    // when serializing, so the source is visually unchanged.
+    text.replace(/(!\[[^\]\n]*\]\()/g, '$1\u2060')
+  );
+}
+
 export function prepareMarkdownForEditor(markdown: string): string {
-  return escapeGfmTablesForEditor(escapeMarkdownHtml(markdown));
+  return escapeImagesForEditor(escapeGfmTablesForEditor(escapeMarkdownHtml(markdown)));
 }
 
 function decodeSerializedMarkdownText(markdown: string): string {
@@ -339,6 +355,15 @@ function normalizeSerializedGfmTableHardBreaks(markdown: string): string {
   );
 }
 
+function normalizeSerializedImages(markdown: string): string {
+  // 【本地改动】撤销 escapeImagesForEditor 插入的 \u2060，使序列化后的 body 恢复原始 `![alt](url)` 源。
+  return transformMarkdownOutsideCode(markdown, (text) =>
+    // Undo the invisible marker inserted by escapeImagesForEditor so the
+    // serialized body keeps the original `![alt](url)` source.
+    text.replace(/(!\[[^\]\n]*\]\()\u2060/g, '$1')
+  );
+}
+
 function encodeSerializedHeadingClosingHashes(markdown: string): string {
   return transformMarkdownOutsideCode(
     markdown,
@@ -356,7 +381,10 @@ export function getSerializedMarkdown(e: Editor): string {
   return normalizeSerializedHardBreaksBeforeLists(
     normalizeSerializedGfmTableHardBreaks(
       encodeSerializedHeadingClosingHashes(
-        trimSerializedTrailingEmptyParagraph(decodeSerializedMarkdownText(e.getMarkdown()), e)
+        trimSerializedTrailingEmptyParagraph(
+          normalizeSerializedImages(decodeSerializedMarkdownText(e.getMarkdown())),
+          e
+        )
       )
     )
   );

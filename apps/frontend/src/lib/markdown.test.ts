@@ -359,4 +359,51 @@ describe('renderMarkdown', () => {
       expect(html).toContain('name = &quot;chatto&quot;');
     });
   });
+
+  // 【本地改动】回归测试：内联图片经代理重写、非 http(s) 降级为 #、javascript: 不产 <img>。
+  // 发现背景：支持消息正文 ![]() 内联图片，且所有图片统一走 IMAGE_PROXY_BASE 代理（隐藏观看者 IP/Referer）。
+  describe('inline images', () => {
+    it('rewrites an http(s) image through the proxy, preserving path and original query', async () => {
+      const html = await renderMarkdown('![cat](https://images.example.com/photos/cat.png?token=abc)');
+      expect(html).toContain('<img src="https://proxy.moonchan.xyz/photos/cat.png?token=abc');
+      expect(html).toContain('proxy_host=images.example.com');
+      expect(html).toContain('proxy_scheme=https');
+      expect(html).toContain('alt="cat"');
+    });
+
+    it('adds proxy_host and proxy_scheme when there is no original query', async () => {
+      const html = await renderMarkdown('![cat](https://images.example.com/cat.png)');
+      expect(html).toContain('<img src="https://proxy.moonchan.xyz/cat.png?proxy_host=images.example.com');
+      expect(html).toContain('proxy_scheme=https');
+    });
+
+    it('keeps the fragment at the end, after the proxy params', async () => {
+      const html = await renderMarkdown('![cat](https://images.example.com/cat.png#section)');
+      expect(html).toContain('#section');
+      expect(html.indexOf('#section')).toBeGreaterThan(html.indexOf('proxy_scheme=https'));
+    });
+
+    it('records the original scheme for http images', async () => {
+      const html = await renderMarkdown('![cat](http://images.example.com/cat.png)');
+      expect(html).toContain('proxy_scheme=http');
+    });
+
+    it('hardens the emitted img tag', async () => {
+      const html = await renderMarkdown('![cat](https://images.example.com/cat.png)');
+      expect(html).toContain('loading="lazy"');
+      expect(html).toContain('referrerpolicy="no-referrer"');
+      expect(html).toContain('rel="noopener noreferrer"');
+    });
+
+    it('neuters non-http(s) image sources to #', async () => {
+      const html = await renderMarkdown('![x](/relative/cat.png)');
+      expect(html).toContain('src="#"');
+      expect(html).not.toContain('/relative/cat.png');
+    });
+
+    it('does not emit an image for javascript: sources', async () => {
+      const html = await renderMarkdown('![x](javascript:alert(1))');
+      expect(html).not.toContain('<img');
+    });
+  });
 });

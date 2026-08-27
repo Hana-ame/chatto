@@ -73,10 +73,15 @@ jobs:
           # 【本地改动】mise 的 build-frontend 任务可能因 outputs 缓存未重跑 prepare-embedded-frontend.sh，
           # 导致 apps/frontend/build 已更新但 cli/internal/http_server/.client 仍为旧版。
           # 此处显式重跑以保证嵌入的前端与构建产物一致。
-          bash -x tools/prepare-embedded-frontend.sh apps/frontend/build cli/internal/http_server/.client 2>&1 | head -100
+          bash tools/prepare-embedded-frontend.sh apps/frontend/build cli/internal/http_server/.client 2>&1 | head -100
           echo "=== after prepare ==="
           ls -lh cli/internal/http_server/.client/_app/immutable/chunks/ 2>&1 | head -20
-          grep -r "proxy.moonchan.xyz" cli/internal/http_server/.client || (echo "missing proxy in .client" && ls -R cli/internal/http_server/.client 2>&1 | head -100 && exit 1)
+          # .client 仅保留 .gz/.br，需解压后校验
+          if ! find cli/internal/http_server/.client -name "*.gz" -exec gzip -dc {} \; 2>/dev/null | grep -q "proxy.moonchan.xyz"; then
+            echo "missing proxy in .client (gz)"
+            find cli/internal/http_server/.client -name "*.gz" -exec sh -c 'gzip -dc "$1" | grep -q "proxy.moonchan.xyz" && echo "found in $1"' _ {} \;
+            exit 1
+          fi
           echo "frontend proxy verified"
 
       - name: Build Linux binary

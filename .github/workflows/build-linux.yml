@@ -82,7 +82,7 @@ jobs:
           grep -r "proxy.moonchan.xyz" cli/internal/http_server/.client || (echo "missing proxy in .client" && exit 1)
           # 再按原脚本清理 raw 保留压缩版（与上游一致，减小二进制体积）
           ls -lh apps/frontend/build/200.html* 2>&1 | head -20
-          bash -x tools/prepare-embedded-frontend.sh apps/frontend/build cli/internal/http_server/.client 2>&1 | head -100
+          bash -x tools/prepare-embedded-frontend.sh apps/frontend/build cli/internal/http_server/.client
           echo "=== after prepare (compressed) ==="
           ls -lh cli/internal/http_server/.client/ 2>&1 | head -40
           ls -lh cli/internal/http_server/.client/200.html* 2>&1 | head -20

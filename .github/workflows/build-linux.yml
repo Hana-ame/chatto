@@ -67,6 +67,10 @@ jobs:
           grep -q "proxy.moonchan.xyz" apps/frontend/src/lib/markdown.ts
           echo "=== check built frontend ==="
           grep -r "proxy.moonchan.xyz" apps/frontend/build || (echo "missing proxy in apps/frontend/build" && exit 1)
+          # 【本地改动】mise 的 build-frontend 任务可能因 outputs 缓存未重跑 prepare-embedded-frontend.sh，
+          # 导致 apps/frontend/build 已更新但 cli/internal/http_server/.client 仍为旧版。
+          # 此处显式重跑以保证嵌入的前端与构建产物一致。
+          bash tools/prepare-embedded-frontend.sh apps/frontend/build cli/internal/http_server/.client
           grep -r "proxy.moonchan.xyz" cli/internal/http_server/.client || (echo "missing proxy in .client" && exit 1)
           echo "frontend proxy verified"
 

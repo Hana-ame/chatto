@@ -73,7 +73,7 @@ jobs:
           # 【本地改动】mise 的 build-frontend 任务可能因 outputs 缓存未重跑 prepare-embedded-frontend.sh，
           # 导致 apps/frontend/build 已更新但 cli/internal/http_server/.client 仍为旧版。
           # 此处显式重跑以保证嵌入的前端与构建产物一致。
-          bash tools/prepare-embedded-frontend.sh apps/frontend/build cli/internal/http_server/.client 2>&1 | head -100
+          bash tools/prepare-embedded-frontend.sh apps/frontend/build cli/internal/http_server/.client
           echo "=== after prepare ==="
           ls -lh cli/internal/http_server/.client/_app/immutable/chunks/ 2>&1 | head -20
           # .client 仅保留 .gz/.br，需解压后校验

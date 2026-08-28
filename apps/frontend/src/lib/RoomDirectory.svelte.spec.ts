@@ -185,6 +185,12 @@ describe('RoomDirectory', () => {
     expect(shell.className).toContain('shrink-0');
     expect(header.className).toContain('px-6');
     expect(inset).not.toBeNull();
+
+    // The header creates separation above the inset; the panel adds the
+    // bottom frame inset. Keep the list's own vertical inset compact.
+    const list = shell.querySelector('ul') as HTMLElement;
+    expect(list.className).toContain('pt-1');
+    expect(list.className).toContain('pb-1');
   });
 
   // -- "Join all" group action -----------------------------------------------

@@ -128,7 +128,7 @@ idempotent operations:
   visible room-group layout; DM participant references remain eager;
 - complete channel membership and the latest 50 renderable timeline events for
   retained DMs. For a retained channel room, it includes all roots with
-  `message.read`, or only related roots with `message.read.interactions`;
+  `message.read`, or only related roots with `message.read-interactions`;
 - the newest finite Notifications 2.0 occurrences, exact total and Important
   unread-occurrence counts, and complete per-room counterparts;
 - every active call visible to the viewer; and
@@ -416,10 +416,11 @@ RBAC facts are fanned through the shared hub. The mapper normally responds with
 a reconnecting `projection_reset_required` close so the next subscription
 starts from current authorization and removes channel-room message state after
 a `message.read` loss. A `message.read` decision does not remove DM state from
-a participant. A human viewer's own direct permission
-mutation targeting a bot cannot change that viewer's authorization, so their
-connection instead receives an empty projection envelope and advances its
-cursor without rebuilding the page. Other viewers, including the target bot,
+a participant. An effective owner's self-authored RBAC mutation cannot change
+that owner's authorization. A human viewer's own direct permission mutation
+targeting a bot also cannot change that viewer's authorization. In both cases,
+the writer's connection receives an empty projection envelope and advances its
+cursor without rebuilding the page. Other viewers, including a target bot,
 still receive the reset.
 
 ## Process-wide live ingress
@@ -455,7 +456,7 @@ list for existing viewers.
 
 Message and asset facts are delivered only when the viewer is a member. A
 channel-room viewer also needs broad `message.read`, or
-`message.read.interactions` with a relationship to the canonical thread root.
+`message.read-interactions` with a relationship to the canonical thread root.
 DM membership authorizes DM delivery. The hub and public projection mapper
 both check this boundary. Authorized facts carry lightweight replacements of
 the affected room summary and viewer state alongside timeline mutations. Root
@@ -468,7 +469,7 @@ deletion from direct echo removal.
 Typing is transient rather than durable, but it follows the same read boundary.
 The hub and public projection mapper suppress typing events unless the viewer
 is a member. Main-room typing needs broad `message.read`. Thread typing also
-permits `message.read.interactions` with a relationship to that thread.
+permits `message.read-interactions` with a relationship to that thread.
 
 Room-read signals emit a `RoomViewerStateReplace` for the affected room and a
 finite `NotificationsReplace`. This keeps the retained canonical room row,

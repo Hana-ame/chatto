@@ -499,7 +499,7 @@ func TestRealtimeProjectionOmitsMessageStateWithoutMessageRead(t *testing.T) {
 		t.Fatalf("DenyRoomPermission: %v", err)
 	}
 	if err := env.core.DenyRoomPermission(env.ctx, core.SystemActorID, room.Id, core.RoleEveryone, core.PermMessageReadInteractions); err != nil {
-		t.Fatalf("DenyRoomPermission message.read.interactions: %v", err)
+		t.Fatalf("DenyRoomPermission message.read-interactions: %v", err)
 	}
 
 	snapshot, err := env.httpServer.connectAPI.BuildRealtimeProjectionSnapshot(env.ctx, viewer.Id, []string{room.Id})
@@ -751,7 +751,7 @@ func TestRealtimeBotReceivesNotificationActivations(t *testing.T) {
 		t.Fatalf("AddMember bot: %v", err)
 	}
 	if err := env.core.SetUserPermissionState(env.ctx, owner.GetId(), bot.User.GetId(), core.PermissionTargetScope{Kind: core.MatrixScopeRoom, ID: room.GetId()}, core.PermMessageReadInteractions, core.PermissionStateAllow); err != nil {
-		t.Fatalf("grant bot message.read.interactions: %v", err)
+		t.Fatalf("grant bot message.read-interactions: %v", err)
 	}
 
 	conn := env.connectRealtime(t)
@@ -795,7 +795,7 @@ func TestRealtimeBotReceivesNotificationActivations(t *testing.T) {
 	}
 }
 
-func TestRealtimeSelfAuthoredBotPermissionAdvancesWithoutProjectionReset(t *testing.T) {
+func TestRealtimeSelfAuthoredRBACAdvancesWithoutUnnecessaryProjectionReset(t *testing.T) {
 	env := setupWebSocketTestServer(t)
 	owner, err := env.core.CreateUser(env.ctx, core.SystemActorID, "rt-permission-owner", "RT Permission Owner", "password123")
 	if err != nil {
@@ -834,10 +834,35 @@ func TestRealtimeSelfAuthoredBotPermissionAdvancesWithoutProjectionReset(t *test
 	if err != nil {
 		t.Fatalf("CreateUser human target: %v", err)
 	}
-	event.GetRbacPermissionGranted().Subject.Id = human.GetId()
+	event.GetRbacPermissionGranted().Subject = &evtv1.RbacPermissionSubject{
+		Kind: evtv1.RbacPermissionSubjectKind_RBAC_PERMISSION_SUBJECT_KIND_USER,
+		Id:   human.GetId(),
+	}
 	frame, handled, err = env.httpServer.realtimeProjectionFrameForEvent(env.ctx, owner.GetId(), core.NewEVTEventEnvelope(event))
 	if err != nil || !handled || frame.GetClose().GetCode() != "projection_reset_required" {
 		t.Fatalf("self-authored human permission frame = %+v, %v, %v", frame, handled, err)
+	}
+
+	if err := env.core.AssignOwnerRole(env.ctx, owner.GetId()); err != nil {
+		t.Fatalf("AssignOwnerRole: %v", err)
+	}
+	event.GetRbacPermissionGranted().Subject = &evtv1.RbacPermissionSubject{
+		Kind: evtv1.RbacPermissionSubjectKind_RBAC_PERMISSION_SUBJECT_KIND_ROLE,
+		Id:   core.RoleEveryone,
+	}
+	frame, handled, err = env.httpServer.realtimeProjectionFrameForEvent(env.ctx, owner.GetId(), core.NewEVTEventEnvelope(event))
+	if err != nil || !handled {
+		t.Fatalf("self-authored owner RBAC frame = %+v, %v, %v", frame, handled, err)
+	}
+	if frame.GetProjectionEvent() == nil || len(frame.GetProjectionEvent().GetOperations()) != 0 {
+		t.Fatalf("self-authored owner RBAC frame = %+v, want empty projection event", frame)
+	}
+	if err := env.core.RevokeServerRole(env.ctx, core.SystemActorID, owner.GetId(), core.RoleOwner); err != nil {
+		t.Fatalf("RevokeServerRole owner: %v", err)
+	}
+	frame, handled, err = env.httpServer.realtimeProjectionFrameForEvent(env.ctx, owner.GetId(), core.NewEVTEventEnvelope(event))
+	if err != nil || !handled || frame.GetClose().GetCode() != "projection_reset_required" {
+		t.Fatalf("self-authored former-owner RBAC frame = %+v, %v, %v; want reset", frame, handled, err)
 	}
 }
 

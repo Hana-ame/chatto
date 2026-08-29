@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"errors"
+	"hmans.de/chatto/internal/pb/chatto/core/live/v1"
 	"strconv"
 	"strings"
 	"testing"
@@ -13,7 +14,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"hmans.de/chatto/internal/evtstream"
-	corev1 "hmans.de/chatto/internal/pb/chatto/core/v1"
+	evtv1 "hmans.de/chatto/internal/pb/chatto/core/evt/v1"
 	"hmans.de/chatto/pkg/events"
 )
 
@@ -22,7 +23,7 @@ func TestEventPublishingHelpers_RejectInvalidEvents(t *testing.T) {
 	ctx := testContext(t)
 
 	t.Run("publishLiveEvent rejects invalid payload", func(t *testing.T) {
-		err := core.publishLiveEvent(ctx, "live.sync.test", &corev1.LiveEvent{})
+		err := core.publishLiveEvent(ctx, "live.sync.test", &livev1.LiveEvent{})
 		if !errors.Is(err, ErrInvalidEvent) {
 			t.Fatalf("expected ErrInvalidEvent, got: %v", err)
 		}
@@ -72,7 +73,7 @@ func TestRoomMutationsDoNotWriteServerEvents(t *testing.T) {
 
 // setupRoomWithMessage creates a user, a room, joins the user, and posts one
 // message. Returns the resulting event so the test can use the durable envelope id.
-func setupRoomWithMessage(t *testing.T, core *ChattoCore, ctx context.Context, body string) (room, user struct{ Id string }, event *corev1.Event) {
+func setupRoomWithMessage(t *testing.T, core *ChattoCore, ctx context.Context, body string) (room, user struct{ Id string }, event *evtv1.Event) {
 	t.Helper()
 
 	createdUser, err := core.CreateUser(ctx, "system", "msguser", "msguser", "password123")
@@ -249,7 +250,6 @@ func TestStreamMyEvents_DoesNotDeliverMessageBodyEvent(t *testing.T) {
 	if _, err := core.JoinRoom(ctx, viewer.Id, KindChannel, viewer.Id, room.Id); err != nil {
 		t.Fatalf("JoinRoom viewer: %v", err)
 	}
-
 	subCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	eventChan, err := core.StreamMyEvents(subCtx, viewer.Id)
@@ -289,11 +289,11 @@ func TestStreamMyEvents_ClosesWhenLiveEVTProjectionReadinessFails(t *testing.T) 
 	ctx := testContext(t)
 	roomID := "R-projection-fail"
 	userID := "U-projection-fail"
-	event := &corev1.Event{
+	event := &evtv1.Event{
 		Id:      "E-projection-fail",
 		ActorId: userID,
-		Event: &corev1.Event_MessagePosted{
-			MessagePosted: &corev1.MessagePostedEvent{RoomId: roomID},
+		Event: &evtv1.Event_MessagePosted{
+			MessagePosted: &evtv1.MessagePostedEvent{RoomId: roomID},
 		},
 	}
 	subject := evtstream.RoomAggregate(roomID).SubjectFor(event)
@@ -337,11 +337,11 @@ func TestStreamMyEvents_ClosesWhenCallProjectionReadinessFails(t *testing.T) {
 	ctx := testContext(t)
 	roomID := "R-call-projection-fail"
 	userID := "U-call-projection-fail"
-	event := &corev1.Event{
+	event := &evtv1.Event{
 		Id:      "E-call-projection-fail",
 		ActorId: userID,
-		Event: &corev1.Event_VoiceCallParticipantJoined{
-			VoiceCallParticipantJoined: &corev1.CallParticipantJoinedEvent{
+		Event: &evtv1.Event_VoiceCallParticipantJoined{
+			VoiceCallParticipantJoined: &evtv1.CallParticipantJoinedEvent{
 				RoomId: roomID,
 				CallId: "C-call-projection-fail",
 			},
@@ -418,11 +418,11 @@ func TestMyEventsFilter_DeliversUniversalDisableToPriorEffectiveMember(t *testin
 
 	service := NewMyEventsModel(core)
 	memberRooms := map[string]struct{}{room.Id: {}}
-	event := &corev1.Event{
+	event := &evtv1.Event{
 		Id:      NewEventID(),
 		ActorId: actor.Id,
-		Event: &corev1.Event_RoomUniversalChanged{
-			RoomUniversalChanged: &corev1.RoomUniversalChangedEvent{
+		Event: &evtv1.Event_RoomUniversalChanged{
+			RoomUniversalChanged: &evtv1.RoomUniversalChangedEvent{
 				RoomId:    room.Id,
 				Universal: false,
 			},
@@ -443,16 +443,88 @@ func TestMyEventsFilter_DeliversUniversalDisableToPriorEffectiveMember(t *testin
 		t.Fatal("memberRooms still contains room after universal disable")
 	}
 
-	nextEvent := &corev1.Event{
+	nextEvent := &evtv1.Event{
 		Id:      NewEventID(),
 		ActorId: actor.Id,
-		Event: &corev1.Event_RoomUpdated{
-			RoomUpdated: &corev1.RoomUpdatedEvent{RoomId: room.Id},
+		Event: &evtv1.Event_RoomUpdated{
+			RoomUpdated: &evtv1.RoomUpdatedEvent{RoomId: room.Id},
 		},
 	}
 	delivered, ok = service.filterReadyEVTRoomSubjectEvent(viewer.Id, memberRooms, room.Id, nextEvent, 124)
 	if ok || delivered != nil {
 		t.Fatalf("next room event delivered %T/%v after universal disable, want dropped", delivered, ok)
+	}
+}
+
+func TestMyEventsFilter_DropsMessageAndAssetFactsWithoutMessageRead(t *testing.T) {
+	chatto, _ := setupTestCore(t)
+	ctx := testContext(t)
+	viewer, room, messageID := setupReactionTest(t, chatto, ctx)
+	message, err := chatto.GetRoomEventByEventID(ctx, KindChannel, room.Id, messageID)
+	if err != nil {
+		t.Fatalf("GetRoomEventByEventID: %v", err)
+	}
+
+	if err := chatto.DenyRoomPermission(ctx, SystemActorID, room.Id, RoleEveryone, PermMessageRead); err != nil {
+		t.Fatalf("DenyRoomPermission message.read: %v", err)
+	}
+	if err := chatto.DenyRoomPermission(ctx, SystemActorID, room.Id, RoleEveryone, PermMessageReadInteractions); err != nil {
+		t.Fatalf("DenyRoomPermission message.read-interactions: %v", err)
+	}
+
+	service := NewMyEventsModel(chatto)
+	memberRooms := map[string]struct{}{room.Id: {}}
+	if delivered, ok := service.filterReadyEVTRoomSubjectEvent(viewer.Id, memberRooms, room.Id, message, 123); ok || delivered != nil {
+		t.Fatalf("message event delivered %T/%v without a message read mode, want dropped", delivered, ok)
+	}
+
+	assetEvent := &evtv1.Event{
+		Id: NewEventID(),
+		Event: &evtv1.Event_AssetProcessingStarted{AssetProcessingStarted: &evtv1.AssetProcessingStartedEvent{
+			AssetId: "asset-1", MessageEventId: messageID,
+		}},
+	}
+	if delivered, ok := service.filterReadyEVTAssetSubjectEvent(viewer.Id, memberRooms, room.Id, assetEvent, 124); ok || delivered != nil {
+		t.Fatalf("asset event delivered %T/%v without a message read mode, want dropped", delivered, ok)
+	}
+}
+
+func TestMyEventsFilter_DeliversDMFactsDespiteMessageReadDenial(t *testing.T) {
+	chatto, _ := setupTestCore(t)
+	ctx := testContext(t)
+	viewer, err := chatto.CreateUser(ctx, SystemActorID, "live-dm-viewer", "Live DM Viewer", "password123")
+	if err != nil {
+		t.Fatalf("CreateUser viewer: %v", err)
+	}
+	author, err := chatto.CreateUser(ctx, SystemActorID, "live-dm-author", "Live DM Author", "password123")
+	if err != nil {
+		t.Fatalf("CreateUser author: %v", err)
+	}
+	dm, _, err := chatto.FindOrCreateDM(ctx, viewer.GetId(), []string{author.GetId()})
+	if err != nil {
+		t.Fatalf("FindOrCreateDM: %v", err)
+	}
+	if err := chatto.DenyUserRoomPermission(ctx, SystemActorID, dm.GetId(), viewer.GetId(), PermMessageRead); err != nil {
+		t.Fatalf("DenyUserRoomPermission message.read: %v", err)
+	}
+	message, err := chatto.PostMessage(ctx, KindDM, dm.GetId(), author.GetId(), "live DM message", nil, "", "", nil, false)
+	if err != nil {
+		t.Fatalf("PostMessage: %v", err)
+	}
+
+	service := NewMyEventsModel(chatto)
+	memberRooms := map[string]struct{}{dm.GetId(): {}}
+	if delivered, ok := service.filterReadyEVTRoomSubjectEvent(viewer.GetId(), memberRooms, dm.GetId(), message, 123); !ok || delivered == nil {
+		t.Fatalf("DM message event delivered %T/%v, want delivery", delivered, ok)
+	}
+	assetEvent := &evtv1.Event{
+		Id: NewEventID(),
+		Event: &evtv1.Event_AssetProcessingStarted{AssetProcessingStarted: &evtv1.AssetProcessingStartedEvent{
+			AssetId: "dm-asset-1", MessageEventId: message.GetId(),
+		}},
+	}
+	if delivered, ok := service.filterReadyEVTAssetSubjectEvent(viewer.GetId(), memberRooms, dm.GetId(), assetEvent, 124); !ok || delivered == nil {
+		t.Fatalf("DM asset event delivered %T/%v, want delivery", delivered, ok)
 	}
 }
 
@@ -620,6 +692,10 @@ func TestStreamMyEvents_DeliversRawEVTRepublish(t *testing.T) {
 	if _, err := core.JoinRoom(ctx, viewer.Id, KindChannel, viewer.Id, room.Id); err != nil {
 		t.Fatalf("JoinRoom viewer: %v", err)
 	}
+	target, err := core.PostMessage(ctx, KindChannel, room.Id, author.Id, "raw EVT target", nil, "", "", nil, false)
+	if err != nil {
+		t.Fatalf("PostMessage target: %v", err)
+	}
 
 	subCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -629,11 +705,11 @@ func TestStreamMyEvents_DeliversRawEVTRepublish(t *testing.T) {
 	}
 	time.Sleep(100 * time.Millisecond)
 
-	event := newEvent(author.Id, &corev1.Event{
-		Event: &corev1.Event_MessageEdited{
-			MessageEdited: &corev1.MessageEditedEvent{
+	event := newEvent(author.Id, &evtv1.Event{
+		Event: &evtv1.Event_MessageEdited{
+			MessageEdited: &evtv1.MessageEditedEvent{
 				RoomId:  room.Id,
-				EventId: "E-raw-evt",
+				EventId: target.GetId(),
 			},
 		},
 	})
@@ -649,8 +725,8 @@ func TestStreamMyEvents_DeliversRawEVTRepublish(t *testing.T) {
 			if edited == nil {
 				continue
 			}
-			if edited.EventId != "E-raw-evt" {
-				t.Errorf("EventId = %q, want E-raw-evt", edited.EventId)
+			if edited.EventId != target.GetId() {
+				t.Errorf("EventId = %q, want %s", edited.EventId, target.GetId())
 			}
 			return
 		case <-timeout:
@@ -665,29 +741,29 @@ func liveEventRoomID(event EventEnvelope) string {
 		return ""
 	}
 	switch e := evt.GetEvent().(type) {
-	case *corev1.Event_RoomCreated:
+	case *evtv1.Event_RoomCreated:
 		return e.RoomCreated.GetRoomId()
-	case *corev1.Event_RoomUpdated:
+	case *evtv1.Event_RoomUpdated:
 		return e.RoomUpdated.GetRoomId()
-	case *corev1.Event_RoomDeleted:
+	case *evtv1.Event_RoomDeleted:
 		return e.RoomDeleted.GetRoomId()
-	case *corev1.Event_RoomArchived:
+	case *evtv1.Event_RoomArchived:
 		return e.RoomArchived.GetRoomId()
-	case *corev1.Event_RoomUnarchived:
+	case *evtv1.Event_RoomUnarchived:
 		return e.RoomUnarchived.GetRoomId()
-	case *corev1.Event_UserJoinedRoom:
+	case *evtv1.Event_UserJoinedRoom:
 		return e.UserJoinedRoom.GetRoomId()
-	case *corev1.Event_UserLeftRoom:
+	case *evtv1.Event_UserLeftRoom:
 		return e.UserLeftRoom.GetRoomId()
-	case *corev1.Event_MessagePosted:
+	case *evtv1.Event_MessagePosted:
 		return e.MessagePosted.GetRoomId()
-	case *corev1.Event_MessageEdited:
+	case *evtv1.Event_MessageEdited:
 		return e.MessageEdited.GetRoomId()
-	case *corev1.Event_MessageRetracted:
+	case *evtv1.Event_MessageRetracted:
 		return e.MessageRetracted.GetRoomId()
-	case *corev1.Event_ReactionAdded:
+	case *evtv1.Event_ReactionAdded:
 		return e.ReactionAdded.GetRoomId()
-	case *corev1.Event_ReactionRemoved:
+	case *evtv1.Event_ReactionRemoved:
 		return e.ReactionRemoved.GetRoomId()
 	default:
 		return ""

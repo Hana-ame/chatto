@@ -15,7 +15,7 @@ import (
 	"golang.org/x/text/unicode/norm"
 
 	"hmans.de/chatto/internal/evtstream"
-	corev1 "hmans.de/chatto/internal/pb/chatto/core/v1"
+	evtv1 "hmans.de/chatto/internal/pb/chatto/core/evt/v1"
 	"hmans.de/chatto/pkg/events"
 )
 
@@ -23,8 +23,8 @@ import (
 // (excluding thread replies) in a room, or nil if none have been
 // projected yet. Bounded O(walk-until-found) via the projection's
 // LastVisibleRoomEntry helper.
-func (c *ChattoCore) getRoomLastRootEvent(roomID string) *corev1.Event {
-	entry, ok := c.roomModel.lastVisibleRoomEntry(roomID, func(e *corev1.Event) bool {
+func (c *ChattoCore) getRoomLastRootEvent(roomID string) *evtv1.Event {
+	entry, ok := c.roomModel.lastVisibleRoomEntry(roomID, func(e *evtv1.Event) bool {
 		msg := e.GetMessagePosted()
 		return msg != nil && msg.GetInThread() == ""
 	})
@@ -38,7 +38,7 @@ func (c *ChattoCore) getRoomLastRootEvent(roomID string) *corev1.Event {
 // of any kind (root or thread reply) in a room, or nil. It uses the
 // projection's message-post index because thread replies are not part of the
 // visible room timeline.
-func (c *ChattoCore) getRoomLastMessageEvent(roomID string) *corev1.Event {
+func (c *ChattoCore) getRoomLastMessageEvent(roomID string) *evtv1.Event {
 	entry, ok := c.roomModel.lastRoomMessageEntry(roomID)
 	if !ok {
 		return nil
@@ -130,6 +130,7 @@ const maxRoomNameClaimRetries = 5
 
 type createRoomOptions struct {
 	universal                  bool
+	threadingMode              evtv1.RoomThreadingMode
 	applyAnnouncementsDefaults bool
 }
 
@@ -142,6 +143,49 @@ func WithUniversalRoom(universal bool) CreateRoomOption {
 	return func(options *createRoomOptions) {
 		options.universal = universal
 	}
+}
+
+// WithRoomThreadingMode sets the initial threading policy for a channel room.
+// Omitting this option preserves the ENABLED default.
+func WithRoomThreadingMode(mode evtv1.RoomThreadingMode) CreateRoomOption {
+	return func(options *createRoomOptions) {
+		options.threadingMode = mode
+	}
+}
+
+// IsValidRoomThreadingMode reports whether mode is an explicit channel-room
+// policy. UNSPECIFIED is reserved for omitted historical data and DMs.
+func IsValidRoomThreadingMode(mode evtv1.RoomThreadingMode) bool {
+	switch mode {
+	case evtv1.RoomThreadingMode_ROOM_THREADING_MODE_REQUIRED,
+		evtv1.RoomThreadingMode_ROOM_THREADING_MODE_ENCOURAGED,
+		evtv1.RoomThreadingMode_ROOM_THREADING_MODE_ENABLED,
+		evtv1.RoomThreadingMode_ROOM_THREADING_MODE_DISABLED:
+		return true
+	default:
+		return false
+	}
+}
+
+// EffectiveRoomThreadingMode normalizes persisted room data. Historical
+// channel events predate the field and therefore resolve UNSPECIFIED to
+// ENABLED. Unknown future values fail closed to DISABLED. DMs remain
+// threadless.
+func EffectiveRoomThreadingMode(room *evtv1.Room) evtv1.RoomThreadingMode {
+	if room == nil || room.GetKind() == evtv1.RoomKind_ROOM_KIND_DM {
+		return evtv1.RoomThreadingMode_ROOM_THREADING_MODE_UNSPECIFIED
+	}
+	if room.GetThreadingMode() == evtv1.RoomThreadingMode_ROOM_THREADING_MODE_UNSPECIFIED {
+		return evtv1.RoomThreadingMode_ROOM_THREADING_MODE_ENABLED
+	}
+	if IsValidRoomThreadingMode(room.GetThreadingMode()) {
+		return room.GetThreadingMode()
+	}
+	return evtv1.RoomThreadingMode_ROOM_THREADING_MODE_DISABLED
+}
+
+func normalizedRoomThreadingMode(kind evtv1.RoomKind, mode evtv1.RoomThreadingMode) evtv1.RoomThreadingMode {
+	return EffectiveRoomThreadingMode(&evtv1.Room{Kind: kind, ThreadingMode: mode})
 }
 
 // WithAnnouncementsRoomDefaults applies the built-in announcements room's
@@ -180,7 +224,7 @@ func collectCreateRoomOptions(opts []CreateRoomOption) createRoomOptions {
 // mutations from any process (this one or another replica) advance the
 // filter's seq and cause our publish to fail; we re-check uniqueness
 // from the (now-caught-up) projection and retry.
-func (c *ChattoCore) CreateRoom(ctx context.Context, actorID string, kind RoomKind, groupID, name, description string, opts ...CreateRoomOption) (*corev1.Room, error) {
+func (c *ChattoCore) CreateRoom(ctx context.Context, actorID string, kind RoomKind, groupID, name, description string, opts ...CreateRoomOption) (*evtv1.Room, error) {
 	if err := ValidateRoomName(name); err != nil {
 		return nil, err
 	}
@@ -194,6 +238,13 @@ func (c *ChattoCore) CreateRoom(ctx context.Context, actorID string, kind RoomKi
 	if kind == KindDM && options.applyAnnouncementsDefaults {
 		return nil, fmt.Errorf("DM rooms cannot use announcements defaults")
 	}
+	if kind == KindDM && options.threadingMode != evtv1.RoomThreadingMode_ROOM_THREADING_MODE_UNSPECIFIED {
+		return nil, invalidArgument("DM rooms cannot configure threading")
+	}
+	if kind == KindChannel && options.threadingMode != evtv1.RoomThreadingMode_ROOM_THREADING_MODE_UNSPECIFIED && !IsValidRoomThreadingMode(options.threadingMode) {
+		return nil, invalidArgument("invalid room threading mode")
+	}
+	threadingMode := normalizedRoomThreadingMode(ProtoKindForRoomKind(kind), options.threadingMode)
 
 	if groupID != "" {
 		if _, err := c.GetRoomGroup(ctx, groupID); err != nil {
@@ -212,23 +263,25 @@ func (c *ChattoCore) CreateRoom(ctx context.Context, actorID string, kind RoomKi
 	name = normalizeRoomName(name)
 	room_id := NewRoomID()
 
-	room := &corev1.Room{
-		Id:          room_id,
-		Kind:        ProtoKindForRoomKind(kind),
-		Name:        name,
-		Description: description,
-		GroupId:     groupID,
-		Universal:   options.universal,
+	room := &evtv1.Room{
+		Id:            room_id,
+		Kind:          ProtoKindForRoomKind(kind),
+		Name:          name,
+		Description:   description,
+		GroupId:       groupID,
+		Universal:     options.universal,
+		ThreadingMode: threadingMode,
 	}
 
-	createdEvent := newEvent(actorID, &corev1.Event{
-		Event: &corev1.Event_RoomCreated{
-			RoomCreated: &corev1.RoomCreatedEvent{
-				RoomId:      room_id,
-				Name:        name,
-				Description: description,
-				Kind:        ProtoKindForRoomKind(kind),
-				Universal:   options.universal,
+	createdEvent := newEvent(actorID, &evtv1.Event{
+		Event: &evtv1.Event_RoomCreated{
+			RoomCreated: &evtv1.RoomCreatedEvent{
+				RoomId:        room_id,
+				Name:          name,
+				Description:   description,
+				Kind:          ProtoKindForRoomKind(kind),
+				Universal:     options.universal,
+				ThreadingMode: threadingMode,
 			},
 		},
 	})
@@ -280,7 +333,7 @@ func defaultAnnouncementsRoomDecisions(roomID string) []rbacSeedDecision {
 			decisions = append(decisions, rbacSeedDecision{
 				scope:       ScopeRoom,
 				scopeID:     roomID,
-				subjectKind: corev1.RbacPermissionSubjectKind_RBAC_PERMISSION_SUBJECT_KIND_ROLE,
+				subjectKind: evtv1.RbacPermissionSubjectKind_RBAC_PERMISSION_SUBJECT_KIND_ROLE,
 				subject:     roleName,
 				permission:  permission,
 				decision:    decision,
@@ -295,7 +348,7 @@ func defaultAnnouncementsRoomDecisions(roomID string) []rbacSeedDecision {
 
 // SetRoomUniversal updates a channel room's universal membership flag.
 // Authorization: Caller must verify CanManageAnyRoom before calling.
-func (c *ChattoCore) SetRoomUniversal(ctx context.Context, actorID string, kind RoomKind, roomID string, universal bool) (*corev1.Room, error) {
+func (c *ChattoCore) SetRoomUniversal(ctx context.Context, actorID string, kind RoomKind, roomID string, universal bool) (*evtv1.Room, error) {
 	if kind == KindDM {
 		return nil, fmt.Errorf("DM rooms cannot be universal")
 	}
@@ -322,8 +375,8 @@ func (c *ChattoCore) SetRoomUniversal(ctx context.Context, actorID string, kind 
 		if room.GetUniversal() == universal {
 			return room, nil
 		}
-		event := newEvent(actorID, &corev1.Event{Event: &corev1.Event_RoomUniversalChanged{
-			RoomUniversalChanged: &corev1.RoomUniversalChangedEvent{RoomId: roomID, Universal: universal},
+		event := newEvent(actorID, &evtv1.Event{Event: &evtv1.Event_RoomUniversalChanged{
+			RoomUniversalChanged: &evtv1.RoomUniversalChangedEvent{RoomId: roomID, Universal: universal},
 		}})
 		subject := agg.SubjectFor(event)
 		seqs, err := c.appendAuthorizationFencedBatch(ctx, actorID, []evtstream.BatchEntry{{
@@ -347,7 +400,7 @@ func (c *ChattoCore) SetRoomUniversal(ctx context.Context, actorID string, kind 
 
 // SetRoomSlowMode updates a channel room's per-user posting interval.
 // Authorization: Caller must verify room.manage before calling.
-func (c *ChattoCore) SetRoomSlowMode(ctx context.Context, actorID string, kind RoomKind, roomID string, seconds uint32) (*corev1.Room, error) {
+func (c *ChattoCore) SetRoomSlowMode(ctx context.Context, actorID string, kind RoomKind, roomID string, seconds uint32) (*evtv1.Room, error) {
 	if kind == KindDM {
 		return nil, invalidArgument("DM rooms cannot use slow mode")
 	}
@@ -362,8 +415,8 @@ func (c *ChattoCore) SetRoomSlowMode(ctx context.Context, actorID string, kind R
 		return room, nil
 	}
 
-	event := newEvent(actorID, &corev1.Event{Event: &corev1.Event_RoomSlowModeChanged{
-		RoomSlowModeChanged: &corev1.RoomSlowModeChangedEvent{RoomId: roomID, SlowModeSeconds: seconds},
+	event := newEvent(actorID, &evtv1.Event{Event: &evtv1.Event_RoomSlowModeChanged{
+		RoomSlowModeChanged: &evtv1.RoomSlowModeChangedEvent{RoomId: roomID, SlowModeSeconds: seconds},
 	}})
 	pos, err := c.roomModel.appendDirectoryEventually(ctx, c.EventPublisher, evtstream.RoomAggregate(roomID), event)
 	if err != nil {
@@ -375,6 +428,71 @@ func (c *ChattoCore) SetRoomSlowMode(ctx context.Context, actorID string, kind R
 
 	c.logger.Info("Room slow mode updated", "kind", kind, "room_id", roomID, "seconds", seconds)
 	return c.GetRoom(ctx, kind, roomID)
+}
+
+// SetRoomThreadingMode updates a channel room's threading policy. The room
+// aggregate and authorization fence are checked together so concurrent policy
+// changes cannot commit from stale state.
+// Authorization: Caller must verify room.manage before calling.
+func (c *ChattoCore) SetRoomThreadingMode(ctx context.Context, actorID string, kind RoomKind, roomID string, mode evtv1.RoomThreadingMode) (*evtv1.Room, error) {
+	return c.setRoomThreadingMode(ctx, actorID, kind, roomID, mode, nil)
+}
+
+func (c *ChattoCore) setRoomThreadingMode(
+	ctx context.Context,
+	actorID string,
+	kind RoomKind,
+	roomID string,
+	mode evtv1.RoomThreadingMode,
+	authorize func(context.Context) error,
+) (*evtv1.Room, error) {
+	if kind == KindDM {
+		return nil, invalidArgument("DM rooms cannot configure threading")
+	}
+	if !IsValidRoomThreadingMode(mode) {
+		return nil, invalidArgument("invalid room threading mode")
+	}
+
+	agg := evtstream.RoomAggregate(roomID)
+	filter := agg.AllEventsFilter()
+	for attempt := 0; attempt < maxJoinRoomRetries; attempt++ {
+		prepared, err := c.prepareMessageAppendAttempt(ctx, agg, actorID, func(attemptCtx context.Context) error {
+			if authorize != nil {
+				return authorize(attemptCtx)
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+		room, err := c.GetRoom(ctx, kind, roomID)
+		if err != nil {
+			return nil, err
+		}
+		if EffectiveRoomThreadingMode(room) == mode {
+			return room, nil
+		}
+		event := newEvent(actorID, &evtv1.Event{Event: &evtv1.Event_RoomThreadingModeChanged{
+			RoomThreadingModeChanged: &evtv1.RoomThreadingModeChangedEvent{RoomId: roomID, ThreadingMode: mode},
+		}})
+		subject := agg.SubjectFor(event)
+		seqs, err := c.appendAuthorizationFencedBatch(ctx, actorID, []evtstream.BatchEntry{{
+			Subject: subject, Event: event, HasOCC: true, ExpectedSeq: prepared.roomSeq, FilterSubject: filter,
+		}}, prepared.authorizationSeq)
+		if errors.Is(err, events.ErrConflict) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("publish RoomThreadingModeChangedEvent: %w", err)
+		}
+		pos := events.SubjectPosition(subject, seqs[0])
+		if err := c.roomModel.waitForDirectoryAndTimeline(ctx, pos); err != nil {
+			return nil, err
+		}
+		c.logger.Info("Room threading mode updated", "kind", kind, "room_id", roomID, "threading_mode", mode.String())
+		return c.GetRoom(ctx, kind, roomID)
+	}
+	return nil, fmt.Errorf("publish threading-mode change retry exhausted after %d attempts: %w", maxJoinRoomRetries, events.ErrConflict)
 }
 
 // publishRoomEventWithNameOCC publishes a name-claiming room event
@@ -396,15 +514,15 @@ func (c *ChattoCore) SetRoomSlowMode(ctx context.Context, actorID string, kind R
 // excludeRoomID is the ID to exclude from the uniqueness check —
 // used by UpdateRoom so a room can keep a name it already holds
 // (e.g. case-only changes, or no-op renames).
-func (c *ChattoCore) publishRoomEventWithNameOCC(ctx context.Context, name string, event *corev1.Event, excludeRoomID string, additionalEntries ...evtstream.BatchEntry) ([]uint64, error) {
+func (c *ChattoCore) publishRoomEventWithNameOCC(ctx context.Context, name string, event *evtv1.Event, excludeRoomID string, additionalEntries ...evtstream.BatchEntry) ([]uint64, error) {
 	// Determine publish subject from the event payload. Room events
 	// all target the per-room aggregate subject; this doesn't change
 	// across retries.
 	var roomID string
 	switch e := event.GetEvent().(type) {
-	case *corev1.Event_RoomCreated:
+	case *evtv1.Event_RoomCreated:
 		roomID = e.RoomCreated.GetRoomId()
-	case *corev1.Event_RoomUpdated:
+	case *evtv1.Event_RoomUpdated:
 		roomID = e.RoomUpdated.GetRoomId()
 	default:
 		return nil, fmt.Errorf("publishRoomEventWithNameOCC: unsupported event type %T", e)
@@ -466,7 +584,7 @@ func (c *ChattoCore) publishRoomEventWithNameOCC(ctx context.Context, name strin
 // path to enforce cluster-wide name uniqueness (see
 // publishRoomEventWithNameOCC); description-only edits skip the
 // uniqueness check and use a plain per-subject OCC.
-func (c *ChattoCore) UpdateRoom(ctx context.Context, actorID string, kind RoomKind, room_id, name, description string) (*corev1.Room, error) {
+func (c *ChattoCore) UpdateRoom(ctx context.Context, actorID string, kind RoomKind, room_id, name, description string) (*evtv1.Room, error) {
 	if err := ValidateRoomName(name); err != nil {
 		return nil, err
 	}
@@ -489,9 +607,9 @@ func (c *ChattoCore) UpdateRoom(ctx context.Context, actorID string, kind RoomKi
 	room.Name = name
 	room.Description = description
 
-	updatedEvent := newEvent(actorID, &corev1.Event{
-		Event: &corev1.Event_RoomUpdated{
-			RoomUpdated: &corev1.RoomUpdatedEvent{
+	updatedEvent := newEvent(actorID, &evtv1.Event{
+		Event: &evtv1.Event_RoomUpdated{
+			RoomUpdated: &evtv1.RoomUpdatedEvent{
 				RoomId:      room_id,
 				Name:        name,
 				Description: description,
@@ -536,7 +654,7 @@ func (c *ChattoCore) UpdateRoom(ctx context.Context, actorID string, kind RoomKi
 func (c *ChattoCore) DeleteRoom(ctx context.Context, actorID string, kind RoomKind, room_id string) error {
 	agg := evtstream.RoomAggregate(room_id)
 	filter := agg.AllEventsFilter()
-	var room *corev1.Room
+	var room *evtv1.Room
 	var deletedSubject string
 	var seq uint64
 	for attempt := 0; attempt < maxJoinRoomRetries; attempt++ {
@@ -557,9 +675,9 @@ func (c *ChattoCore) DeleteRoom(ctx context.Context, actorID string, kind RoomKi
 		if err != nil {
 			return err
 		}
-		event := newEvent(actorID, &corev1.Event{
-			Event: &corev1.Event_RoomDeleted{
-				RoomDeleted: &corev1.RoomDeletedEvent{RoomId: room_id},
+		event := newEvent(actorID, &evtv1.Event{
+			Event: &evtv1.Event_RoomDeleted{
+				RoomDeleted: &evtv1.RoomDeletedEvent{RoomId: room_id},
 			},
 		})
 		deletedSubject = agg.SubjectFor(event)
@@ -593,9 +711,9 @@ func (c *ChattoCore) DeleteRoom(ctx context.Context, actorID string, kind RoomKi
 	var groupRemovedSeq uint64
 	var err error
 	if kind == KindChannel && room.GetGroupId() != "" {
-		removed := newEvent(actorID, &corev1.Event{
-			Event: &corev1.Event_RoomRemovedFromGroup{
-				RoomRemovedFromGroup: &corev1.RoomRemovedFromGroupEvent{
+		removed := newEvent(actorID, &evtv1.Event{
+			Event: &evtv1.Event_RoomRemovedFromGroup{
+				RoomRemovedFromGroup: &evtv1.RoomRemovedFromGroupEvent{
 					GroupId: room.GetGroupId(),
 					RoomId:  room_id,
 				},
@@ -637,16 +755,16 @@ func (c *ChattoCore) DeleteRoom(ctx context.Context, actorID string, kind RoomKi
 // Authorization: Caller must verify CanManageAnyRoom before calling.
 //
 // ADR-035 phase 6: event-only.
-func (c *ChattoCore) ArchiveRoom(ctx context.Context, actorID string, kind RoomKind, roomID string) (*corev1.Room, error) {
+func (c *ChattoCore) ArchiveRoom(ctx context.Context, actorID string, kind RoomKind, roomID string) (*evtv1.Room, error) {
 	room, err := c.GetRoom(ctx, kind, roomID)
 	if err != nil {
 		return nil, err
 	}
 	room.Archived = true
 
-	archivedEvent := newEvent(actorID, &corev1.Event{
-		Event: &corev1.Event_RoomArchived{
-			RoomArchived: &corev1.RoomArchivedEvent{
+	archivedEvent := newEvent(actorID, &evtv1.Event{
+		Event: &evtv1.Event_RoomArchived{
+			RoomArchived: &evtv1.RoomArchivedEvent{
 				RoomId: roomID,
 			},
 		},
@@ -672,16 +790,16 @@ func (c *ChattoCore) ArchiveRoom(ctx context.Context, actorID string, kind RoomK
 // Authorization: Caller must verify CanManageAnyRoom before calling.
 //
 // ADR-035 phase 6: event-only.
-func (c *ChattoCore) UnarchiveRoom(ctx context.Context, actorID string, kind RoomKind, roomID string) (*corev1.Room, error) {
+func (c *ChattoCore) UnarchiveRoom(ctx context.Context, actorID string, kind RoomKind, roomID string) (*evtv1.Room, error) {
 	room, err := c.GetRoom(ctx, kind, roomID)
 	if err != nil {
 		return nil, err
 	}
 	room.Archived = false
 
-	unarchivedEvent := newEvent(actorID, &corev1.Event{
-		Event: &corev1.Event_RoomUnarchived{
-			RoomUnarchived: &corev1.RoomUnarchivedEvent{
+	unarchivedEvent := newEvent(actorID, &evtv1.Event{
+		Event: &evtv1.Event_RoomUnarchived{
+			RoomUnarchived: &evtv1.RoomUnarchivedEvent{
 				RoomId: roomID,
 			},
 		},
@@ -709,7 +827,7 @@ func (c *ChattoCore) UnarchiveRoom(ctx context.Context, actorID string, kind Roo
 // projected OR if its kind doesn't match the requested kind —
 // keeping the "the wrong kind is not found" semantic so callers
 // don't accidentally read a DM via a channel-kind probe.
-func (c *ChattoCore) GetRoom(ctx context.Context, kind RoomKind, room_id string) (*corev1.Room, error) {
+func (c *ChattoCore) GetRoom(ctx context.Context, kind RoomKind, room_id string) (*evtv1.Room, error) {
 	room, ok := c.roomModel.room(room_id)
 	if !ok || room.Kind != ProtoKindForRoomKind(kind) {
 		return nil, fmt.Errorf("room not found: %w", jetstream.ErrKeyNotFound)
@@ -727,7 +845,7 @@ func (c *ChattoCore) GetRoom(ctx context.Context, kind RoomKind, room_id string)
 // wire), so resolvers and consumers downstream of those events use
 // this to recover both the room and the kind context (via
 // KindOfRoom on the result).
-func (c *ChattoCore) FindRoomByID(ctx context.Context, room_id string) (*corev1.Room, error) {
+func (c *ChattoCore) FindRoomByID(ctx context.Context, room_id string) (*evtv1.Room, error) {
 	room, ok := c.roomModel.room(room_id)
 	if !ok {
 		return nil, ErrNotFound
@@ -752,7 +870,7 @@ func (c *ChattoCore) FindRoomKind(ctx context.Context, room_id string) (RoomKind
 // ListRooms retrieves all rooms of the given kind from the
 // RoomModel's room catalog, composed with its group-layout state for the
 // group_id field.
-func (c *ChattoCore) ListRooms(ctx context.Context, kind RoomKind) ([]*corev1.Room, error) {
+func (c *ChattoCore) ListRooms(ctx context.Context, kind RoomKind) ([]*evtv1.Room, error) {
 	rooms := c.roomModel.roomsByKind(ProtoKindForRoomKind(kind))
 	for _, r := range rooms {
 		if gid := c.roomModel.roomGroupForRoom(r.Id); gid != "" {
@@ -774,12 +892,12 @@ type MemberRoomListOptions struct {
 // ListMemberRooms retrieves rooms of the given kind that the user participates
 // in. It is the shared room-list primitive for member-scoped room surfaces;
 // callers layer product policy on top with MemberRoomListOptions.
-func (c *ChattoCore) ListMemberRooms(ctx context.Context, kind RoomKind, userID string, opts MemberRoomListOptions) ([]*corev1.Room, error) {
+func (c *ChattoCore) ListMemberRooms(ctx context.Context, kind RoomKind, userID string, opts MemberRoomListOptions) ([]*evtv1.Room, error) {
 	roomIDs := c.roomModel.explicitRoomIDsForUser(userID)
 	seen := make(map[string]struct{}, len(roomIDs))
 
 	type listedRoom struct {
-		room          *corev1.Room
+		room          *evtv1.Room
 		lastMessageAt time.Time
 	}
 	listed := make([]listedRoom, 0, len(roomIDs))
@@ -849,7 +967,7 @@ func (c *ChattoCore) ListMemberRooms(ctx context.Context, kind RoomKind, userID 
 		})
 	}
 
-	rooms := make([]*corev1.Room, len(listed))
+	rooms := make([]*evtv1.Room, len(listed))
 	for i, r := range listed {
 		rooms[i] = r.room
 	}

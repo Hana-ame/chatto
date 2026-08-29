@@ -44,6 +44,7 @@
       "allow": "tillat",
       "deny": "avviser",
       "winning_decision": "(vinnende avgjørelse)",
+      "included_by": "Included by {permission}",
       "level_server": "Server",
       "level_group": "Gruppe",
       "level_room": "Rom",
@@ -94,6 +95,16 @@
         }
       }
     },
+    "permission_categories": {
+      "admin": "Administrasjon",
+      "bot": "Boter",
+      "message": "Meldinger",
+      "role": "Roller",
+      "room": "Rom",
+      "server": "Server",
+      "user": "Brukere",
+      "other": "Annet"
+    },
     "permission_descriptions": {
       "server_manage": "Oppdater serverinnstillinger (navn, beskrivelse, logo)",
       "room_create": "Opprett nye rom",
@@ -101,6 +112,8 @@
       "room_list": "Se rom i katalogen. En bruker kan få lov til å se et rom (f.eks. for å be om tilgang) uten å få lov til å bli med i det.",
       "room_manage": "Rediger et roms innstillinger og tillatelser, og slett rom",
       "room_ban_member": "Ban medlemmer fra rom",
+      "message_read": "Les meldinger i kanalrom",
+      "message_read_interactions": "Les hele tråder som du opprettet, eller der en annen bruker nevnte deg direkte",
       "message_post": "Legg ut root-meldinger i rom og start DM-er",
       "message_post_in_thread": "Legg inn svar i en tråd",
       "message_attach": "Legg ved filer til meldinger",
@@ -116,7 +129,9 @@
       "user_delete_self": "Slett din egen konto",
       "user_invite": "Opprett og administrer invitasjonslenker",
       "user_manage_accounts": "Opprett brukere, rediger kontoidentitet, tilbakestill passord, legg ved bekreftede e-poster og fjern påloggingsavkjølinger",
-      "user_manage_permissions": "Rediger direkte overstyringer av tillatelser per bruker"
+      "user_manage_permissions": "Rediger direkte overstyringer av tillatelser per bruker",
+      "bot_create": "Opprett botkontoer som du eier",
+      "bot_manage": "Vis og administrer alle botkontoer"
     }
   }
 }

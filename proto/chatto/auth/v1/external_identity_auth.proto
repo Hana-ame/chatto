@@ -70,8 +70,15 @@ message CreateExternalIdentityAccountResponse {
   string user_id = 1;
   // Newly created username.
   string login = 2;
-  // Bearer token for the new session.
+  // Short-lived bearer access token for the new session.
   string token = 3;
+  // Rotating refresh credential for renewing the bearer session.
+  string refresh_token = 4;
+  // Lifetime of the access token in seconds.
+  int64 expires_in = 5;
+  // Remaining lifetime of the current renewable-session window in seconds.
+  // A successful refresh can advance this window for an active session.
+  int64 refresh_token_expires_in = 6;
 }
 
 // Request to cancel a pending external identity flow.

@@ -1,25 +1,26 @@
 # Instructions for Agents Working in `cli/`
 
-This file covers backend code: Go services, ConnectRPC, NATS/JetStream,
-authorization, live events, backup/restore, and backend tests.
+This file applies to backend code: Go services, ConnectRPC, NATS/JetStream,
+authorization, live events, backup and restore, and backend tests.
 
 ## Non-Negotiables
 
-- Chatto is multi-replica software. Never rely on process-local serialization
-  for correctness.
+- Chatto can run in more than one replica. Never use process-local
+  serialization for correctness.
 - NATS JetStream/KV is the primary data store. Use JetStream OCC or KV
   `Create`/revision `Update` for uniqueness and cross-replica invariants.
 - Durable domain state belongs in `EVT`; latest-value runtime state belongs in
   `RUNTIME_STATE` only when it is truly runtime/latest-value state.
 - Services own their domain state and projections. Do not bypass service
-  boundaries to poke JetStream, KV, or projections from unrelated code.
+  boundaries to access JetStream, KV, or projections from unrelated code.
 - Call access is generation-bound. Use one call-state snapshot whenever an
   operation combines call identity and participants. For access credentials,
   capture the call ID and E2EE key reference from the same projected session,
   resolve that key reference, then revalidate both values before issuing
   access; fail or retry if the generation changed. Never assemble one response
   or credential from independent call-state reads.
-- Do not log PII. Use opaque IDs, counts, booleans, event names, and safe hashes.
+- Do not log PII. Use opaque IDs, counts, Boolean values, event names, and safe
+  hashes.
 - Projections must not retain decrypted PII when encrypted source fields can be
   retained and hydrated at read boundaries. Keep derived lookup state
   non-plaintext, and never turn KMS or decryption failures into apparent
@@ -32,7 +33,9 @@ authorization, live events, backup/restore, and backend tests.
 
 - `cli/internal/core` is domain logic and service/projection code.
 - `cli/internal/connectapi` is the protobuf/ConnectRPC API.
-- `proto/chatto/core/v1` holds persisted/internal protobufs.
+- `proto/chatto/core` holds lifecycle-specific internal protobuf packages. Its
+  package names distinguish EVT, notification-log, runtime-state, key-material,
+  cache-state, projection-snapshot, and transient live contracts.
 - `proto/chatto/api/v1` holds public ConnectRPC API protobufs.
 - The relevant `docs/architecture/` inventories, FDRs, and ADRs should move
   with architectural changes.
@@ -133,7 +136,7 @@ authorization, live events, backup/restore, and backend tests.
   the projection apply barrier across NATS or other external I/O.
 - Keep the package dependency direction application/core code ->
   `internal/evtstream` -> the `hmans.de/chatto/pkg/events` shared module.
-  Chatto's `corev1.Event` codec,
+  Chatto's `evtv1.Event` codec,
   aggregate subjects, event tokens, typed publisher/projector constructors, and
   envelope-aware effect consumers belong in `internal/evtstream`.
   The framework lives in the independently versioned `../pkg/events` module.
@@ -226,7 +229,7 @@ authorization, live events, backup/restore, and backend tests.
 
 - Durable facts publish to `evt.>` through `EventPublisher`; JetStream republish
   exposes committed facts on `live.evt.>`.
-- Transient UI sync publishes `corev1.LiveEvent` on `live.sync.>` through
+- Transient UI sync publishes `livev1.LiveEvent` on `live.sync.>` through
   `publishLiveEvent`.
 - Pick one delivery path per conceptual update. Do not double-publish both a
   durable event and a transient live event for the same UI change.
@@ -256,8 +259,18 @@ authorization, live events, backup/restore, and backend tests.
   `owners.emails`.
 - DM rooms have an explicit privacy boundary; owners/admins/moderators do not
   get moderation visibility into DM contents.
-- Permission strings use exactly `{object}.{verb}` with hyphenated verbs:
-  `room.ban-member`, `message.post-in-thread`, `admin.view-users`.
+- DM membership is the complete DM content-read boundary. `message.read`
+  applies only to channel rooms. Do not add a second DM read gate.
+- A bot must never start or fetch a DM through `RoomService.StartDM`, even when
+  it has `message.post` or the DM already exists. A human must start the DM.
+  After that, the bot can read it through membership and can use its normal
+  message permissions inside it.
+- Permission strings are opaque, stable identifiers. Punctuation helps humans
+  recognize current identifiers, but it does not define authorization.
+- Define permission inclusion explicitly in the Go permission catalog. Validate
+  that each included permission exists and has compatible category and scope
+  metadata. Currently, `message.read` includes
+  `message.read-interactions`.
 - Add permissions in Go first, regenerate frontend mirrors, and test scope and
   DM-boundary behavior.
 - Targeted operations are permission-gated, not rank-gated: role assignment uses
@@ -342,6 +355,9 @@ mise x -- go test -tags test_endpoints ./internal/http_server -run TestName -tim
 - Treat fixture and setup errors as fatal before using returned values. Never
   discard an error from helpers such as `CreateRoom` or `CreateUser` and then
   dereference the result; fail the test at the setup call instead.
+- `JoinRoom` is a self-service operation. The actor must be the account that
+  joins. Use `AddMember` when an authorized account adds a different account
+  during test setup.
 - Tests that mutate a projection wired into a running `ChattoCore` must append
   the fact through `EventPublisher` and wait for the owning projector. Reserve
   direct `Apply` calls for isolated projection tests, using monotonically

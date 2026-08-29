@@ -4,10 +4,24 @@
       "title": "Agordoj",
       "back_to_server": "Reen al Servilo",
       "profile": "Profilo",
-      "display": "Montru",
+      "display": "Preferoj",
       "notifications": "Sciigoj",
       "account": "Konto",
-      "bots": "Botoj"
+      "bots": "Botoj",
+      "user_preferences": "Uzantaj preferoj",
+      "app_preferences": "Aplikaj preferoj",
+      "your_account": "Via konto",
+      "server_configuration": "Servilo"
+    },
+    "app_preferences": {
+      "title": "Aplikaj preferoj",
+      "subtitle": "Elektoj de ĉi tiu aplikaĵo, kiuj validas por ĉiuj viaj registritaj serviloj",
+      "appearance": {
+        "title": "Aspekto"
+      },
+      "composer": {
+        "title": "Mesaĝverkilo"
+      }
     },
     "profile": {
       "title": "Profilo",
@@ -94,7 +108,7 @@
       "presence": {
         "button": "Ĉeesto: {status}",
         "title": "Ĉeesto",
-        "auto": "Rete",
+        "online": "Rete",
         "away": "For",
         "do_not_disturb": "Ne ĝenu",
         "offline": "Senrete",
@@ -102,11 +116,18 @@
       },
       "saved": "Profilo sukcese ĝisdatigita",
       "save_failed": "Malsukcesis konservi profilon",
-      "save_button": "Konservu Ŝanĝojn"
+      "save_button": "Konservu Ŝanĝojn",
+      "bio": {
+        "label": "Priskribo",
+        "description": "Ĝis {max} signoj, videbla en via profilo.",
+        "placeholder": "Rakontu al aliaj iom pri vi",
+        "too_long": "La priskribo povas havi maksimume {max} signojn."
+      }
     },
     "preferences": {
-      "title": "Montru",
-      "subtitle": "Elektu kiel Chatto aperas",
+      "title": "Tempo kaj regiono",
+      "subtitle": "Elektu kiel ĉi tiu servilo montras datojn kaj horojn al vi",
+      "browser_scope": "Ĉi tiu elekto validas por ĉiuj Chatto-serviloj en ĉi tiu retumilo.",
       "theme": {
         "title": "Temo",
         "system": {
@@ -120,6 +141,28 @@
         "dark": {
           "label": "Mallumo",
           "description": "Uzu la malhelan interfacon en ĉi tiu retumilo"
+        }
+      },
+      "editor": {
+        "title": "Mesaĝredaktilo",
+        "visual": {
+          "label": "Vida",
+          "description": "Aranĝu mesaĝojn sen vidi Markdown-sintakson"
+        },
+        "markdown": {
+          "label": "Markdown",
+          "description": "Redaktu Markdown-fonton kun sintaksa reliefigo"
+        }
+      },
+      "send_mode": {
+        "title": "Sendi mesaĝojn per",
+        "enter": {
+          "label": "Return",
+          "description": "Return sendas; Cmd/Ctrl+Return plenumas la normalan Return-agon de la redaktilo"
+        },
+        "modifier_enter": {
+          "label": "Cmd/Ctrl+Return",
+          "description": "Cmd/Ctrl+Return sendas; Return plenumas la normalan agon de la redaktilo"
         }
       },
       "language": {
@@ -153,9 +196,9 @@
           "description": "ekz., 14:30"
         }
       },
-      "save_button": "Konservu ekranajn agordojn",
-      "saved": "Vidigaj agordoj konservitaj",
-      "save_failed": "Malsukcesis konservi ekranajn agordojn"
+      "save_button": "Konservi horajn agordojn",
+      "saved": "Horaj agordoj konservitaj",
+      "save_failed": "Ne eblis konservi horajn agordojn"
     },
     "notifications": {
       "title": "Sciigoj",
@@ -246,17 +289,27 @@
       },
       "policy": {
         "title": "Sciiga politiko",
-        "description": "Elektu kiom forte ĉiu speco de aktiveco atentigu vin. Heredi uzas la servilan aprioron.",
+        "description": "Elektu kiel ĉiu aktiveco atentigu vin je servila, ĉambrogrupa kaj ĉambra nivelo. Ĉambroj heredas de sia grupo kaj poste de la servilo.",
         "load_failed": "Ne eblis ŝargi la sciigan politikon",
         "save_failed": "Ne eblis konservi la sciigan politikon",
         "effective": "Efektiva: {mode}",
+        "filter_label": "Filtri sciigajn ampleksojn",
+        "filter_placeholder": "Filtri grupojn kaj ĉambrojn…",
+        "no_filter_matches": "Neniu sciiga amplekso kongruas kun ĉi tiu filtrilo.",
+        "legend": "Reĝimoj de livero de sciigoj",
+        "cell_aria": "{cause}, {scope}. Superrego: {override}. Efektiva: {effective}. Aktivigu por agordi {next}.",
+        "server_default_cell_aria": "{cause}, {scope}. Defaŭlto: {current}. Aktivigu por agordi {next}.",
+        "not_applicable_cell_aria": "{cause}, {scope}. Ne aplikebla.",
         "delivery_mode": {
           "inherit": "Heredi",
           "off": "Malŝaltita",
-          "silent": "Silenta",
-          "alert": "Alarmo"
+          "badge": "Insigno",
+          "badge_hint": "Aldonas nur neŭtralan punkton por nelegita enhavo. Ĝi ne kreas sciigon, ludas sonon aŭ sendas puŝan sciigon.",
+          "notification": "Sciigo",
+          "push_notification": "Puŝa sciigo"
         },
         "reason": {
+          "room_message": "Ĉambraj mesaĝoj",
           "direct_message": "Rektaj mesaĝoj",
           "direct_mention": "Rektaj mencioj",
           "reply": "Respondoj al viaj mesaĝoj",
@@ -264,10 +317,20 @@
           "here": "@here-mencioj",
           "all": "@all-mencioj",
           "followed_thread": "Sekvataj fadenoj",
-          "followed_room": "Sekvataj ĉambroj",
           "reaction": "Reagoj al viaj mesaĝoj",
           "activity": "Aktiveco",
           "room_invitation": "Invitoj al ĉambroj"
+        },
+        "reason_hint": {
+          "room_message": "Ĉefnivelaj mesaĝoj, kiujn aliaj membroj afiŝas rekte en kanalĉambroj, ne ene de fadenoj.",
+          "direct_message": "Mesaĝoj, kiujn aliaj membroj sendas en rektmesaĝaj konversacioj.",
+          "direct_mention": "Mesaĝoj, kiuj rekte mencias vian uzantnomon.",
+          "reply": "Mesaĝoj, kiuj respondas al unu el viaj mesaĝoj.",
+          "role_mention": "Mesaĝoj, kiuj mencias rolon atribuitan al vi.",
+          "here": "Mesaĝoj, kiuj uzas @here kiam via ĉeesto ne estas eksterreta.",
+          "all": "Mesaĝoj, kiuj uzas @all en ĉambro, al kiu vi apartenas.",
+          "followed_thread": "Novaj respondoj en fadenoj, kiujn vi sekvas.",
+          "reaction": "Reagoj, kiujn aliaj membroj aldonas al viaj mesaĝoj."
         }
       }
     },
@@ -361,11 +424,6 @@
       "create_title": "Krei Bot-Konton",
       "create_failed": "Malsukcesis krei bot",
       "created": "Bot kreita",
-      "edit": "Redakti",
-      "edit_title": "Redakti Bot-Konton",
-      "updated": "Bot ĝisdatigita",
-      "update_failed": "Malsukcesis ĝisdatigi bot",
-      "update_conflict": "Iu alia ĝisdatigis ĉi tiun roboton. Reŝargu la paĝon kaj provu denove.",
       "username": "Uzantnomo",
       "username_hint": "Bot uzantnomoj devas finiĝi per _bot.",
       "display_name": "Montra nomo",
@@ -384,6 +442,12 @@
       "rotate_warning": "La nuna ŝlosilo tuj ĉesos funkcii. Ĉiu integriĝo uzanta ĝin devas esti ĝisdatigita.",
       "key_rotated": "API-ŝlosilo turniĝis",
       "rotate_failed": "Malsukcesis turni API-ŝlosilon",
+      "webhook_title": "Envenaj rethokoj",
+      "webhook_description": "Afiŝu mesaĝojn kiel ĉi tiu roboto per eksteraj iloj.",
+      "webhook_created": "Envena rethoko kreita",
+      "webhook_url_title": "Konservu ĉi tiun rethokan URL-on",
+      "webhook_url_warning": "Ĉi tiu URL montriĝas nur unufoje kaj enhavas ensalutilon. Konservu ĝin sekure antaŭ ol fermi ĉi tiun fenestron.",
+      "webhook_url_copied": "Rethoka URL kopiita",
       "delete_title": "Forigi Bot",
       "delete_warning": "Ĉu forigi {name}? Ĝia API-ŝlosilo tuj ĉesos funkcii kaj la konto ne povas esti reakirita.",
       "deleted": "Bot forigita",
@@ -391,7 +455,20 @@
       "permissions": {
         "owner_ceiling": "Elektu, kion ĉi tiu roboto rajtas fari. Vi povas doni al ĝi nur permesojn, kiujn vi mem havas. Se vi perdas permeson, ankaŭ la roboto ne plu povos uzi ĝin.",
         "save_failed": "Malsukcesis ĝisdatigi bot-permeson"
-      }
+      },
+      "webhook_empty_description": "Ankoraŭ neniu envena rethoko estis kreita.",
+      "webhook_create": "Krei rethokon",
+      "webhook_name": "Nomo",
+      "webhook_created_at": "Kreita",
+      "webhook_create_failed": "Ne eblis krei la envenan rethokon",
+      "webhook_revoke": "Revoki rethokon",
+      "webhook_revoke_warning": "La nuna rethoka URL tuj ĉesos funkcii.",
+      "webhook_revoked": "Envena rethoko revokita",
+      "webhook_revoke_failed": "Ne eblis revoki la envenan rethokon",
+      "webhook_last_used": "Laste uzita",
+      "webhook_no_use_recorded": "Neniu uzo registrita",
+      "webhook_last_used_unavailable": "Provizore nedisponebla",
+      "webhook_limit_reached": "La limo de 20 envenaj rethokoj estas atingita."
     }
   }
 }

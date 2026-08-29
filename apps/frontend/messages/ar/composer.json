@@ -1,10 +1,9 @@
 {
   "composer": {
     "attach_file": "قم بإرفاق الملف",
+    "formatting_options": "خيارات التنسيق",
     "send": "أرسل الرسالة",
     "send_label": "إرسال",
-    "send_enter": "أرسل رسالة (أدخل)",
-    "send_ctrl_enter": "إرسال رسالة (Ctrl/Cmd+Enter)",
     "also_send_to_channel": "أرسل أيضًا إلى القناة",
     "post_as_thread": "نشر كموضوع",
     "thread_label": "الموضوع",
@@ -28,6 +27,11 @@
     "slow_mode_waiting": "الوضع البطيء: يمكنك الإرسال مجددًا بعد {countdown}.",
     "slow_mode_bypassed": "الوضع البطيء: {interval} (أنت مُعفى).",
     "slow_mode_rejected": "الوضع البطيء مفعّل. انتظر قبل إرسال رسالة أخرى.",
+    "threads_encouraged": "يُنصح باستخدام سلاسل المحادثات في هذه الغرفة.",
+    "recent_thread_confirm_title": "هل تريد متابعة سلسلة المحادثة السابقة؟",
+    "recent_thread_confirm_body": "لرسالتك السابقة سلسلة محادثة بالفعل. أين يجب نشر هذه الرسالة؟",
+    "post_as_new_message": "نشر كرسالة جديدة",
+    "continue_in_thread": "المتابعة في سلسلة المحادثة",
     "edit_failed": "فشل في تحرير الرسالة",
     "upload": {
       "preparing": "جارٍ التحضير...",
@@ -44,7 +48,9 @@
       "bullet_list": "قائمة نقطية",
       "ordered_list": "قائمة مرقمة",
       "blockquote": "اقتباس",
-      "code_block": "كتلة التعليمات البرمجية"
+      "code_block": "كتلة التعليمات البرمجية",
+      "outdent": "تقليل المسافة البادئة",
+      "indent": "زيادة المسافة البادئة"
     },
     "timestamp": {
       "title": "أدخل الطابع الزمني",

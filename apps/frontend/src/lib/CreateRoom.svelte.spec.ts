@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync } from 'svelte';
 import { render } from 'vitest-browser-svelte';
 import { q } from '$lib/test-utils';
+import { RoomThreadingMode } from '$lib/roomThreading';
 
 const { mocks } = vi.hoisted(() => ({
   mocks: {
@@ -56,6 +57,28 @@ beforeEach(() => {
 });
 
 describe('CreateRoom', () => {
+  it('uses the standard modal form actions', async () => {
+    const onclose = vi.fn();
+    const { container, getByRole } = render(CreateRoom, {
+      groupId: 'group-1',
+      onclose,
+      onroomcreated: mocks.onroomcreated
+    });
+
+    await expect.element(getByRole('dialog', { name: 'Create Room' })).toBeInTheDocument();
+    await expect.element(getByRole('button', { name: 'Cancel' })).toBeInTheDocument();
+    const form = q(container, 'form') as HTMLFormElement;
+    const submit = q(container, 'button[type="submit"]');
+    expect(submit).toHaveTextContent('Create and configure');
+    expect(submit).toHaveAttribute('form', form.id);
+    expect(container.querySelector('#room-description')).toBeNull();
+    expect(container.querySelector('#room-universal')).toBeNull();
+    expect(container.querySelector('[role="radiogroup"]')).toBeNull();
+
+    await getByRole('button', { name: 'Cancel' }).click();
+    await vi.waitFor(() => expect(onclose).toHaveBeenCalled());
+  });
+
   it('creates a normal room through ConnectRPC and joins it', async () => {
     const { container } = render(CreateRoom, {
       groupId: 'group-1',
@@ -71,29 +94,10 @@ describe('CreateRoom', () => {
       name: 'general',
       description: null,
       groupId: 'group-1',
-      universal: false
+      universal: false,
+      threadingMode: RoomThreadingMode.ENABLED
     });
     expect(mocks.joinRoom).toHaveBeenCalledWith('room-1');
-  });
-
-  it('passes the universal flag to ConnectRPC', async () => {
-    const { container } = render(CreateRoom, {
-      groupId: 'group-1',
-      onroomcreated: mocks.onroomcreated
-    });
-
-    (q(container, '#room-universal') as HTMLInputElement).click();
-    await fillNameAndSubmit(container);
-
-    await vi.waitFor(() => {
-      expect(mocks.onroomcreated).toHaveBeenCalledWith('room-1');
-    });
-    expect(mocks.createRoom).toHaveBeenCalledWith({
-      name: 'general',
-      description: null,
-      groupId: 'group-1',
-      universal: true
-    });
   });
 
   it('accepts spaces, punctuation, emoji, and normalizes Unicode before creation', async () => {
@@ -109,7 +113,8 @@ describe('CreateRoom', () => {
         name: 'Team chat 💬 / Küche!',
         description: null,
         groupId: 'group-1',
-        universal: false
+        universal: false,
+        threadingMode: RoomThreadingMode.ENABLED
       });
     });
   });

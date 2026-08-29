@@ -5,6 +5,7 @@
   import MessageEvent from './MessageEvent.svelte';
   import SystemEvent from './SystemEvent.svelte';
   import type { OpenThreadHandler } from './threadOpenOptions';
+  import { RoomThreadingMode } from '$lib/roomThreading';
 
   let {
     event,
@@ -14,7 +15,9 @@
     messageStore = null,
     onOpenThread,
     activeCallId = null,
-    onOpenCall
+    onOpenCall,
+    onOpenProfile,
+    threadingMode = RoomThreadingMode.ENABLED
   }: {
     event: TimelineEventView;
     compact?: boolean;
@@ -24,6 +27,8 @@
     onOpenThread?: OpenThreadHandler;
     activeCallId?: string | null;
     onOpenCall?: () => void;
+    onOpenProfile?: (userId: string) => void;
+    threadingMode?: RoomThreadingMode;
   } = $props();
 
   // Join/leave events are confusing in DM 1:1 conversations. Post-PR(b) we
@@ -44,6 +49,8 @@
     {permalinkThreadRootEventId}
     {messageStore}
     {onOpenThread}
+    {onOpenProfile}
+    {threadingMode}
   />
 {:else}
   <SystemEvent {event} {activeCallId} {onOpenCall} />

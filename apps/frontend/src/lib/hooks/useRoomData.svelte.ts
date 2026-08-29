@@ -1,5 +1,6 @@
 import type { DirectoryMember } from '$lib/api-client/memberDirectory';
 import { mapDirectoryRoomDetails, RoomKind } from '$lib/api-client/roomDirectory';
+import type { RoomThreadingMode } from '$lib/roomThreading';
 import { useServerScope } from '$lib/state/server/scope.svelte';
 
 export type RoomData = {
@@ -10,9 +11,11 @@ export type RoomData = {
     description?: string | null;
     isUniversal: boolean;
     slowModeSeconds: number;
+    threadingMode: RoomThreadingMode;
     archived?: boolean;
   };
   spaceName: string | null;
+  canReadMessages: boolean | null;
   canPostMessage: boolean;
   canPostInThread: boolean;
   canAttach: boolean;
@@ -25,6 +28,8 @@ export type RoomData = {
 };
 
 export type DMData = {
+  /** Stable member IDs from the room projection, including unresolved users. */
+  participantIds: string[];
   participants: Array<{
     id: string;
     login: string;
@@ -63,9 +68,11 @@ export function useRoomData(getProps: () => { roomId: string }) {
         type: room.kind,
         isUniversal: room.isUniversal,
         slowModeSeconds: room.slowModeSeconds,
+        threadingMode: room.threadingMode,
         archived: room.archived
       },
       spaceName: currentStore.serverInfo.name ?? null,
+      canReadMessages: room.canReadMessages,
       canPostMessage: room.canPostMessage,
       canPostInThread: room.canPostInThread,
       canAttach: room.canAttach,
@@ -82,7 +89,9 @@ export function useRoomData(getProps: () => { roomId: string }) {
   const dmData = $derived.by<DMData | null>(() => {
     const currentStore = store;
     if (!isDM || !currentStore.realtimeSync.hasUsableProjection) return null;
+    const projectedRoom = currentStore.projection.rooms.get(getProps().roomId);
     return {
+      participantIds: projectedRoom?.memberUserIds ?? [],
       participants: currentStore.projectedMembersForRoom(getProps().roomId),
       currentUserId: currentStore.currentUser.user?.id ?? null
     };

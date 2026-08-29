@@ -3,6 +3,7 @@ import {
   type CurrentUser,
   type ViewerAPIConfig
 } from '$lib/api-client/viewer';
+import { browserCookieAuthenticationHeaders } from './authenticationMode';
 import { clearCachedUser } from './loadAuth';
 import { csrfFetch } from './csrf';
 import { isAuthenticationRequiredError } from './errors';
@@ -30,6 +31,7 @@ export class CurrentUserState {
   #apiConfig?: ViewerAPIConfig;
   #loadCurrentUser: (config: ViewerAPIConfig) => Promise<CurrentUser>;
   #onAuthenticationRequired?: () => void;
+  #loadPromise: Promise<void> | null = null;
   #isLoggingOut = false;
 
   constructor(
@@ -44,7 +46,18 @@ export class CurrentUserState {
     this.#onAuthenticationRequired = onAuthenticationRequired;
   }
 
-  async load() {
+  /** Load the viewer once, sharing an in-flight request between route and store owners. */
+  load(): Promise<void> {
+    if (this.#loadPromise) return this.#loadPromise;
+
+    const promise = this.#loadViewer().finally(() => {
+      if (this.#loadPromise === promise) this.#loadPromise = null;
+    });
+    this.#loadPromise = promise;
+    return promise;
+  }
+
+  async #loadViewer(): Promise<void> {
     try {
       if (!this.#apiConfig) {
         throw new Error('current user Connect API config is not configured');
@@ -85,7 +98,14 @@ export class CurrentUserState {
     this.#isLoggingOut = true;
 
     if (options.revokeServerSession) {
-      await csrfFetch('/auth/logout', { method: 'POST' }).catch(() => {});
+      await csrfFetch('/auth/browser/logout', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...browserCookieAuthenticationHeaders
+        },
+        body: '{}'
+      }).catch(() => {});
       this.user = undefined;
       clearCachedUser();
       this.loading = false;

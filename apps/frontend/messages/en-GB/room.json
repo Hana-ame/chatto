@@ -13,7 +13,7 @@
       "missing_group": "Choose a room group before creating a room.",
       "failed": "Failed to create room",
       "creating": "Creating...",
-      "submit": "Create Room"
+      "submit_and_configure": "Create and configure"
     },
     "join": {
       "title": "Join Room",
@@ -70,7 +70,8 @@
       "remove_account_suffix": " for this server before removing it."
     },
     "timeline": {
-      "beginning": "This is the beginning of this conversation."
+      "beginning": "This is the beginning of this conversation.",
+      "read_denied": "You do not have permission to read messages in this room."
     },
     "message": {
       "empty": "No messages yet",
@@ -87,6 +88,7 @@
         "add_reaction": "Add reaction",
         "more_reactions": "More reactions",
         "reply": "Reply",
+        "reply_room": "Reply in room",
         "reply_thread": "Reply in thread",
         "open_thread": "Open thread",
         "edit": "Edit message",
@@ -99,6 +101,8 @@
       "meta": {
         "pinned": "Pinned message",
         "thread": "Thread",
+        "edited": "Edited message",
+        "echoed_to_channel": "Also sent to channel",
         "reply_count_one": "1 reply",
         "reply_count_many": "{count} replies",
         "follow_thread": "Follow thread",
@@ -130,6 +134,7 @@
       "unarchived": "unarchived the room",
       "call_started": "started a call in this room",
       "call_ended": "The active call has ended",
+      "threading_mode_changed": "changed threading mode to {mode}",
       "and": "and",
       "other_people_count": {
         "one": "other",

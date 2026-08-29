@@ -43,20 +43,18 @@ func (s *HTTPServer) injectUserIntoContext(c *gin.Context) *http.Request {
 	ctx := authctx.WithUser(c.Request.Context(), credential.user)
 	ctx = authctx.WithCredential(ctx, credential.auth)
 
-	if credential.auth.Kind == authctx.RuntimeCredentialKindCookieSession {
-		s.rotateCookieSessionIfNeeded(c, credential.auth.UserID, credential.auth.Handle, credential.cookieRecord)
-	}
-
 	return c.Request.WithContext(ctx)
 }
 
 func (s *HTTPServer) presentedCredentialFromRequest(c *gin.Context) (presentedRuntimeCredential, bool, error) {
 	if authHeader := c.GetHeader("Authorization"); authHeader != "" {
 		if token, ok := strings.CutPrefix(authHeader, "Bearer "); ok && strings.TrimSpace(token) != "" {
-			if credential, ok, err := s.bearerPresentedCredential(c.Request.Context(), strings.TrimSpace(token)); ok || err != nil {
-				return credential, ok, err
-			}
+			return s.bearerPresentedCredential(c.Request.Context(), strings.TrimSpace(token))
 		}
+		// An explicit Authorization header is authoritative. Never execute the
+		// request with a different ambient cookie identity when it is malformed,
+		// unsupported, expired, or revoked.
+		return presentedRuntimeCredential{}, false, nil
 	}
 
 	if !s.requestIsSameOrigin(c.Request) {
@@ -67,7 +65,10 @@ func (s *HTTPServer) presentedCredentialFromRequest(c *gin.Context) (presentedRu
 
 // requestIsSameOrigin treats requests without an Origin header as same-origin
 // or non-browser traffic. Browser requests with an Origin may use ambient
-// cookie authentication only when it exactly matches Chatto's public origin.
+// cookie authentication only when it exactly matches the request target or
+// Chatto's configured public origin. The latter covers TLS-terminating proxies;
+// the former keeps direct hostname aliases usable without trusting forwarded
+// headers.
 func (s *HTTPServer) requestIsSameOrigin(r *http.Request) bool {
 	origin := strings.TrimSpace(r.Header.Get("Origin"))
 	if origin == "" {
@@ -77,11 +78,36 @@ func (s *HTTPServer) requestIsSameOrigin(r *http.Request) bool {
 	if !ok {
 		return false
 	}
+	presentedOrigin := canonicalOrigin(presented)
+	if presentedOrigin == directRequestOrigin(r) {
+		return true
+	}
+	for _, allowed := range s.config.Webserver.AllowedOrigins {
+		if allowed == "*" {
+			continue
+		}
+		allowedOrigin, ok := parseBrowserOrigin(allowed)
+		if ok && presentedOrigin == canonicalOrigin(allowedOrigin) {
+			return true
+		}
+	}
 	base, err := url.Parse(s.requestBaseURL(r))
 	if err != nil || base.Scheme == "" || base.Host == "" {
 		return false
 	}
-	return canonicalOrigin(presented) == canonicalOrigin(base)
+	return presentedOrigin == canonicalOrigin(base)
+}
+
+func directRequestOrigin(r *http.Request) string {
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	direct, err := url.Parse(scheme + "://" + r.Host)
+	if err != nil || direct.Host == "" || direct.User != nil {
+		return ""
+	}
+	return canonicalOrigin(direct)
 }
 
 func parseBrowserOrigin(raw string) (*url.URL, bool) {
@@ -132,6 +158,7 @@ func (s *HTTPServer) bearerPresentedCredential(ctx context.Context, token string
 			UserID:        credential.UserID,
 			Handle:        token,
 			OAuthClientID: oauthClientIDForRuntimeCredential(credential),
+			ExpiresAt:     credential.ExpiresAt,
 		},
 	}, true, nil
 }

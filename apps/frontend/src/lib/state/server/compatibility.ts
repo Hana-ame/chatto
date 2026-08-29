@@ -6,13 +6,13 @@ export const MINIMUM_SUPPORTED_SERVER_VERSION = '0.5.0-0';
 const serverFeatureMinimumVersions = {
   adminApi: '0.5.0-0',
   botAccounts: '0.5.0-0',
+  botIncomingWebhooks: '0.5.0-0',
   botOwnerReassignment: '0.5.0-0',
   messageSearch: '0.5.0-0',
   pinnedMessages: '0.5.0-0',
   realtimeProjection: '0.5.0-0',
   roomManagement: '0.5.0-0',
-  serverInvitations: '0.5.0-0',
-  threadCreation: '0.5.0-0'
+  serverInvitations: '0.5.0-0'
 } as const;
 
 export type ServerFeature = keyof typeof serverFeatureMinimumVersions;

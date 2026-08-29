@@ -1,7 +1,7 @@
 # FDR-006: @Mentions
 
 **Status:** Active
-**Last reviewed:** 2026-08-20
+**Last reviewed:** 2026-08-27
 
 ## Overview
 
@@ -15,7 +15,9 @@ the message body.
 - Typing `@` followed by at least one character opens the autocomplete popup in the composer.
 - Matching is fuzzy against room-member logins, room-member display names, the virtual handles `all` and `here`, and pingable role names. Prefix matches rank higher than substring matches.
 - Pressing Enter confirms the highlighted autocomplete result and appends a space. Pressing Tab completes the first match, appends a space, and pressing Tab again cycles to the next candidate.
-- `@username` mentions select that user when they are a current room member. Universal room implicit members count as room members; notification policy still decides whether to create an occurrence.
+- `@username` mentions select that human or bot account when it is a current
+  room member. Universal room implicit members count as room members;
+  notification policy still decides whether to create an occurrence.
 - Pingable `@role` mentions select current room members who are explicitly assigned that role. Universal room implicit members count as room members; each recipient's policy still applies.
 - `@owner` and `@admin` are ordinary role handles but are not pingable by default, so they do not appear in autocomplete and do not notify unless an operator explicitly enables them.
 - Fresh servers seed the `moderator` role as pingable. It remains an explicit role ping: it reaches users assigned to `moderator`, not admins or owners unless those users also have the `moderator` role.
@@ -29,7 +31,14 @@ the message body.
 - The bundled composer asks for confirmation before sending a message that
   mentions any role or room-wide virtual handle (`@all` or `@here`).
 - Mentions are resolved when a message is first posted. Editing a message later does not add, remove, dismiss, or re-send mention notifications.
-- A delivered direct `@username` mention inside a thread attempts to follow that thread for the mentioned user if they have no prior follow state for it. Role mentions, `@all`, and `@here` do not auto-follow recipients.
+- A delivered direct `@username` mention in a channel-room root or reply
+  attempts to follow that thread for the mentioned account if it has no prior
+  follow state. The root message ID identifies the thread for a root mention.
+  Role mentions, `@all`, and `@here` do not auto-follow recipients.
+- A direct mention from another account creates a durable interaction
+  relationship with the message's channel-room thread. With
+  `message.read-interactions`, that relationship authorizes the complete
+  thread. Self, role, `@all`, and `@here` mentions do not create this access.
 
 ## Design Decisions
 
@@ -53,7 +62,7 @@ the message body.
 
 ### 4. Mentions are post-time facts
 
-**Decision:** Mention delivery is decided when the message is posted. Later edits may change the visible message body, but they do not re-resolve mentions or change who was notified by the original post.
+**Decision:** Mention delivery is decided when the message is posted. Later edits may change the visible message body, but they do not re-resolve mentions, change who was notified, or remove a derived thread interaction relationship.
 **Why:** A mention notification is an attention event that already happened. Re-resolving mentions on edit would allow quiet retroactive pings, would make notifications depend on mutable usernames and edited body text, and would complicate replay now that message bodies are private payload facts.
 **Tradeoff:** An author who forgot to mention someone must send a new message rather than editing the old one to ping them. Removing an `@name` from the edited body also does not revoke an already-created notification.
 
@@ -66,7 +75,8 @@ the message body.
 ### 6. Direct-mention policy controls delivery
 
 **Decision:** A rendered mention produces an occurrence only when its specific
-mention cause resolves to Silent or Alert for the recipient; Off suppresses it.
+mention cause resolves to Notification or Push notification for the recipient;
+Off suppresses it.
 **Why:** Direct, role, `@here`, and `@all` mentions need independent attention
 policy instead of one coarse room mute. See FDR-012.
 **Tradeoff:** Users can deliberately suppress directed mentions in a room and
@@ -84,10 +94,18 @@ model avoids duplicated state.
 the corresponding unread sidebar attention signal while retaining the notification
 item.
 
-### 8. Direct thread mentions can subscribe the recipient
+### 8. Direct mentions can subscribe the recipient
 
-**Decision:** When a direct `@username` mention is delivered inside a thread, Chatto attempts a post-commit thread-follow event for the mentioned user only if they have no prior follow state for it. An explicit unfollow suppresses mention-driven re-follow, but the mention notification is still created when normal notification rules allow it.
-**Why:** A direct thread mention usually means the thread now concerns the recipient, so it should appear in My Threads by default. An explicit unfollow is a stronger preference and should not be undone by someone else's later mention.
+**Decision:** When a direct `@username` mention is delivered in a channel-room
+root or reply, Chatto attempts a post-commit thread-follow event for the
+mentioned account only if it has no prior follow state. The root message is
+the thread root when the mention is in a root. An explicit unfollow suppresses
+mention-driven re-follow, but normal notification rules can still create the
+mention occurrence.
+**Why:** A direct channel-room mention usually means the thread now concerns
+the recipient, so it should appear in My Threads by default. An explicit
+unfollow is a stronger preference and should not be replaced by another
+account's later mention.
 **Tradeoff:** The follow write is best-effort after the source message commits,
 so a transient failure can omit the subscription without losing the message or
 mention notification. Broadcast and role mentions do not populate My Threads
@@ -117,5 +135,5 @@ No dedicated mention permission. Anyone who can post in a room can mention any u
 
 ## Related
 
-- **ADRs:** ADR-026 (event identity via NanoID), ADR-076 (deterministic notification occurrences), ADR-077 (persistent notification list)
-- **FDRs:** FDR-002 (Replies & Threads), FDR-003 (Thread Reply Echo), FDR-012 (Notifications), FDR-013 (Web Push Notifications)
+- **ADRs:** ADR-026 (event identity via NanoID), ADR-076 (deterministic notification occurrences), ADR-077 (persistent notification list), ADR-080 (explicit message-read permissions), ADR-082 (derived thread interactions)
+- **FDRs:** FDR-002 (Replies & Threads), FDR-003 (Thread Reply Echo), FDR-012 (Notifications), FDR-013 (Web Push Notifications), FDR-039 (Message Access & Interactions)

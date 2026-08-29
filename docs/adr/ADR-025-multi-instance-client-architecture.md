@@ -2,13 +2,16 @@
 
 **Date:** 2026-03-20
 
+**Updated:** 2026-08-25
+
 ## Status
 
 Partially superseded by [ADR-071](ADR-071-cimd-identified-open-oauth-clients.md),
 which replaces the origin allow-list client-registration requirement, and
 [ADR-074](ADR-074-keep-server-catalogue-device-local.md), which makes the
-server catalogue device-local. The multi-server client architecture remains
-current.
+server catalogue device-local. [ADR-079](ADR-079-renewable-bearer-sessions.md)
+replaces the sliding bearer-token lifetime. The multi-server client
+architecture remains current.
 
 ## Context
 
@@ -24,7 +27,12 @@ The frontend is server-agnostic by default. It doesn't assume it is served by a 
 
 1. **Probe-based origin detection**: On init, call `chatto.discovery.v1.ServerDiscoveryService.GetServer` on the current origin. If it responds, auto-register the origin as a server. If it fails (static hosting), skip.
 2. **No `isHome` flag**: The origin server is identified by comparing `server.url` to `window.location.origin` at runtime — no stored flag.
-3. **Bearer-first client auth**: The client stores opaque bearer tokens in `localStorage` for every authenticated server, including the origin when direct login or registration returns a token. Cookie auth remains as an origin-only fallback for compatibility flows that have not yet handed the SPA a bearer token.
+3. **Cookie-only origin auth**: The client uses the HttpOnly cookie for the
+   server that serves the SPA. Dedicated browser authentication does not issue
+   bearer credentials for that server. During migration, the client revokes
+   old origin bearer authority before it removes the local credentials. Remote
+   servers use persisted renewable bearer sessions obtained through Chatto
+   OAuth.
 
 Bearer tokens are only handed to API clients that need to authenticate
 ConnectRPC, realtime WebSocket, or direct HTTP API traffic. Browser media
@@ -41,8 +49,9 @@ atomic: when a server is added, its retained store exists immediately.
 
 The persisted `localStorage` slot intentionally remains named `instances`, and
 its combined record remains a compatibility adapter. It is split into catalogue
-and session state at runtime and combined on save. This preserves registrations
-and remote bearer tokens across upgrade and rollback.
+and session state at runtime. Authentication fields migrate into independently
+keyed per-server records; combined-record saves merge those authoritative
+fields so a stale tab cannot restore an older rotated credential generation.
 
 The catalogue and sessions are device-local under ADR-074. A server can remain
 known while signed out, and selecting it starts the normal Chatto OAuth flow.
@@ -63,9 +72,14 @@ The `[serverId]/+layout.svelte` resolves the segment and provides the server ID 
 
 Each server state store has permission and viewer-capability state loaded from ConnectRPC viewer/server-state APIs. This lets the UI show only actions the viewer can perform on the selected server.
 
-### Sliding Window Token Expiry
+### Renewable Bearer Lifetime
 
-Bearer tokens use NATS KV TTL (default 90 days). Each successful `ValidateAuthToken` re-puts the entry to reset the TTL. Tokens expire after the configured duration of *inactivity*, not from creation time. Active users are never logged out.
+Human bearer sessions use short fixed-lifetime access tokens and rotating
+refresh credentials. The frontend serializes rotation, refreshes before access
+expiry, and advances the renewable-session window without user action. Origin
+cookie sessions renew one stable handle in the final quarter of the current
+credential window. ADR-079 and ADR-081 own the detailed renewal, recovery,
+revocation, and expiry contract.
 
 ## Consequences
 
@@ -74,15 +88,16 @@ Bearer tokens use NATS KV TTL (default 90 days). Each successful `ValidateAuthTo
 - Users can connect to multiple Chatto servers from one client
 - The SPA can be served statically (CDN) without a Chatto backend
 - No special-casing for "home" vs "remote" — all servers use the same code paths
-- Token sliding window means active users never get surprise logouts
+- Short access lifetimes bound an access token stolen without its refresh
+  credential, while background rotation avoids frequent interactive login
 
 ### Negative
 
-- Registered-server bearer tokens in `localStorage` are vulnerable to XSS (cookie auth is not)
-- This makes XSS prevention part of the auth boundary. The shipped frontend sets
-  a report-only CSP with Trusted Types reporting so deployments can surface
-  dangerous script and DOM-sink patterns before policy enforcement is viable for
-  the multi-server client.
+- Remote-server bearer credentials in `localStorage` are vulnerable to XSS
+  (origin cookie auth is not)
+- This makes XSS prevention part of the auth boundary. The shipped frontend
+  enforces a CSP. It uses build-time hashes for inline bootstrap scripts and
+  does not allow general inline scripts.
 - All public HTTP and realtime entry points permit browser transport from any syntactically valid origin without credentialed CORS. Cross-origin clients must present bearer tokens; ambient cookie credentials remain same-origin only.
 - Separately hosted frontends publish a CIMD document and send its URL as `client_id`. Chatto validates the exact callback from that document, while Desktop uses its fixed built-in registration.
 - Users approve the first OAuth authorization for each client; Chatto remembers consent per user + stable client ID without an operator-managed registration table.
@@ -92,5 +107,8 @@ Bearer tokens use NATS KV TTL (default 90 days). Each successful `ValidateAuthTo
 
 ### Trade-offs
 
-- During the transition, cookie and token auth still create two disconnect flows: token failures remove the registered credential, while origin cookie fallback can still require server-side logout + hard reload for compatibility paths.
+- Bearer refresh failure preserves the route and marks only that server as
+  requiring explicit authentication, while an invalid origin cookie session
+  can still require server-side logout plus a hard reload. The two
+  presentations retain distinct disconnect flows.
 - SvelteMap for the store map enables reactive `$derived` reads but requires careful separation of imperative writes (`addServer`) from pure reads (`getStore`)

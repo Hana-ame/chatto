@@ -3,6 +3,8 @@ package core
 import (
 	"context"
 	"time"
+
+	evtv1 "hmans.de/chatto/internal/pb/chatto/core/evt/v1"
 )
 
 // can.go provides semantic helper functions for permission checks. These wrap
@@ -79,11 +81,20 @@ func (c *ChattoCore) CanManageBots(ctx context.Context, userID string) (bool, er
 	return c.HasServerPermission(ctx, userID, PermBotManage)
 }
 
-// CanStartDM checks if a user can start DM conversations. DMs are allowed by
-// default for authenticated users, but an applicable server-scope
-// message.post deny still blocks the action. This keeps global suspension
-// roles effective without requiring a default server-scope message.post allow.
+// CanStartDM checks if a human user can start DM conversations. Bot accounts
+// can never start or fetch DMs through the creation operation, regardless of
+// their permissions. DMs are allowed by default for active human users, but an
+// applicable server-scope message.post deny still blocks the action. This
+// keeps global suspension roles effective without requiring a default
+// server-scope message.post allow.
 func (c *ChattoCore) CanStartDM(ctx context.Context, userID string) (bool, error) {
+	isBot, _, accountExists := c.userModel.isBotAndOwner(userID)
+	if !accountExists {
+		return false, ErrNotFound
+	}
+	if isBot {
+		return false, nil
+	}
 	decision, err := c.ResolveUserPermission(ctx, userID, KindDM, "", PermMessagePost)
 	if err != nil {
 		return false, err
@@ -232,6 +243,90 @@ func (c *ChattoCore) CanJoinRoomAt(ctx context.Context, userID string, kind Room
 // ============================================================================
 // Room-Scoped Permissions
 // ============================================================================
+
+// CanReadMessages checks the permission part of message-content access in a
+// specific room. DM membership is the complete DM read boundary, so
+// message.read decisions do not restrict DM participants. Callers must enforce
+// room membership for both room kinds.
+func (c *ChattoCore) CanReadMessages(ctx context.Context, userID string, kind RoomKind, roomID string) (bool, error) {
+	if kind == KindDM {
+		if _, err := c.GetRoom(ctx, kind, roomID); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	return c.hasRoomPermission(ctx, kind, roomID, userID, PermMessageRead)
+}
+
+// CanReadMessageInteractions checks the RBAC gate for interaction-scoped
+// channel-room reads. It does not test a specific thread relationship. DM
+// membership remains the complete DM read boundary. Callers must enforce
+// current room membership separately.
+func (c *ChattoCore) CanReadMessageInteractions(ctx context.Context, userID string, kind RoomKind, roomID string) (bool, error) {
+	if kind == KindDM {
+		if _, err := c.GetRoom(ctx, kind, roomID); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	return c.hasRoomPermission(ctx, kind, roomID, userID, PermMessageReadInteractions)
+}
+
+// CanAccessRoomMessages reports whether a channel-room account has at least
+// one configured read mode. A positive interaction result does not imply that
+// any specific thread relationship exists.
+func (c *ChattoCore) CanAccessRoomMessages(ctx context.Context, userID string, kind RoomKind, roomID string) (bool, error) {
+	broad, err := c.CanReadMessages(ctx, userID, kind, roomID)
+	if err != nil || broad || kind == KindDM {
+		return broad, err
+	}
+	return c.CanReadMessageInteractions(ctx, userID, kind, roomID)
+}
+
+// CanReadThreadMessages reports whether the account can read one complete
+// thread. Callers must enforce current room membership separately.
+func (c *ChattoCore) CanReadThreadMessages(ctx context.Context, userID string, kind RoomKind, roomID, threadRootEventID string) (bool, error) {
+	broad, err := c.CanReadMessages(ctx, userID, kind, roomID)
+	if err != nil || broad || kind == KindDM {
+		return broad, err
+	}
+	interactions, err := c.CanReadMessageInteractions(ctx, userID, kind, roomID)
+	if err != nil || !interactions {
+		return false, err
+	}
+	return c.roomModel.hasThreadInteraction(userID, roomID, threadRootEventID), nil
+}
+
+// CanReadMessage reports whether the account can read one channel-room
+// message. Roots, replies, and channel echoes use their canonical thread root.
+// Callers must enforce current room membership separately.
+func (c *ChattoCore) CanReadMessage(ctx context.Context, userID string, kind RoomKind, roomID, messageEventID string) (bool, error) {
+	broad, err := c.CanReadMessages(ctx, userID, kind, roomID)
+	if err != nil || broad || kind == KindDM {
+		return broad, err
+	}
+	interactions, err := c.CanReadMessageInteractions(ctx, userID, kind, roomID)
+	if err != nil || !interactions {
+		return false, err
+	}
+	rootID, ok := c.roomModel.threadRootForMessage(roomID, messageEventID)
+	return ok && c.roomModel.hasThreadInteraction(userID, roomID, rootID), nil
+}
+
+// CanReadMessageEvent reports whether the account can receive one durable
+// message-derived fact. Callers must enforce current room membership.
+func (c *ChattoCore) CanReadMessageEvent(ctx context.Context, userID string, kind RoomKind, roomID string, event *evtv1.Event) (bool, error) {
+	broad, err := c.CanReadMessages(ctx, userID, kind, roomID)
+	if err != nil || broad || kind == KindDM {
+		return broad, err
+	}
+	interactions, err := c.CanReadMessageInteractions(ctx, userID, kind, roomID)
+	if err != nil || !interactions {
+		return false, err
+	}
+	rootID, ok := c.MessageEventThreadRoot(roomID, event)
+	return ok && c.roomModel.hasThreadInteraction(userID, roomID, rootID), nil
+}
 
 // CanPostMessage checks if a user can post new root messages in a specific room.
 // Uses room-level permission resolution (checks room overrides, then server defaults).

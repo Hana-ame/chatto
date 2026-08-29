@@ -13,7 +13,7 @@
       "missing_group": "Wähle eine Raumgruppe aus, bevor du einen Raum erstellst.",
       "failed": "Raum konnte nicht erstellt werden",
       "creating": "Wird erstellt...",
-      "submit": "Raum erstellen"
+      "submit_and_configure": "Erstellen und einrichten"
     },
     "join": {
       "title": "Raum beitreten",
@@ -70,7 +70,8 @@
       "remove_account_suffix": " dieses Servers."
     },
     "timeline": {
-      "beginning": "Dies ist der Anfang dieser Unterhaltung."
+      "beginning": "Dies ist der Anfang dieser Unterhaltung.",
+      "read_denied": "Du hast keine Berechtigung, Nachrichten in diesem Raum zu lesen."
     },
     "message": {
       "empty": "Noch keine Nachrichten",
@@ -87,6 +88,7 @@
         "add_reaction": "Reaktion hinzufügen",
         "more_reactions": "Weitere Reaktionen",
         "reply": "Antworten",
+        "reply_room": "Im Raum antworten",
         "reply_thread": "Im Thread antworten",
         "open_thread": "Thread öffnen",
         "edit": "Nachricht bearbeiten",
@@ -99,6 +101,8 @@
       "meta": {
         "pinned": "Angepinnte Nachricht",
         "thread": "Thread",
+        "edited": "Nachricht bearbeitet",
+        "echoed_to_channel": "Auch an den Kanal gesendet",
         "reply_count_one": "1 Antwort",
         "reply_count_many": "{count} Antworten",
         "follow_thread": "Thread folgen",
@@ -130,6 +134,7 @@
       "unarchived": "hat die Archivierung des Raums aufgehoben",
       "call_started": "hat einen Anruf in diesem Raum gestartet",
       "call_ended": "Der aktive Anruf wurde beendet",
+      "threading_mode_changed": "hat den Thread-Modus zu {mode} geändert",
       "and": "und",
       "other_people_count": {
         "one": "weitere Person",

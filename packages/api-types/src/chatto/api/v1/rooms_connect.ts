@@ -95,8 +95,10 @@ export const RoomService = {
       kind: MethodKind.Unary,
     },
     /**
-     * Starts or fetches a direct-message room for the current user and the
-     * requested participant set. The caller must be allowed to start DMs.
+     * Starts a direct-message room for the current human user and the requested
+     * participant set, or fetches its existing DM. message.post is required
+     * only when the DM must be created. A valid request from a bot receives
+     * PERMISSION_DENIED and cannot use this RPC to fetch an existing DM.
      *
      * @generated from rpc chatto.api.v1.RoomService.StartDM
      */
@@ -196,7 +198,10 @@ export const RoomService = {
     },
     /**
      * Lists current message-owned room attachments. Authentication and room
-     * membership are required. Returns PERMISSION_DENIED when the room is
+     * membership are required. Channel-room attachments also require message.read
+     * or a matching thread relationship with message.read-interactions. DM
+     * membership authorizes DM attachments. The server omits attachments from
+     * inaccessible threads. Returns PERMISSION_DENIED when the room is
      * inaccessible to the caller.
      *
      * @generated from rpc chatto.api.v1.RoomService.ListRoomAttachments
@@ -208,8 +213,10 @@ export const RoomService = {
       kind: MethodKind.Unary,
     },
     /**
-     * Lists current pinned messages in a channel room. Room membership is
-     * required; direct-message rooms do not support pinned messages.
+     * Lists current pinned messages in a channel room. Room membership plus
+     * message.read or message.read-interactions are required. The server omits
+     * pins from threads that the caller cannot read. Direct-message rooms do not
+     * support pins.
      *
      * @generated from rpc chatto.api.v1.RoomService.ListPinnedMessages
      */
@@ -220,8 +227,9 @@ export const RoomService = {
       kind: MethodKind.Unary,
     },
     /**
-     * Pins a current message. The caller must have room.manage. Repeating an
-     * existing pin is idempotent. Direct-message rooms are rejected.
+     * Pins a current message. The caller must have room.manage and must be able
+     * to read the message. Repeating an existing pin is idempotent. Direct-message
+     * rooms are rejected.
      *
      * @generated from rpc chatto.api.v1.RoomService.CreatePinnedMessage
      */
@@ -256,8 +264,11 @@ export const RoomService = {
       kind: MethodKind.Unary,
     },
     /**
-     * Returns one page of room timeline events, including related user data needed
-     * to render the page.
+     * Returns one page of room timeline events, including related user data
+     * needed to render the page. Room membership is required. Channel-room reads
+     * also require message.read or message.read-interactions. The server returns
+     * only related thread roots for an interaction-scoped caller. DM membership
+     * authorizes DM reads.
      *
      * @generated from rpc chatto.api.v1.RoomService.GetRoomEvents
      */
@@ -271,7 +282,9 @@ export const RoomService = {
      * Returns a room timeline window centered around a specific event. Use this to
      * open a permalink, search result, or notification target in context. Returns
      * NOT_FOUND when the anchor event is missing or not visible in the room
-     * timeline and PERMISSION_DENIED when the room is inaccessible.
+     * timeline. Returns PERMISSION_DENIED when room membership or both read modes
+     * are missing, or when the anchor is in an unrelated thread. DM membership
+     * authorizes DM reads.
      *
      * @generated from rpc chatto.api.v1.RoomService.GetRoomEventsAround
      */
@@ -282,8 +295,11 @@ export const RoomService = {
       kind: MethodKind.Unary,
     },
     /**
-     * Marks a room timeline as read through the supplied event. If no event is
-     * supplied, the server marks through the room's latest root event. Clients
+     * Marks a room timeline as read through the supplied event. Room membership
+     * is required. Channel-room reads also require message.read or
+     * message.read-interactions. DM membership authorizes DM reads. If no event
+     * is supplied, the server marks through the latest root event that the caller
+     * can read. Clients
      * usually call this after the user has viewed the latest visible event in the
      * room.
      *

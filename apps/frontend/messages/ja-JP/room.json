@@ -13,7 +13,7 @@
       "missing_group": "ルームを作成する前にルーム グループを選択してください。",
       "failed": "ルームの作成に失敗しました",
       "creating": "作成中...",
-      "submit": "ルームの作成"
+      "submit_and_configure": "ルームを作成して設定"
     },
     "join": {
       "title": "ルームに参加",
@@ -70,7 +70,8 @@
       "remove_account_suffix": "を開いてください。"
     },
     "timeline": {
-      "beginning": "ここから会話が始まります。"
+      "beginning": "ここから会話が始まります。",
+      "read_denied": "このルームのメッセージを読む権限がありません。"
     },
     "message": {
       "empty": "まだメッセージはありません",
@@ -87,6 +88,7 @@
         "add_reaction": "リアクションを追加",
         "more_reactions": "その他のリアクション",
         "reply": "返信",
+        "reply_room": "ルームで返信",
         "reply_thread": "スレッド内で返信",
         "open_thread": "スレッドを開きます",
         "edit": "メッセージを編集",
@@ -99,6 +101,8 @@
       "meta": {
         "pinned": "ピン留めされたメッセージ",
         "thread": "スレッド",
+        "edited": "編集済みメッセージ",
+        "echoed_to_channel": "チャンネルにも送信済み",
         "reply_count_one": "1 件の返信",
         "reply_count_many": "{count} が返信します",
         "follow_thread": "スレッドをフォローする",
@@ -130,6 +134,7 @@
       "unarchived": "ルームのアーカイブを解除しました",
       "call_started": "がこのルームで通話を開始しました",
       "call_ended": "通話が終了しました",
+      "threading_mode_changed": "スレッドモードを「{mode}」に変更しました",
       "and": "と",
       "other_people_count": {
         "one": "その他",

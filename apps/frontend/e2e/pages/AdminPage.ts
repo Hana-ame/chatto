@@ -26,9 +26,9 @@ export class AdminPage {
     return this.page.locator('div.flex-1.flex-col').first();
   }
 
-  /** Gear entry point in the server header. */
-  get adminGearLink(): Locator {
-    return this.page.getByRole('link', { name: 'Server administration' });
+  /** Settings entry point in the server sidebar. */
+  get settingsLink(): Locator {
+    return this.page.getByRole('link', { name: 'Settings', exact: true });
   }
 
   /** General settings link inside the dedicated admin sidebar. */
@@ -85,28 +85,28 @@ export class AdminPage {
    * Navigate to the default admin destination.
    */
   async goto(): Promise<void> {
-    await this.page.goto(routes.admin);
+    await this.page.goto(routes.serverAdminGeneral);
   }
 
   /**
    * Navigate to the admin users page.
    */
   async gotoUsers(): Promise<void> {
-    await this.page.goto(routes.adminUsers);
+    await this.page.goto(routes.serverAdminMembers);
   }
 
   /**
    * Navigate to the admin system page.
    */
   async gotoSystem(): Promise<void> {
-    await this.page.goto(routes.adminSystem);
+    await this.page.goto(routes.serverAdminSystem);
   }
 
   /**
    * Navigate to the admin permissions page.
    */
   async gotoRoles(): Promise<void> {
-    await this.page.goto(routes.adminRoles);
+    await this.page.goto(routes.serverAdminPermissions);
   }
 
   /**
@@ -132,34 +132,34 @@ export class AdminPage {
    * Navigate to a specific user's management page.
    */
   async gotoUserManagement(userId: string): Promise<void> {
-    await this.page.goto(routes.adminUser(userId));
+    await this.page.goto(routes.serverAdminMember(userId));
   }
 
   /**
    * Navigate to a specific role's page.
    */
   async gotoRole(roleName: string): Promise<void> {
-    await this.page.goto(routes.adminRole(roleName));
+    await this.page.goto(routes.serverAdminPermission(roleName));
   }
 
   async navigateToGeneral(): Promise<void> {
     await this.generalLink.click();
-    await this.page.waitForURL(routes.admin);
+    await this.page.waitForURL(routes.serverAdminGeneral);
   }
 
   async navigateToUsers(): Promise<void> {
     await this.usersLink.click();
-    await this.page.waitForURL(routes.adminUsers);
+    await this.page.waitForURL(routes.serverAdminMembers);
   }
 
   async navigateToSystem(): Promise<void> {
     await this.systemLink.click();
-    await this.page.waitForURL(routes.adminSystem);
+    await this.page.waitForURL(routes.serverAdminSystem);
   }
 
-  async navigateToAdminViaGear(): Promise<void> {
-    await this.adminGearLink.click();
-    await this.page.waitForURL(routes.admin);
+  async navigateToSettings(): Promise<void> {
+    await this.settingsLink.click();
+    await this.page.waitForURL(routes.serverAdminGeneral);
   }
 
   async navigateBackToChat(): Promise<void> {
@@ -365,12 +365,8 @@ export class AdminPage {
     await expect(this.systemLink).toBeVisible();
   }
 
-  async expectAdminGearVisible(): Promise<void> {
-    await expect(this.adminGearLink).toBeVisible();
-  }
-
-  async expectAdminGearNotVisible(): Promise<void> {
-    await expect(this.adminGearLink).not.toBeVisible();
+  async expectSettingsLinkVisible(): Promise<void> {
+    await expect(this.settingsLink).toBeVisible();
   }
 
   /**

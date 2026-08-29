@@ -42,6 +42,85 @@ unsupported and asks the operator to upgrade them. A 0.5 server accepts only
 realtime protocol 2; older clients must migrate to the server-scoped projection
 stream.
 
+The 0.5 authentication boundary also replaces sliding human bearer tokens with
+short-lived access tokens and rotating refresh credentials. A 0.5 server
+rejects bearer records issued before that change, so affected users sign in
+once after upgrade. Older clients can read the initial access token from a 0.5
+login or OAuth response but cannot renew it and become unauthenticated when it
+expires. A remote 0.5 client connection requires the refresh credential and
+expiry fields from its OAuth response. The bundled same-origin client uses only
+its HttpOnly cookie. Its dedicated login and registration routes do not create
+or return bearer credentials. A separately hosted browser client must use
+Chatto OAuth. Upgrade serving replicas and bundled clients together; mixed replicas
+or rollback after new credentials have been issued can incorrectly extend
+fixed-expiry access records.
+
+Chatto 0.5.0-alpha.1 publishes the canonical `webserver.url` identity from the
+bundled frontend CIMD route, even when a browser uses an exact
+`webserver.allowed_origins` alias. A frontend on that alias cannot connect to a
+remote Chatto server because the client ID does not match its metadata
+document. Later 0.5 servers publish a matching frontend identity for each
+exact alias. Upgrade all replicas that serve an alias before you use that alias
+for remote-server connections.
+
+The new fields on
+`chatto.auth.v1.CreateExternalIdentityAccountResponse` are additive at the
+protobuf wire level. Programmatic clients can use the complete renewable pair.
+The bundled same-origin client completes this flow with its HttpOnly cookie.
+
+Chatto 0.5 removes `current_password` from
+`chatto.admin.v1.DeleteUserRequest`. Regenerate custom clients and stop sending
+that field. An older binary client can send protobuf tag `2` to a 0.5 server;
+the server treats it as an unknown field and ignores it. The field is not part
+of the 0.5 ProtoJSON schema. A 0.5 client does not send the field to an older
+server, so that server can return `failed_precondition` when the current
+session is not fresh. A 0.5 server authorizes deletion with `user.delete-any`
+for another user or `user.delete-self` for the caller. It does not use password
+proof or a fresh credential for this operation.
+
+The 0.5 notification matrix uses the additive
+`chatto.api.v1.NotificationPolicyService`. An older server returns
+`Unimplemented` for this service. It cannot misapply a room-group update as a
+server update because the new service uses an explicit scope oneof. The
+existing `NotificationService` server and room policy methods remain available
+for integrations. A rollback makes new room-group overrides temporarily
+inactive; it does not convert them to server overrides. The group map changes
+the affected projection snapshot contract IDs, so an older binary cannot
+replace a newer snapshot with data that omits the group overrides.
+
+The delivery-mode enum keeps numeric values 1, 2, and 3. The names
+`IN_APP_NOTIFICATION` and `PUSH_NOTIFICATION` are additive aliases for values 2
+and 3. The previous `SILENT` and `ALERT` names remain as deprecated aliases.
+Existing protobuf JSON responses continue to use the previous names so older
+JSON clients can decode them. A JSON client that sends a new alias requires a
+server that includes the new schema.
+
+Chatto 0.5 also requires `message.read` for channel-room message-content APIs
+and realtime message delivery. Fresh servers grant it to `everyone`. Existing
+servers do not receive an automatic grant because startup never changes
+operator-owned RBAC state. Operators must update RBAC and replace every old
+replica before they rely on the channel-room permission boundary. DM membership
+continues to authorize DM reads. New clients treat a missing `message.read`
+room-permission row from an older server as unsupported and keep the former
+membership-based channel-room navigation behavior.
+
+Chatto 0.5 adds `message.read-interactions` for relationship-scoped channel
+reads. An effective `message.read` allow includes this permission, so fresh
+servers store only the broad `everyone` grant. Existing servers do not receive
+an automatic grant. A direct mention or an authored root establishes access to
+the complete thread while room membership and the permission remain active.
+Clients supply known thread roots to the existing thread API. Chatto does not
+provide a relationship-list API. Older replicas do not know the narrow
+permission and deny this mode when `message.read` is absent. Complete the
+replica rollout before you depend on narrow-read availability.
+
+Chatto 0.5 also denies `RoomService.StartDM` to bot callers. This rule applies
+when the requested DM already exists. A human must start the DM, after which
+the bot can interact through its normal permissions. A bot integration that
+used `StartDM` must stop that call and use its room state or realtime events.
+During a mixed-replica rollout, an older replica can still accept the call.
+Upgrade all replicas before you depend on this boundary.
+
 This breaking realtime migration does not retire the `chatto.api.v1`
 ConnectRPC namespace. It remains Chatto's resource-oriented public integrations
 API. Do not replace explicit resource reads, pagination, mutation responses, or

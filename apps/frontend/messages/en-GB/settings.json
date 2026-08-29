@@ -4,10 +4,24 @@
       "title": "Settings",
       "back_to_server": "Back to Server",
       "profile": "Profile",
-      "display": "Display",
+      "display": "Preferences",
       "notifications": "Notifications",
       "account": "Account",
-      "bots": "Bots"
+      "bots": "Bots",
+      "user_preferences": "User Preferences",
+      "app_preferences": "App preferences",
+      "your_account": "Your account",
+      "server_configuration": "Server"
+    },
+    "app_preferences": {
+      "title": "App Preferences",
+      "subtitle": "Choices for this app that apply across all your registered servers",
+      "appearance": {
+        "title": "Appearance"
+      },
+      "composer": {
+        "title": "Composer"
+      }
     },
     "profile": {
       "title": "Profile",
@@ -94,7 +108,7 @@
       "presence": {
         "button": "Presence: {status}",
         "title": "Presence",
-        "auto": "Online",
+        "online": "Online",
         "away": "Away",
         "do_not_disturb": "Do Not Disturb",
         "offline": "Offline",
@@ -102,11 +116,18 @@
       },
       "saved": "Profile updated successfully",
       "save_failed": "Failed to save profile",
-      "save_button": "Save Changes"
+      "save_button": "Save Changes",
+      "bio": {
+        "label": "Bio",
+        "description": "Up to {max} characters, shown on your profile.",
+        "placeholder": "Tell others a little about yourself",
+        "too_long": "Bio must be {max} characters or fewer."
+      }
     },
     "preferences": {
-      "title": "Display",
-      "subtitle": "Choose how Chatto appears",
+      "title": "Time & region",
+      "subtitle": "Choose how this server displays dates and times for you",
+      "browser_scope": "This choice applies to every Chatto server in this browser.",
       "theme": {
         "title": "Theme",
         "system": {
@@ -120,6 +141,28 @@
         "dark": {
           "label": "Dark",
           "description": "Use the dark interface on this browser"
+        }
+      },
+      "editor": {
+        "title": "Message editor",
+        "visual": {
+          "label": "Visual",
+          "description": "Format messages without seeing Markdown syntax"
+        },
+        "markdown": {
+          "label": "Markdown",
+          "description": "Edit Markdown source with syntax highlighting"
+        }
+      },
+      "send_mode": {
+        "title": "Send messages with",
+        "enter": {
+          "label": "Return",
+          "description": "Return sends; Cmd/Ctrl+Return performs the editor's normal Return action"
+        },
+        "modifier_enter": {
+          "label": "Cmd/Ctrl+Return",
+          "description": "Cmd/Ctrl+Return sends; Return performs the editor's normal action"
         }
       },
       "language": {
@@ -153,9 +196,9 @@
           "description": "e.g., 14:30"
         }
       },
-      "save_button": "Save Display Settings",
-      "saved": "Display settings saved",
-      "save_failed": "Failed to save display settings"
+      "save_button": "Save Time Settings",
+      "saved": "Time settings saved",
+      "save_failed": "Failed to save time settings"
     },
     "notifications": {
       "title": "Notifications",
@@ -246,17 +289,27 @@
       },
       "policy": {
         "title": "Notification policy",
-        "description": "Choose how strongly each kind of activity should get your attention. Inherit uses the server default.",
+        "description": "Choose how each kind of activity gets your attention at server, room-group, and room scope. Rooms inherit from their group, then the server.",
         "load_failed": "Failed to load notification policy",
         "save_failed": "Failed to save notification policy",
         "effective": "Effective: {mode}",
+        "filter_label": "Filter notification scopes",
+        "filter_placeholder": "Filter groups and rooms…",
+        "no_filter_matches": "No notification scopes match this filter.",
+        "legend": "Notification delivery modes",
+        "cell_aria": "{cause}, {scope}. Override: {override}. Effective: {effective}. Activate to set {next}.",
+        "server_default_cell_aria": "{cause}, {scope}. Default: {current}. Activate to set {next}.",
+        "not_applicable_cell_aria": "{cause}, {scope}. Not applicable.",
         "delivery_mode": {
           "inherit": "Inherit",
           "off": "Off",
-          "silent": "Silent",
-          "alert": "Alert"
+          "badge": "Badge",
+          "badge_hint": "Adds only a neutral unread dot. It does not create a notification, play a sound, or send a push notification.",
+          "notification": "Notification",
+          "push_notification": "Push notification"
         },
         "reason": {
+          "room_message": "Room messages",
           "direct_message": "Direct messages",
           "direct_mention": "Direct mentions",
           "reply": "Replies to your messages",
@@ -264,10 +317,20 @@
           "here": "@here mentions",
           "all": "@all mentions",
           "followed_thread": "Followed threads",
-          "followed_room": "Followed rooms",
           "reaction": "Reactions to your messages",
           "activity": "Activity",
           "room_invitation": "Room invitations"
+        },
+        "reason_hint": {
+          "room_message": "Root messages that other members post directly to channel rooms, not inside threads.",
+          "direct_message": "Messages that other members send in direct-message conversations.",
+          "direct_mention": "Messages that mention your username directly.",
+          "reply": "Messages that reply to one of your messages.",
+          "role_mention": "Messages that mention a role assigned to you.",
+          "here": "Messages that use @here while your presence is not offline.",
+          "all": "Messages that use @all in a room you belong to.",
+          "followed_thread": "New replies in threads that you follow.",
+          "reaction": "Reactions that other members add to your messages."
         }
       }
     },
@@ -361,11 +424,6 @@
       "create_title": "Create Bot Account",
       "create_failed": "Failed to create bot",
       "created": "Bot created",
-      "edit": "Edit",
-      "edit_title": "Edit Bot Account",
-      "updated": "Bot updated",
-      "update_failed": "Failed to update bot",
-      "update_conflict": "Someone else updated this bot. Reload the page and try again.",
       "username": "Username",
       "username_hint": "Bot usernames must end in _bot.",
       "display_name": "Display Name",
@@ -384,6 +442,12 @@
       "rotate_warning": "The current key will stop working immediately. Any integration using it must be updated.",
       "key_rotated": "API key rotated",
       "rotate_failed": "Failed to rotate API key",
+      "webhook_title": "Incoming webhooks",
+      "webhook_description": "Post messages as this bot from external tools.",
+      "webhook_created": "Incoming webhook created",
+      "webhook_url_title": "Save This Webhook URL",
+      "webhook_url_warning": "This URL is shown only once and contains a credential. Store it somewhere secure before closing this window.",
+      "webhook_url_copied": "Webhook URL copied",
       "delete_title": "Delete Bot",
       "delete_warning": "Delete {name}? Its API key will stop working immediately and the account cannot be recovered.",
       "deleted": "Bot deleted",
@@ -391,7 +455,20 @@
       "permissions": {
         "owner_ceiling": "Choose what your bot can do. You can only give it permissions you have yourself. If you lose a permission, your bot loses it too.",
         "save_failed": "Failed to update bot permission"
-      }
+      },
+      "webhook_empty_description": "No incoming webhooks have been created.",
+      "webhook_create": "Create Webhook",
+      "webhook_name": "Name",
+      "webhook_created_at": "Created",
+      "webhook_create_failed": "Failed to create incoming webhook",
+      "webhook_revoke": "Revoke Webhook",
+      "webhook_revoke_warning": "The current webhook URL will stop working immediately.",
+      "webhook_revoked": "Incoming webhook revoked",
+      "webhook_revoke_failed": "Failed to revoke incoming webhook",
+      "webhook_last_used": "Last used",
+      "webhook_no_use_recorded": "No use recorded",
+      "webhook_last_used_unavailable": "Temporarily unavailable",
+      "webhook_limit_reached": "You have reached the limit of 20 incoming webhooks."
     }
   }
 }

@@ -32,13 +32,23 @@ Chatto Desktop uses the fixed built-in client identifier `chatto://desktop` and
 an exact built-in callback. Future native applications may use HTTPS-hosted
 CIMD metadata with native application callback schemes.
 
+The bundled frontend publishes its CIMD document for the canonical
+`webserver.url` origin and each exact `webserver.allowed_origins` entry. The
+request host must match one of these configured origins. The document uses the
+matched origin for its client ID, client URI, and callback. A wildcard or an
+unknown request host does not publish a frontend client identity. Alias entries
+must be origins without paths, queries, or fragments. Two configured origins
+must not use different schemes with the same request host because a
+TLS-terminating proxy does not provide a trusted request scheme.
+
 The authorization server retrieves a CIMD document itself and validates that:
 
 - the client identifier is an HTTPS URL with a non-root path, or an HTTP
   loopback URL when the Chatto server itself is in loopback development;
 - the document's `client_id` exactly equals the URL that served it;
-- the client is public (`token_endpoint_auth_method` is `none`) and supports
-  Authorization Code;
+- the client is public (`token_endpoint_auth_method` is `none`), supports
+  Authorization Code, and declares no grant outside Authorization Code and the
+  rotating refresh grant added by ADR-079;
 - the requested callback exactly equals one declared redirect URI; and
 - web callbacks use HTTPS, while native private-use schemes require
   `application_type = "native"`.
@@ -76,8 +86,9 @@ Administrators can leave a recorded client at the default policy, label it
 trusted, or block it. Trust is an administrative annotation and never bypasses
 user consent. Blocking rejects new authorization attempts, authorization-code
 issuance, code exchange, and access-token use; changing a client to blocked also
-scans and revokes its existing OAuth access tokens. Policy changes are durable
-EVT facts, and each replica enforces them from a cold-replayed projection.
+scans and revokes its renewable OAuth sessions, which invalidates every access
+generation. Policy changes are durable EVT facts, and each replica enforces
+them from a cold-replayed projection.
 
 CIMD can also publish `jwks` or `jwks_uri`, but this decision does not add
 client-authentication proofs, service credentials, scopes, token exchange, or
@@ -127,4 +138,5 @@ tokens record their issuing client.
 - [ADR-045](ADR-045-public-api-stability-tiers.md)
 - [ADR-046](ADR-046-typed-runtime-credentials.md)
 - [ADR-067](ADR-067-electron-desktop-client.md)
+- [ADR-079](ADR-079-renewable-bearer-sessions.md)
 - [FDR-023](../fdr/FDR-023-authentication-and-sessions.md)

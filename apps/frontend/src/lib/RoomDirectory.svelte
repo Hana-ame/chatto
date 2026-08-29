@@ -17,7 +17,7 @@ store owns only optimistic join/leave state.
   import { m } from '$lib/i18n/messages';
   import { Button } from '$lib/ui/form';
   import Dialog from '$lib/ui/Dialog.svelte';
-  import { Panel } from '$lib/components/admin';
+  import Panel from '$lib/ui/Panel.svelte';
   import type { RoomDirectoryStore, DirectoryRoom } from '$lib/state/server/roomDirectory.svelte';
 
   let {
@@ -295,9 +295,7 @@ store owns only optimistic join/leave state.
         {/if}
       {/snippet}
 
-      <!-- Horizontal inset (`px-1` + the menu-item's own `px-3` = 16px)
-           keeps per-row actions aligned within the shared panel inset. -->
-      <ul class="selectable-list py-2">
+      <ul class="selectable-list">
         {#each rooms as room (room.id)}
           {@render roomRow(room)}
         {/each}
@@ -351,7 +349,7 @@ store owns only optimistic join/leave state.
   </p>
 
   <div class="flex items-center gap-3">
-    <Button variant="danger" onclick={confirmLeaveRoom}>{m('room.leave.action')}</Button>
+    <Button defaultAction variant="danger" onclick={confirmLeaveRoom}>{m('room.leave.action')}</Button>
     <Button variant="ghost" onclick={() => (leaveConfirmVisible = false)}>
       {m('common.cancel')}
     </Button>

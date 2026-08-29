@@ -1,10 +1,9 @@
 {
   "composer": {
     "attach_file": "Attach file",
+    "formatting_options": "Formatting options",
     "send": "Send message",
     "send_label": "Send",
-    "send_enter": "Send message (Enter)",
-    "send_ctrl_enter": "Send message (Ctrl/Cmd+Enter)",
     "also_send_to_channel": "Also send to channel",
     "post_as_thread": "Post as thread",
     "thread_label": "Thread",
@@ -28,6 +27,11 @@
     "slow_mode_waiting": "Slow Mode: send again in {countdown}.",
     "slow_mode_bypassed": "Slow Mode: {interval} (you're exempt).",
     "slow_mode_rejected": "Slow Mode is active. Wait before sending another message.",
+    "threads_encouraged": "Threads are encouraged in this room.",
+    "recent_thread_confirm_title": "Continue your previous thread?",
+    "recent_thread_confirm_body": "Your previous message already has a thread. Where should this message go?",
+    "post_as_new_message": "Post as new message",
+    "continue_in_thread": "Continue in thread",
     "edit_failed": "Failed to edit message",
     "upload": {
       "preparing": "Preparing…",
@@ -44,7 +48,9 @@
       "bullet_list": "Bullet list",
       "ordered_list": "Numbered list",
       "blockquote": "Quote",
-      "code_block": "Code block"
+      "code_block": "Code block",
+      "outdent": "Outdent",
+      "indent": "Indent"
     },
     "timestamp": {
       "title": "Insert timestamp",

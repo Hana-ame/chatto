@@ -1,10 +1,9 @@
 {
   "composer": {
     "attach_file": "Manusta fail",
+    "formatting_options": "Vormindusvalikud",
     "send": "Saada sõnum",
     "send_label": "Saada",
-    "send_enter": "Saada sõnum (sisesta)",
-    "send_ctrl_enter": "Saada sõnum (Ctrl/Cmd+Enter)",
     "also_send_to_channel": "Saada ka kanalile",
     "post_as_thread": "Postita lõimena",
     "thread_label": "Niit",
@@ -28,6 +27,11 @@
     "slow_mode_waiting": "Aeglane režiim: saada uuesti {countdown} pärast.",
     "slow_mode_bypassed": "Aeglane režiim: {interval} (sina oled piirangust vabastatud).",
     "slow_mode_rejected": "Aeglane režiim on aktiivne. Oota enne järgmise sõnumi saatmist.",
+    "threads_encouraged": "Selles ruumis on lõimede kasutamine soovitatud.",
+    "recent_thread_confirm_title": "Kas jätkata eelmises lõimes?",
+    "recent_thread_confirm_body": "Sinu eelmisel sõnumil on juba lõim. Kuhu see sõnum postitada?",
+    "post_as_new_message": "Postita uue sõnumina",
+    "continue_in_thread": "Jätka lõimes",
     "edit_failed": "Sõnumi muutmine ebaõnnestus",
     "upload": {
       "preparing": "Ettevalmistus…",
@@ -44,7 +48,9 @@
       "bullet_list": "Täppide loend",
       "ordered_list": "Nummerdatud loend",
       "blockquote": "Tsiteeri",
-      "code_block": "Koodiplokk"
+      "code_block": "Koodiplokk",
+      "outdent": "Vähenda taanet",
+      "indent": "Suurenda taanet"
     },
     "timestamp": {
       "title": "Sisestage ajatempel",

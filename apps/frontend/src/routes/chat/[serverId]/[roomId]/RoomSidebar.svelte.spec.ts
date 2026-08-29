@@ -10,6 +10,7 @@ import { setReactiveLocale } from '$lib/i18n/state.svelte';
 import { ROOM_MEMBERS_PAGE_SIZE, type RoomMember } from '$lib/state/room/members.svelte';
 import type { PresenceCache } from '$lib/state/presenceCache.svelte';
 import type { RoomData } from '$lib/hooks/useRoomData.svelte';
+import { RoomThreadingMode } from '$lib/roomThreading';
 import { RoomKind as SearchRoomKind } from '$lib/api-client/roomDirectory';
 import {
   MessageSearchOrder,
@@ -188,6 +189,8 @@ vi.mock('$lib/state/server/registry.svelte', () => ({
 }));
 
 vi.mock('$lib/state/userProfiles.svelte', () => ({
+    getLiveBio: () => null,
+    getLiveTimezone: () => null,
   getLiveAvatarUrl: (_userId: string, fallback: string | null) => fallback,
   getLiveCustomStatus: (_userId: string, fallback: unknown) => fallback,
   getLiveDisplayName: (_userId: string, fallback: string) => fallback,
@@ -273,9 +276,11 @@ function roomData(members: RoomMember[], totalCount: number, hasMore: boolean): 
       name: 'general',
       type: RoomKind.CHANNEL,
       isUniversal: false,
-      slowModeSeconds: 0
+      slowModeSeconds: 0,
+      threadingMode: RoomThreadingMode.ENABLED
     },
     spaceName: 'Test Server',
+    canReadMessages: true,
     canPostMessage: true,
     canPostInThread: true,
     canAttach: true,
@@ -1417,6 +1422,29 @@ describe('RoomSidebar', () => {
     expect(memberDirectoryMocks.listRoomMembers).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps the member search fixed above a scroll-faded member list', async () => {
+    const { container } = render(RoomSidebarTestHarness, {
+      props: {
+        roomData: roomData([], 0, false)
+      }
+    });
+
+    await vi.waitFor(() => {
+      expect(renderedMemberTitles(container)).toHaveLength(1);
+    });
+
+    const searchBlock = q(container, '[data-testid="room-member-search-block"]');
+    const memberList = q(container, '[data-testid="room-member-list"]');
+    const scrollFader = memberList?.parentElement;
+
+    expect(searchBlock?.nextElementSibling).toBe(scrollFader);
+    expect(searchBlock?.classList).not.toContain('overflow-y-auto');
+    expect(memberList?.classList).toContain('overflow-y-auto');
+    expect(q(memberList!, 'nav[aria-label="Members"]')).toBeTruthy();
+    expect(scrollFader?.querySelector('.bg-gradient-to-b')).toBeTruthy();
+    expect(scrollFader?.querySelector('.bg-gradient-to-t')).toBeTruthy();
+  });
+
   it('clears the member search with the Chatto-styled clear button without refetching', async () => {
     memberDirectoryMocks.listRoomMembers.mockResolvedValueOnce(
       memberPage([member(1), { ...member(2), displayName: 'Boris Member' }])
@@ -1589,9 +1617,30 @@ describe('RoomSidebar', () => {
 
     expect(buttonByText(container, 'Online (1)')).toBeTruthy();
     expect(buttonByText(container, 'Offline (1)')).toBeTruthy();
-    expect(
-      container.querySelectorAll('[data-testid="room-group-section"].border-t')
-    ).toHaveLength(1);
+    expect(container.querySelectorAll('[data-testid="room-group-section"].border-t')).toHaveLength(
+      2
+    );
+  });
+
+  it('separates an offline-only member group from member search', async () => {
+    memberDirectoryMocks.listRoomMembers.mockResolvedValueOnce(
+      memberPage([{ ...member(1), presenceStatus: PresenceStatus.OFFLINE }])
+    );
+
+    const { container } = render(RoomSidebarTestHarness, {
+      props: {
+        roomData: roomData([], 0, false)
+      }
+    });
+
+    await vi.waitFor(() => {
+      expect(buttonByText(container, 'Offline (1)')).toBeTruthy();
+    });
+
+    expect(buttonByText(container, 'Online (1)')).toBeFalsy();
+    expect(container.querySelectorAll('[data-testid="room-group-section"].border-t')).toHaveLength(
+      1
+    );
   });
 
   it('coalesces a burst of presence-driven member group movement', async () => {
@@ -1977,9 +2026,9 @@ describe('RoomSidebar', () => {
 
     await flushRoomFilesPanel();
     expect(roomFileGroupHeadings(container)).toEqual(['Today', 'Yesterday']);
-    expect(
-      container.querySelectorAll('[data-testid="room-group-section"].border-t')
-    ).toHaveLength(1);
+    expect(container.querySelectorAll('[data-testid="room-group-section"].border-t')).toHaveLength(
+      1
+    );
     expect(roomFileRowLabels(container)).toHaveLength(2);
     expect(roomFileRowLabels(container)[0]).toContain('today.txt');
     expect(roomFileRowLabels(container)[1]).toContain('yesterday.txt');
@@ -2002,9 +2051,9 @@ describe('RoomSidebar', () => {
       'This month',
       'May 2026'
     ]);
-    expect(
-      container.querySelectorAll('[data-testid="room-group-section"].border-t')
-    ).toHaveLength(4);
+    expect(container.querySelectorAll('[data-testid="room-group-section"].border-t')).toHaveLength(
+      4
+    );
     const labels = roomFileRowLabels(container);
     expect(labels).toHaveLength(5);
     expect(labels.filter((label) => label.includes('today.txt'))).toHaveLength(1);

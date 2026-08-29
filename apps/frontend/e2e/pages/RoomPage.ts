@@ -9,7 +9,7 @@ import { MessageComponent } from './MessageComponent';
 export class RoomPage {
   constructor(readonly page: Page) {}
 
-  /** The message input field (TipTap contenteditable editor) */
+  /** The message input field (visual or Markdown contenteditable editor) */
   get messageInput(): Locator {
     return this.page.getByTestId('message-input');
   }
@@ -52,6 +52,11 @@ export class RoomPage {
   /** The send button */
   get sendButton(): Locator {
     return this.page.getByRole('button', { name: 'Send message' });
+  }
+
+  /** The destination prompt shown after a recent authored message gained a thread. */
+  get recentThreadConfirmationDialog(): Locator {
+    return this.page.getByRole('dialog', { name: 'Continue your previous thread?' });
   }
 
   /** Video attachment preview in the composer (shown when a video file is staged) */
@@ -181,7 +186,30 @@ export class RoomPage {
     await this.waitForInputEditable();
     await this.messageInput.fill(text);
     await this.dismissAutocompleteIfOpen(this.messageInput);
-    await this.messageInput.press('Enter');
+    await this.messageInput.press('Control+Enter');
+    const message = this.getMessage(text);
+    await expect(message.locator).toBeVisible({ timeout: TIMEOUTS.UI_FAST });
+    await this.waitForInputEditable();
+    return message;
+  }
+
+  /**
+   * Send a new root message when the composer asks whether a recent thread
+   * should receive it instead. This asserts that the safeguard was shown.
+   */
+  async sendNewRootAfterThread(text: string): Promise<MessageComponent> {
+    await this.waitForInputEditable();
+    await this.messageInput.fill(text);
+    await this.dismissAutocompleteIfOpen(this.messageInput);
+    await this.messageInput.press('Control+Enter');
+
+    await expect(this.recentThreadConfirmationDialog).toBeVisible({
+      timeout: TIMEOUTS.UI_FAST
+    });
+    await this.recentThreadConfirmationDialog
+      .getByRole('button', { name: 'Post as new message' })
+      .click();
+
     const message = this.getMessage(text);
     await expect(message.locator).toBeVisible({ timeout: TIMEOUTS.UI_FAST });
     await this.waitForInputEditable();
@@ -221,7 +249,7 @@ export class RoomPage {
       await this.messageInput.fill(text);
     }
     await this.dismissAutocompleteIfOpen(this.messageInput);
-    await this.messageInput.press('Enter');
+    await this.messageInput.press('Control+Enter');
 
     // Wait for attachment preview to clear (message sent)
     await expect(this.attachmentPreview).not.toBeVisible();
@@ -472,7 +500,7 @@ export class RoomPage {
    */
   async completeEdit(newText: string): Promise<void> {
     await this.composer.fill(newText);
-    await this.composer.press('Enter');
+    await this.composer.press('Control+Enter');
     await expect(this.editingIndicator).not.toBeVisible({ timeout: TIMEOUTS.UI_FAST });
   }
 
@@ -590,7 +618,7 @@ export class RoomPage {
     });
     await this.threadReplyInput.fill(text);
     await this.dismissAutocompleteIfOpen(this.threadReplyInput);
-    await this.threadReplyInput.press('Enter');
+    await this.threadReplyInput.press('Control+Enter');
     await expect(this.getThreadMessage(text).locator).toBeVisible({
       timeout: TIMEOUTS.REALTIME_EVENT
     });
@@ -613,7 +641,7 @@ export class RoomPage {
     // Post the reply
     await this.threadReplyInput.fill(text);
     await this.dismissAutocompleteIfOpen(this.threadReplyInput);
-    await this.threadReplyInput.press('Enter');
+    await this.threadReplyInput.press('Control+Enter');
     await expect(this.getThreadMessage(text).locator).toBeVisible({
       timeout: TIMEOUTS.UI_STANDARD
     });
@@ -728,7 +756,7 @@ export class RoomPage {
    */
   async completeThreadEdit(newText: string): Promise<void> {
     await this.threadReplyInput.fill(newText);
-    await this.threadReplyInput.press('Enter');
+    await this.threadReplyInput.press('Control+Enter');
     await expect(this.threadEditingIndicator).not.toBeVisible({ timeout: TIMEOUTS.UI_FAST });
   }
 

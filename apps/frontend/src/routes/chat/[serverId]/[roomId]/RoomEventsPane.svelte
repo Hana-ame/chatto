@@ -5,6 +5,7 @@
   import type { OpenThreadHandler } from './threadOpenOptions';
   import { m } from '$lib/i18n/messages';
   import { toast } from '$lib/ui/toast';
+  import { RoomThreadingMode } from '$lib/roomThreading';
 
   let {
     roomId,
@@ -13,10 +14,12 @@
     onUnreadMarkerCleared,
     onOpenThread,
     onOpenCall,
+    onOpenProfile,
     pendingHighlightId = null,
     onHighlightComplete,
     typingUserIds = [],
-    typingMembers = []
+    typingMembers = [],
+    threadingMode = RoomThreadingMode.ENABLED
   }: {
     roomId: string;
     messageStore: MessagesStore;
@@ -24,10 +27,12 @@
     onUnreadMarkerCleared?: () => void;
     onOpenThread?: OpenThreadHandler;
     onOpenCall?: () => void;
+    onOpenProfile?: (userId: string) => void;
     pendingHighlightId?: string | null;
     onHighlightComplete?: () => void;
     typingUserIds?: string[];
     typingMembers?: RoomMember[];
+    threadingMode?: RoomThreadingMode;
   } = $props();
 
   const composerContext = getComposerContext();
@@ -87,6 +92,7 @@
   {updateCounter}
   {onOpenThread}
   {onOpenCall}
+  {onOpenProfile}
   enableLastEditableFinder={true}
   isLoading={store.isInitialLoading}
   unreadAfterEventId={unreadMarkerEventId}
@@ -106,4 +112,5 @@
   onReachedPresent={handleReachedPresent}
   onReachedBottom={onUnreadMarkerCleared}
   {pendingHighlightId}
+  {threadingMode}
 />

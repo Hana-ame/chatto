@@ -40,6 +40,7 @@ Server and CLI Go Components:
   MIT License
 - imageorient (https://github.com/disintegration/imageorient) - MIT License
 - rs/cors (https://github.com/rs/cors) - MIT License
+- SCS session management (https://github.com/alexedwards/scs) - MIT License
 - LiveKit Protocol (https://github.com/livekit/protocol) - Apache License 2.0
 - NATS Server, Go client, JSM, and nkeys (https://nats.io/) - Apache License 2.0
 - nativewebp (https://github.com/HugoSmits86/nativewebp) - MIT License
@@ -60,6 +61,8 @@ Frontend and Documentation Components:
 - Astro and Starlight (https://astro.build/) - MIT License
 - Buf Protobuf runtime and ES code generation for TypeScript
   (https://github.com/bufbuild/protobuf-es) - Apache License 2.0
+- CodeMirror and Lezer (https://codemirror.net/, https://lezer.codemirror.net/) -
+  MIT License
 - ConnectRPC for Web and Connect-ES code generation
   (https://connectrpc.com/) - Apache License 2.0
 - ESLint packages (https://eslint.org/) - MIT License and Apache License 2.0

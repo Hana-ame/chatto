@@ -18,6 +18,7 @@
   import SidebarNav from '$lib/components/SidebarNav.svelte';
   import MyThreadsNavItem from './MyThreadsNavItem.svelte';
   import { MessageSearchState } from '$lib/state/server/messageSearch.svelte';
+  import { serverStorageKey } from '$lib/storage/serverStorage';
   import { getAdminNavItems } from './adminNav';
   import { m } from '$lib/i18n/messages';
 
@@ -36,33 +37,51 @@
     page.url.pathname === managementPrefix || page.url.pathname.startsWith(`${managementPrefix}/`)
   );
 
-  // Detect if we're in user settings mode
+  // Server preferences and permission-gated server administration share one
+  // settings shell, regardless of which route family owns the content page.
   const settingsPrefix = $derived(
     resolve('/chat/[serverId]/settings', { serverId: serverSegment })
   );
   const isSettingsMode = $derived(page.url.pathname.startsWith(settingsPrefix));
+  const isServerSettingsMode = $derived(isSettingsMode || isManageMode);
 
-  // User-settings navigation items
-  const settingsNavItems = $derived([
+  const userPreferenceNavItems = $derived([
     {
-      href: resolve('/chat/[serverId]/settings', { serverId: serverSegment }),
+      href: resolve('/chat/[serverId]/settings/account', { serverId: serverSegment }),
+      label: m('settings.nav.account'),
+      icon: 'iconify icon-[uil--setting]'
+    },
+    {
+      href: resolve('/chat/[serverId]/settings/profile', { serverId: serverSegment }),
       label: m('settings.nav.profile'),
       icon: 'iconify icon-[uil--user]'
     },
     {
-      href: resolve('/chat/[serverId]/settings/preferences', { serverId: serverSegment }),
-      label: m('settings.nav.display'),
+      href: resolve('/chat/[serverId]/settings/time', { serverId: serverSegment }),
+      label: m('settings.preferences.title'),
       icon: 'iconify icon-[uil--clock]'
     },
     {
       href: resolve('/chat/[serverId]/settings/notifications', { serverId: serverSegment }),
       label: m('settings.nav.notifications'),
       icon: 'iconify icon-[uil--bell]'
+    }
+  ]);
+  const appPreferenceNavItems = $derived([
+    {
+      href: resolve('/chat/[serverId]/settings/appearance', { serverId: serverSegment }),
+      label: m('settings.app_preferences.appearance.title'),
+      icon: 'iconify icon-[uil--palette]'
     },
     {
-      href: resolve('/chat/[serverId]/settings/account', { serverId: serverSegment }),
-      label: m('settings.nav.account'),
-      icon: 'iconify icon-[uil--setting]'
+      href: resolve('/chat/[serverId]/settings/language', { serverId: serverSegment }),
+      label: m('settings.preferences.language.title'),
+      icon: 'iconify icon-[uil--language]'
+    },
+    {
+      href: resolve('/chat/[serverId]/settings/composer', { serverId: serverSegment }),
+      label: m('settings.app_preferences.composer.title'),
+      icon: 'iconify icon-[uil--edit]'
     }
   ]);
 
@@ -172,20 +191,40 @@
             ]
           : []
   );
-  const adminHref = $derived(adminNavItems[0]?.href);
-
-  function isAdminNavActive(href: string, _items: unknown): boolean {
-    return page.url.pathname.startsWith(href);
-  }
+  const settingsNavGroups = $derived([
+    {
+      label: m('settings.nav.app_preferences'),
+      items: appPreferenceNavItems,
+      persistKey: serverStorageKey(serverScope.serverId, 'collapsible:settings:app-preferences')
+    },
+    {
+      label: m('settings.nav.your_account'),
+      items: userPreferenceNavItems,
+      persistKey: serverStorageKey(serverScope.serverId, 'collapsible:settings:your-account')
+    },
+    {
+      label: m('settings.nav.server_configuration'),
+      items: managementNavItems,
+      persistKey: serverStorageKey(
+        serverScope.serverId,
+        'collapsible:settings:server-configuration'
+      )
+    }
+  ]);
+  const settingsHref = $derived(
+    adminNavItems[0]?.href ??
+      resolve('/chat/[serverId]/settings/profile', { serverId: serverSegment })
+  );
 </script>
 
 <ServerPresenceSync />
 <!-- Sidebar -->
 <ServerSidebar>
-  {#if isSettingsMode}
+  {#if isServerSettingsMode}
     <SidebarNav
       title={m('settings.nav.title')}
-      items={settingsNavItems}
+      subtitle={serverName ?? activeStore.serverInfo.name}
+      groups={settingsNavGroups}
       backHref={resolve('/chat/[serverId]', { serverId: serverSegment })}
       backLabel={m('settings.nav.back_to_server')}
     />
@@ -212,17 +251,9 @@
         </div>
       {/each}
     </ScrollFader>
-  {:else if isManageMode}
-    <SidebarNav
-      title={serverName ?? m('chat.server_nav.server_fallback')}
-      items={managementNavItems}
-      backHref={resolve('/chat/[serverId]', { serverId: serverSegment })}
-      backLabel={m('chat.server_nav.back_to_server')}
-      isActive={isAdminNavActive}
-    />
   {:else}
     <!-- Server header - fixed at top -->
-    <ServerHeader serverName={serverName ?? ''} {adminHref} />
+    <ServerHeader serverName={serverName ?? ''} />
 
     <!-- Scrollable area for room list sidebar -->
     <ScrollFader top bottom>
@@ -233,18 +264,29 @@
       <nav class="sidebar-nav p-2">
         <a
           href={resolve('/chat/[serverId]/overview', { serverId: serverSegment })}
-          class={['sidebar-item', isHomeActive ? 'bg-surface' : '']}
+          aria-current={isHomeActive ? 'page' : undefined}
+          class="sidebar-item"
         >
           <span class="iconify sidebar-icon icon-[uil--estate]"></span>
           {m('chat.overview.title')}
         </a>
         {#if messageSearchAvailable}
-          <a href={searchHref} class={['sidebar-item', isSearchActive ? 'bg-surface' : '']}>
+          <!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- searchHref is resolved above -->
+          <a
+            href={searchHref}
+            aria-current={isSearchActive ? 'page' : undefined}
+            class="sidebar-item"
+          >
             <span class="iconify sidebar-icon icon-[uil--search]" aria-hidden="true"></span>
             {m('search.action')}
           </a>
         {/if}
         <MyThreadsNavItem active={isMyThreadsActive} />
+        <!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- settingsHref is resolved above -->
+        <a href={settingsHref} class="sidebar-item">
+          <span class="iconify sidebar-icon icon-[uil--setting]" aria-hidden="true"></span>
+          {m('settings.nav.title')}
+        </a>
       </nav>
 
       <hr class="border-border" />

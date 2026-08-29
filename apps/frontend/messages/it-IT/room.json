@@ -13,7 +13,7 @@
       "missing_group": "Scegli un gruppo di stanze prima di creare una stanza.",
       "failed": "Impossibile creare la stanza",
       "creating": "Creazione...",
-      "submit": "Crea stanza"
+      "submit_and_configure": "Crea e configura"
     },
     "join": {
       "title": "Unisciti alla stanza",
@@ -70,7 +70,8 @@
       "remove_account_suffix": " per questo server prima di rimuoverlo."
     },
     "timeline": {
-      "beginning": "Questo è l'inizio di questa conversazione."
+      "beginning": "Questo è l'inizio di questa conversazione.",
+      "read_denied": "Non hai l'autorizzazione per leggere i messaggi in questa stanza."
     },
     "message": {
       "empty": "Nessun messaggio ancora",
@@ -87,6 +88,7 @@
         "add_reaction": "Aggiungi reazione",
         "more_reactions": "Altre reazioni",
         "reply": "Rispondi",
+        "reply_room": "Rispondi nella stanza",
         "reply_thread": "Rispondi nel thread",
         "open_thread": "Discussione aperta",
         "edit": "Modifica messaggio",
@@ -99,6 +101,8 @@
       "meta": {
         "pinned": "Messaggio fissato",
         "thread": "Filo",
+        "edited": "Messaggio modificato",
+        "echoed_to_channel": "Inviato anche al canale",
         "reply_count_one": "1 risposta",
         "reply_count_many": "{count} risponde",
         "follow_thread": "Segui il filo",
@@ -130,6 +134,7 @@
       "unarchived": "ha annullato l'archiviazione della stanza",
       "call_started": "ha avviato una chiamata in questa stanza",
       "call_ended": "La chiamata attiva è terminata",
+      "threading_mode_changed": "ha impostato la modalità thread su {mode}",
       "and": "e",
       "other_people_count": {
         "one": "altro",

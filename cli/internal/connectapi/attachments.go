@@ -7,7 +7,7 @@ import (
 	"connectrpc.com/connect"
 	"hmans.de/chatto/internal/core"
 	apiv1 "hmans.de/chatto/internal/pb/chatto/api/v1"
-	corev1 "hmans.de/chatto/internal/pb/chatto/core/v1"
+	evtv1 "hmans.de/chatto/internal/pb/chatto/core/evt/v1"
 )
 
 type assetService struct {
@@ -100,7 +100,7 @@ func (s *assetService) BatchGetAssets(ctx context.Context, req *connect.Request[
 	return connect.NewResponse(&apiv1.BatchGetAssetsResponse{Assets: out}), nil
 }
 
-func apiAsset(api *API, attachment *corev1.Attachment, viewerID string, thumbnail attachmentThumbnailRequest) *apiv1.Asset {
+func apiAsset(api *API, attachment *evtv1.Attachment, viewerID string, thumbnail attachmentThumbnailRequest) *apiv1.Asset {
 	if attachment == nil {
 		return nil
 	}
@@ -119,7 +119,7 @@ func apiAsset(api *API, attachment *corev1.Attachment, viewerID string, thumbnai
 	}
 }
 
-func apiVideoProcessing(api *API, viewerID string, attachment *corev1.Attachment) *apiv1.MessageVideoProcessing {
+func apiVideoProcessing(api *API, viewerID string, attachment *evtv1.Attachment) *apiv1.MessageVideoProcessing {
 	if attachment == nil || (!strings.HasPrefix(attachment.GetContentType(), "video/") && attachment.GetContentType() != "image/gif") {
 		return nil
 	}
@@ -157,7 +157,11 @@ func apiVideoProcessing(api *API, viewerID string, attachment *corev1.Attachment
 			}
 			var width, height int32
 			var size int64
-			var variantAttachment *corev1.Attachment
+			// 【本地改动 2026-08-29】整个 variant 循环是本 fork 新增（merge-base
+			// 与 upstream 均无此段），最初按当时的 corev1.Attachment 写；合并
+			// upstream #2162 后 core/v1 pb 包被删除，Attachment 迁到 evt/v1，
+			// core.AttachmentFromAsset 的返回值也随之变成 *evtv1.Attachment。
+			var variantAttachment *evtv1.Attachment
 			if created := api.core.GetAssetState(variant.GetAssetId()).Creation; created != nil {
 				asset := created.GetAsset()
 				if asset != nil {
@@ -210,11 +214,11 @@ func assetSourceAvailable(api *API, assetID string, fallback bool) bool {
 	return created.GetOriginalBinaryAvailable()
 }
 
-func assetProcessingFailureReasonCode(code corev1.AssetProcessingFailureCode) string {
+func assetProcessingFailureReasonCode(code evtv1.AssetProcessingFailureCode) string {
 	switch code {
-	case corev1.AssetProcessingFailureCode_ASSET_PROCESSING_FAILURE_CODE_SOURCE_MISSING:
+	case evtv1.AssetProcessingFailureCode_ASSET_PROCESSING_FAILURE_CODE_SOURCE_MISSING:
 		return "original_missing"
-	case corev1.AssetProcessingFailureCode_ASSET_PROCESSING_FAILURE_CODE_PROCESSING_FAILED:
+	case evtv1.AssetProcessingFailureCode_ASSET_PROCESSING_FAILURE_CODE_PROCESSING_FAILED:
 		return "processing_failed"
 	default:
 		return "processing_failed"

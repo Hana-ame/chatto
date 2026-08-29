@@ -1,10 +1,9 @@
 {
   "composer": {
     "attach_file": "Bestand bijvoegen",
+    "formatting_options": "Opmaakopties",
     "send": "Bericht verzenden",
     "send_label": "Verzenden",
-    "send_enter": "Bericht verzenden (Enter)",
-    "send_ctrl_enter": "Bericht verzenden (Ctrl/Cmd+Enter)",
     "also_send_to_channel": "Stuur ook naar kanaal",
     "post_as_thread": "Als thread plaatsen",
     "thread_label": "Discussie",
@@ -28,6 +27,11 @@
     "slow_mode_waiting": "Langzame modus: opnieuw verzenden over {countdown}.",
     "slow_mode_bypassed": "Langzame modus: {interval} (je bent vrijgesteld).",
     "slow_mode_rejected": "De langzame modus is actief. Wacht voordat je nog een bericht verzendt.",
+    "threads_encouraged": "Threads worden in deze ruimte aangemoedigd.",
+    "recent_thread_confirm_title": "Doorgaan in je vorige thread?",
+    "recent_thread_confirm_body": "Je vorige bericht heeft al een thread. Waar wil je dit bericht plaatsen?",
+    "post_as_new_message": "Als nieuw bericht plaatsen",
+    "continue_in_thread": "Doorgaan in de thread",
     "edit_failed": "Kan bericht niet bewerken",
     "upload": {
       "preparing": "Voorbereiden…",
@@ -44,7 +48,9 @@
       "bullet_list": "Opsomming",
       "ordered_list": "Genummerde lijst",
       "blockquote": "Citaat",
-      "code_block": "Codeblok"
+      "code_block": "Codeblok",
+      "outdent": "Minder inspringen",
+      "indent": "Meer inspringen"
     },
     "timestamp": {
       "title": "Tijdstempel invoegen",

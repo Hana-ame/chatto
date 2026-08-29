@@ -5,8 +5,11 @@ import { TimelineEventKind, type TimelineEventView } from '$lib/render/timelineE
 import { loadLocaleMessages } from '$lib/i18n/messages';
 import { setReactiveLocale } from '$lib/i18n/state.svelte';
 import SystemEvent from './SystemEvent.svelte';
+import { RoomThreadingMode } from '$lib/roomThreading';
 
 vi.mock('$lib/state/userProfiles.svelte', () => ({
+    getLiveBio: () => null,
+    getLiveTimezone: () => null,
   getLiveDisplayName: (_userId: string, fallback: string) => fallback,
   getLiveAvatarUrl: (_userId: string, fallback: string | null) => fallback,
   getLiveCustomStatus: (_userId: string, fallback: unknown) => fallback
@@ -69,6 +72,32 @@ describe('SystemEvent', () => {
     });
 
     expect(container.textContent).toContain('Alice left the room');
+  });
+
+  it('renders an actor-attributed threading mode change', () => {
+    const event = systemEvent(TimelineEventKind.RoomArchived, 'Alice');
+    event.event = {
+      kind: TimelineEventKind.RoomThreadingModeChanged,
+      roomId: 'room-1',
+      threadingMode: RoomThreadingMode.ENCOURAGED
+    };
+
+    const { container } = render(SystemEvent, { props: { event } });
+
+    expect(container.textContent).toContain('Alice changed threading mode to Encouraged');
+  });
+
+  it('renders an unknown threading mode as Disabled', () => {
+    const event = systemEvent(TimelineEventKind.RoomArchived, 'Alice');
+    event.event = {
+      kind: TimelineEventKind.RoomThreadingModeChanged,
+      roomId: 'room-1',
+      threadingMode: 99 as RoomThreadingMode
+    };
+
+    const { container } = render(SystemEvent, { props: { event } });
+
+    expect(container.textContent).toContain('Alice changed threading mode to Disabled');
   });
 
   it('renders an actionable call-start event while its call is active', async () => {

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { RoomKind } from '$lib/api-client/roomDirectory';
 import type { DMData, RoomData } from '$lib/hooks/useRoomData.svelte';
+import { RoomThreadingMode } from '$lib/roomThreading';
 import { buildRoomPresentation } from './roomPresentation';
 
 function roomData(overrides: Partial<RoomData> = {}): RoomData {
@@ -11,9 +12,11 @@ function roomData(overrides: Partial<RoomData> = {}): RoomData {
       type: RoomKind.CHANNEL,
       description: ' Room description ',
       isUniversal: false,
-      slowModeSeconds: 0
+      slowModeSeconds: 0,
+      threadingMode: RoomThreadingMode.ENABLED
     },
     spaceName: 'Test Space',
+    canReadMessages: true,
     canPostMessage: true,
     canPostInThread: true,
     canAttach: true,
@@ -55,7 +58,8 @@ describe('buildRoomPresentation', () => {
         type: RoomKind.CHANNEL,
         description: ' ',
         isUniversal: false,
-        slowModeSeconds: 0
+        slowModeSeconds: 0,
+        threadingMode: RoomThreadingMode.ENABLED
       },
       spaceName: null
     });
@@ -74,6 +78,7 @@ describe('buildRoomPresentation', () => {
       isDM: true,
       dmData: {
         currentUserId: 'self',
+        participantIds: ['self', 'other'],
         participants: [
           {
             id: 'self',
@@ -106,6 +111,7 @@ describe('buildRoomPresentation', () => {
     expect(
       build(roomData(), true, {
         currentUserId: 'self',
+        participantIds: ['self'],
         participants: [
           {
             id: 'self',
@@ -123,7 +129,9 @@ describe('buildRoomPresentation', () => {
   });
 
   it('uses the direct-message label while participant data is empty', () => {
-    expect(build(roomData(), true, { currentUserId: 'self', participants: [] })).toEqual({
+    expect(
+      build(roomData(), true, { currentUserId: 'self', participantIds: [], participants: [] })
+    ).toEqual({
       title: 'Direct message',
       description: undefined,
       pageTitle: 'Direct message'

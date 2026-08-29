@@ -8,7 +8,7 @@ import (
 	"hmans.de/chatto/internal/core"
 	"hmans.de/chatto/internal/parallel"
 	apiv1 "hmans.de/chatto/internal/pb/chatto/api/v1"
-	corev1 "hmans.de/chatto/internal/pb/chatto/core/v1"
+	evtv1 "hmans.de/chatto/internal/pb/chatto/core/evt/v1"
 )
 
 const (
@@ -237,7 +237,13 @@ func (a *API) BuildRealtimeProjectionSnapshot(ctx context.Context, userID string
 		}
 		seenTimelineRooms[roomID] = struct{}{}
 		if room := memberRooms[roomID]; room != nil {
-			requestedRooms = append(requestedRooms, room)
+			canRead, err := a.core.CanAccessRoomMessages(ctx, userID, core.KindOfRoom(room.Room), room.Room.GetId())
+			if err != nil {
+				return nil, fmt.Errorf("authorize realtime timeline %q: %w", roomID, err)
+			}
+			if canRead {
+				requestedRooms = append(requestedRooms, room)
+			}
 		}
 	}
 	timelines, err := parallel.MapNonNil(ctx, maxConnectAPIHydrationConcurrency, requestedRooms, func(ctx context.Context, _ int, room *core.DirectoryRoom) (*RealtimeProjectionRoomTimeline, error) {
@@ -383,11 +389,13 @@ func (a *API) realtimeProjectionRoom(ctx context.Context, userID string, room *c
 	}
 	var hasMessageHistory *bool
 	if core.KindOfRoom(room.Room) == core.KindDM {
-		_, _, exists, err := a.core.GetRoomLastEvent(ctx, core.KindDM, room.Room.GetId())
-		if err != nil {
-			return nil, err
+		if room.ViewerState.IsMember {
+			_, _, exists, err := a.core.GetRoomLastEvent(ctx, core.KindDM, room.Room.GetId())
+			if err != nil {
+				return nil, err
+			}
+			hasMessageHistory = &exists
 		}
-		hasMessageHistory = &exists
 	}
 	// Directory-visible rooms are part of the server projection even before
 	// the viewer joins. Their member list is not authorized at that point and
@@ -395,7 +403,7 @@ func (a *API) realtimeProjectionRoom(ctx context.Context, userID string, room *c
 	if !room.ViewerState.IsMember {
 		return &RealtimeProjectionRoom{Room: apiRoomWithViewerState(room), HasMessageHistory: hasMessageHistory}, nil
 	}
-	if room.Room.GetKind() != corev1.RoomKind_ROOM_KIND_DM && !includeChannelMembership {
+	if room.Room.GetKind() != evtv1.RoomKind_ROOM_KIND_DM && !includeChannelMembership {
 		return &RealtimeProjectionRoom{Room: apiRoomWithViewerState(room), HasMessageHistory: hasMessageHistory}, nil
 	}
 	members, err := a.core.ListRoomMemberReferencesForList(ctx, userID, room.Room.GetId())
@@ -523,7 +531,7 @@ func (a *API) BuildRealtimeProjectionTimelineEvent(ctx context.Context, userID, 
 
 // BuildRealtimeProjectionSourceTimelineEvent hydrates a source EVT fact that
 // is itself visible in the room timeline, such as room lifecycle/membership.
-func (a *API) BuildRealtimeProjectionSourceTimelineEvent(ctx context.Context, userID, roomID string, event *corev1.Event) (*apiv1.RoomTimelineEvent, *apiv1.RoomTimelineIncludes, string, error) {
+func (a *API) BuildRealtimeProjectionSourceTimelineEvent(ctx context.Context, userID, roomID string, event *evtv1.Event) (*apiv1.RoomTimelineEvent, *apiv1.RoomTimelineIncludes, string, error) {
 	room, err := a.core.RoomDirectoryReads().GetRoom(ctx, userID, roomID)
 	if err != nil {
 		return nil, nil, "", err

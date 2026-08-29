@@ -2,7 +2,11 @@
 
 **Date:** 2026-05-27
 
-**Updated:** 2026-08-21
+**Updated:** 2026-08-25
+
+**Status:** Partially superseded
+
+**Partially superseded by:** [ADR-081](ADR-081-explicit-expiry-for-mutable-runtime-credentials.md) for mutable human-session expiry storage.
 
 ## Context
 
@@ -65,12 +69,27 @@ Current occupants include:
   work, occurrences, and lifecycle facts do not live in `RUNTIME_STATE`; see
   ADR-076.
 - Web Push subscriptions: `push_subscription.{userId}.{endpointHash}`.
-- Runtime credential verifiers: `session.{hmac}`, with per-key
-  `auth.token_ttl` sliding-window expiry. Values include credential kind
+- Runtime credential verifiers: `session.{hmac}`. Cookie-presentation records
+  carry a fixed explicit `auth.token_ttl` expiry and rotate in the final
+  quarter of that lifetime. Human bearer access records use fixed
+  `auth.access_token_ttl` expiry and point to a stable
+  `renewable_session.{hmac}` authority with an explicit `auth.token_ttl`
+  renewal window. Values include credential kind
   (`first_party_session` or `oauth_access_token`), presentation (`bearer` or
   `cookie`), source, safe request metadata, fresh-auth metadata, and the user
   auth generation they were issued against. User-wide cleanup scans these
   records and deletes entries whose stored user ID matches.
+- Renewable human bearer-session authorities: `renewable_session.{hmac}` with
+  user/client binding, current window expiry, auth generation, current refresh
+  generation, last refresh-request verifier/time, and fresh-auth metadata. The
+  verifier is a purpose-separated HMAC of a raw UUID version 4 recovery nonce.
+  Rotation uses KV revision OCC across replicas and advances the window in its
+  final quarter. The raw refresh credential and recovery nonce are never
+  stored; deleting this key invalidates every access generation.
+- Mutable human sessions: `session.{hmac}` cookie records and
+  `renewable_session.{hmac}` bearer authorities store explicit expiry. Each
+  changed revision uses revision-checked JetStream publish with a per-message
+  TTL equal to its remaining explicit lifetime. See ADR-081.
 - OAuth authorization-code verifiers: `grant.{hmac}`, with per-key 5-minute
   TTL. Values include the user auth generation they were issued against.
 - Account workflow credential verifiers: `email_otp.{hmac(subject)}.{hmac(code)}`,
@@ -97,13 +116,13 @@ revision to reach the index when local read-your-writes matters. One owning
 model therefore serves all requests and background repair without creating a
 watcher per request, user, or WebSocket.
 
-The HMAC keys for runtime credential handles, OAuth codes, and account workflow
-tokens are derived with `[core].secret_key` from the raw token/code plus a
-per-flow scope string. `RUNTIME_STATE` is included in backups, so active
-sessions and pending flows survive restore when the same secret is used;
-restoring with a different secret intentionally invalidates those credentials.
-Backup archives do not contain raw cookie credential handles, bearer tokens,
-links, or OAuth codes.
+The HMAC keys for runtime credential handles, renewable sessions, OAuth codes,
+and account workflow tokens are derived with `[core].secret_key` from opaque
+credential material plus a per-flow scope string. `RUNTIME_STATE` is included
+in backups, so active sessions and pending flows survive restore when the same
+secret is used; restoring with a different secret intentionally invalidates
+those credentials. Backup archives do not contain raw cookie credential
+handles, bearer access or refresh credentials, links, or OAuth codes.
 
 Attachment declarations and video derivative manifests are not a `RUNTIME_STATE`
 target. Uploaded assets are content and are declared with `AssetCreatedEvent`;
@@ -136,6 +155,8 @@ from exact unread notification occurrences instead of preserving
   tokens, because their keys are HMAC-derived from `[core].secret_key`.
 - Per-key TTL becomes available for tokens and similar runtime values without
   splitting each feature into its own bucket.
+- Mutable human-session revisions use per-message TTL. Explicit record expiry
+  remains the authorization boundary.
 - Security-sensitive exceptions remain explicit. In particular, KMS KEKs in
   `ENCRYPTION_KEYS` are not folded into this bucket; only app-owned wrapped DEK
   records live in `RUNTIME_STATE`.
@@ -155,6 +176,8 @@ from exact unread notification occurrences instead of preserving
 
 - [ADR-033](ADR-033-event-sourced-state-with-projections.md) — defines the
   event-sourced content/domain boundary.
+- [ADR-081](ADR-081-explicit-expiry-for-mutable-runtime-credentials.md)
+  — separates mutable human-session state from immutable cleanup deadlines.
 - [ADR-028](ADR-028-event-id-keyed-read-state.md) — defines the read-cursor
   shape that now lives in `RUNTIME_STATE`.
 - [ADR-076](ADR-076-deterministic-notification-occurrences.md) — defines the

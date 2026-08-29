@@ -13,7 +13,7 @@
       "missing_group": "Valige enne ruumi loomist ruumirühm.",
       "failed": "Ruumi loomine ebaõnnestus",
       "creating": "Loomine...",
-      "submit": "Loo tuba"
+      "submit_and_configure": "Loo ja seadista tuba"
     },
     "join": {
       "title": "Liituge ruumiga",
@@ -70,7 +70,8 @@
       "remove_account_suffix": " selle serveri jaoks enne selle eemaldamist."
     },
     "timeline": {
-      "beginning": "See on selle vestluse algus."
+      "beginning": "See on selle vestluse algus.",
+      "read_denied": "Sul pole õigust selles ruumis sõnumeid lugeda."
     },
     "message": {
       "empty": "Sõnumeid pole veel",
@@ -87,6 +88,7 @@
         "add_reaction": "Lisa reaktsioon",
         "more_reactions": "Rohkem reaktsioone",
         "reply": "Vasta",
+        "reply_room": "Vasta ruumis",
         "reply_thread": "Vasta lõimes",
         "open_thread": "Ava lõng",
         "edit": "Redigeeri sõnumit",
@@ -99,6 +101,8 @@
       "meta": {
         "pinned": "Kinnitatud sõnum",
         "thread": "Niit",
+        "edited": "Muudetud sõnum",
+        "echoed_to_channel": "Saadetud ka kanalisse",
         "reply_count_one": "1 vastus",
         "reply_count_many": "{count} vastust",
         "follow_thread": "Jälgi lõime",
@@ -130,6 +134,7 @@
       "unarchived": "eemaldas ruumi arhiivist",
       "call_started": "alustas selles ruumis kõnet",
       "call_ended": "Aktiivne kõne on lõppenud",
+      "threading_mode_changed": "muutis lõimerežiimiks {mode}",
       "and": "ja",
       "other_people_count": {
         "one": "muud",

@@ -3,11 +3,12 @@ package core
 import (
 	"context"
 	"fmt"
+	"hmans.de/chatto/internal/pb/chatto/core/live/v1"
 	"time"
 
 	"hmans.de/chatto/internal/core/subjects"
 	"hmans.de/chatto/internal/jetstreamutil"
-	corev1 "hmans.de/chatto/internal/pb/chatto/core/v1"
+	evtv1 "hmans.de/chatto/internal/pb/chatto/core/evt/v1"
 )
 
 // ============================================================================
@@ -41,9 +42,9 @@ type LastReadEventIDAdvance struct {
 // a room as read. This enables real-time updates to space unread indicators.
 // This is best-effort - failures are logged but don't affect the mark-as-read operation.
 func (c *ChattoCore) NotifyRoomMarkedAsRead(ctx context.Context, userID string, kind RoomKind, roomID string) {
-	event := newLiveEvent(userID, &corev1.LiveEvent{
-		Event: &corev1.LiveEvent_RoomMarkedAsRead{
-			RoomMarkedAsRead: &corev1.RoomMarkedAsReadEvent{
+	event := newLiveEvent(userID, &livev1.LiveEvent{
+		Event: &livev1.LiveEvent_RoomMarkedAsRead{
+			RoomMarkedAsRead: &livev1.RoomMarkedAsReadEvent{
 				RoomId: roomID,
 			},
 		},
@@ -80,6 +81,43 @@ func (c *ChattoCore) GetRoomLastEvent(ctx context.Context, kind RoomKind, roomID
 	return ev.GetId(), createdAt, true, nil
 }
 
+// GetRoomLastReadableEvent returns the most recent room-visible message that
+// userID can currently read. Channel echoes use the interaction relationship
+// of their canonical thread root.
+func (c *ChattoCore) GetRoomLastReadableEvent(ctx context.Context, kind RoomKind, userID, roomID string) (eventID string, ts time.Time, exists bool, err error) {
+	broad, err := c.CanReadMessages(ctx, userID, kind, roomID)
+	if err != nil {
+		return "", time.Time{}, false, err
+	}
+	interactions := false
+	if !broad && kind != KindDM {
+		interactions, err = c.CanReadMessageInteractions(ctx, userID, kind, roomID)
+		if err != nil {
+			return "", time.Time{}, false, err
+		}
+	}
+	visible := func(event *evtv1.Event) bool {
+		message := event.GetMessagePosted()
+		if message == nil || message.GetInThread() != "" {
+			return false
+		}
+		if broad || kind == KindDM {
+			return true
+		}
+		rootID, ok := c.roomModel.threadRootForMessage(roomID, event.GetId())
+		return ok && interactions && c.roomModel.hasThreadInteraction(userID, roomID, rootID)
+	}
+	entry, ok := c.roomModel.lastVisibleRoomEntry(roomID, visible)
+	if !ok || entry == nil || entry.Event == nil {
+		return "", time.Time{}, false, nil
+	}
+	createdAt := time.Time{}
+	if entry.Event.GetCreatedAt() != nil {
+		createdAt = entry.Event.GetCreatedAt().AsTime()
+	}
+	return entry.Event.GetId(), createdAt, true, nil
+}
+
 // roomReadEventKey returns the RUNTIME_STATE key for tracking the user's
 // last-read root event ID in a room.
 func roomReadEventKey(userID, roomID string) string {
@@ -104,7 +142,7 @@ func (c *ChattoCore) GetLastReadEventID(ctx context.Context, kind RoomKind, user
 
 	// No marker yet — initialize to the room's current last root event so the
 	// user starts caught up rather than seeing a wall of unreads.
-	lastID, _, exists, err := c.GetRoomLastEvent(ctx, kind, roomID)
+	lastID, _, exists, err := c.GetRoomLastReadableEvent(ctx, kind, userID, roomID)
 	if err != nil {
 		return "", err
 	}
@@ -331,9 +369,9 @@ func (c *ChattoCore) GetEventTimestamp(ctx context.Context, kind RoomKind, roomI
 	return time.Time{}, nil
 }
 
-// HasUnread reports whether a room has unread messages for a user. Returns
-// false if the user is not a member or there are no messages. Notification
-// policy is intentionally independent from ordinary room unread state.
+// HasUnread reports whether a room has active Badge attention for a user.
+// Thread Badge markers roll up into the parent room. The result is independent
+// of the user's last-read cursor and false when the user cannot see the room.
 func (c *ChattoCore) HasUnread(ctx context.Context, kind RoomKind, userID, roomID string) (bool, error) {
 	isMember, err := c.RoomMembershipExists(ctx, kind, userID, roomID)
 	if err != nil {
@@ -342,37 +380,9 @@ func (c *ChattoCore) HasUnread(ctx context.Context, kind RoomKind, userID, roomI
 	if !isMember {
 		return false, nil
 	}
-
-	lastID, lastTime, exists, err := c.GetRoomLastEvent(ctx, kind, roomID)
+	badgeUnread, err := c.notificationOccurrences.HasNotificationUnread(ctx, userID, roomID, "")
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("read notification Badge state: %w", err)
 	}
-	if !exists {
-		return false, nil
-	}
-
-	readID, err := c.GetLastReadEventID(ctx, kind, userID, roomID)
-	if err != nil {
-		return false, err
-	}
-	if readID == "" {
-		// Member has a marker but no specific event read yet (joined an
-		// empty room, then messages arrived). Anything counts as unread.
-		return true, nil
-	}
-	if readID == lastID {
-		return false, nil // Caught up — fast path
-	}
-
-	// Read marker points to an older (or deleted) message. Resolve its
-	// timestamp and compare. A missing message means the marker is stale —
-	// treat as unread; the user re-marks and state self-corrects.
-	readTime, err := c.GetEventTimestamp(ctx, kind, roomID, readID)
-	if err != nil {
-		return false, err
-	}
-	if readTime.IsZero() {
-		return true, nil
-	}
-	return lastTime.After(readTime), nil
+	return badgeUnread, nil
 }

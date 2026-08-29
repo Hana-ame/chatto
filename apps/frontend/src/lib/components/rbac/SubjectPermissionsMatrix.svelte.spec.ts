@@ -62,6 +62,7 @@ it('highlights the hovered permission row and scope column', () => {
     'td[data-scope="server"][data-permission="message.delete"]'
   ) as HTMLTableCellElement;
   const columnHeader = container.querySelector('th[data-scope="group:general"]') as HTMLElement;
+  const columnLabel = columnHeader.querySelector('span[title]') as HTMLElement;
   const permissionName = intersection.parentElement!.querySelector(
     '[data-testid="permission-name"]'
   ) as HTMLElement;
@@ -74,13 +75,14 @@ it('highlights the hovered permission row and scope column', () => {
   expect(sameColumn.className).toContain('bg-action/8');
   expect(unrelated.className).not.toContain('bg-action/');
   expect(columnHeader.className).toContain('bg-action/10');
+  expect(columnLabel.className).toContain('text-action');
   expect(permissionName.className).toContain('text-action');
   expect(getComputedStyle(intersection).backgroundColor).not.toBe(
     getComputedStyle(sameRow).backgroundColor
   );
 });
 
-it('renders one alphabetically ordered matrix without category dividers', () => {
+it('renders one compact matrix grouped and ordered by internal permission IDs', () => {
   const { container } = render(SubjectPermissionsMatrix, {
     props: {
       data: {
@@ -120,8 +122,14 @@ it('renders one alphabetically ordered matrix without category dividers', () => 
   expect(container.querySelectorAll('[data-testid="permission-matrix-spacer"]')).toHaveLength(3);
   expect(container.querySelector('thead th:last-child')?.className).toContain('bg-background');
   expect(
+    [...container.querySelectorAll('[data-testid="permission-section-divider"]')].map((heading) =>
+      heading.textContent?.trim()
+    )
+  ).toEqual(['Rooms', 'Server', 'Users']);
+  expect(
     [...container.querySelectorAll('[data-testid="permission-name"]')].map((row) => row.textContent)
   ).toEqual(['room.manage', 'server.manage', 'user.delete-self']);
+  expect(container.querySelector('tbody th[scope="row"]')?.className).toContain('py-0.5');
 });
 
 it('filters permission names as the query changes', () => {
@@ -333,7 +341,11 @@ it('localizes binary cell labels, state details, and owner ceilings', async () =
   const button = container.querySelector(
     'button[aria-label^="message.post"]'
   ) as HTMLButtonElement;
+  const permissionName = container.querySelector(
+    '[data-testid="permission-name"]'
+  ) as HTMLElement;
 
+  expect(permissionName.title).toBe('Root-Nachrichten in Räumen posten und DMs starten');
   expect(button.ariaLabel).toBe('message.post ist für Bot in Server aktiviert');
   expect(button.title).toContain('Derzeit nicht verfügbar');
   expect(button.title).toContain('Du kannst message.post in Server nicht vergeben');

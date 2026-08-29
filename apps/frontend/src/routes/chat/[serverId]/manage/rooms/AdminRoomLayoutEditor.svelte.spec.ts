@@ -1,16 +1,40 @@
-import { describe, it, expect, vi } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
 import { flushSync } from 'svelte';
 import { render } from 'vitest-browser-svelte';
 import { goto } from '$app/navigation';
 import { q } from '$lib/test-utils';
 import type { AdminRoomLayoutAPI } from '$lib/api-client/adminRoomLayout';
 import type { RoomCommandAPI } from '$lib/api-client/rooms';
+import { RoomThreadingMode } from '$lib/roomThreading';
 import {
   AdminRoomLayoutStore,
   type AdminRoomGroup,
   type AdminRoomInfo
 } from '$lib/state/server/adminRoomLayout.svelte';
 import AdminRoomLayoutEditor from './AdminRoomLayoutEditor.svelte';
+
+const { roomCreationMocks } = vi.hoisted(() => ({
+  roomCreationMocks: {
+    createRoom: vi.fn(),
+    joinRoom: vi.fn()
+  }
+}));
+
+vi.mock('$lib/state/server/scope.svelte', () => ({
+  useServerScope: () => ({
+    connection: {
+      getAPI: (factory: (config: never) => unknown) => factory({} as never)
+    },
+    isCurrent: () => true
+  })
+}));
+
+vi.mock('$lib/api-client/rooms', () => ({
+  createRoomCommandAPI: () => ({
+    createRoom: roomCreationMocks.createRoom,
+    joinRoom: roomCreationMocks.joinRoom
+  })
+}));
 
 vi.mock('$app/navigation', () => ({
   afterNavigate: vi.fn(),
@@ -57,7 +81,8 @@ function room(id: string, overrides: Partial<AdminRoomInfo> = {}): AdminRoomInfo
     description: overrides.description ?? null,
     archived: overrides.archived ?? false,
     isUniversal: overrides.isUniversal ?? false,
-    slowModeSeconds: overrides.slowModeSeconds ?? 0
+    slowModeSeconds: overrides.slowModeSeconds ?? 0,
+    threadingMode: overrides.threadingMode ?? RoomThreadingMode.ENABLED
   };
 }
 
@@ -119,6 +144,12 @@ function fill(input: HTMLInputElement | HTMLTextAreaElement, value: string) {
   input.dispatchEvent(new Event('input', { bubbles: true }));
   flushSync();
 }
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  roomCreationMocks.createRoom.mockResolvedValue({ id: 'new-room' });
+  roomCreationMocks.joinRoom.mockResolvedValue(null);
+});
 
 describe('AdminRoomLayoutEditor', () => {
   it('renders loading, error, empty, and populated states from the layout store', async () => {
@@ -196,6 +227,29 @@ describe('AdminRoomLayoutEditor', () => {
     expect(goto).toHaveBeenCalledWith('/chat/-/manage/rooms/r1');
     expect(container.querySelector('#edit-room-name')).toBeNull();
     expect(container.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  it('opens the new room settings after creating a room with defaults', async () => {
+    const layout = makeLayout();
+    layout.initialized = true;
+    layout.groups = [group('g1', [], 'Lobby')];
+    const { container } = renderEditor(layout);
+
+    buttonByText(container, 'New Room').click();
+    flushSync();
+    fill(q(container, '#room-name') as HTMLInputElement, 'Design systems');
+    buttonByText(container, 'Create and configure').click();
+
+    await vi.waitFor(() => {
+      expect(roomCreationMocks.createRoom).toHaveBeenCalledWith({
+        name: 'Design systems',
+        description: null,
+        groupId: 'g1',
+        universal: false,
+        threadingMode: RoomThreadingMode.ENABLED
+      });
+      expect(goto).toHaveBeenCalledWith('/chat/-/manage/rooms/new-room');
+    });
   });
 
   it('opens the room-group edit page from the group edit action without showing a dialog', async () => {

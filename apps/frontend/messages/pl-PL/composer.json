@@ -1,10 +1,9 @@
 {
   "composer": {
     "attach_file": "Załącz plik",
+    "formatting_options": "Opcje formatowania",
     "send": "Wyślij wiadomość",
     "send_label": "Wyślij",
-    "send_enter": "Wyślij wiadomość (Enter)",
-    "send_ctrl_enter": "Wyślij wiadomość (Ctrl/Cmd+Enter)",
     "also_send_to_channel": "Wyślij także do kanału",
     "post_as_thread": "Opublikuj jako wątek",
     "thread_label": "Wątek",
@@ -28,6 +27,11 @@
     "slow_mode_waiting": "Tryb powolny: wyślij ponownie za {countdown}.",
     "slow_mode_bypassed": "Tryb powolny: {interval} (ograniczenie Cię nie dotyczy).",
     "slow_mode_rejected": "Tryb powolny jest aktywny. Zaczekaj przed wysłaniem kolejnej wiadomości.",
+    "threads_encouraged": "W tym pokoju zalecane jest używanie wątków.",
+    "recent_thread_confirm_title": "Kontynuować w poprzednim wątku?",
+    "recent_thread_confirm_body": "Twoja poprzednia wiadomość ma już wątek. Gdzie opublikować tę wiadomość?",
+    "post_as_new_message": "Opublikuj jako nową wiadomość",
+    "continue_in_thread": "Kontynuuj w wątku",
     "edit_failed": "Nie udało się edytować wiadomości",
     "upload": {
       "preparing": "Przygotowywanie…",
@@ -44,7 +48,9 @@
       "bullet_list": "Lista punktowana",
       "ordered_list": "Lista numerowana",
       "blockquote": "Cytat",
-      "code_block": "Blok kodu"
+      "code_block": "Blok kodu",
+      "outdent": "Zmniejsz wcięcie",
+      "indent": "Zwiększ wcięcie"
     },
     "timestamp": {
       "title": "Wstaw znacznik czasu",

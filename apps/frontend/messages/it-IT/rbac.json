@@ -44,6 +44,7 @@
       "allow": "consentire",
       "deny": "negare",
       "winning_decision": "(decisione vincente)",
+      "included_by": "Included by {permission}",
       "level_server": "Server",
       "level_group": "Gruppo",
       "level_room": "Stanza",
@@ -94,6 +95,16 @@
         }
       }
     },
+    "permission_categories": {
+      "admin": "Amministrazione",
+      "bot": "Bot",
+      "message": "Messaggi",
+      "role": "Ruoli",
+      "room": "Stanze",
+      "server": "Server",
+      "user": "Utenti",
+      "other": "Altro"
+    },
     "permission_descriptions": {
       "server_manage": "Aggiorna le impostazioni del server (nome, descrizione, logo)",
       "room_create": "Crea nuove stanze",
@@ -101,6 +112,8 @@
       "room_list": "Vedi le stanze nella directory. A un utente può essere consentito di vedere una stanza (ad esempio per richiedere l'accesso) senza che gli sia consentito accedervi.",
       "room_manage": "Modifica le impostazioni e le autorizzazioni di una stanza ed elimina le stanze",
       "room_ban_member": "Escludi i membri dalle stanze",
+      "message_read": "Leggere i messaggi nelle stanze canale",
+      "message_read_interactions": "Leggere thread completi che hai creato o in cui un altro utente ti ha menzionato direttamente",
       "message_post": "Pubblica messaggi root nelle stanze virtuali e avvia i messaggi diretti",
       "message_post_in_thread": "Pubblica le risposte all'interno di un thread",
       "message_attach": "Allega file ai messaggi",
@@ -116,7 +129,9 @@
       "user_delete_self": "Elimina il tuo account",
       "user_invite": "Crea e gestisci i link di invito",
       "user_manage_accounts": "Crea utenti, modifica l'identità dell'account, reimposta le password, allega e-mail verificate e cancella i tempi di recupero dell'accesso",
-      "user_manage_permissions": "Modifica le autorizzazioni dirette per utente"
+      "user_manage_permissions": "Modifica le autorizzazioni dirette per utente",
+      "bot_create": "Creare account bot di tua proprietà",
+      "bot_manage": "Visualizzare e gestire tutti gli account bot"
     }
   }
 }

@@ -1,10 +1,9 @@
 {
   "composer": {
     "attach_file": "Připojit soubor",
+    "formatting_options": "Možnosti formátování",
     "send": "Odeslat zprávu",
     "send_label": "Odeslat",
-    "send_enter": "Odeslat zprávu (Enter)",
-    "send_ctrl_enter": "Odeslat zprávu (Ctrl/Cmd+Enter)",
     "also_send_to_channel": "Také odeslat na kanál",
     "post_as_thread": "Publikovat jako vlákno",
     "thread_label": "Vlákno",
@@ -28,6 +27,11 @@
     "slow_mode_waiting": "Pomalý režim: další zprávu můžete poslat za {countdown}.",
     "slow_mode_bypassed": "Pomalý režim: {interval} (máte výjimku).",
     "slow_mode_rejected": "Je zapnutý pomalý režim. Před odesláním další zprávy počkejte.",
+    "threads_encouraged": "V této místnosti se doporučuje používat vlákna.",
+    "recent_thread_confirm_title": "Pokračovat v předchozím vlákně?",
+    "recent_thread_confirm_body": "Vaše předchozí zpráva už má vlákno. Kam se má tato zpráva odeslat?",
+    "post_as_new_message": "Poslat jako novou zprávu",
+    "continue_in_thread": "Pokračovat ve vlákně",
     "edit_failed": "Zprávu se nepodařilo upravit",
     "upload": {
       "preparing": "Příprava…",
@@ -44,7 +48,9 @@
       "bullet_list": "Seznam odrážek",
       "ordered_list": "Číslovaný seznam",
       "blockquote": "Citace",
-      "code_block": "Blok kódu"
+      "code_block": "Blok kódu",
+      "outdent": "Zmenšit odsazení",
+      "indent": "Zvětšit odsazení"
     },
     "timestamp": {
       "title": "Vložte časové razítko",

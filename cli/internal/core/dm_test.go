@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hmans.de/chatto/internal/pb/chatto/core/live/v1"
 	"testing"
 	"time"
 
@@ -12,7 +13,7 @@ import (
 
 	"hmans.de/chatto/internal/core/subjects"
 	"hmans.de/chatto/internal/evtstream"
-	corev1 "hmans.de/chatto/internal/pb/chatto/core/v1"
+	evtv1 "hmans.de/chatto/internal/pb/chatto/core/evt/v1"
 	"hmans.de/chatto/pkg/events"
 )
 
@@ -147,6 +148,7 @@ func TestDMBoundaryDeniedPermissions(t *testing.T) {
 	// asserts they aren't *unconditionally* denied.
 	notBoundaryDenied := []Permission{
 		PermRoomJoin,
+		PermMessageRead,
 		PermMessagePost,
 		PermMessageAttach,
 		PermMessageReact,
@@ -209,6 +211,84 @@ func TestDMRoomPermissionDefaults(t *testing.T) {
 			t.Error("CanSeeRoom should return false for DM rooms (use ListMemberRooms)")
 		}
 	})
+}
+
+func TestDMMessageReadPermissionDoesNotRestrictParticipants(t *testing.T) {
+	chatto, _ := setupTestCore(t)
+	ctx := testContext(t)
+	reader, err := chatto.CreateUser(ctx, SystemActorID, "dm-message-reader", "DM Message Reader", "password123")
+	if err != nil {
+		t.Fatalf("CreateUser reader: %v", err)
+	}
+	other, err := chatto.CreateUser(ctx, SystemActorID, "dm-message-other", "DM Message Other", "password123")
+	if err != nil {
+		t.Fatalf("CreateUser other: %v", err)
+	}
+	outsider, err := chatto.CreateUser(ctx, SystemActorID, "dm-message-outsider", "DM Message Outsider", "password123")
+	if err != nil {
+		t.Fatalf("CreateUser outsider: %v", err)
+	}
+	dm, _, err := chatto.FindOrCreateDM(ctx, reader.GetId(), []string{other.GetId()})
+	if err != nil {
+		t.Fatalf("FindOrCreateDM: %v", err)
+	}
+	visible, err := chatto.PostMessage(ctx, KindDM, dm.GetId(), other.GetId(), "visible DM message", nil, "", "", nil, false)
+	if err != nil {
+		t.Fatalf("PostMessage visible: %v", err)
+	}
+	if _, err := chatto.RoomTimelineReads().GetMessage(ctx, reader.GetId(), dm.GetId(), visible.GetId()); err != nil {
+		t.Fatalf("GetMessage before denial: %v", err)
+	}
+	if err := chatto.DenyUserRoomPermission(ctx, SystemActorID, dm.GetId(), reader.GetId(), PermMessageRead); err != nil {
+		t.Fatalf("DenyUserRoomPermission: %v", err)
+	}
+	if canRead, err := chatto.CanReadMessages(ctx, reader.GetId(), KindDM, dm.GetId()); err != nil || !canRead {
+		t.Fatalf("CanReadMessages after DM denial = %v, %v; want true", canRead, err)
+	}
+	if _, err := chatto.RoomTimelineReads().GetMessage(ctx, reader.GetId(), dm.GetId(), visible.GetId()); err != nil {
+		t.Fatalf("GetMessage after inapplicable denial: %v", err)
+	}
+	if _, err := chatto.RoomTimelineReads().GetMessage(ctx, outsider.GetId(), dm.GetId(), visible.GetId()); !errors.Is(err, ErrNotRoomMember) {
+		t.Fatalf("GetMessage outsider error = %v, want ErrNotRoomMember", err)
+	}
+	posted, err := chatto.PostMessage(ctx, KindDM, dm.GetId(), reader.GetId(), "DM message after read denial", nil, "", "", nil, false)
+	if err != nil {
+		t.Fatalf("PostMessage after inapplicable message.read denial: %v", err)
+	}
+	editedBody := "edited DM message after read denial"
+	if _, _, err := chatto.Messages().UpdateMessage(ctx, MessageUpdateInput{
+		ActorID: reader.GetId(),
+		RoomID:  dm.GetId(),
+		EventID: posted.GetId(),
+		Body:    &editedBody,
+	}); err != nil {
+		t.Fatalf("UpdateMessage after inapplicable message.read denial: %v", err)
+	}
+}
+
+func TestCanReadMessagesRejectsChannelWithDMKind(t *testing.T) {
+	chatto, _ := setupTestCore(t)
+	ctx := testContext(t)
+	reader, err := chatto.CreateUser(ctx, SystemActorID, "kind-mismatch-reader", "Kind Mismatch Reader", "password123")
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	room, err := chatto.CreateRoom(ctx, SystemActorID, KindChannel, "", "kind-mismatch-room", "")
+	if err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+	if _, err := chatto.JoinRoom(ctx, reader.GetId(), KindChannel, reader.GetId(), room.GetId()); err != nil {
+		t.Fatalf("JoinRoom: %v", err)
+	}
+	if err := chatto.DenyUserRoomPermission(ctx, SystemActorID, room.GetId(), reader.GetId(), PermMessageRead); err != nil {
+		t.Fatalf("DenyUserRoomPermission: %v", err)
+	}
+	if canRead, err := chatto.CanReadMessages(ctx, reader.GetId(), KindChannel, room.GetId()); err != nil || canRead {
+		t.Fatalf("channel CanReadMessages = %v, %v; want false", canRead, err)
+	}
+	if canRead, err := chatto.CanReadMessages(ctx, reader.GetId(), KindDM, room.GetId()); err == nil || canRead {
+		t.Fatalf("mismatched DM-kind CanReadMessages = %v, %v; want false with error", canRead, err)
+	}
 }
 
 func TestFindOrCreateDM(t *testing.T) {
@@ -376,7 +456,7 @@ func TestFindOrCreateDM(t *testing.T) {
 	})
 }
 
-func listActiveDMRoomsForTest(t *testing.T, core *ChattoCore, ctx context.Context, userID string) []*corev1.Room {
+func listActiveDMRoomsForTest(t *testing.T, core *ChattoCore, ctx context.Context, userID string) []*evtv1.Room {
 	t.Helper()
 	rooms, err := core.ListMemberRooms(ctx, KindDM, userID, MemberRoomListOptions{
 		RequireLastMessage:    true,
@@ -617,6 +697,15 @@ func TestDMUnreadStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create DM: %v", err)
 	}
+	if err := core.DenyUserRoomPermission(ctx, SystemActorID, room.Id, user2.Id, PermMessageRead); err != nil {
+		t.Fatalf("DenyUserRoomPermission: %v", err)
+	}
+	if _, err := core.NotificationPolicy().SetRoomNotificationMode(
+		ctx, user2.Id, room.Id, notificationTestSignalDirectMessage,
+		evtv1.NotificationDeliveryMode_NOTIFICATION_DELIVERY_MODE_UNREAD_BADGE,
+	); err != nil {
+		t.Fatalf("SetRoomNotificationMode: %v", err)
+	}
 
 	t.Run("no unread when no messages", func(t *testing.T) {
 		hasUnread, err := core.HasUnread(ctx, KindDM, user2.Id, room.Id)
@@ -634,6 +723,7 @@ func TestDMUnreadStatus(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to post message: %v", err)
 		}
+		waitForNotificationMaterializer(t, core)
 
 		// user2 should have unread
 		hasUnread, err := core.HasUnread(ctx, KindDM, user2.Id, room.Id)
@@ -664,9 +754,9 @@ func TestDMUnreadStatus(t *testing.T) {
 			t.Fatal("Expected last event to exist after posting")
 		}
 
-		// Mark as read for user2
-		if err := core.SetLastReadEventID(ctx, KindDM, user2.Id, room.Id, lastID); err != nil {
-			t.Fatalf("SetLastReadEventID error: %v", err)
+		// Mark as read through the user-facing authorization boundary.
+		if _, err := core.ReadState().MarkRoomAsRead(ctx, user2.Id, room.Id, lastID); err != nil {
+			t.Fatalf("MarkRoomAsRead error: %v", err)
 		}
 
 		// user2 should no longer have unread
@@ -743,9 +833,14 @@ func TestDMReactions(t *testing.T) {
 		t.Fatalf("Failed to post message: %v", err)
 	}
 	messageEventID := event.Id
+	if err := core.DenyUserRoomPermission(ctx, SystemActorID, room.Id, user2.Id, PermMessageRead); err != nil {
+		t.Fatalf("DenyUserRoomPermission: %v", err)
+	}
 
 	t.Run("can add reaction to DM message", func(t *testing.T) {
-		added, err := core.ReactionModel().addReaction(ctx, KindDM, room.Id, messageEventID, "thumbsup", user2.Id)
+		added, err := core.ReactionModel().AddReaction(ctx, ReactionMutationInput{
+			ActorID: user2.Id, RoomID: room.Id, MessageEventID: messageEventID, Emoji: "thumbsup",
+		})
 		if err != nil {
 			t.Fatalf("AddReaction error: %v", err)
 		}
@@ -765,7 +860,9 @@ func TestDMReactions(t *testing.T) {
 	})
 
 	t.Run("can remove reaction from DM message", func(t *testing.T) {
-		removed, err := core.ReactionModel().removeReaction(ctx, KindDM, room.Id, messageEventID, "thumbsup", user2.Id)
+		removed, err := core.ReactionModel().RemoveReaction(ctx, ReactionMutationInput{
+			ActorID: user2.Id, RoomID: room.Id, MessageEventID: messageEventID, Emoji: "thumbsup",
+		})
 		if err != nil {
 			t.Fatalf("RemoveReaction error: %v", err)
 		}
@@ -793,6 +890,9 @@ func TestDMNotifications(t *testing.T) {
 	room, _, err := core.FindOrCreateDM(ctx, user1.Id, []string{user2.Id})
 	if err != nil {
 		t.Fatalf("Failed to create DM: %v", err)
+	}
+	if err := core.DenyUserRoomPermission(ctx, SystemActorID, room.Id, user2.Id, PermMessageRead); err != nil {
+		t.Fatalf("DenyUserRoomPermission: %v", err)
 	}
 
 	t.Run("DM message triggers notification to other participants", func(t *testing.T) {
@@ -849,7 +949,7 @@ func TestDMNotifications(t *testing.T) {
 		if err != nil {
 			t.Fatalf("waiting for DND notification occurrence change: %v", err)
 		}
-		var live corev1.LiveEvent
+		var live livev1.LiveEvent
 		if err := proto.Unmarshal(msg.Data, &live); err != nil {
 			t.Fatalf("unmarshal live event: %v", err)
 		}
@@ -859,6 +959,9 @@ func TestDMNotifications(t *testing.T) {
 		}
 		if event.GetAlertCandidateNotificationId() != "" {
 			t.Fatal("NotificationOccurrencesInvalidatedEvent has an alert candidate during DND")
+		}
+		if event.GetSoundCandidateNotificationId() != "" {
+			t.Fatal("NotificationOccurrencesInvalidatedEvent has a sound candidate during DND")
 		}
 		after := testNotificationOccurrences(t, core, user2.Id)
 		if len(after) != len(before)+1 {
@@ -991,14 +1094,14 @@ func TestDMThreadsUnsupported(t *testing.T) {
 	// Seed a historical DM thread directly through EVT. Current writers must
 	// reject this shape, but projections and read/follow paths remain compatible
 	// with facts persisted by earlier versions.
-	threadCreated := newEvent(owner.Id, &corev1.Event{Event: &corev1.Event_ThreadCreated{
-		ThreadCreated: &corev1.ThreadCreatedEvent{RoomId: room.Id, ThreadRootEventId: root.Id},
+	threadCreated := newEvent(owner.Id, &evtv1.Event{Event: &evtv1.Event_ThreadCreated{
+		ThreadCreated: &evtv1.ThreadCreatedEvent{RoomId: room.Id, ThreadRootEventId: root.Id},
 	}})
 	if _, err := core.EventPublisher.AppendEventually(ctx, agg.SubjectFor(threadCreated), threadCreated); err != nil {
 		t.Fatalf("append historical ThreadCreatedEvent: %v", err)
 	}
-	legacyReply := newEvent(owner.Id, &corev1.Event{Event: &corev1.Event_MessagePosted{
-		MessagePosted: &corev1.MessagePostedEvent{RoomId: room.Id, InThread: root.Id},
+	legacyReply := newEvent(owner.Id, &evtv1.Event{Event: &evtv1.Event_MessagePosted{
+		MessagePosted: &evtv1.MessagePostedEvent{RoomId: room.Id, InThread: root.Id},
 	}})
 	legacySubject := agg.SubjectFor(legacyReply)
 	legacySeq, err := core.EventPublisher.AppendEventually(ctx, legacySubject, legacyReply)

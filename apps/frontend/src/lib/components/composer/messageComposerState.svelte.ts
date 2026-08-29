@@ -12,15 +12,21 @@ import type { ServerInfoState } from '$lib/state/server/state.svelte';
 import type { createMessageAPI, UpdateMessageInput } from '$lib/api-client/messages';
 import type { createLinkPreviewAPI } from '$lib/api-client/linkPreviews';
 import { hasVisibleContent } from '$lib/validation';
-import { prefersTouchActions } from '$lib/utils/inputCapabilities';
 import { shouldAutoFocus } from '$lib/utils/shouldAutoFocus';
+import { prefersTouchActions } from '$lib/utils/inputCapabilities';
+import type { ComposerSendMode } from '$lib/state/userPreferences.svelte';
 import { useDebounce } from '$lib/hooks/useDebounce.svelte';
 import { toast } from '$lib/ui/toast';
 import { m } from '$lib/i18n/messages';
 import { AttachmentsState } from './attachments.svelte';
 import { AutocompleteState, type MentionRole } from './autocomplete.svelte';
 import { DraftState, draftKey } from './draft.svelte';
-import type { ComposerFormattingState, TipTapEditorApi } from './editorTypes';
+import {
+  emptyComposerIndentState,
+  type ComposerEditorApi,
+  type ComposerFormattingState,
+  type ComposerIndentState
+} from './editorTypes';
 import { LinkPreviewState } from './linkPreviews.svelte';
 import { ComposerSubmissionState, type PreparedPost } from './submission.svelte';
 
@@ -41,6 +47,10 @@ export type MessageComposerApi = {
   insertQuote: (text: QuoteInsertionContent) => void;
 };
 
+export type RecentThreadRootCandidate = {
+  threadRootEventId: string;
+};
+
 export type MessageComposerProps = {
   roomId: string;
   inThread?: string;
@@ -57,10 +67,20 @@ export type MessageComposerProps = {
   onReady?: (api: MessageComposerApi) => void;
   onTyping?: () => void;
   onMessageSent?: (event: TimelineEventView | null) => void;
+  /** Called after a room-level post successfully creates a thread. */
+  onThreadCreated?: (threadRootEventId: string) => void;
   onCancelReply?: () => void;
   onEscape?: () => void;
   showAlsoSendToChannel?: boolean;
   showCreateThread?: boolean;
+  createThreadRequired?: boolean;
+  createThreadDefault?: boolean;
+  threadsEncouraged?: boolean;
+  getRecentThreadRootCandidate?: () => RecentThreadRootCandidate | null;
+  onThreadMessageSent?: (
+    threadRootEventId: string,
+    event: TimelineEventView | null
+  ) => void;
 };
 
 type MessageComposerDependencies = {
@@ -71,12 +91,21 @@ type MessageComposerDependencies = {
   getCanAttach: () => boolean;
   getSlowModeBlocked: () => boolean;
   getCanCreateThread: () => boolean;
+  getCreateThreadRequired: () => boolean;
+  getCreateThreadDefault: () => boolean;
+  getRecentThreadRootCandidate: () => RecentThreadRootCandidate | null;
   getAutoFocus: () => boolean;
+  getComposerSendMode: () => ComposerSendMode;
   getPlaceholder: () => string | undefined;
   getOnReady: () => MessageComposerProps['onReady'];
   getCallbacks: () => Pick<
     MessageComposerProps,
-    'onTyping' | 'onMessageSent' | 'onCancelReply' | 'onEscape'
+    | 'onTyping'
+    | 'onMessageSent'
+    | 'onThreadCreated'
+    | 'onThreadMessageSent'
+    | 'onCancelReply'
+    | 'onEscape'
   >;
   onPostError?: (error: unknown) => boolean;
   context: ComposerContext;
@@ -107,14 +136,12 @@ export function bodyForSend(text: string): string {
  */
 export class MessageComposerState {
   message = $state('');
-  editorApi = $state<TipTapEditorApi | null>(null);
+  editorApi = $state.raw<ComposerEditorApi | null>(null);
   fileInputElement = $state<HTMLInputElement>();
   formattingState = $state<ComposerFormattingState>({ ...emptyFormattingState });
+  indentState = $state<ComposerIndentState>({ ...emptyComposerIndentState });
   alsoSendToChannel = $state(false);
   createThread = $state(false);
-  editorNextEnterWillSend = $state(false);
-  manualRichMode = $state(false);
-  editorHasRichStructure = $state(false);
   mentionSearchMembers = $state.raw<RoomMember[]>([]);
 
   readonly draft = new DraftState();
@@ -130,6 +157,12 @@ export class MessageComposerState {
   #autocompleteRoomId = '';
   #insertedQuoteRequestId = 0;
   #focusRequested = false;
+  #threadCreationPolicyKey = '';
+  #threadDestinationChoicePending = false;
+  pendingThreadDestinationConfirmation = $state<{
+    post: PreparedPost;
+    candidate: RecentThreadRootCandidate;
+  } | null>(null);
 
   constructor(dependencies: MessageComposerDependencies) {
     this.#dependencies = dependencies;
@@ -157,6 +190,7 @@ export class MessageComposerState {
     this.#synchronizeDraftText();
     this.#synchronizeLinkPreviews();
     this.#synchronizeAttachmentPermission();
+    this.#synchronizeThreadCreationPolicy();
     this.#synchronizeAutoFocus();
     this.#synchronizeQuoteInsertion();
     this.#synchronizePublicApi();
@@ -205,7 +239,7 @@ export class MessageComposerState {
   get inputDisabled(): boolean {
     return (
       this.submission.loading ||
-      !this.#dependencies.getCanPost() ||
+      (!this.#dependencies.getCanPost() && !this.isEditing) ||
       this.#dependencies.isConnectionLost()
     );
   }
@@ -223,14 +257,6 @@ export class MessageComposerState {
       this.attachments.pendingCount === 0 &&
       (hasVisibleContent(this.message) || this.hasSendableAttachments || this.isEditing)
     );
-  }
-
-  get isRichComposer(): boolean {
-    return this.manualRichMode || this.editorHasRichStructure;
-  }
-
-  get nextEnterWillSend(): boolean {
-    return this.canSubmit && this.isRichComposer && this.editorNextEnterWillSend;
   }
 
   observeResize = (node: HTMLDivElement) => {
@@ -293,6 +319,7 @@ export class MessageComposerState {
       this.submission.roleMentionCheckLoading ||
       this.submission.roleMentionConfirmationLoading ||
       this.submission.pendingRoleMentionConfirmation ||
+      this.pendingThreadDestinationConfirmation ||
       this.inputDisabled ||
       (!this.isEditing && this.#dependencies.getSlowModeBlocked()) ||
       this.attachments.pendingCount > 0
@@ -300,6 +327,39 @@ export class MessageComposerState {
       return;
     }
     await (this.isEditing ? this.#editMessage() : this.#createMessage());
+  }
+
+  cancelThreadDestinationConfirmation(): void {
+    if (this.#threadDestinationChoicePending) return;
+    this.pendingThreadDestinationConfirmation = null;
+  }
+
+  async postInRecentThread(): Promise<void> {
+    const pending = this.pendingThreadDestinationConfirmation;
+    if (!pending || this.#threadDestinationChoicePending) return;
+    this.#threadDestinationChoicePending = true;
+    this.pendingThreadDestinationConfirmation = null;
+    try {
+      await this.submission.requestPost({
+        ...pending.post,
+        threadRootEventId: pending.candidate.threadRootEventId,
+        createThread: false
+      });
+    } finally {
+      this.#threadDestinationChoicePending = false;
+    }
+  }
+
+  async postAsNewRoot(): Promise<void> {
+    const pending = this.pendingThreadDestinationConfirmation;
+    if (!pending || this.#threadDestinationChoicePending) return;
+    this.#threadDestinationChoicePending = true;
+    this.pendingThreadDestinationConfirmation = null;
+    try {
+      await this.submission.requestPost(pending.post);
+    } finally {
+      this.#threadDestinationChoicePending = false;
+    }
   }
 
   cancelEdit(): void {
@@ -314,10 +374,7 @@ export class MessageComposerState {
     if (this.autocomplete.mention?.query && this.autocomplete.mentionRef?.handleKeyDown(event)) {
       return true;
     }
-    if (event.key === 'Enter' && !event.ctrlKey && !event.metaKey && prefersTouchActions()) {
-      return false;
-    }
-    if (event.key === 'Enter' && !event.shiftKey && this.#handleEnter(event)) return true;
+    if (event.key === 'Enter' && this.#handleEnter(event)) return true;
     if (event.key === 'Tab' && this.autocomplete.handleTabCompletion(event)) return true;
     if (event.key !== 'Tab') this.autocomplete.resetTabCompletion();
     if (event.key === 'Escape' && this.#handleEscape()) return true;
@@ -328,15 +385,18 @@ export class MessageComposerState {
   handleEditorUpdate(text: string): void {
     const changed = text !== this.message;
     this.message = text;
-    if (!text) this.manualRichMode = false;
     if (changed) this.#dependencies.getCallbacks().onTyping?.();
     this.autocomplete.update();
   }
 
-  handleEditorReady(api: TipTapEditorApi): void {
+  handleEditorReady(api: ComposerEditorApi): void {
     this.editorApi = api;
     if (this.message) api.setContent(this.message);
     if (this.#focusRequested) this.focus();
+  }
+
+  handleEditorDestroyed(api: ComposerEditorApi): void {
+    if (this.editorApi === api) this.editorApi = null;
   }
 
   #synchronizeMentionSearch(): void {
@@ -366,7 +426,6 @@ export class MessageComposerState {
         this.autocomplete.reset();
         this.draft.clearText();
         this.message = originalBody;
-        this.manualRichMode = false;
         this.alsoSendToChannel = this.editState.channelEchoEventId !== null;
         api?.setContent(originalBody);
         tick().then(() => api?.focus('end'));
@@ -385,7 +444,6 @@ export class MessageComposerState {
       if (this.#autocompleteRoomId !== roomId) {
         this.#autocompleteRoomId = roomId;
         this.autocomplete.resetForRoom();
-        this.createThread = false;
       }
       if (this.isEditing) {
         this.draft.switchKey(this.draftKey);
@@ -394,7 +452,6 @@ export class MessageComposerState {
       }
       const draftMessage = this.draft.switchKey(this.draftKey);
       this.message = draftMessage;
-      this.manualRichMode = false;
       this.editorApi?.setContent(draftMessage);
       this.attachments.restore(untrack(() => this.draft.takeFiles()));
       return () => this.draft.stashFiles(untrack(() => this.attachments.filesWithUrls));
@@ -417,6 +474,19 @@ export class MessageComposerState {
       if (!this.#dependencies.getCanAttach() && this.attachments.filesWithUrls.length > 0) {
         this.attachments.clear();
       }
+    });
+  }
+
+  #synchronizeThreadCreationPolicy(): void {
+    $effect(() => {
+      const roomId = this.#dependencies.getRoomId();
+      const canCreateThread = this.#dependencies.getCanCreateThread();
+      const required = this.#dependencies.getCreateThreadRequired();
+      const defaultEnabled = this.#dependencies.getCreateThreadDefault();
+      const policyKey = `${roomId}\u0000${canCreateThread}\u0000${required}\u0000${defaultEnabled}`;
+      if (policyKey === this.#threadCreationPolicyKey) return;
+      this.#threadCreationPolicyKey = policyKey;
+      this.createThread = canCreateThread && !required && defaultEnabled;
     });
   }
 
@@ -459,9 +529,11 @@ export class MessageComposerState {
   #resetEditor(): void {
     this.autocomplete.reset();
     this.message = '';
-    this.manualRichMode = false;
     this.alsoSendToChannel = false;
-    this.createThread = false;
+    this.createThread =
+      this.#dependencies.getCanCreateThread() &&
+      !this.#dependencies.getCreateThreadRequired() &&
+      this.#dependencies.getCreateThreadDefault();
     this.editorApi?.setContent('');
   }
 
@@ -473,9 +545,17 @@ export class MessageComposerState {
       this.#resetEditor();
       this.attachments.clear();
       this.linkPreviews.clear();
-      this.#dependencies.getCallbacks().onMessageSent?.(event);
+      const callbacks = this.#dependencies.getCallbacks();
+      if (post.threadRootEventId && callbacks.onThreadMessageSent) {
+        callbacks.onThreadMessageSent(post.threadRootEventId, event);
+      } else {
+        callbacks.onMessageSent?.(event);
+        if (post.createThread && event) {
+          callbacks.onThreadCreated?.(event.id);
+        }
+      }
       this.#dependencies.context.scrollState?.requestScrollToBottom();
-      this.#dependencies.getCallbacks().onCancelReply?.();
+      callbacks.onCancelReply?.();
     } else {
       for (const { url } of stashedFiles) URL.revokeObjectURL(url);
     }
@@ -492,7 +572,7 @@ export class MessageComposerState {
     const filesToSend = this.hasSendableAttachments ? [...this.attachments.selectedFiles] : null;
     if (!hasVisibleContent(bodyToSend) && !filesToSend) return;
 
-    await this.submission.requestPost({
+    const post: PreparedPost = {
       draftKey: this.draftKey,
       roomId: this.#dependencies.getRoomId(),
       bodyToSend,
@@ -502,10 +582,20 @@ export class MessageComposerState {
       linkPreviewToken: this.linkPreviews.buildToken(),
       alsoSendToChannel: this.alsoSendToChannel,
       createThread:
-        this.#dependencies.getCanCreateThread() &&
-        !this.#dependencies.getThreadRootEventId() &&
-        this.createThread
-    });
+        this.#dependencies.getCreateThreadRequired() ||
+        (this.#dependencies.getCanCreateThread() &&
+          !this.#dependencies.getThreadRootEventId() &&
+          this.createThread)
+    };
+    const candidate =
+      post.threadRootEventId === null && post.inReplyTo === null
+        ? this.#dependencies.getRecentThreadRootCandidate()
+        : null;
+    if (candidate) {
+      this.pendingThreadDestinationConfirmation = { post, candidate };
+      return;
+    }
+    await this.submission.requestPost(post);
   }
 
   async #editMessage(): Promise<void> {
@@ -526,31 +616,23 @@ export class MessageComposerState {
   }
 
   #handleEnter(event: KeyboardEvent): boolean {
-    if (event.metaKey || event.ctrlKey) {
-      if (this.isRichComposer) {
-        void this.submit();
-      } else {
-        if (hasVisibleContent(this.message)) this.editorApi?.insertBlockBreak();
-        this.manualRichMode = true;
-      }
+    if (event.isComposing) return false;
+    if (event.shiftKey || event.altKey) return false;
+
+    const usesModifier = event.metaKey || event.ctrlKey;
+    if (this.#dependencies.getComposerSendMode() === 'modifier-enter') {
+      if (!usesModifier) return false;
+      if (this.canSubmit) void this.submit();
       return true;
     }
-    if (
-      !this.isEditing &&
-      this.#dependencies.getSlowModeBlocked() &&
-      (!this.isRichComposer || this.editorNextEnterWillSend)
-    ) {
+
+    if (usesModifier) {
+      this.editorApi?.performEnter();
       return true;
     }
-    if (!this.isRichComposer && this.canSubmit) {
-      void this.submit();
-      return true;
-    }
-    if (this.isRichComposer && this.nextEnterWillSend) {
-      void this.submit();
-      return true;
-    }
-    return false;
+    if (prefersTouchActions()) return false;
+    if (this.canSubmit) void this.submit();
+    return true;
   }
 
   #handleEscape(): boolean {

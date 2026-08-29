@@ -49,6 +49,7 @@ Request to create a channel room.
 | `description` | `string` | Optional room description. |
 | `group_id` | `string` | Required. Room group that should contain the new channel. |
 | `universal` | `bool` | Whether the new channel should grant effective membership to eligible server members. |
+| `threading_mode` | [`RoomThreadingMode`](/reference/connectrpc-api/types/#chatto-api-v1-RoomThreadingMode) | Threading policy for the new channel. UNSPECIFIED selects ENABLED. |
 
 
 <a id="chatto-api-v1-CreateRoomResponse"></a>
@@ -86,6 +87,7 @@ Request to update a room's editable metadata.
 | `description` | `optional string` | New room description, when changing it. Empty clears the description. |
 | `universal` | `optional bool` | New universal membership state, when changing it. Direct-message rooms cannot be universal. |
 | `slow_mode_seconds` | `optional uint32` | New per-user posting interval in seconds. Zero disables slow mode. The maximum supported interval is six hours. Direct-message rooms cannot use slow mode. |
+| `threading_mode` | optional [`RoomThreadingMode`](/reference/connectrpc-api/types/#chatto-api-v1-RoomThreadingMode) | New threading policy. Direct-message rooms cannot set this field, and an explicitly supplied UNSPECIFIED or unknown value is rejected. |
 
 
 <a id="chatto-api-v1-UpdateRoomResponse"></a>
@@ -234,8 +236,10 @@ Result of joining all joinable rooms in one room group.
 
 ### StartDM
 
-Starts or fetches a direct-message room for the current user and the
-requested participant set. The caller must be allowed to start DMs.
+Starts a direct-message room for the current human user and the requested
+participant set, or fetches its existing DM. message.post is required
+only when the DM must be created. A valid request from a bot receives
+PERMISSION_DENIED and cannot use this RPC to fetch an existing DM.
 
 ```http
 POST /api/connect/chatto.api.v1.RoomService/StartDM
@@ -245,7 +249,10 @@ POST /api/connect/chatto.api.v1.RoomService/StartDM
 
 #### Input: StartDMRequest
 
-Request to start or fetch a direct-message room.
+Request to start a direct-message room for a human caller, or fetch an
+existing one. A human caller can fetch an existing DM without message.post.
+A valid request from a bot receives PERMISSION_DENIED, including when the
+room already exists.
 
 | Field | Type | Description |
 | --- | --- | --- |
@@ -512,7 +519,10 @@ Active room bans visible to the current moderator.
 ### ListRoomAttachments
 
 Lists current message-owned room attachments. Authentication and room
-membership are required. Returns PERMISSION_DENIED when the room is
+membership are required. Channel-room attachments also require message.read
+or a matching thread relationship with message.read-interactions. DM
+membership authorizes DM attachments. The server omits attachments from
+inaccessible threads. Returns PERMISSION_DENIED when the room is
 inaccessible to the caller.
 
 ```http
@@ -548,8 +558,10 @@ Room-scoped attachment list response.
 
 ### ListPinnedMessages
 
-Lists current pinned messages in a channel room. Room membership is
-required; direct-message rooms do not support pinned messages.
+Lists current pinned messages in a channel room. Room membership plus
+message.read or message.read-interactions are required. The server omits
+pins from threads that the caller cannot read. Direct-message rooms do not
+support pins.
 
 ```http
 POST /api/connect/chatto.api.v1.RoomService/ListPinnedMessages
@@ -584,8 +596,9 @@ Current pinned messages in one channel room.
 
 ### CreatePinnedMessage
 
-Pins a current message. The caller must have room.manage. Repeating an
-existing pin is idempotent. Direct-message rooms are rejected.
+Pins a current message. The caller must have room.manage and must be able
+to read the message. Repeating an existing pin is idempotent. Direct-message
+rooms are rejected.
 
 ```http
 POST /api/connect/chatto.api.v1.RoomService/CreatePinnedMessage
@@ -686,8 +699,11 @@ Result of refreshing a typing indicator.
 
 ### GetRoomEvents
 
-Returns one page of room timeline events, including related user data needed
-to render the page.
+Returns one page of room timeline events, including related user data
+needed to render the page. Room membership is required. Channel-room reads
+also require message.read or message.read-interactions. The server returns
+only related thread roots for an interaction-scoped caller. DM membership
+authorizes DM reads.
 
 ```http
 POST /api/connect/chatto.api.v1.RoomService/GetRoomEvents
@@ -729,7 +745,9 @@ Response containing one room timeline page.
 Returns a room timeline window centered around a specific event. Use this to
 open a permalink, search result, or notification target in context. Returns
 NOT_FOUND when the anchor event is missing or not visible in the room
-timeline and PERMISSION_DENIED when the room is inaccessible.
+timeline. Returns PERMISSION_DENIED when room membership or both read modes
+are missing, or when the anchor is in an unrelated thread. DM membership
+authorizes DM reads.
 
 ```http
 POST /api/connect/chatto.api.v1.RoomService/GetRoomEventsAround
@@ -767,8 +785,11 @@ Response containing a room timeline window around a specific event.
 
 ### MarkRoomAsRead
 
-Marks a room timeline as read through the supplied event. If no event is
-supplied, the server marks through the room's latest root event. Clients
+Marks a room timeline as read through the supplied event. Room membership
+is required. Channel-room reads also require message.read or
+message.read-interactions. DM membership authorizes DM reads. If no event
+is supplied, the server marks through the latest root event that the caller
+can read. Clients
 usually call this after the user has viewed the latest visible event in the
 room.
 
@@ -794,8 +815,8 @@ Request to mark a room timeline as read.
 
 Result of marking a room timeline as read.
 
-Clients can use the previous timestamp to decide whether unread badges or
-local notification state need to be reconciled.
+Clients can use the previous timestamp to place a local New messages
+separator. Notification policy controls room Badge attention separately.
 
 | Field | Type | Description |
 | --- | --- | --- |

@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"hmans.de/chatto/internal/evtstream"
-	corev1 "hmans.de/chatto/internal/pb/chatto/core/v1"
+	evtv1 "hmans.de/chatto/internal/pb/chatto/core/evt/v1"
 	"hmans.de/chatto/pkg/events"
 )
 
@@ -31,7 +31,7 @@ type PinnedMessageListInput struct {
 // PinnedMessageItem pairs current pin metadata with the canonical message fact.
 type PinnedMessageItem struct {
 	Pin   PinnedMessageState
-	Event *corev1.Event
+	Event *evtv1.Event
 }
 
 // PinnedMessageListResult is a stable newest-first page of active room pins.
@@ -42,10 +42,11 @@ type PinnedMessageListResult struct {
 	LatestPinEventID string
 }
 
-// ListPinnedMessages returns active pins for a channel room. Any member may
-// read them; direct-message rooms deliberately do not support pins.
+// ListPinnedMessages returns active pins for a channel room. A member with
+// message-read authority may read them; direct-message rooms do not support
+// pins.
 func (s *RoomTimelineReadModel) ListPinnedMessages(ctx context.Context, input PinnedMessageListInput) (*PinnedMessageListResult, error) {
-	room, kind, err := s.core.requireRoomMember(ctx, input.ActorID, input.RoomID)
+	room, kind, err := s.core.requireRoomMessageReader(ctx, input.ActorID, input.RoomID)
 	if err != nil {
 		return nil, err
 	}
@@ -53,6 +54,27 @@ func (s *RoomTimelineReadModel) ListPinnedMessages(ctx context.Context, input Pi
 		return nil, invalidArgument("DM rooms do not support pinned messages")
 	}
 	pins, latestPinEventID := s.core.roomModel.pinnedMessagesWithLatest(room.GetId())
+	broad, err := s.core.CanReadMessages(ctx, input.ActorID, kind, room.GetId())
+	if err != nil {
+		return nil, err
+	}
+	readablePins := make([]PinnedMessageState, 0, len(pins))
+	for _, pin := range pins {
+		allowed, err := s.core.CanReadMessage(ctx, input.ActorID, kind, room.GetId(), pin.MessageEventID)
+		if err != nil {
+			return nil, err
+		}
+		if allowed {
+			readablePins = append(readablePins, pin)
+		}
+	}
+	pins = readablePins
+	if !broad {
+		latestPinEventID = ""
+		if len(pins) > 0 {
+			latestPinEventID = pins[0].PinEventID
+		}
+	}
 	total := len(pins)
 	start := min(max(input.Offset, 0), total)
 	end := total
@@ -89,11 +111,11 @@ func (s *RoomCommandModel) mutatePinnedMessage(ctx context.Context, input Pinned
 	}
 	aggregate := evtstream.RoomAggregate(input.RoomID)
 	filter := aggregate.AllEventsFilter()
-	var event *corev1.Event
+	var event *evtv1.Event
 	if create {
-		event = newEvent(input.ActorID, &corev1.Event{Event: &corev1.Event_MessagePinned{MessagePinned: &corev1.MessagePinnedEvent{RoomId: input.RoomID, MessageEventId: input.MessageEventID}}})
+		event = newEvent(input.ActorID, &evtv1.Event{Event: &evtv1.Event_MessagePinned{MessagePinned: &evtv1.MessagePinnedEvent{RoomId: input.RoomID, MessageEventId: input.MessageEventID}}})
 	} else {
-		event = newEvent(input.ActorID, &corev1.Event{Event: &corev1.Event_MessageUnpinned{MessageUnpinned: &corev1.MessageUnpinnedEvent{RoomId: input.RoomID, MessageEventId: input.MessageEventID}}})
+		event = newEvent(input.ActorID, &evtv1.Event{Event: &evtv1.Event_MessageUnpinned{MessageUnpinned: &evtv1.MessageUnpinnedEvent{RoomId: input.RoomID, MessageEventId: input.MessageEventID}}})
 	}
 
 	for attempt := 0; attempt < maxPinnedMessageMutationAttempts; attempt++ {
@@ -113,6 +135,15 @@ func (s *RoomCommandModel) mutatePinnedMessage(ctx context.Context, input Pinned
 			}
 			if room.GetArchived() {
 				return ErrRoomArchived
+			}
+			if create {
+				canRead, readErr := s.core.CanReadMessage(ctx, input.ActorID, memberKind, room.GetId(), input.MessageEventID)
+				if readErr != nil {
+					return readErr
+				}
+				if !canRead {
+					return ErrPermissionDenied
+				}
 			}
 			return nil
 		})

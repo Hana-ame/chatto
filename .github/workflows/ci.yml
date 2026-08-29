@@ -27,6 +27,7 @@ jobs:
   build-main-image-contexts:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     outputs:
       image-version: ${{ steps.image-version.outputs.version }}
     steps:
@@ -100,6 +101,7 @@ jobs:
   license-check:
     # runs-on: ubicloud-standard-4
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -111,6 +113,21 @@ jobs:
 
       - name: Check license metadata
         run: mise license-check
+
+  workflow-lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup mise
+        uses: jdx/mise-action@v4
+        with:
+          experimental: true
+
+      - name: Check workflows and shell scripts
+        run: mise lint-actions
 
   desktop:
     name: desktop (${{ matrix.platform }})
@@ -140,10 +157,6 @@ jobs:
 
       - name: Check and test desktop shell
         run: mise test-desktop
-
-      - name: Test macOS game-capture helper
-        if: runner.os == 'macOS'
-        run: mise test-desktop-macos-capture
 
       - name: Build desktop bundle
         run: mise desktop-build
@@ -175,9 +188,20 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  desktop-macos-capture:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Test macOS game-capture helper
+        run: tools/test-desktop-macos-capture.sh
+
   codegen-proto-drift:
     # runs-on: ubicloud-standard-4
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -193,16 +217,8 @@ jobs:
       - name: Check storage, internal, and Operator protobuf breaking changes
         run: |
           base_ref="${GITHUB_BASE_REF:-${GITHUB_REF_NAME}}"
-          cd proto
-          mise x -- buf breaking . --against "../.git#branch=origin/${base_ref},subdir=proto" \
-            --exclude-imports \
-            --exclude-path chatto/auth/v1 \
-            --exclude-path chatto/discovery/v1 \
-            --exclude-path chatto/api/v1 \
-            --exclude-path chatto/admin/v1 \
-            --exclude-path chatto/realtime/v1 \
-            --exclude-path chatto/core/v1/live_events.proto \
-            --exclude-path chatto/core/v1/projection_snapshots.proto
+          mise x -- node tools/check-storage-proto-breaking.mjs \
+            "../.git#branch=origin/${base_ref},subdir=proto"
 
       - name: Check projection snapshot schema contracts
         working-directory: cli
@@ -219,7 +235,7 @@ jobs:
             --path chatto/api/v1 \
             --path chatto/admin/v1 \
             --path chatto/realtime/v1 \
-            --path chatto/core/v1/live_events.proto
+            --path chatto/core/live/v1/live_events.proto
 
       - name: Check Authling persisted protobuf breaking changes
         run: |
@@ -255,9 +271,33 @@ jobs:
             exit 1
           fi
 
-  test-workspace:
+  check-workspace:
     # runs-on: ubicloud-standard-4
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup environment
+        uses: ./.github/actions/setup
+        with:
+          install-cli-deps: "false"
+
+      - name: Run workspace typechecks
+        run: pnpm run check
+
+      - name: Run workspace linters
+        run: pnpm run lint
+
+      - name: Build Storybook design-system catalog
+        run: pnpm run build:storybook
+
+  test-workspace:
+    # Keep this job name stable because it can be a required branch check.
+    # runs-on: ubicloud-standard-4
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -270,22 +310,16 @@ jobs:
       - name: Setup Playwright
         uses: ./.github/actions/setup-playwright
         timeout-minutes: 15
-
-      - name: Run workspace typechecks
-        run: pnpm run check
-
-      - name: Run workspace linters
-        run: pnpm run lint
+        with:
+          save-cache: "true"
 
       - name: Run workspace unit tests
         run: pnpm test
 
-      - name: Build Storybook design-system catalog
-        run: pnpm run build:storybook
-
   test-cli:
     # runs-on: ubicloud-standard-4
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -293,10 +327,13 @@ jobs:
       - name: Setup environment
         uses: ./.github/actions/setup
         with:
-          # 【本地改动 32e1f566】Authling 测试依赖 ffmpeg(图片/视频处理
-          # 走 ffmpeg)。上游 CI 不装,导致本 fork 的 Authling 测试在
-          # 无 ffmpeg 环境跳过/失败。
+          # 【本地改动 32e1f566】test-cli job 需要 ffmpeg：本地 AVIF 附件重编码
+          # 改动让 cli/internal/assets 与 cli/internal/http_server 的图片测试走
+          # ffmpeg 编码分支。上游只在 media E2E job 装 ffmpeg，Chatto 的 Go 测试
+          # 在无 ffmpeg 环境会跳过/失败，因此在 test-cli 也装上。
           install-ffmpeg: "true"
+          # PR caches are isolated from main and cannot accelerate a merge run.
+          save-go-build-cache: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       - name: Run Authling tests
         working-directory: authling
@@ -322,6 +359,7 @@ jobs:
 
   test-authling-e2e:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -358,6 +396,7 @@ jobs:
   test-e2e:
     # runs-on: ubicloud-standard-4
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     name: test-e2e (${{ matrix.shard }}/4)
     strategy:
       fail-fast: false
@@ -391,6 +430,7 @@ jobs:
   test-e2e-media:
     # runs-on: ubicloud-standard-4
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -455,12 +495,14 @@ jobs:
           echo "available=true" >> "$GITHUB_OUTPUT"
 
       - name: Run base-revision performance test
+        id: performance-baseline-test
         if: steps.performance-baseline.outputs.available == 'true'
         working-directory: ${{ runner.temp }}/chatto-performance-base
+        continue-on-error: true
         run: mise test-e2e-performance
 
       - name: Preserve base-revision results
-        if: steps.performance-baseline.outputs.available == 'true'
+        if: steps.performance-baseline.outputs.available == 'true' && steps.performance-baseline-test.outcome == 'success'
         shell: bash
         run: |
           set -euo pipefail
@@ -486,7 +528,7 @@ jobs:
           cp "$candidate_result" "$comparison_dir/candidate.json"
 
       - name: Compare performance with base revision
-        if: steps.performance-baseline.outputs.available == 'true'
+        if: steps.performance-baseline.outputs.available == 'true' && steps.performance-baseline-test.outcome == 'success'
         working-directory: apps/frontend
         shell: bash
         run: |
@@ -497,12 +539,16 @@ jobs:
             | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Summarize candidate-only performance results
-        if: steps.performance-baseline.outputs.available != 'true'
+        if: steps.performance-baseline.outputs.available != 'true' || steps.performance-baseline-test.outcome == 'failure'
         shell: bash
         run: |
           result="apps/frontend/test-results/performance-comparison/candidate.json"
           {
             echo "## Large-server E2E performance"
+            if [[ "${{ steps.performance-baseline-test.outcome }}" == 'failure' ]]; then
+              echo "> Warning: The base-revision benchmark failed, so these candidate results are not compared with the base revision."
+              echo ""
+            fi
             jq -r '"Fixture: \(.measurements.syntheticUsers) users, \(.measurements.messages) messages; \(.measurements.sampleCount)-sample medians (\(.measurements.startupMode) startup)"' "$result"
             echo ""
             echo "| Measurement | Duration (ms) |"
@@ -532,12 +578,15 @@ jobs:
     needs:
       - build-main-image-contexts
       - license-check
+      - workflow-lint
       - codegen-proto-drift
+      - check-workspace
       - test-workspace
       - test-cli
       - test-e2e
       - test-e2e-media
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: read
       packages: write

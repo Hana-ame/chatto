@@ -150,6 +150,31 @@ func TestReactionModel_AuthorizationAndValidation(t *testing.T) {
 		}
 	})
 
+	t.Run("requires message.read", func(t *testing.T) {
+		if err := core.DenyRoomPermission(ctx, SystemActorID, room.Id, RoleEveryone, PermMessageRead); err != nil {
+			t.Fatalf("DenyRoomPermission: %v", err)
+		}
+		if err := core.DenyRoomPermission(ctx, SystemActorID, room.Id, RoleEveryone, PermMessageReadInteractions); err != nil {
+			t.Fatalf("DenyRoomPermission message.read-interactions: %v", err)
+		}
+
+		_, err := service.AddReaction(ctx, ReactionMutationInput{
+			ActorID:        user.Id,
+			RoomID:         room.Id,
+			MessageEventID: eventID,
+			Emoji:          "thumbsup",
+		})
+		if !errors.Is(err, ErrPermissionDenied) {
+			t.Fatalf("error = %v, want ErrPermissionDenied", err)
+		}
+		if err := core.ClearRoomPermissionState(ctx, SystemActorID, room.Id, RoleEveryone, PermMessageRead); err != nil {
+			t.Fatalf("ClearRoomPermissionState: %v", err)
+		}
+		if err := core.ClearRoomPermissionState(ctx, SystemActorID, room.Id, RoleEveryone, PermMessageReadInteractions); err != nil {
+			t.Fatalf("ClearRoomPermissionState message.read-interactions: %v", err)
+		}
+	})
+
 	t.Run("requires message.react", func(t *testing.T) {
 		if err := core.DenyRoomPermission(ctx, SystemActorID, room.Id, RoleEveryone, PermMessageReact); err != nil {
 			t.Fatalf("DenyRoomPermission: %v", err)

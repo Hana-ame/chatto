@@ -143,6 +143,9 @@ describe('remote server OAuth popup', () => {
           new Response(
             JSON.stringify({
               access_token: 'cht_ATtoken',
+              refresh_token: 'cht_RT_token',
+              expires_in: 900,
+              refresh_token_expires_in: 7_776_000,
               user: { id: 'user-1', login: 'alice', displayName: 'Alice' }
             }),
             { headers: { 'Content-Type': 'application/json' } }
@@ -240,7 +243,12 @@ describe('remote server OAuth popup', () => {
       'fetch',
       vi.fn(
         async () =>
-          new Response(JSON.stringify({ access_token: 'cht_ATtoken' }), {
+          new Response(JSON.stringify({
+            access_token: 'cht_ATtoken',
+            refresh_token: 'cht_RT_token',
+            expires_in: 900,
+            refresh_token_expires_in: 7_776_000
+          }), {
             headers: { 'Content-Type': 'application/json' }
           })
       )
@@ -343,5 +351,35 @@ describe('remote server OAuth popup', () => {
 
     expect(gotoMock).not.toHaveBeenCalled();
     expect(sessionStorage.getItem('chatto:oauth:flow')).toBeNull();
+  });
+});
+
+describe('origin server reauthentication', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.resetModules();
+    vi.stubGlobal('sessionStorage', memoryStorage());
+    vi.stubGlobal('window', {
+      location: {
+        pathname: '/chat/origin',
+        search: '?room=general'
+      }
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('opens sign-in without an external identity linking error', async () => {
+    const { beginOriginReauthentication } = await import('./reauth');
+
+    beginOriginReauthentication();
+
+    expect(clearOriginAuthenticationMock).toHaveBeenCalledOnce();
+    expect(gotoMock).toHaveBeenCalledWith('/login?redirect=%2Fchat%2Forigin%3Froom%3Dgeneral', {
+      invalidateAll: true
+    });
+    expect(sessionStorage.getItem('returnUrl')).toBe('/chat/origin?room=general');
   });
 });

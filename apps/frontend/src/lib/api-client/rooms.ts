@@ -8,13 +8,17 @@ import {
 } from './connect.js';
 import { Timestamp } from '@bufbuild/protobuf';
 import { RoomService } from '@chatto/api-types/api/v1/rooms_connect';
-import type { Room, RoomBan as APIRoomBan } from '@chatto/api-types/api/v1/rooms_pb';
+import type {
+  Room,
+  RoomBan as APIRoomBan
+} from '@chatto/api-types/api/v1/rooms_pb';
 import { mapDirectoryMember, type DirectoryMember } from './memberDirectory.js';
 import {
   normalizeRoomName,
   ROOM_NAME_MAX_LENGTH,
   roomNameCharacterCount
 } from '$lib/utils/roomName';
+import { normalizeRoomThreadingMode, type RoomThreadingMode } from '$lib/roomThreading';
 
 export type { ConnectAPIConfig } from './connect.js';
 
@@ -26,6 +30,7 @@ export type PublicRoom = {
   groupId: string;
   universal: boolean;
   slowModeSeconds: number;
+  threadingMode: RoomThreadingMode;
 };
 
 export type RoomBanSummary = {
@@ -60,7 +65,8 @@ function publicRoom(room: Room | undefined): PublicRoom | null {
     archived: room.archived,
     groupId: room.groupId,
     universal: room.universal,
-    slowModeSeconds: room.slowModeSeconds
+    slowModeSeconds: room.slowModeSeconds ?? 0,
+    threadingMode: normalizeRoomThreadingMode(room.kind, room.threadingMode)
   };
 }
 
@@ -105,6 +111,7 @@ export function createRoomCommandAPI(config: ConnectAPIConfig) {
       description?: string | null;
       groupId: string;
       universal?: boolean;
+      threadingMode?: RoomThreadingMode;
     }): Promise<PublicRoom | null> {
       try {
         const response = await rooms.createRoom(
@@ -112,7 +119,8 @@ export function createRoomCommandAPI(config: ConnectAPIConfig) {
             name: input.name,
             description: input.description ?? '',
             groupId: input.groupId,
-            universal: input.universal ?? false
+            universal: input.universal ?? false,
+            threadingMode: input.threadingMode
           },
           { headers: headers() }
         );
@@ -128,6 +136,7 @@ export function createRoomCommandAPI(config: ConnectAPIConfig) {
       description?: string | null;
       universal?: boolean;
       slowModeSeconds?: number;
+      threadingMode?: RoomThreadingMode;
     }): Promise<PublicRoom | null> {
       try {
         const response = await rooms.updateRoom(
@@ -136,7 +145,8 @@ export function createRoomCommandAPI(config: ConnectAPIConfig) {
             name: input.name,
             description: input.description === undefined ? undefined : (input.description ?? ''),
             universal: input.universal,
-            slowModeSeconds: input.slowModeSeconds
+            slowModeSeconds: input.slowModeSeconds,
+            threadingMode: input.threadingMode
           },
           { headers: headers() }
         );

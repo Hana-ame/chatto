@@ -13,7 +13,7 @@
       "missing_group": "Wybierz grupę pokoi przed utworzeniem pokoju.",
       "failed": "Nie udało się utworzyć pokoju",
       "creating": "Tworzenie...",
-      "submit": "Utwórz pokój"
+      "submit_and_configure": "Utwórz i skonfiguruj pokój"
     },
     "join": {
       "title": "Dołącz do pokoju",
@@ -70,7 +70,8 @@
       "remove_account_suffix": "."
     },
     "timeline": {
-      "beginning": "To początek tej rozmowy."
+      "beginning": "To początek tej rozmowy.",
+      "read_denied": "Nie masz uprawnień do odczytywania wiadomości w tym pokoju."
     },
     "message": {
       "empty": "Nie ma jeszcze żadnych wiadomości",
@@ -87,6 +88,7 @@
         "add_reaction": "Dodaj reakcję",
         "more_reactions": "Więcej reakcji",
         "reply": "Odpowiedz",
+        "reply_room": "Odpowiedz w pokoju",
         "reply_thread": "Odpowiedz w wątku",
         "open_thread": "Otwórz wątek",
         "edit": "Edytuj wiadomość",
@@ -99,6 +101,8 @@
       "meta": {
         "pinned": "Przypięta wiadomość",
         "thread": "Wątek",
+        "edited": "Edytowana wiadomość",
+        "echoed_to_channel": "Wysłano również na kanał",
         "reply_count_one": "1 odpowiedź",
         "reply_count_many": "Odpowiedzi {count}",
         "follow_thread": "Obserwuj wątek",
@@ -134,6 +138,7 @@
       "unarchived": "cofnął archiwizację pokoju",
       "call_started": "rozpoczął rozmowę w tym pokoju",
       "call_ended": "Aktywna rozmowa zakończyła się",
+      "threading_mode_changed": "zmienił(a) tryb wątków na {mode}",
       "and": "i",
       "other_people_count": {
         "one": "inna osoba",

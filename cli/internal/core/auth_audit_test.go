@@ -5,13 +5,14 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
 	"golang.org/x/crypto/bcrypt"
 	"google.golang.org/protobuf/encoding/protojson"
 
 	"hmans.de/chatto/internal/evtstream"
-	corev1 "hmans.de/chatto/internal/pb/chatto/core/v1"
+	evtv1 "hmans.de/chatto/internal/pb/chatto/core/evt/v1"
 )
 
 func countTestKVKeys(ctx context.Context, kv jetstream.KeyValue, filters ...string) (int, error) {
@@ -31,7 +32,7 @@ func countTestKVKeys(ctx context.Context, kv jetstream.KeyValue, filters ...stri
 
 func TestChattoCore_RegistrationCodeAuditEvent(t *testing.T) {
 	core, _ := setupTestCore(t)
-	ctx := WithAuditRequestMetadata(testContext(t), &corev1.AuditRequestMetadata{
+	ctx := WithAuditRequestMetadata(testContext(t), &evtv1.AuditRequestMetadata{
 		UserAgent: "audit-test-agent",
 		IpHash:    "hashed-ip",
 	})
@@ -165,6 +166,33 @@ func TestChattoCore_PasswordResetAuditEvents(t *testing.T) {
 	}
 }
 
+func TestChattoCore_CreateAccountDeletionTokenRequiresDeleteSelfPermission(t *testing.T) {
+	core, _ := setupTestCore(t)
+	ctx := testContext(t)
+	user, err := core.CreateUser(ctx, SystemActorID, "delete-self-denied-user", "Delete Self Denied User", "password123")
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	if err := core.DenyUserPermission(ctx, SystemActorID, user.Id, PermUserDeleteSelf); err != nil {
+		t.Fatalf("DenyUserPermission user.delete-self: %v", err)
+	}
+	if _, err := core.CreateAccountDeletionToken(ctx, user.Id); !errors.Is(err, ErrPermissionDenied) {
+		t.Fatalf("CreateAccountDeletionToken with denied delete-self err = %v, want ErrPermissionDenied", err)
+	}
+
+	if err := core.GrantUserPermission(ctx, SystemActorID, user.Id, PermUserDeleteSelf); err != nil {
+		t.Fatalf("GrantUserPermission user.delete-self: %v", err)
+	}
+	token, err := core.CreateAccountDeletionToken(ctx, user.Id)
+	if err != nil {
+		t.Fatalf("CreateAccountDeletionToken after grant: %v", err)
+	}
+	if token == "" {
+		t.Fatalf("expected token after grant")
+	}
+}
+
 func TestChattoCore_AccountDeletionTokenAuditEvent(t *testing.T) {
 	core, _ := setupTestCore(t)
 	ctx := testContext(t)
@@ -256,7 +284,7 @@ func TestChattoCore_LoginAndLogoutAuditEvents(t *testing.T) {
 
 func TestChattoCore_BearerTokenAuditEvents(t *testing.T) {
 	core, _ := setupTestCore(t)
-	ctx := WithAuditRequestMetadata(testContext(t), &corev1.AuditRequestMetadata{
+	ctx := WithAuditRequestMetadata(testContext(t), &evtv1.AuditRequestMetadata{
 		UserAgent: "bearer-audit-agent",
 		IpHash:    "bearer-ip-hash",
 	})
@@ -308,6 +336,37 @@ func TestChattoCore_BearerTokenAuditEvents(t *testing.T) {
 		if strings.Contains(string(jsonPayload), token) {
 			t.Fatalf("bearer audit payload leaked raw token: %s", jsonPayload)
 		}
+	}
+}
+
+func TestChattoCore_BearerTokenAuditUsesClampedCredentialExpiry(t *testing.T) {
+	chattoCore, _ := setupTestCore(t)
+	chattoCore.config.AuthTokenTTL = 5 * time.Minute
+	chattoCore.config.AuthAccessTokenTTL = time.Hour
+	ctx := testContext(t)
+	user, err := chattoCore.CreateUser(ctx, SystemActorID, "clamped-bearer-audit-user", "Clamped Bearer Audit User", "password123")
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	credentials, err := chattoCore.CreateBearerSessionWithSource(ctx, user.Id, "password_login")
+	if err != nil {
+		t.Fatalf("CreateBearerSessionWithSource: %v", err)
+	}
+	issuedEvents, _, err := chattoCore.EventPublisher.SubjectEvents(
+		ctx,
+		evtstream.UserAggregate(user.Id).Subject(evtstream.EventBearerTokenIssued),
+	)
+	if err != nil {
+		t.Fatalf("SubjectEvents bearer issued: %v", err)
+	}
+	if len(issuedEvents) != 1 {
+		t.Fatalf("expected 1 bearer token issued event, got %d", len(issuedEvents))
+	}
+
+	got := issuedEvents[0].GetBearerTokenIssued().GetExpiresAt().AsTime()
+	if !got.Equal(credentials.AccessTokenExpiresAt) {
+		t.Fatalf("audit expiry = %s, want clamped credential expiry %s", got, credentials.AccessTokenExpiresAt)
 	}
 }
 
@@ -500,7 +559,7 @@ func TestChattoCore_AuditAppendFailureCleansNewAuthRuntimeTokens(t *testing.T) {
 	}
 }
 
-func TestChattoCore_BearerRevocationAuditFailureKeepsToken(t *testing.T) {
+func TestChattoCore_BearerRevocationAuditFailureStillRevokesToken(t *testing.T) {
 	core, _ := setupTestCore(t)
 	ctx := testContext(t)
 	user, err := core.CreateUser(ctx, SystemActorID, "revocation-audit-failure-user", "Revocation Audit Failure User", "password123")
@@ -513,16 +572,12 @@ func TestChattoCore_BearerRevocationAuditFailureKeepsToken(t *testing.T) {
 	}
 
 	core.EventPublisher = nil
-	if err := core.RevokeAuthTokenWithReason(ctx, token, "test_revoke"); err == nil {
-		t.Fatalf("expected revocation audit append failure")
+	if err := core.RevokeAuthTokenWithReason(ctx, token, "test_revoke"); err != nil {
+		t.Fatalf("RevokeAuthTokenWithReason: %v", err)
 	}
 
-	userID, err := core.ValidateAuthToken(ctx, token)
-	if err != nil {
-		t.Fatalf("expected token to remain valid after failed revocation audit: %v", err)
-	}
-	if userID != user.Id {
-		t.Fatalf("ValidateAuthToken userID = %q, want %q", userID, user.Id)
+	if _, err := core.ValidateAuthToken(ctx, token); !errors.Is(err, ErrAuthTokenNotFound) {
+		t.Fatalf("ValidateAuthToken error = %v, want ErrAuthTokenNotFound", err)
 	}
 }
 
@@ -534,7 +589,7 @@ func TestAuditRequestMetadataContextCopiesAndDefaults(t *testing.T) {
 		t.Fatalf("empty metadata has fields: %#v", got)
 	}
 
-	metadata := &corev1.AuditRequestMetadata{UserAgent: "ua", IpHash: "ip"}
+	metadata := &evtv1.AuditRequestMetadata{UserAgent: "ua", IpHash: "ip"}
 	ctx = WithAuditRequestMetadata(ctx, metadata)
 	metadata.UserAgent = "mutated"
 	got := AuditRequestMetadataFromContext(ctx)

@@ -8,6 +8,8 @@
   import { m } from '$lib/i18n/messages';
   import { useServerScope } from '$lib/state/server/scope.svelte';
   import ConfirmDialog from '$lib/ui/ConfirmDialog.svelte';
+  import Dialog from '$lib/ui/Dialog.svelte';
+  import { Button } from '$lib/ui/form';
   import { toast } from '$lib/ui/toast';
   import { getRoomMembers, getRoomMembersStore, getComposerContext } from '$lib/state/room';
   import { shouldAutoFocus } from '$lib/utils/shouldAutoFocus';
@@ -20,15 +22,25 @@
   } from '$lib/slowMode';
   import { Code, ConnectError } from '$lib/api-client/connect';
   import { SvelteDate } from 'svelte/reactivity';
+  import type { Component } from 'svelte';
   import EmojiAutocomplete from './EmojiAutocomplete.svelte';
   import MentionAutocomplete from './MentionAutocomplete.svelte';
   import ComposerLinkPreview from './ComposerLinkPreview.svelte';
   import ComposerAttachmentPreviews from './ComposerAttachmentPreviews.svelte';
+  import ComposerFormattingToolbar from './ComposerFormattingToolbar.svelte';
   import ComposerToolbar from './ComposerToolbar.svelte';
   import ComposerModeIndicators from './ComposerModeIndicators.svelte';
   import { MessageComposerState, type MessageComposerProps } from './messageComposerState.svelte';
+  import type { ComposerEditorProps } from './editorTypes';
+  import { userPreferences, type ComposerEditorKind } from '$lib/state/userPreferences.svelte';
 
-  const tipTapEditorModule = import('./TipTapEditor.svelte');
+  const editorLoaders: Record<
+    ComposerEditorKind,
+    () => Promise<{ default: Component<ComposerEditorProps> }>
+  > = {
+    visual: () => import('./TipTapEditor.svelte'),
+    markdown: () => import('./MarkdownEditor.svelte')
+  };
   const serverScope = useServerScope();
   const stores = serverScope.store;
   const serverInfo = stores.serverInfo;
@@ -51,10 +63,16 @@
     onReady,
     onTyping,
     onMessageSent,
+    onThreadCreated,
+    onThreadMessageSent,
     onCancelReply,
     onEscape,
     showAlsoSendToChannel = false,
-    showCreateThread = false
+    showCreateThread = false,
+    createThreadRequired = false,
+    createThreadDefault = false,
+    getRecentThreadRootCandidate = () => null,
+    threadsEncouraged = false
   }: MessageComposerProps = $props();
 
   const clock = new SvelteDate();
@@ -65,9 +83,10 @@
   );
   const slowModeDeadline = $derived.by<number | null>(() => {
     if (slowModeSeconds <= 0 || slowModeBypassed) return null;
-    const optimisticDeadline = optimisticPost?.roomId === roomId
-      ? optimisticPost.createdAt + slowModeSeconds * 1000
-      : Number.NaN;
+    const optimisticDeadline =
+      optimisticPost?.roomId === roomId
+        ? optimisticPost.createdAt + slowModeSeconds * 1000
+        : Number.NaN;
     const deadlines = [authoritativeNextPostAt, optimisticDeadline].filter(Number.isFinite);
     return deadlines.length > 0 ? Math.max(...deadlines) : null;
   });
@@ -78,6 +97,9 @@
     )
   );
   const slowModeBlocked = $derived(slowModeRemainingSeconds > 0);
+  const editorModule = $derived(editorLoaders[userPreferences.composerEditor]());
+  const composerId = $props.id();
+  const formattingToolbarId = `${composerId}-formatting-toolbar`;
 
   $effect(() => {
     const deadline = slowModeDeadline;
@@ -99,7 +121,11 @@
     getCanAttach: () => canAttach,
     getSlowModeBlocked: () => slowModeBlocked,
     getCanCreateThread: () => showCreateThread,
+    getCreateThreadRequired: () => createThreadRequired,
+    getCreateThreadDefault: () => createThreadDefault,
+    getRecentThreadRootCandidate: () => getRecentThreadRootCandidate(),
     getAutoFocus: () => autoFocus,
+    getComposerSendMode: () => userPreferences.composerSendMode,
     getPlaceholder: () => placeholder,
     getOnReady: () => onReady,
     getCallbacks: () => ({
@@ -109,6 +135,8 @@
         if (event) optimisticPost = { roomId, createdAt: Date.parse(event.createdAt) };
         onMessageSent?.(event);
       },
+      onThreadCreated,
+      onThreadMessageSent,
       onCancelReply,
       onEscape
     }),
@@ -141,7 +169,7 @@
     if (
       event.button === 0 &&
       target instanceof Element &&
-      !target.closest('button, a, input, label, select, .tiptap')
+      !target.closest('button, a, input, label, select, [data-composer-editor]')
     ) {
       composer.editorApi?.focus();
     }
@@ -169,6 +197,12 @@
     </p>
   {/if}
 
+  {#if threadsEncouraged && inReplyTo && !inThread}
+    <p class="px-0.5 text-xs text-muted" data-testid="threads-encouraged-hint">
+      {m('composer.threads_encouraged')}
+    </p>
+  {/if}
+
   {#if canAttach && !composer.isEditing}
     <input
       bind:this={composer.fileInputElement}
@@ -179,12 +213,21 @@
     />
   {/if}
 
-  <div
-    data-testid="composer-input-surface"
-    data-composer-mode={composer.isRichComposer ? 'rich' : 'simple'}
-    class="composer-mode-surface @container relative flex flex-col rounded-lg bg-surface px-2.5 py-1.5"
-    class:opacity-50={composer.inputDisabled}
-  >
+  {#if userPreferences.composerFormattingToolbarVisible}
+    <ComposerFormattingToolbar
+      id={formattingToolbarId}
+      formattingState={composer.formattingState}
+      indentState={composer.indentState}
+      editorApi={composer.editorApi}
+      inputDisabled={composer.inputDisabled}
+    />
+  {/if}
+
+	<div
+		data-testid="composer-input-surface"
+		class="composer-surface @container relative flex min-h-12 min-w-0 items-end gap-1 px-2.5 py-1.5"
+		class:opacity-50={composer.inputDisabled}
+	>
     {#if composer.autocomplete.emoji}
       <EmojiAutocomplete
         bind:this={composer.autocomplete.emojiRef}
@@ -205,11 +248,35 @@
       />
     {/if}
 
-    <div class="min-h-9 min-w-0 px-0.5 py-0.5" data-testid="composer-editor-row">
-      {#await tipTapEditorModule}
+    <button
+      type="button"
+      onpointerdown={(event) => event.preventDefault()}
+      onclick={() =>
+        (userPreferences.composerFormattingToolbarVisible =
+          !userPreferences.composerFormattingToolbarVisible)}
+      aria-label={m('composer.formatting_options')}
+      aria-controls={formattingToolbarId}
+      aria-expanded={userPreferences.composerFormattingToolbarVisible}
+      aria-pressed={userPreferences.composerFormattingToolbarVisible}
+      title={m('composer.formatting_options')}
+      class={[
+        'mb-1.5 flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded text-sm font-semibold transition-[background-color,color,scale] duration-100 active:scale-[0.96]',
+        userPreferences.composerFormattingToolbarVisible
+          ? 'bg-surface-emphasized text-text'
+          : 'text-muted hover:bg-surface-emphasized hover:text-text'
+      ]}
+    >
+      <span aria-hidden="true">Aa</span>
+    </button>
+
+    <div
+      class="min-h-9 min-w-0 flex-1 px-0.5 py-0.5"
+      data-testid="composer-editor-row"
+    >
+      {#await editorModule}
         <div class="min-h-8 min-w-0" aria-hidden="true"></div>
-      {:then { default: TipTapEditor }}
-        <TipTapEditor
+      {:then { default: Editor }}
+        <Editor
           placeholder={composer.currentPlaceholder}
           editable={!composer.inputDisabled}
           autofocus={autoFocus && shouldAutoFocus()}
@@ -217,27 +284,25 @@
           onUpdate={(text) => composer.handleEditorUpdate(text)}
           onKeyDown={(event) => composer.handleEditorKeyDown(event)}
           onPaste={(event) => composer.handlePaste(event)}
-          onNextEnterWillSendChange={(value) => (composer.editorNextEnterWillSend = value)}
-          onRichStructureChange={(value) => (composer.editorHasRichStructure = value)}
           onFormattingStateChange={(formatting) => (composer.formattingState = { ...formatting })}
+          onIndentStateChange={(state) => (composer.indentState = { ...state })}
           onReady={(api) => composer.handleEditorReady(api)}
+          onDestroy={(api) => composer.handleEditorDestroyed(api)}
         />
       {/await}
     </div>
 
     <ComposerToolbar
-      formattingState={composer.formattingState}
       editorApi={composer.editorApi}
       inputDisabled={composer.inputDisabled}
       {canAttach}
       isEditing={composer.isEditing}
       canSubmit={composer.canSubmit}
-      isRichComposer={composer.isRichComposer}
-      nextEnterWillSend={composer.nextEnterWillSend}
       fileInputElement={composer.fileInputElement}
       effectiveTimezone={userSettings.effectiveTimezone}
       showCreateThread={showCreateThread && !composer.isEditing && !inThread}
-      createThread={composer.createThread}
+      createThread={createThreadRequired || composer.createThread}
+      {createThreadRequired}
       onToggleCreateThread={() => (composer.createThread = !composer.createThread)}
       showAlsoSendToChannel={(showAlsoSendToChannel && !composer.isEditing) ||
         composer.showEditEchoToggle}
@@ -269,4 +334,30 @@
   >
     {m('composer.role_mention_confirm_body')}
   </ConfirmDialog>
+{/if}
+
+{#if composer.pendingThreadDestinationConfirmation}
+  <Dialog
+    visible
+    size="md"
+    title={m('composer.recent_thread_confirm_title')}
+    onclose={() => composer.cancelThreadDestinationConfirmation()}
+  >
+    <p class="text-muted">{m('composer.recent_thread_confirm_body')}</p>
+
+    {#snippet footer()}
+      <div class="flex justify-end gap-2">
+        <Button variant="secondary" onclick={() => composer.cancelThreadDestinationConfirmation()}>
+          {m('common.cancel')}
+        </Button>
+        <Button variant="secondary" onclick={() => composer.postAsNewRoot()}>
+          {m('composer.post_as_new_message')}
+        </Button>
+        <Button defaultAction variant="action" onclick={() => composer.postInRecentThread()}>
+          <span class="iconify icon-[uil--comment-alt-lines]"></span>
+          {m('composer.continue_in_thread')}
+        </Button>
+      </div>
+    {/snippet}
+  </Dialog>
 {/if}

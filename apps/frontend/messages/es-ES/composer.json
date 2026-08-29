@@ -1,10 +1,9 @@
 {
   "composer": {
     "attach_file": "Adjuntar archivo",
+    "formatting_options": "Opciones de formato",
     "send": "Enviar mensaje",
     "send_label": "Enviar",
-    "send_enter": "Enviar mensaje (Entrar)",
-    "send_ctrl_enter": "Enviar mensaje (Ctrl/Cmd+Entrar)",
     "also_send_to_channel": "También enviar al canal",
     "post_as_thread": "Publicar como hilo",
     "thread_label": "Hilo",
@@ -28,6 +27,11 @@
     "slow_mode_waiting": "Modo lento: vuelve a enviar en {countdown}.",
     "slow_mode_bypassed": "Modo lento: {interval} (tienes una exención).",
     "slow_mode_rejected": "El modo lento está activo. Espera antes de enviar otro mensaje.",
+    "threads_encouraged": "Se recomienda usar hilos en esta sala.",
+    "recent_thread_confirm_title": "¿Continuar en tu hilo anterior?",
+    "recent_thread_confirm_body": "Tu mensaje anterior ya tiene un hilo. ¿Dónde quieres publicar este mensaje?",
+    "post_as_new_message": "Publicar como mensaje nuevo",
+    "continue_in_thread": "Continuar en el hilo",
     "edit_failed": "No se pudo editar el mensaje",
     "upload": {
       "preparing": "Preparando…",
@@ -44,7 +48,9 @@
       "bullet_list": "Lista con viñetas",
       "ordered_list": "Lista numerada",
       "blockquote": "Cita",
-      "code_block": "Bloque de código"
+      "code_block": "Bloque de código",
+      "outdent": "Reducir sangría",
+      "indent": "Aumentar sangría"
     },
     "timestamp": {
       "title": "Insertar marca de tiempo",

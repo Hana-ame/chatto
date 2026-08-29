@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/alexedwards/scs/v2"
 	"github.com/charmbracelet/log"
 	"github.com/gin-contrib/sessions"
 	"github.com/gin-contrib/sessions/cookie"
@@ -52,12 +53,19 @@ type HTTPServer struct {
 	realtimeCatchUps    *realtimeCatchUpAdmission
 	trustedProxies      trustedProxySet
 	oauthClientResolver *OAuthClientResolver
+	browserSessions     *scs.SessionManager
 
 	// Optional test hook used to make password-login revocation races deterministic.
 	passwordLoginSessionCreatedHook func(*gin.Context, string, uint64)
 
 	// Optional test hook for deterministic OAuth client metadata resolution.
 	oauthClientResolveHook func(context.Context, string) (OAuthClient, bool, error)
+
+	// Optional test hook for deterministic cookie-session renewal timing.
+	cookieSessionRenewalNow func() time.Time
+
+	// Optional test hook for established realtime credential checks.
+	realtimeCredentialCheckEvery time.Duration
 }
 
 const (
@@ -108,8 +116,8 @@ func limitRequestBody(maxBytes int64, readTimeout time.Duration) gin.HandlerFunc
 func NewHTTPServer(cfg HTTPServerConfig) (*HTTPServer, error) {
 	logger := log.WithPrefix("server.HTTP")
 
-	// Create email mailer (mock if built with -tags test_endpoints, real otherwise)
-	mockMailer, mailer := createMailer(cfg.Config.SMTP)
+	// Create the configured email sender (mock if built with -tags test_endpoints).
+	mockMailer, mailer := createMailer(cfg.Config.Email, cfg.Config.SMTP)
 
 	// Warn at startup if test endpoints are enabled (security-bypassing endpoints)
 	if mockMailer != nil {
@@ -221,13 +229,21 @@ func requestLogPath(path string) string {
 	if strings.HasPrefix(path, "/invite/") {
 		return "/invite/:token"
 	}
+	if strings.HasPrefix(path, "/webhooks/incoming/") {
+		return "/webhooks/incoming/:credential"
+	}
 	return path
 }
 
 func (s *HTTPServer) setupRoutes() error {
 	// SESSION MANAGEMENT
+	secureCookies := strings.HasPrefix(s.config.Webserver.URL, "https")
+	browserSessionStore := newJetStreamBrowserSessionStore(s.core)
+	s.browserSessions = newBrowserSessionManager(browserSessionStore, s.config.Auth.TokenTTLOrDefault(), secureCookies)
 
-	// Configure session middleware
+	// The legacy encrypted session is retained only for short-lived provider,
+	// invitation, and OAuth browser-flow state. Authentication uses the separate
+	// opaque SCS cookie above.
 	authKey := []byte(s.config.Webserver.CookieSigningSecret)
 	var sessionStore sessions.Store
 	encKey, err := s.config.Webserver.CookieEncryptionKey()
@@ -240,7 +256,7 @@ func (s *HTTPServer) setupRoutes() error {
 		s.logger.Warn("webserver.cookie_encryption_secret is not set; session cookies are signed but NOT encrypted. Run `chatto init` on a fresh server to generate one, or add a hex-encoded 32-byte value to chatto.toml.")
 		sessionStore = cookie.NewStore(authKey)
 	}
-	sessionStore.Options(cookieSessionOptions(s.config.Auth.TokenTTLOrDefault(), strings.HasPrefix(s.config.Webserver.URL, "https")))
+	sessionStore.Options(cookieSessionOptions(s.config.Auth.TokenTTLOrDefault(), secureCookies))
 	sessionStore = newDebugSessionStore(sessionStore, s.logger)
 	s.router.Use(sessions.Sessions("chatto_session", sessionStore))
 

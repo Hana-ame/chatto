@@ -1,10 +1,9 @@
 {
   "composer": {
     "attach_file": "Legg ved fil",
+    "formatting_options": "Formateringsalternativer",
     "send": "Send melding",
     "send_label": "Send",
-    "send_enter": "Send melding (Enter)",
-    "send_ctrl_enter": "Send melding (Ctrl/Cmd+Enter)",
     "also_send_to_channel": "Send også til kanalen",
     "post_as_thread": "Publiser som tråd",
     "thread_label": "Tråd",
@@ -28,6 +27,11 @@
     "slow_mode_waiting": "Sakte modus: send igjen om {countdown}.",
     "slow_mode_bypassed": "Sakte modus: {interval} (du er unntatt).",
     "slow_mode_rejected": "Sakte modus er aktiv. Vent før du sender en ny melding.",
+    "threads_encouraged": "Tråder anbefales i dette rommet.",
+    "recent_thread_confirm_title": "Fortsette i den forrige tråden?",
+    "recent_thread_confirm_body": "Den forrige meldingen din har allerede en tråd. Hvor skal denne meldingen publiseres?",
+    "post_as_new_message": "Publiser som ny melding",
+    "continue_in_thread": "Fortsett i tråden",
     "edit_failed": "Kunne ikke redigere meldingen",
     "upload": {
       "preparing": "Klargjør…",
@@ -44,7 +48,9 @@
       "bullet_list": "Punktliste",
       "ordered_list": "Nummerert liste",
       "blockquote": "Sitat",
-      "code_block": "Kodeblokk"
+      "code_block": "Kodeblokk",
+      "outdent": "Reduser innrykk",
+      "indent": "Øk innrykk"
     },
     "timestamp": {
       "title": "Sett inn tidsstempel",

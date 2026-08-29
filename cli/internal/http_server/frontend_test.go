@@ -18,7 +18,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"hmans.de/chatto/internal/config"
 	"hmans.de/chatto/internal/core"
-	corev1 "hmans.de/chatto/internal/pb/chatto/core/v1"
+	evtv1 "hmans.de/chatto/internal/pb/chatto/core/evt/v1"
 	"hmans.de/chatto/internal/testutil"
 	"hmans.de/chatto/pkg/signedurl"
 )
@@ -150,6 +150,47 @@ func TestImmutableAssetCaching(t *testing.T) {
 		assert.Equal(t, cacheControlRevalidate, w.Header().Get("Cache-Control"))
 		assert.Empty(t, w.Header().Get("ETag"))
 	})
+}
+
+func TestImmutableFrontendAssetNeverCarriesAuthenticationCookies(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	chattoCore := setupFrontendTestCoreWithLogo(t)
+	ctx := testContext(t)
+	user, err := chattoCore.CreateUser(ctx, core.SystemActorID, "immutable-cookie-user", "Immutable Cookie User", "password123")
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	sessionID, _, err := chattoCore.CreateCookieSession(ctx, user.GetId(), "password_login")
+	if err != nil {
+		t.Fatalf("CreateCookieSession: %v", err)
+	}
+
+	router := gin.New()
+	store := cookie.NewStore([]byte("test-secret-key-32-bytes-long!!"))
+	router.Use(sessions.Sessions("chatto_session", store))
+	server := &HTTPServer{
+		config: config.ChattoConfig{
+			Webserver: config.WebserverConfig{URL: "https://example.com"},
+		},
+		core:   chattoCore,
+		router: router,
+	}
+	router.Use(server.csrfMiddleware())
+	if err := server.setupFrontendRoutes(); err != nil {
+		t.Fatalf("setupFrontendRoutes: %v", err)
+	}
+
+	assetRequest := httptest.NewRequest(http.MethodGet, "/_app/immutable/entry/start.CxnbWTuF.js", nil)
+	assetRequest.AddCookie(&http.Cookie{Name: browserSessionCookieName, Value: sessionID})
+	assetResponse := httptest.NewRecorder()
+	router.ServeHTTP(assetResponse, assetRequest)
+
+	if values := assetResponse.Header().Values("Set-Cookie"); len(values) != 0 {
+		t.Fatalf("immutable asset Set-Cookie = %v, want none", values)
+	}
+	if got := assetResponse.Header().Get("Cache-Control"); got != cacheControlImmutable {
+		t.Fatalf("immutable asset Cache-Control = %q, want %q", got, cacheControlImmutable)
+	}
 }
 
 func TestServiceWorkerETag(t *testing.T) {
@@ -726,11 +767,11 @@ func setupFrontendTestCoreWithLogo(t *testing.T) *core.ChattoCore {
 	}
 	startCoreServices(t, chattoCore)
 
-	logo := &corev1.AssetRecord{
+	logo := &evtv1.AssetRecord{
 		Id:          "logo-asset",
 		Filename:    "logo.webp",
 		ContentType: "image/webp",
-		Storage:     &corev1.AssetRecord_Nats{Nats: &corev1.NATSAsset{Key: "logo-asset"}},
+		Storage:     &evtv1.AssetRecord_Nats{Nats: &evtv1.NATSAsset{Key: "logo-asset"}},
 	}
 	if err := chattoCore.SetServerLogo(ctx, core.SystemActorID, logo); err != nil {
 		t.Fatalf("SetServerLogo: %v", err)
@@ -793,15 +834,7 @@ func TestSecurityHeaders(t *testing.T) {
 		assert.Equal(t, "nosniff", w.Header().Get("X-Content-Type-Options"))
 		assert.Equal(t, "DENY", w.Header().Get("X-Frame-Options"))
 		assert.Equal(t, "strict-origin-when-cross-origin", w.Header().Get("Referrer-Policy"))
-		csp := w.Header().Get("Content-Security-Policy-Report-Only")
-		assert.NotEmpty(t, csp)
-		assert.Contains(t, csp, "default-src 'self'")
-		assert.Contains(t, csp, "connect-src 'self' http: https: ws: wss:")
-		assert.Contains(t, csp, "img-src 'self' data: blob: http: https:")
-		assert.Contains(t, csp, "media-src 'self' blob: http: https:")
-		assert.Contains(t, csp, "frame-src https://www.youtube-nocookie.com")
-		assert.Contains(t, csp, "require-trusted-types-for 'script'")
-		assert.Contains(t, csp, "trusted-types chatto-markdown-html")
-		assert.NotContains(t, csp, "trusted-types default")
+		assert.Equal(t, "frame-ancestors 'none'", w.Header().Get("Content-Security-Policy"))
+		assert.Empty(t, w.Header().Get("Content-Security-Policy-Report-Only"))
 	})
 }

@@ -16,6 +16,7 @@ import type {
 } from '@chatto/api-types/api/v1/room_directory_pb';
 import { RoomDirectoryScope } from '@chatto/api-types/api/v1/room_directory_pb';
 import { RoomKind } from '@chatto/api-types/api/v1/rooms_pb';
+import { normalizeRoomThreadingMode, type RoomThreadingMode } from '$lib/roomThreading';
 
 export type RoomDirectoryAPIConfig = ConnectAPIConfig;
 
@@ -27,9 +28,11 @@ export type DirectoryRoomSummary = {
   archived: boolean;
   isUniversal: boolean;
   slowModeSeconds: number;
+  threadingMode: RoomThreadingMode;
   slowModeNextPostAt: string | null;
   isMember: boolean;
   hasUnread: boolean;
+  canReadMessages: boolean | null;
   canJoinRoom: boolean;
   canManageRoom: boolean;
 };
@@ -83,6 +86,8 @@ const RoomPermission = {
   JoinRoom: 'room.join',
   ManageMessage: 'message.manage',
   ManageRoom: 'room.manage',
+  ReadInteractions: 'message.read-interactions',
+  ReadMessages: 'message.read',
   PostInThread: 'message.post-in-thread',
   PostMessage: 'message.post',
   React: 'message.react'
@@ -197,9 +202,14 @@ export function mapDirectoryRoom(entry: RoomWithViewerState): DirectoryRoomSumma
     archived: entry.room.archived,
     isUniversal: entry.room.universal,
     slowModeSeconds: entry.room.slowModeSeconds ?? 0,
+    threadingMode: normalizeRoomThreadingMode(entry.room.kind, entry.room.threadingMode),
     slowModeNextPostAt: entry.viewerState?.slowModeNextPostAt?.toDate().toISOString() ?? null,
     isMember: entry.viewerState?.isMember ?? false,
     hasUnread: entry.viewerState?.hasUnread ?? false,
+    canReadMessages: anyRoomPermissionDecision(entry.viewerState, [
+      RoomPermission.ReadMessages,
+      RoomPermission.ReadInteractions
+    ]),
     canJoinRoom: hasRoomPermission(entry.viewerState, RoomPermission.JoinRoom),
     canManageRoom: hasRoomPermission(entry.viewerState, RoomPermission.ManageRoom)
   };
@@ -217,9 +227,25 @@ export function mapRoomGroup(group: RoomGroup): DirectoryRoomGroup {
 }
 
 function hasRoomPermission(state: RoomViewerState | undefined, permission: string): boolean {
-  return (
-    state?.permissions.some((grant) => grant.permission === permission && grant.granted) ?? false
-  );
+  return roomPermissionDecision(state, permission) ?? false;
+}
+
+function roomPermissionDecision(
+  state: RoomViewerState | undefined,
+  permission: string
+): boolean | null {
+  const grant = state?.permissions.find((candidate) => candidate.permission === permission);
+  return grant ? grant.granted : null;
+}
+
+function anyRoomPermissionDecision(
+  state: RoomViewerState | undefined,
+  permissions: readonly string[]
+): boolean | null {
+  const decisions = permissions.map((permission) => roomPermissionDecision(state, permission));
+  if (decisions.some((decision) => decision === true)) return true;
+  if (decisions.some((decision) => decision === false)) return false;
+  return null;
 }
 
 function hasRoomGroupPermission(

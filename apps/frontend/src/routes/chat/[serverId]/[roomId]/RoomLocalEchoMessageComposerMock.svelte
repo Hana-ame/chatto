@@ -1,18 +1,19 @@
 <script lang="ts">
-  import {
-    TimelineEventKind,
-    type TimelineEventView
-  } from '$lib/render/timelineEvents';
+  import { TimelineEventKind, type TimelineEventView } from '$lib/render/timelineEvents';
   import { getComposerContext } from '$lib/state/room';
 
   let {
     inReplyTo,
     showCreateThread = false,
-    onMessageSent
+    createThreadRequired = false,
+    onMessageSent,
+    onThreadCreated
   }: {
     inReplyTo?: string;
     showCreateThread?: boolean;
+    createThreadRequired?: boolean;
     onMessageSent?: (event: TimelineEventView | null) => void;
+    onThreadCreated?: (threadRootEventId: string) => void;
   } = $props();
 
   const composerContext = getComposerContext();
@@ -72,7 +73,13 @@
   emit returned post
 </button>
 
-<button data-testid="emit-created-thread" onclick={() => onMessageSent?.(returnedPost)}>
+<button
+  data-testid="emit-created-thread"
+  onclick={() => {
+    onMessageSent?.(returnedPost);
+    onThreadCreated?.(returnedPost.id);
+  }}
+>
   emit created thread
 </button>
 
@@ -89,3 +96,4 @@
 
 <output data-testid="composer-in-reply-to">{inReplyTo ?? ''}</output>
 <output data-testid="composer-can-create-thread">{String(showCreateThread)}</output>
+<output data-testid="composer-requires-thread">{String(createThreadRequired)}</output>

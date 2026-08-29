@@ -34,8 +34,8 @@ test.describe('Direct Messages (room-shaped)', () => {
     await withServerUser(browser, serverURL, async ({ page: pageB, user: userB }) => {
       const roomB = await new DMPage(pageB).startConversation(userA.login);
 
-      await page.goto(routes.browseRooms);
-      await page.waitForURL(routes.browseRooms);
+      await page.goto(routes.serverOverview);
+      await page.waitForURL(routes.serverOverview);
       const conversation = new DMPage(page).getConversation(userB.displayName);
       await expect(conversation).not.toBeVisible();
 
@@ -148,8 +148,8 @@ test.describe('Direct Messages (room-shaped)', () => {
         const aToB = await dmA.startConversation(userB.login);
         await aToB.sendMessage('seed B');
 
-        await page.goto(routes.browseRooms);
-        await page.waitForURL(routes.browseRooms);
+        await page.goto(routes.serverOverview);
+        await page.waitForURL(routes.serverOverview);
         await expect(page.getByRole('button', { name: /direct messages/i })).toBeVisible({
           timeout: TIMEOUTS.REALTIME_EVENT
         });
@@ -212,8 +212,8 @@ test.describe('Direct Messages (room-shaped)', () => {
         await aToC.sendMessage('seed C');
         // C is now most-recent.
 
-        await page.goto(routes.browseRooms);
-        await page.waitForURL(routes.browseRooms);
+        await page.goto(routes.serverOverview);
+        await page.waitForURL(routes.serverOverview);
         const dmRows = () =>
           page.locator('nav a.sidebar-item').filter({
             has: page.getByText(new RegExp(`^(${userB.displayName}|${userC.displayName})$`))
@@ -250,8 +250,8 @@ test.describe('Direct Messages (room-shaped)', () => {
 
     await withServerUser(browser, serverURL, async ({ page: pageB }) => {
       // User A on Overview with no DMs yet — server icon has no indicator.
-      await page.goto(routes.browseRooms);
-      await page.waitForURL(routes.browseRooms);
+      await page.goto(routes.serverOverview);
+      await page.waitForURL(routes.serverOverview);
       // Scope to the Server Gutter so we don't collide with notification
       // buttons rendered inside the Server Sidebar.
       const serverIconWrapper = page
@@ -297,8 +297,8 @@ test.describe('Direct Messages (room-shaped)', () => {
         const aToC = await dmA.startConversation(userC.login);
         await aToC.sendMessage('seed C');
 
-        await page.goto(routes.browseRooms);
-        await page.waitForURL(routes.browseRooms);
+        await page.goto(routes.serverOverview);
+        await page.waitForURL(routes.serverOverview);
 
         const groupHeader = page.getByRole('button', { name: /direct messages/i });
         const dmRow = (displayName: string) =>
@@ -333,7 +333,7 @@ test.describe('Direct Messages (room-shaped)', () => {
     });
   });
 
-  test('user with denied message.post still sees existing DM conversations', async ({
+  test('message.read denial does not hide a DM from its participant', async ({
     page,
     browser,
     serverURL
@@ -356,9 +356,11 @@ test.describe('Direct Messages (room-shaped)', () => {
       const dmRoomId = (await startResp.json()).room.id as string;
       await postMessageViaConnect(page, dmRoomId, 'seed');
 
-      // Deny message.post BEFORE the regular user navigates. This should stop
-      // starting/sending DMs, not reading an existing DM.
-      const denyRole = await denyUserPermission(page, regularUser.id!, 'message.post');
+      // Deny both permissions before the regular user navigates. message.post
+      // must stop creating DMs and sending messages, while message.read is
+      // inapplicable to DM reads.
+      const denyPostRole = await denyUserPermission(page, regularUser.id!, 'message.post');
+      const denyReadRole = await denyUserPermission(page, regularUser.id!, 'message.read');
       try {
         const deniedStartResp = await regularPage.request.post(
           '/api/connect/chatto.api.v1.RoomService/StartDM',
@@ -367,7 +369,12 @@ test.describe('Direct Messages (room-shaped)', () => {
             data: { participantIds: [adminUser.id!] }
           }
         );
-        expect(deniedStartResp.status()).toBe(403);
+        // Reusing the seeded DM remains allowed. This lets a participant open
+        // its profile information, while attempts to create a new DM still
+        // return permission denied (covered by the RoomService integration
+        // test).
+        expect(deniedStartResp.status()).toBe(200);
+        expect((await deniedStartResp.json()).room.id).toBe(dmRoomId);
 
         await regularPage.goto(routes.chat);
         await regularPage.waitForURL(routes.chat);
@@ -380,8 +387,8 @@ test.describe('Direct Messages (room-shaped)', () => {
           timeout: TIMEOUTS.UI_STANDARD
         });
 
-        // DM read access is membership-based, so the seeded conversation still
-        // appears even while message.post is denied.
+        // DM read access is membership-based, so the seeded DM still appears
+        // while message.post and message.read are denied.
         await expect(regularPage.getByRole('button', { name: /direct messages/i })).toBeVisible({
           timeout: TIMEOUTS.UI_STANDARD
         });
@@ -392,6 +399,11 @@ test.describe('Direct Messages (room-shaped)', () => {
         const roomPage = new RoomPage(regularPage);
         await expect(roomPage.getMessage('seed').locator).toBeVisible({
           timeout: TIMEOUTS.UI_STANDARD
+        });
+        const liveBody = `live DM after message.read denial ${Date.now()}`;
+        await postMessageViaConnect(page, dmRoomId, liveBody);
+        await expect(roomPage.getMessage(liveBody).locator).toBeVisible({
+          timeout: TIMEOUTS.REALTIME_EVENT
         });
         await expect(roomPage.messageInput).toHaveAttribute('contenteditable', 'false');
         await expect(roomPage.sendButton).toBeDisabled();
@@ -405,7 +417,8 @@ test.describe('Direct Messages (room-shaped)', () => {
         await expect(profileDialog).toBeVisible({ timeout: TIMEOUTS.UI_STANDARD });
         await expect(profileDialog.getByRole('button', { name: 'Send Message' })).toBeHidden();
       } finally {
-        await clearUserPermissionOverride(page, regularUser.id!, 'message.post', denyRole);
+        await clearUserPermissionOverride(page, regularUser.id!, 'message.read', denyReadRole);
+        await clearUserPermissionOverride(page, regularUser.id!, 'message.post', denyPostRole);
       }
     });
   });

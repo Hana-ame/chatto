@@ -4,10 +4,25 @@ import type { Editor } from '@tiptap/core';
 import {
   buildQuoteContent,
   createClipboardContent,
+  // 【本地改动】getSerializedMarkdown 服务于内联图片序列化回归测试
+  // （inline image serialization）；isHttpMarkdownAutolink 是 upstream 新增。
+  // 2026-08-29 合并 upstream：两者都保留。本地原有的
+  // normalizeQuoteInsertionContent 已由 upstream 删除（markdown.ts 不再导出该函数，
+  // 相关测试也一并移除），因此不能保留此导入，否则 TS 报未定义导出。
   getSerializedMarkdown,
-  normalizeQuoteInsertionContent,
+  isHttpMarkdownAutolink,
   prepareMarkdownForEditor
 } from './markdown';
+
+describe('isHttpMarkdownAutolink', () => {
+  it('accepts only complete angle-bracket HTTP(S) URLs', () => {
+    expect(isHttpMarkdownAutolink('<https://example.com/story>')).toBe(true);
+    expect(isHttpMarkdownAutolink('<HTTP://example.com/story>')).toBe(true);
+    expect(isHttpMarkdownAutolink('<example.com>')).toBe(false);
+    expect(isHttpMarkdownAutolink('<https://example.com/story')).toBe(false);
+    expect(isHttpMarkdownAutolink('See <https://example.com/story>')).toBe(false);
+  });
+});
 
 describe('prepareMarkdownForEditor', () => {
   it('escapes HTML-looking prose without changing link destinations', () => {
@@ -55,28 +70,6 @@ describe('inline image serialization', () => {
     const serialized = getSerializedMarkdown(fakeEditor);
     expect(serialized).toBe('see ![alt](https://example.com/a.png) here');
     expect(serialized).not.toContain('\u2060');
-  });
-});
-
-describe('normalizeQuoteInsertionContent', () => {
-  it('normalizes plain selected text into top-level quote blocks', () => {
-    expect(normalizeQuoteInsertionContent(' First\r\nSecond ')).toEqual([
-      { quoteDepth: 0, text: 'First' },
-      { quoteDepth: 0, text: 'Second' }
-    ]);
-  });
-
-  it('normalizes structured quote depth and drops empty blocks', () => {
-    expect(
-      normalizeQuoteInsertionContent([
-        { quoteDepth: 1.9, text: ' Nested\r\nline ' },
-        { quoteDepth: -3, text: ' Root ' },
-        { quoteDepth: 4, text: '  ' }
-      ])
-    ).toEqual([
-      { quoteDepth: 1, text: 'Nested\nline' },
-      { quoteDepth: 0, text: 'Root' }
-    ]);
   });
 });
 

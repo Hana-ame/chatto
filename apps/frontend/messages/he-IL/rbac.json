@@ -44,6 +44,7 @@
       "allow": "לאפשר",
       "deny": "דחה",
       "winning_decision": "(החלטה מנצחת)",
+      "included_by": "Included by {permission}",
       "level_server": "שרת",
       "level_group": "קבוצה",
       "level_room": "חדר",
@@ -94,6 +95,16 @@
         }
       }
     },
+    "permission_categories": {
+      "admin": "ניהול",
+      "bot": "בוטים",
+      "message": "הודעות",
+      "role": "תפקידים",
+      "room": "חדרים",
+      "server": "שרת",
+      "user": "משתמשים",
+      "other": "אחר"
+    },
     "permission_descriptions": {
       "server_manage": "עדכון הגדרות שרת (שם, תיאור, לוגו)",
       "room_create": "צור חדרים חדשים",
@@ -101,6 +112,8 @@
       "room_list": "ראה חדרים בספרייה. ניתן לאפשר למשתמש לראות חדר (למשל לבקש גישה) מבלי שיוכל להצטרף אליו.",
       "room_manage": "ערוך את ההגדרות וההרשאות של חדר ומחק חדרים",
       "room_ban_member": "חסום חברים מחדרים",
+      "message_read": "קריאת הודעות בחדרי ערוצים",
+      "message_read_interactions": "קריאת שרשורים מלאים שיצרת או שבהם משתמש אחר הזכיר אותך ישירות",
       "message_post": "פרסם הודעות שורש בחדרים והתחל הודעות DM",
       "message_post_in_thread": "פרסם תשובות בתוך שרשור",
       "message_attach": "צרף קבצים להודעות",
@@ -116,7 +129,9 @@
       "user_delete_self": "מחק את החשבון שלך",
       "user_invite": "יצירה וניהול של קישורי הזמנה",
       "user_manage_accounts": "צור משתמשים, ערוך את זהות החשבון, אפס סיסמאות, צרף הודעות אימייל מאומתות ונקה צינון התחברות",
-      "user_manage_permissions": "עריכה ישירה של הרשאות לכל משתמש"
+      "user_manage_permissions": "עריכה ישירה של הרשאות לכל משתמש",
+      "bot_create": "יצירת חשבונות בוט בבעלותך",
+      "bot_manage": "הצגה וניהול של כל חשבונות הבוט"
     }
   }
 }

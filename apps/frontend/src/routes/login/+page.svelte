@@ -1,5 +1,6 @@
 <script lang="ts">
   import { resolve } from '$app/paths';
+  import { browserCookieAuthenticationHeaders } from '$lib/auth/authenticationMode';
   import { completeOriginAuthentication } from '$lib/auth/originAuthentication';
   import { startRemoteReauthentication } from '$lib/auth/reauth';
   import { navigateAfterAuthentication } from '$lib/auth/returnNavigation';
@@ -117,9 +118,12 @@
     isLoading = true;
 
     try {
-      const response = await fetch('/auth/login', {
+      const response = await fetch('/auth/browser/login', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...browserCookieAuthenticationHeaders
+        },
         body: JSON.stringify({ identifier, password }),
         credentials: 'include'
       });
@@ -131,15 +135,7 @@
         return;
       }
 
-      if (typeof result.token !== 'string' || !result.token) {
-        error = m('auth.login.missing_token');
-        return;
-      }
-
-      const resumedReturnNavigation = await completeOriginAuthentication(
-        result.token,
-        result.user ?? null
-      );
+      const resumedReturnNavigation = await completeOriginAuthentication();
       if (!resumedReturnNavigation) {
         await navigateAfterAuthentication(data.redirectUrl);
       }

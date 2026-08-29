@@ -1,10 +1,9 @@
 {
   "composer": {
     "attach_file": "Pievienojiet failu",
+    "formatting_options": "Formatēšanas opcijas",
     "send": "Nosūtīt ziņu",
     "send_label": "Sūtīt",
-    "send_enter": "Sūtīt ziņojumu (ievadiet)",
-    "send_ctrl_enter": "Sūtīt ziņojumu (Ctrl/Cmd+Enter)",
     "also_send_to_channel": "Sūtīt arī uz kanālu",
     "post_as_thread": "Publicēt kā pavedienu",
     "thread_label": "Pavediens",
@@ -28,6 +27,11 @@
     "slow_mode_waiting": "Lēnais režīms: sūtiet vēlreiz pēc {countdown}.",
     "slow_mode_bypassed": "Lēnais režīms: {interval} (uz jums ierobežojums neattiecas).",
     "slow_mode_rejected": "Lēnais režīms ir aktīvs. Uzgaidiet pirms nākamā ziņojuma sūtīšanas.",
+    "threads_encouraged": "Šajā telpā ieteicams izmantot pavedienus.",
+    "recent_thread_confirm_title": "Vai turpināt iepriekšējā pavedienā?",
+    "recent_thread_confirm_body": "Jūsu iepriekšējam ziņojumam jau ir pavediens. Kur publicēt šo ziņojumu?",
+    "post_as_new_message": "Publicēt kā jaunu ziņojumu",
+    "continue_in_thread": "Turpināt pavedienā",
     "edit_failed": "Neizdevās rediģēt ziņojumu",
     "upload": {
       "preparing": "Notiek sagatavošana…",
@@ -44,7 +48,9 @@
       "bullet_list": "Aizzīmju saraksts",
       "ordered_list": "Numurēts saraksts",
       "blockquote": "Citāts",
-      "code_block": "Koda bloks"
+      "code_block": "Koda bloks",
+      "outdent": "Samazināt atkāpi",
+      "indent": "Palielināt atkāpi"
     },
     "timestamp": {
       "title": "Ievietojiet laikspiedolu",

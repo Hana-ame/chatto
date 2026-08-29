@@ -15,14 +15,14 @@ import { Room } from "./rooms_pb.js";
  */
 export enum RoomDirectoryScope {
   /**
-   * Include both visible channel rooms and the caller's active DM rooms.
+   * Include visible channel rooms and readable active DM rooms.
    *
    * @generated from enum value: ROOM_DIRECTORY_SCOPE_UNSPECIFIED = 0;
    */
   UNSPECIFIED = 0,
 
   /**
-   * Include both visible channel rooms and the caller's active DM rooms.
+   * Include visible channel rooms and readable active DM rooms.
    *
    * @generated from enum value: ROOM_DIRECTORY_SCOPE_ALL = 1;
    */
@@ -36,7 +36,7 @@ export enum RoomDirectoryScope {
   CHANNELS = 2,
 
   /**
-   * Include the caller's active DM rooms only.
+   * Include the caller's readable active DM rooms only.
    *
    * @generated from enum value: ROOM_DIRECTORY_SCOPE_DMS = 3;
    */
@@ -64,7 +64,8 @@ export class RoomViewerState extends Message<RoomViewerState> {
   isMember = false;
 
   /**
-   * True when the room has unread root messages for the current user.
+   * True when the room has neutral Badge attention for the current user.
+   * This state is independent of the user's last-read message cursor.
    *
    * @generated from field: bool has_unread = 2;
    */

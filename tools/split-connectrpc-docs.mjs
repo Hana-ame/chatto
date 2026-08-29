@@ -96,7 +96,14 @@ const categories = [
         slug: 'notifications',
         title: 'Notifications',
         description:
-          'Exact notification occurrence listing, read, deletion, and per-signal-class policy RPCs.'
+          'Exact notification occurrence listing, read, deletion, and legacy server/room policy RPCs.'
+      },
+      {
+        name: 'NotificationPolicyService',
+        slug: 'notification-policies',
+        title: 'Notification Policies',
+        description:
+          'Server, room-group, and room notification delivery policy RPCs for the authenticated viewer.'
       },
       {
         name: 'PushNotificationService',
@@ -400,7 +407,7 @@ function renderLanding() {
     '',
     '### Authenticated JSON request',
     '',
-    'Use bearer tokens for external clients. The exact token issuance flow depends on how your integration authenticates with the server. This example calls [ViewerService.GetViewer](/reference/connectrpc-api/viewer/#chatto-api-v1-ViewerService-GetViewer).',
+    'Use the short-lived access token from a renewable bearer session for external clients. Persist and rotate its refresh credential as described in [Using the Chatto API](/guides/integrations/chatto-api/). This example calls [ViewerService.GetViewer](/reference/connectrpc-api/viewer/#chatto-api-v1-ViewerService-GetViewer).',
     '',
     '```sh',
     'curl -X POST \\',

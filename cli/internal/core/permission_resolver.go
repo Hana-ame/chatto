@@ -16,7 +16,9 @@ import (
 //  4. The implicit everyone role supplies the nearest scope baseline. A named
 //     allow overrides an everyone deny only at the same or a nearer scope;
 //     named denies always win.
-//  5. No decision is denied at the API boundary.
+//  5. An allow from an explicitly including permission satisfies the requested
+//     permission. Denies do not propagate through an inclusion.
+//  6. No decision is denied at the API boundary.
 //
 // This makes everyone a scoped baseline rather than an absolute restriction: a
 // room allow can grant access that everyone lacks in that room, while an
@@ -76,6 +78,7 @@ type TraceEntry struct {
 //     beats any allow across those subjects.
 //  4. Apply the implicit everyone baseline. A named allow beats an everyone
 //     deny only when it is at least as specific; named denies always win.
+//  5. Apply explicit permission inclusion to effective allows.
 func (r *PermissionResolver) Resolve(ctx context.Context, userID string, kind RoomKind, roomID string, perm Permission) (DecisionKind, error) {
 	return r.resolveWithGroup(ctx, userID, kind, roomID, "", perm)
 }
@@ -91,6 +94,10 @@ func (r *PermissionResolver) resolveWithGroup(ctx context.Context, userID string
 	if accountExists && isBot {
 		return r.resolveBotWithGroup(ctx, userID, ownerUserID, kind, roomID, explicitGroupID, perm)
 	}
+	return r.resolveHumanWithGroup(ctx, userID, kind, roomID, explicitGroupID, perm)
+}
+
+func (r *PermissionResolver) resolveHumanWithGroup(ctx context.Context, userID string, kind RoomKind, roomID, explicitGroupID string, perm Permission) (DecisionKind, error) {
 	if _, known := GetPermissionMetadata(perm); known {
 		isOwner, err := r.core.IsServerOwner(ctx, userID)
 		if err != nil {
@@ -114,15 +121,17 @@ func (r *PermissionResolver) resolveWithGroup(ctx context.Context, userID string
 		}
 	}
 
-	decisions, err := r.applicableDecisions(ctx, userID, kind, roomID, groupID, perm)
-	if err != nil {
-		return DecisionNone, err
-	}
-	result, _, _ := resolveApplicablePermissionDecisions(decisions)
-	if err == nil && result == DecisionNone && kind == KindDM && dmDefaultAllows(perm) {
-		result = DecisionAllow
-	}
-	return result, err
+	return resolvePermissionWithInclusions(perm, func(candidate Permission) (DecisionKind, error) {
+		decisions, err := r.applicableDecisions(ctx, userID, kind, roomID, groupID, candidate)
+		if err != nil {
+			return DecisionNone, err
+		}
+		result, _, _ := resolveApplicablePermissionDecisions(decisions)
+		if result == DecisionNone && kind == KindDM && dmDefaultAllows(candidate) {
+			result = DecisionAllow
+		}
+		return result, nil
+	})
 }
 
 func (r *PermissionResolver) resolveBotWithGroup(ctx context.Context, botUserID, ownerUserID string, kind RoomKind, roomID, explicitGroupID string, perm Permission) (DecisionKind, error) {
@@ -158,18 +167,42 @@ func (r *PermissionResolver) resolveBotWithGroup(ctx context.Context, botUserID,
 }
 
 // botDelegatedDecision resolves only the bot's explicit direct-user decisions.
-// Bots never receive named-role, everyone, owner, or DM-default grants.
+// An explicit including permission can satisfy the requested permission. Bots
+// never receive named-role, everyone, owner, or DM-default grants.
 func (r *PermissionResolver) botDelegatedDecision(botUserID string, kind RoomKind, roomID, groupID string, perm Permission) DecisionKind {
-	parts := perm.KeyParts()
-	if parts.Verb == "" || parts.ObjectType == "" {
+	decision, _ := resolvePermissionWithInclusions(perm, func(candidate Permission) (DecisionKind, error) {
+		return r.botDelegatedExactDecision(botUserID, kind, roomID, groupID, candidate), nil
+	})
+	return decision
+}
+
+func (r *PermissionResolver) botDelegatedExactDecision(botUserID string, kind RoomKind, roomID, groupID string, perm Permission) DecisionKind {
+	if _, known := GetPermissionMetadata(perm); !known {
 		return DecisionNone
 	}
 	scopes := r.applicableScopeTargets(kind, roomID, groupID, perm)
-	entry, ok := r.nearestDecision(botUserID, parts, scopes)
+	entry, ok := r.nearestDecision(botUserID, perm, scopes)
 	if !ok {
 		return DecisionNone
 	}
 	return entry.Decision
+}
+
+// resolvePermissionWithInclusions applies explicit permission inclusion to an
+// effective decision. An allow from an including permission wins. A deny or
+// absent decision on an including permission does not restrict a separately
+// allowed included permission.
+func resolvePermissionWithInclusions(perm Permission, resolveExact func(Permission) (DecisionKind, error)) (DecisionKind, error) {
+	for _, including := range includingPermissions(perm) {
+		decision, err := resolveExact(including)
+		if err != nil {
+			return DecisionNone, err
+		}
+		if decision == DecisionAllow {
+			return DecisionAllow, nil
+		}
+	}
+	return resolveExact(perm)
 }
 
 // HasServerPermission checks a server-only permission (no room context).
@@ -238,8 +271,7 @@ func (r *PermissionResolver) applicableDecisions(
 	ctx context.Context, userID string, kind RoomKind, roomID, groupID string, perm Permission,
 ) (applicablePermissionDecisions, error) {
 	var out applicablePermissionDecisions
-	parts := perm.KeyParts()
-	if parts.Verb == "" || parts.ObjectType == "" {
+	if _, known := GetPermissionMetadata(perm); !known {
 		return out, nil
 	}
 
@@ -254,20 +286,20 @@ func (r *PermissionResolver) applicableDecisions(
 	subjects := append([]string{userID}, roles...)
 
 	for _, subject := range subjects {
-		if entry, ok := r.nearestDecision(subject, parts, scopes); ok {
+		if entry, ok := r.nearestDecision(subject, perm, scopes); ok {
 			out.named = append(out.named, entry)
 		}
 	}
 
-	if entry, ok := r.nearestDecision(RoleEveryone, parts, scopes); ok {
+	if entry, ok := r.nearestDecision(RoleEveryone, perm, scopes); ok {
 		out.everyone = &entry
 	}
 	return out, nil
 }
 
-func (r *PermissionResolver) nearestDecision(subject string, parts PermissionKeyParts, scopes []permissionScopeTarget) (TraceEntry, bool) {
+func (r *PermissionResolver) nearestDecision(subject string, perm Permission, scopes []permissionScopeTarget) (TraceEntry, bool) {
 	for _, target := range scopes {
-		decision := r.decisionFor(target.scope, target.id, subject, parts)
+		decision := r.decisionFor(target.scope, target.id, subject, perm)
 		if decision == DecisionNone {
 			continue
 		}
@@ -368,9 +400,9 @@ func (t permissionScopeTarget) objectID() string {
 //     DMs (DMs have their own listing/creation/membership APIs).
 //
 // Everything else resolves through the standard deny-wins resolver. Access to
-// DM rooms is gated by participation at the API boundary (`requireRoomMember`);
-// this set only governs *what* a participant can do once inside, and *what*
-// DM rooms refuse to answer for channel-style operations.
+// DM content is gated by participation at the API boundary; message.read does
+// not apply to DMs. This set only governs *what* a participant can do once
+// inside, and *what* DM rooms refuse to answer for channel-style operations.
 var dmBoundaryDeniedPermissions = map[Permission]bool{
 	// Privacy boundary.
 	PermRoomManage:    true,
@@ -403,12 +435,11 @@ func dmDefaultAllows(perm Permission) bool {
 
 // decisionFor returns the current projection-backed RBAC decision for a
 // subject at a specific scope.
-func (r *PermissionResolver) decisionFor(scope PermissionScope, scopeID, subject string, parts PermissionKeyParts) DecisionKind {
-	if subject == "" || parts.Verb == "" || parts.ObjectType == "" {
+func (r *PermissionResolver) decisionFor(scope PermissionScope, scopeID, subject string, perm Permission) DecisionKind {
+	if subject == "" {
 		return DecisionNone
 	}
-	perm := ReconstructPermission(parts.Verb, parts.ObjectType)
-	if perm == "" {
+	if _, known := GetPermissionMetadata(perm); !known {
 		return DecisionNone
 	}
 	return r.core.rbacModel.decision(scope, scopeID, subject, perm)

@@ -5,14 +5,14 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	corev1 "hmans.de/chatto/internal/pb/chatto/core/v1"
+	evtv1 "hmans.de/chatto/internal/pb/chatto/core/evt/v1"
 )
 
-func newServerNameChangedEvent(name string) *corev1.Event {
-	return &corev1.Event{
+func newServerNameChangedEvent(name string) *evtv1.Event {
+	return &evtv1.Event{
 		Id: "test-event",
-		Event: &corev1.Event_ServerNameChanged{
-			ServerNameChanged: &corev1.ServerNameChangedEvent{Name: name},
+		Event: &evtv1.Event_ServerNameChanged{
+			ServerNameChanged: &evtv1.ServerNameChangedEvent{Name: name},
 		},
 	}
 }
@@ -40,11 +40,11 @@ func TestConfigProjection_AppliesIndependentServerFields(t *testing.T) {
 	p, model := newConfigProjectionUnderModel()
 
 	require.NoError(t, p.Apply(newServerNameChangedEvent("First Server"), 1))
-	require.NoError(t, p.Apply(&corev1.Event{Event: &corev1.Event_ServerWelcomeMessageChanged{
-		ServerWelcomeMessageChanged: &corev1.ServerWelcomeMessageChangedEvent{WelcomeMessage: "Welcome!"},
+	require.NoError(t, p.Apply(&evtv1.Event{Event: &evtv1.Event_ServerWelcomeMessageChanged{
+		ServerWelcomeMessageChanged: &evtv1.ServerWelcomeMessageChangedEvent{WelcomeMessage: "Welcome!"},
 	}}, 2))
-	require.NoError(t, p.Apply(&corev1.Event{Event: &corev1.Event_ServerMotdChanged{
-		ServerMotdChanged: &corev1.ServerMotdChangedEvent{Motd: "MOTD-1"},
+	require.NoError(t, p.Apply(&evtv1.Event{Event: &evtv1.Event_ServerMotdChanged{
+		ServerMotdChanged: &evtv1.ServerMotdChangedEvent{Motd: "MOTD-1"},
 	}}, 3))
 
 	cfg := model.GetServerConfig()
@@ -64,11 +64,11 @@ func TestConfigProjection_AppliesIndependentServerFields(t *testing.T) {
 func TestConfigProjection_AppliesSemanticConfigEvents(t *testing.T) {
 	p, model := newConfigProjectionUnderModel()
 
-	require.NoError(t, p.Apply(&corev1.Event{Event: &corev1.Event_ServerNameChanged{
-		ServerNameChanged: &corev1.ServerNameChangedEvent{Name: "Semantic Server"},
+	require.NoError(t, p.Apply(&evtv1.Event{Event: &evtv1.Event_ServerNameChanged{
+		ServerNameChanged: &evtv1.ServerNameChangedEvent{Name: "Semantic Server"},
 	}}, 1))
-	require.NoError(t, p.Apply(&corev1.Event{Event: &corev1.Event_ServerMotdChanged{
-		ServerMotdChanged: &corev1.ServerMotdChangedEvent{Motd: "semantic motd"},
+	require.NoError(t, p.Apply(&evtv1.Event{Event: &evtv1.Event_ServerMotdChanged{
+		ServerMotdChanged: &evtv1.ServerMotdChangedEvent{Motd: "semantic motd"},
 	}}, 2))
 
 	cfg := model.GetServerConfig()
@@ -77,8 +77,8 @@ func TestConfigProjection_AppliesSemanticConfigEvents(t *testing.T) {
 	require.Equal(t, "Semantic Server", model.GetEffectiveServerName())
 	require.Equal(t, "semantic motd", model.GetEffectiveMOTD())
 
-	require.NoError(t, p.Apply(&corev1.Event{Event: &corev1.Event_ServerNameChanged{
-		ServerNameChanged: &corev1.ServerNameChangedEvent{Name: ""},
+	require.NoError(t, p.Apply(&evtv1.Event{Event: &evtv1.Event_ServerNameChanged{
+		ServerNameChanged: &evtv1.ServerNameChangedEvent{Name: ""},
 	}}, 3))
 	cfg = model.GetServerConfig()
 	require.Equal(t, "", cfg.ServerName)
@@ -106,10 +106,10 @@ func TestConfigProjection_UnknownEventTypesIgnored(t *testing.T) {
 
 	// An unrelated event variant under the same subject namespace
 	// must not affect the projection (forward-compatibility).
-	other := &corev1.Event{
+	other := &evtv1.Event{
 		Id: "unrelated",
-		Event: &corev1.Event_UserJoinedRoom{
-			UserJoinedRoom: &corev1.UserJoinedRoomEvent{RoomId: "R1"},
+		Event: &evtv1.Event_UserJoinedRoom{
+			UserJoinedRoom: &evtv1.UserJoinedRoomEvent{RoomId: "R1"},
 		},
 	}
 	require.NoError(t, p.Apply(other, 1))
@@ -117,20 +117,54 @@ func TestConfigProjection_UnknownEventTypesIgnored(t *testing.T) {
 	require.Nil(t, model.GetServerConfig())
 }
 
+func TestConfigProjection_GroupNotificationPolicyAccountCleanupAndEstimate(t *testing.T) {
+	p := NewConfigProjection()
+	require.NoError(t, p.Apply(&evtv1.Event{Event: &evtv1.Event_UserRoomGroupNotificationPolicyChanged{
+		UserRoomGroupNotificationPolicyChanged: &evtv1.UserRoomGroupNotificationPolicyChangedEvent{
+			UserId:      "user-1",
+			RoomGroupId: "group-1",
+			Overrides: &evtv1.NotificationDeliveryModes{
+				DirectMessages: evtv1.NotificationDeliveryMode_NOTIFICATION_DELIVERY_MODE_PUSH_NOTIFICATION.Enum(),
+			},
+		},
+	}}, 1))
+
+	values, bytes, metrics := p.adminProjectionEstimate()
+	require.Positive(t, values)
+	require.Positive(t, bytes)
+	policyMetric := projectionMetricByName(metrics, "notification_policy_values")
+	require.NotNil(t, policyMetric)
+	require.EqualValues(t, 1, policyMetric.Value)
+	require.Positive(t, policyMetric.Bytes)
+	require.Contains(t, p.users["user-1"].roomGroupModesByGroup, "group-1")
+
+	require.NoError(t, p.Apply(&evtv1.Event{Event: &evtv1.Event_UserAccountDeleted{
+		UserAccountDeleted: &evtv1.UserAccountDeletedEvent{UserId: "user-1"},
+	}}, 2))
+
+	require.NotContains(t, p.users, "user-1")
+	values, _, metrics = p.adminProjectionEstimate()
+	require.Zero(t, values)
+	policyMetric = projectionMetricByName(metrics, "notification_policy_values")
+	require.NotNil(t, policyMetric)
+	require.Zero(t, policyMetric.Value)
+	require.Zero(t, policyMetric.Bytes)
+}
+
 func TestConfigProjection_BrandingDoesNotCreateServerConfig(t *testing.T) {
 	p, model := newConfigProjectionUnderModel()
 
-	logo := &corev1.AssetRecord{
+	logo := &evtv1.AssetRecord{
 		Id:          "logo-asset",
 		Filename:    "logo.webp",
 		ContentType: "image/webp",
-		Storage:     &corev1.AssetRecord_Nats{Nats: &corev1.NATSAsset{Key: "logo-asset"}},
+		Storage:     &evtv1.AssetRecord_Nats{Nats: &evtv1.NATSAsset{Key: "logo-asset"}},
 	}
-	require.NoError(t, p.Apply(&corev1.Event{Event: &corev1.Event_ServerLogoSet{
-		ServerLogoSet: &corev1.ServerLogoSetEvent{Asset: logo},
+	require.NoError(t, p.Apply(&evtv1.Event{Event: &evtv1.Event_ServerLogoSet{
+		ServerLogoSet: &evtv1.ServerLogoSetEvent{Asset: logo},
 	}}, 1))
-	require.NoError(t, p.Apply(&corev1.Event{Event: &corev1.Event_ServerBannerCleared{
-		ServerBannerCleared: &corev1.ServerBannerClearedEvent{},
+	require.NoError(t, p.Apply(&evtv1.Event{Event: &evtv1.Event_ServerBannerCleared{
+		ServerBannerCleared: &evtv1.ServerBannerClearedEvent{},
 	}}, 2))
 
 	cfg := model.GetServerConfig()
@@ -146,8 +180,8 @@ func TestConfigProjection_BlockedUsernames(t *testing.T) {
 	require.False(t, model.IsUsernameBlocked("alice"))
 
 	// Operator sets a custom list.
-	require.NoError(t, p.Apply(&corev1.Event{Event: &corev1.Event_ServerBlockedUsernamesChanged{
-		ServerBlockedUsernamesChanged: &corev1.ServerBlockedUsernamesChangedEvent{BlockedUsernames: "foo\nBAR\nbaz"},
+	require.NoError(t, p.Apply(&evtv1.Event{Event: &evtv1.Event_ServerBlockedUsernamesChanged{
+		ServerBlockedUsernamesChanged: &evtv1.ServerBlockedUsernamesChangedEvent{BlockedUsernames: "foo\nBAR\nbaz"},
 	}}, 1))
 
 	require.True(t, model.IsUsernameBlocked("foo"))
@@ -157,8 +191,8 @@ func TestConfigProjection_BlockedUsernames(t *testing.T) {
 
 	// Operator explicitly clears the list. Once there is a blocked-username
 	// event, an empty string is meaningful and should not fall back to defaults.
-	require.NoError(t, p.Apply(&corev1.Event{Event: &corev1.Event_ServerBlockedUsernamesChanged{
-		ServerBlockedUsernamesChanged: &corev1.ServerBlockedUsernamesChangedEvent{BlockedUsernames: ""},
+	require.NoError(t, p.Apply(&evtv1.Event{Event: &evtv1.Event_ServerBlockedUsernamesChanged{
+		ServerBlockedUsernamesChanged: &evtv1.ServerBlockedUsernamesChangedEvent{BlockedUsernames: ""},
 	}}, 2))
 
 	require.False(t, model.IsUsernameBlocked("foo"))

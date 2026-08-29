@@ -13,7 +13,7 @@
       "missing_group": "Oda oluşturmadan önce bir oda grubu seçin.",
       "failed": "Oda oluşturulamadı",
       "creating": "Oluşturuluyor...",
-      "submit": "Oda Oluştur"
+      "submit_and_configure": "Odayı oluştur ve yapılandır"
     },
     "join": {
       "title": "Odaya Katıl",
@@ -70,7 +70,8 @@
       "remove_account_suffix": " kaldırmadan önce bu sunucu için."
     },
     "timeline": {
-      "beginning": "Bu, bu konuşmanın başlangıcıdır."
+      "beginning": "Bu, bu konuşmanın başlangıcıdır.",
+      "read_denied": "Bu odadaki mesajları okuma izniniz yok."
     },
     "message": {
       "empty": "Henüz mesaj yok",
@@ -87,6 +88,7 @@
         "add_reaction": "Tepki ekle",
         "more_reactions": "Daha fazla tepki",
         "reply": "Yanıtla",
+        "reply_room": "Odada yanıtla",
         "reply_thread": "Konuda yanıtla",
         "open_thread": "Konuyu aç",
         "edit": "Mesajı düzenle",
@@ -99,6 +101,8 @@
       "meta": {
         "pinned": "Sabitlenmiş mesaj",
         "thread": "Konu",
+        "edited": "Düzenlenmiş ileti",
+        "echoed_to_channel": "Kanala da gönderildi",
         "reply_count_one": "1 yanıt",
         "reply_count_many": "{count} yanıtlar",
         "follow_thread": "Konuyu takip et",
@@ -130,6 +134,7 @@
       "unarchived": "odayı arşivden çıkardım",
       "call_started": "bu odada bir arama başlattı",
       "call_ended": "Etkin arama sona erdi",
+      "threading_mode_changed": "ileti dizisi modunu {mode} olarak değiştirdi",
       "and": "ve",
       "other_people_count": {
         "one": "diğer",

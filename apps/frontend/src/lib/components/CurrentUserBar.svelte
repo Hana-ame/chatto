@@ -2,8 +2,7 @@
 @component
 
 Displays the current (server-scoped) user at the bottom of the secondary
-sidebar. Shows the avatar with presence and the live display name, and links
-to the user settings page for the active server.
+sidebar. Shows the avatar with presence and the live display name.
 -->
 <script lang="ts">
   import { RoomKind } from '@chatto/api-types/api/v1/rooms_pb';
@@ -88,7 +87,7 @@ to the user settings page for the active server.
   const compactCallActiveButtonClass = 'btn-success btn-compact';
   const compactCallDangerButtonClass = 'btn-danger btn-compact';
   const useSheetDialog = prefersTouchActions() && !supportsHoverActions();
-  const presenceModes: PresenceMode[] = ['auto', 'away', 'doNotDisturb', 'invisible'];
+  const presenceModes: PresenceMode[] = ['online', 'away', 'doNotDisturb', 'invisible'];
   const currentPresence = $derived.by(() => {
     if (!activeServerUser) return PresenceStatus.OFFLINE;
     return presenceCache.get(
@@ -118,7 +117,7 @@ to the user settings page for the active server.
       case 'invisible':
         return m('settings.profile.presence.invisible');
       default:
-        return m('settings.profile.presence.auto');
+        return m('settings.profile.presence.online');
     }
   }
 
@@ -131,7 +130,7 @@ to the user settings page for the active server.
       case PresenceStatus.OFFLINE:
         return m('settings.profile.presence.offline');
       default:
-        return m('settings.profile.presence.auto');
+        return m('settings.profile.presence.online');
     }
   }
 
@@ -281,14 +280,6 @@ to the user settings page for the active server.
           <bdi dir="ltr">@{login}</bdi>
         </span>
       </div>
-      <a
-        href={resolve('/chat/[serverId]/settings', { serverId: serverSegment })}
-        title={m('voice.user_settings')}
-        aria-label={m('voice.user_settings')}
-        class="flex h-10 w-10 shrink-0 cursor-pointer items-center justify-center rounded text-muted transition-[background-color,color,scale] hover:bg-surface hover:text-text active:scale-[0.96]"
-      >
-        <span class="iconify icon-[uil--setting] text-lg" aria-hidden="true"></span>
-      </a>
     </div>
   </div>
 {/if}

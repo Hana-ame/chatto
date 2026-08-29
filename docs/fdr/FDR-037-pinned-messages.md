@@ -1,22 +1,24 @@
 # FDR-037: Pinned Messages
 
 **Status:** Active
-**Last reviewed:** 2026-08-11
+**Last reviewed:** 2026-08-25
 
 ## Overview
 
 Pinned Messages let room managers keep useful channel messages within easy
-reach. Every channel member can browse the current pins in a room sidebar and
-jump to the original message or thread. Direct-message rooms do not support
-pins.
+reach. A channel member with a message-read mode can browse the current visible
+pins in a room sidebar and jump to the original message or thread.
+Direct-message rooms do not support pins.
 
 ## Behavior
 
-- A member with effective `room.manage` may pin or unpin any current message in
-  a channel, including a thread reply. Pins do not introduce a separate
-  permission.
-- Any current channel member may list pins. Leaving or otherwise losing access
-  to the room immediately removes its pinned-message state from the client.
+- A member with effective `room.manage` may unpin any current message. Pinning
+  also requires read access to the target message because the operation returns
+  the hydrated pinned message. Pins do not introduce a separate pin permission.
+- A current channel member with `message.read` may list every pin. A member
+  with `message.read-interactions` may list pins only from related threads.
+  Losing membership or read authority immediately removes inaccessible
+  pinned-message state from the client.
 - Pins appear newest-first in an automatically paginated **Pins** sidebar tab.
   The sidebar renders the complete message with the shared timeline message
   view; it does not apply Search's result-length clamp.
@@ -39,8 +41,9 @@ pins.
 
 ### 1. Reuse `room.manage`
 
-**Decision:** Pin mutations require effective `room.manage`; there is no
-`message.pin` permission.
+**Decision:** Pin mutations require effective `room.manage`; pin creation also
+requires read access to the target message for its hydrated response. There is
+no `message.pin` permission.
 **Why:** Pinning curates a room for all members and already fits the room
 manager role. A new permission would add configuration surface without a
 demonstrated need.
@@ -118,10 +121,18 @@ field. Older servers return an unimplemented RPC, which gated clients do not
 call. Persisted message events are additive and the disposable Room Timeline
 snapshot schema receives a new fingerprinted contract namespace automatically.
 
+## Permissions
+
+- `message.read` — list all room pins and create a pin whose response contains
+  the hydrated message.
+- `message.read-interactions` — list pins from related threads and create a pin
+  for a readable related message.
+- `room.manage` — create or delete pin associations.
+
 ## Related
 
-- **ADRs:** ADR-016 (OCC for message publishing), ADR-033 (event-sourced state), ADR-045 (public API stability), ADR-050 (projection snapshots), ADR-051 (resumable client projection)
-- **FDRs:** FDR-002 (Replies & Threads), FDR-003 (Thread Reply Echo), FDR-004 (Message Editing & Deletion), FDR-019 (Room Lifecycle), FDR-031 (Client–Server Compatibility Discovery), FDR-033 (Message Search)
+- **ADRs:** ADR-016 (OCC for message publishing), ADR-033 (event-sourced state), ADR-045 (public API stability), ADR-050 (projection snapshots), ADR-051 (resumable client projection), ADR-080 (explicit message-read permissions), ADR-082 (derived thread interactions)
+- **FDRs:** FDR-002 (Replies & Threads), FDR-003 (Thread Reply Echo), FDR-004 (Message Editing & Deletion), FDR-019 (Room Lifecycle), FDR-031 (Client–Server Compatibility Discovery), FDR-033 (Message Search), FDR-039 (Message Access & Interactions)
 - **Issue:** [#1982](https://github.com/chattocorp/chatto/issues/1982)
 
 ## Open Questions

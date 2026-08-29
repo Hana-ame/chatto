@@ -4,6 +4,7 @@ import {
   handleAuthError,
   type ConnectAPIConfig
 } from './connect.js';
+import { browserCookieAuthenticationHeaders } from '$lib/auth/authenticationMode';
 import { ExternalIdentityAuthService } from '@chatto/api-types/chatto/auth/v1/external_identity_auth_connect';
 import {
   ExternalIdentityFlowKind,
@@ -58,8 +59,20 @@ export type ExternalIdentityList = {
 export type CreatedExternalIdentityAccount = {
   userId: string;
   login: string;
-  token: string;
 };
+
+function externalIdentityStartURL(value: string): string {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error('External identity link returned an invalid URL.');
+  }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+    throw new Error('External identity link returned an unsafe URL.');
+  }
+  return url.href;
+}
 
 export function createExternalIdentityFlowAPI(config: ExternalIdentityFlowAPIConfig = {}) {
   const client = createChattoClient(ExternalIdentityAuthService, {
@@ -77,11 +90,12 @@ export function createExternalIdentityFlowAPI(config: ExternalIdentityFlowAPICon
       login: string;
       displayName: string;
     }): Promise<CreatedExternalIdentityAccount> {
-      const response = await client.createExternalIdentityAccount(input);
+      const response = await client.createExternalIdentityAccount(input, {
+        headers: browserCookieAuthenticationHeaders
+      });
       return {
         userId: response.userId,
-        login: response.login,
-        token: response.token
+        login: response.login
       };
     },
 
@@ -127,7 +141,7 @@ export function createExternalIdentityAPI(config: ExternalIdentityAPIConfig) {
         const response = await client.startExternalIdentityLink(input, {
           headers: headers()
         });
-        return response.startUrl;
+        return externalIdentityStartURL(response.startUrl);
       } catch (err) {
         return handleAuthError(config, err);
       }

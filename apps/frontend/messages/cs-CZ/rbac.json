@@ -44,6 +44,7 @@
       "allow": "dovolit",
       "deny": "popřít",
       "winning_decision": "(vítězné rozhodnutí)",
+      "included_by": "Included by {permission}",
       "level_server": "Server",
       "level_group": "Skupina",
       "level_room": "Místnost",
@@ -94,6 +95,16 @@
         }
       }
     },
+    "permission_categories": {
+      "admin": "Správa",
+      "bot": "Boti",
+      "message": "Zprávy",
+      "role": "Role",
+      "room": "Místnosti",
+      "server": "Server",
+      "user": "Uživatelé",
+      "other": "Ostatní"
+    },
     "permission_descriptions": {
       "server_manage": "Aktualizace nastavení serveru (název, popis, logo)",
       "room_create": "Vytvořte nové místnosti",
@@ -101,6 +112,8 @@
       "room_list": "Podívejte se na místnosti v adresáři. Uživateli může být povoleno vidět místnost (např. požádat o přístup), aniž by mu bylo povoleno se k ní připojit.",
       "room_manage": "Upravte nastavení a oprávnění místnosti a smažte místnosti",
       "room_ban_member": "Zakázat členům přístup do místností",
+      "message_read": "Číst zprávy v kanálových místnostech",
+      "message_read_interactions": "Číst celá vlákna, která jste vytvořili nebo ve kterých vás přímo zmínil jiný uživatel",
       "message_post": "Zveřejňujte kořenové zprávy v místnostech a spusťte DM",
       "message_post_in_thread": "Zveřejňujte odpovědi uvnitř vlákna",
       "message_attach": "Připojování souborů ke zprávám",
@@ -116,7 +129,9 @@
       "user_delete_self": "Smažte svůj vlastní účet",
       "user_invite": "Vytvářejte a spravujte zvací odkazy",
       "user_manage_accounts": "Vytvářejte uživatele, upravujte identitu účtu, resetujte hesla, připojujte ověřené e-maily a vymažte cooldowny pro přihlášení",
-      "user_manage_permissions": "Upravit přímé přepsání oprávnění pro uživatele"
+      "user_manage_permissions": "Upravit přímé přepsání oprávnění pro uživatele",
+      "bot_create": "Vytvářet účty botů, které vlastníte",
+      "bot_manage": "Zobrazit a spravovat všechny účty botů"
     }
   }
 }

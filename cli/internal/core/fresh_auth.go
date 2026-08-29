@@ -60,23 +60,16 @@ func (c *ChattoCore) RequireFreshAuthForBearerToken(ctx context.Context, token s
 }
 
 func (c *ChattoCore) MarkBearerTokenFresh(ctx context.Context, token, method, source string) error {
-	data, entry, err := c.authTokenData(ctx, token)
+	data, _, err := c.authTokenData(ctx, token)
 	if err != nil {
 		return err
 	}
 	if data.Kind != AuthTokenKindFirstPartySession {
 		return ErrFreshAuthRequired
 	}
-	data.FreshAuthAt = time.Now()
-	data.FreshAuthMethod = method
-	data.FreshAuthSource = source
-	value, err := json.Marshal(data)
-	if err != nil {
-		return fmt.Errorf("failed to marshal auth token: %w", err)
-	}
-	_, err = c.updateRuntimeStateTokenTTL(ctx, c.authTokenKey(token), value, entry.Revision(), c.authTokenTTL())
-	if err != nil {
-		return fmt.Errorf("failed to mark auth token fresh: %w", err)
+	now := time.Now()
+	if err := c.markRenewableSessionFresh(ctx, data.RenewableSessionID, method, source, now); err != nil {
+		return err
 	}
 	return nil
 }
@@ -113,6 +106,25 @@ func (c *ChattoCore) authTokenData(ctx context.Context, token string) (AuthToken
 		_ = c.storage.runtimeStateKV.Delete(ctx, key)
 		return AuthTokenData{}, nil, ErrAuthTokenNotFound
 	}
+	if tokenData.RenewableSessionID == "" || tokenData.ExpiresAt.IsZero() || !time.Now().Before(tokenData.ExpiresAt) {
+		_ = c.storage.runtimeStateKV.Delete(ctx, key)
+		return AuthTokenData{}, nil, ErrAuthTokenNotFound
+	}
+	session, _, err := c.validateRenewableSession(ctx, tokenData.RenewableSessionID, time.Now())
+	if err != nil {
+		if errors.Is(err, ErrRefreshTokenNotFound) {
+			_ = c.storage.runtimeStateKV.Delete(ctx, key)
+			return AuthTokenData{}, nil, ErrAuthTokenNotFound
+		}
+		return AuthTokenData{}, nil, err
+	}
+	if session.UserID != tokenData.UserID || session.ClientID != tokenData.ClientID || session.Kind != tokenData.kindOrDefault() || session.AuthGeneration != tokenData.AuthGeneration || tokenData.AccessGeneration > session.CurrentGeneration {
+		_ = c.storage.runtimeStateKV.Delete(ctx, key)
+		return AuthTokenData{}, nil, ErrAuthTokenNotFound
+	}
+	tokenData.FreshAuthAt = session.FreshAuthAt
+	tokenData.FreshAuthMethod = session.FreshAuthMethod
+	tokenData.FreshAuthSource = session.FreshAuthSource
 	if _, err := c.ValidateRuntimeCredential(ctx, RuntimeCredential{
 		UserID:         tokenData.UserID,
 		CreatedAt:      tokenData.CreatedAt,
@@ -159,8 +171,15 @@ func (c *ChattoCore) MarkCookieSessionFresh(ctx context.Context, sessionID, meth
 	if tokenData.UserID == "" ||
 		tokenData.kindOrDefault() != AuthTokenKindFirstPartySession ||
 		tokenData.presentationOrDefault() != AuthTokenPresentationCookie ||
-		tokenData.CreatedAt.IsZero() {
-		_ = c.storage.runtimeStateKV.Delete(ctx, key)
+		tokenData.CreatedAt.IsZero() ||
+		tokenData.ExpiresAt.IsZero() {
+		_ = c.deleteRuntimeStateKey(ctx, key)
+		return ErrCookieSessionNotFound
+	}
+	expiresAt := tokenData.ExpiresAt
+	now := time.Now()
+	if !now.Before(expiresAt) {
+		_ = c.deleteRuntimeStateKey(ctx, key)
 		return ErrCookieSessionNotFound
 	}
 	validation, err := c.ValidateRuntimeCredential(ctx, RuntimeCredential{
@@ -170,7 +189,7 @@ func (c *ChattoCore) MarkCookieSessionFresh(ctx context.Context, sessionID, meth
 	})
 	if err != nil {
 		if errors.Is(err, ErrAuthenticationRevoked) {
-			_ = c.storage.runtimeStateKV.Delete(ctx, key)
+			_ = c.deleteRuntimeStateKey(ctx, key)
 			return ErrCookieSessionNotFound
 		}
 		return err
@@ -178,14 +197,14 @@ func (c *ChattoCore) MarkCookieSessionFresh(ctx context.Context, sessionID, meth
 	if validation.ShouldPersistAuthGeneration {
 		tokenData.AuthGeneration = validation.AuthGeneration
 	}
-	tokenData.FreshAuthAt = time.Now()
+	tokenData.FreshAuthAt = now
 	tokenData.FreshAuthMethod = method
 	tokenData.FreshAuthSource = source
 	value, err := json.Marshal(tokenData)
 	if err != nil {
 		return fmt.Errorf("failed to marshal cookie session token: %w", err)
 	}
-	_, err = c.updateRuntimeStateTokenTTL(ctx, key, value, entry.Revision(), c.cookieSessionTTL())
+	_, err = c.updateRuntimeStateUntil(ctx, key, value, entry.Revision(), expiresAt, now)
 	if err != nil {
 		return fmt.Errorf("failed to mark cookie session fresh: %w", err)
 	}

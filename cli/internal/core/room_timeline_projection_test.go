@@ -9,7 +9,7 @@ import (
 
 	"hmans.de/chatto/internal/encryption"
 	"hmans.de/chatto/internal/evtstream"
-	corev1 "hmans.de/chatto/internal/pb/chatto/core/v1"
+	evtv1 "hmans.de/chatto/internal/pb/chatto/core/evt/v1"
 )
 
 // =============================================================================
@@ -30,37 +30,41 @@ type postedOpts struct {
 	inThread                  string
 	echoOfEventID             string
 	echoFromThreadRootEventID string
+	mentionedUserIDs          []string
+	mentions                  []*evtv1.MessageMention
 	at                        int
 }
 
-func postedEvent(o postedOpts) *corev1.Event {
+func postedEvent(o postedOpts) *evtv1.Event {
 	envID := o.envelopeID
 	if envID == "" {
 		envID = o.eventID
 	}
-	return &corev1.Event{
+	return &evtv1.Event{
 		Id:        envID,
 		ActorId:   o.actorID,
 		CreatedAt: timestamppb.New(fixedTime(o.at)),
-		Event: &corev1.Event_MessagePosted{
-			MessagePosted: &corev1.MessagePostedEvent{
+		Event: &evtv1.Event_MessagePosted{
+			MessagePosted: &evtv1.MessagePostedEvent{
 				RoomId:                    o.roomID,
 				InReplyTo:                 o.inReplyTo,
 				InThread:                  o.inThread,
 				EchoOfEventId:             o.echoOfEventID,
 				EchoFromThreadRootEventId: o.echoFromThreadRootEventID,
+				MentionedUserIds:          o.mentionedUserIDs,
+				Mentions:                  o.mentions,
 			},
 		},
 	}
 }
 
-func threadCreatedEvent(envID, roomID, rootEventID, actorID string, at int) *corev1.Event {
-	return &corev1.Event{
+func threadCreatedEvent(envID, roomID, rootEventID, actorID string, at int) *evtv1.Event {
+	return &evtv1.Event{
 		Id:        envID,
 		ActorId:   actorID,
 		CreatedAt: timestamppb.New(fixedTime(at)),
-		Event: &corev1.Event_ThreadCreated{
-			ThreadCreated: &corev1.ThreadCreatedEvent{
+		Event: &evtv1.Event_ThreadCreated{
+			ThreadCreated: &evtv1.ThreadCreatedEvent{
 				RoomId:            roomID,
 				ThreadRootEventId: rootEventID,
 			},
@@ -68,13 +72,13 @@ func threadCreatedEvent(envID, roomID, rootEventID, actorID string, at int) *cor
 	}
 }
 
-func editedEvent(envID, targetID, roomID, actorID, newBody string, at int) *corev1.Event {
-	return &corev1.Event{
+func editedEvent(envID, targetID, roomID, actorID, newBody string, at int) *evtv1.Event {
+	return &evtv1.Event{
 		Id:        envID,
 		ActorId:   actorID,
 		CreatedAt: timestamppb.New(fixedTime(at)),
-		Event: &corev1.Event_MessageEdited{
-			MessageEdited: &corev1.MessageEditedEvent{
+		Event: &evtv1.Event_MessageEdited{
+			MessageEdited: &evtv1.MessageEditedEvent{
 				RoomId:  roomID,
 				EventId: targetID,
 			},
@@ -82,20 +86,20 @@ func editedEvent(envID, targetID, roomID, actorID, newBody string, at int) *core
 	}
 }
 
-func bodyEvent(envID, targetID, roomID, actorID, body string, at int) *corev1.Event {
+func bodyEvent(envID, targetID, roomID, actorID, body string, at int) *evtv1.Event {
 	return bodyEventWithAssets(envID, targetID, roomID, actorID, body, nil, at)
 }
 
-func bodyEventWithAssets(envID, targetID, roomID, actorID, body string, assetIDs []string, at int) *corev1.Event {
-	return &corev1.Event{
+func bodyEventWithAssets(envID, targetID, roomID, actorID, body string, assetIDs []string, at int) *evtv1.Event {
+	return &evtv1.Event{
 		Id:        envID,
 		ActorId:   actorID,
 		CreatedAt: timestamppb.New(fixedTime(at)),
-		Event: &corev1.Event_MessageBody{
-			MessageBody: &corev1.MessageBodyEvent{
+		Event: &evtv1.Event_MessageBody{
+			MessageBody: &evtv1.MessageBodyEvent{
 				RoomId:  roomID,
 				EventId: targetID,
-				Body: &corev1.MessageBody{
+				Body: &evtv1.MessageBody{
 					AuthorId:          actorID,
 					BodyEventId:       envID,
 					EncryptionVersion: encryption.EnvelopeVersionV2,
@@ -107,26 +111,26 @@ func bodyEventWithAssets(envID, targetID, roomID, actorID, body string, assetIDs
 	}
 }
 
-func bodylessPostedEvent(envID, roomID, actorID string, at int) *corev1.Event {
-	return &corev1.Event{
+func bodylessPostedEvent(envID, roomID, actorID string, at int) *evtv1.Event {
+	return &evtv1.Event{
 		Id:        envID,
 		ActorId:   actorID,
 		CreatedAt: timestamppb.New(fixedTime(at)),
-		Event: &corev1.Event_MessagePosted{
-			MessagePosted: &corev1.MessagePostedEvent{
+		Event: &evtv1.Event_MessagePosted{
+			MessagePosted: &evtv1.MessagePostedEvent{
 				RoomId: roomID,
 			},
 		},
 	}
 }
 
-func retractedEvent(envID, targetID, roomID, actorID, reason string, at int) *corev1.Event {
-	return &corev1.Event{
+func retractedEvent(envID, targetID, roomID, actorID, reason string, at int) *evtv1.Event {
+	return &evtv1.Event{
 		Id:        envID,
 		ActorId:   actorID,
 		CreatedAt: timestamppb.New(fixedTime(at)),
-		Event: &corev1.Event_MessageRetracted{
-			MessageRetracted: &corev1.MessageRetractedEvent{
+		Event: &evtv1.Event_MessageRetracted{
+			MessageRetracted: &evtv1.MessageRetractedEvent{
 				RoomId:  roomID,
 				EventId: targetID,
 				Reason:  reason,
@@ -135,94 +139,94 @@ func retractedEvent(envID, targetID, roomID, actorID, reason string, at int) *co
 	}
 }
 
-func joinedEvent(envID, roomID, userID string, at int) *corev1.Event {
-	return &corev1.Event{
+func joinedEvent(envID, roomID, userID string, at int) *evtv1.Event {
+	return &evtv1.Event{
 		Id:        envID,
 		ActorId:   userID,
 		CreatedAt: timestamppb.New(fixedTime(at)),
-		Event: &corev1.Event_UserJoinedRoom{
-			UserJoinedRoom: &corev1.UserJoinedRoomEvent{RoomId: roomID},
+		Event: &evtv1.Event_UserJoinedRoom{
+			UserJoinedRoom: &evtv1.UserJoinedRoomEvent{RoomId: roomID},
 		},
 	}
 }
 
-func leftEvent(envID, roomID, userID string, at int) *corev1.Event {
-	return &corev1.Event{
+func leftEvent(envID, roomID, userID string, at int) *evtv1.Event {
+	return &evtv1.Event{
 		Id:        envID,
 		ActorId:   userID,
 		CreatedAt: timestamppb.New(fixedTime(at)),
-		Event: &corev1.Event_UserLeftRoom{
-			UserLeftRoom: &corev1.UserLeftRoomEvent{RoomId: roomID},
+		Event: &evtv1.Event_UserLeftRoom{
+			UserLeftRoom: &evtv1.UserLeftRoomEvent{RoomId: roomID},
 		},
 	}
 }
 
-func callStartedTimelineEvent(envID, roomID, userID, callID string, at int) *corev1.Event {
-	return &corev1.Event{
+func callStartedTimelineEvent(envID, roomID, userID, callID string, at int) *evtv1.Event {
+	return &evtv1.Event{
 		Id:        envID,
 		ActorId:   userID,
 		CreatedAt: timestamppb.New(fixedTime(at)),
-		Event: &corev1.Event_VoiceCallStarted{
-			VoiceCallStarted: &corev1.CallStartedEvent{RoomId: roomID, CallId: callID},
+		Event: &evtv1.Event_VoiceCallStarted{
+			VoiceCallStarted: &evtv1.CallStartedEvent{RoomId: roomID, CallId: callID},
 		},
 	}
 }
 
-func callParticipantJoinedTimelineEvent(envID, roomID, userID, callID string, at int) *corev1.Event {
-	return &corev1.Event{
+func callParticipantJoinedTimelineEvent(envID, roomID, userID, callID string, at int) *evtv1.Event {
+	return &evtv1.Event{
 		Id:        envID,
 		ActorId:   userID,
 		CreatedAt: timestamppb.New(fixedTime(at)),
-		Event: &corev1.Event_VoiceCallParticipantJoined{
-			VoiceCallParticipantJoined: &corev1.CallParticipantJoinedEvent{RoomId: roomID, CallId: callID},
+		Event: &evtv1.Event_VoiceCallParticipantJoined{
+			VoiceCallParticipantJoined: &evtv1.CallParticipantJoinedEvent{RoomId: roomID, CallId: callID},
 		},
 	}
 }
 
-func callParticipantLeftTimelineEvent(envID, roomID, userID, callID string, at int) *corev1.Event {
-	return &corev1.Event{
+func callParticipantLeftTimelineEvent(envID, roomID, userID, callID string, at int) *evtv1.Event {
+	return &evtv1.Event{
 		Id:        envID,
 		ActorId:   userID,
 		CreatedAt: timestamppb.New(fixedTime(at)),
-		Event: &corev1.Event_VoiceCallParticipantLeft{
-			VoiceCallParticipantLeft: &corev1.CallParticipantLeftEvent{RoomId: roomID, CallId: callID},
+		Event: &evtv1.Event_VoiceCallParticipantLeft{
+			VoiceCallParticipantLeft: &evtv1.CallParticipantLeftEvent{RoomId: roomID, CallId: callID},
 		},
 	}
 }
 
-func callEndedTimelineEvent(envID, roomID, userID, callID string, at int) *corev1.Event {
-	return &corev1.Event{
+func callEndedTimelineEvent(envID, roomID, userID, callID string, at int) *evtv1.Event {
+	return &evtv1.Event{
 		Id:        envID,
 		ActorId:   userID,
 		CreatedAt: timestamppb.New(fixedTime(at)),
-		Event: &corev1.Event_VoiceCallEnded{
-			VoiceCallEnded: &corev1.CallEndedEvent{RoomId: roomID, CallId: callID},
+		Event: &evtv1.Event_VoiceCallEnded{
+			VoiceCallEnded: &evtv1.CallEndedEvent{RoomId: roomID, CallId: callID},
 		},
 	}
 }
 
-func roomCreatedTimelineEvent(envID, roomID, name string, at int) *corev1.Event {
-	return &corev1.Event{
+func roomCreatedTimelineEvent(envID, roomID, name string, at int) *evtv1.Event {
+	return &evtv1.Event{
 		Id:        envID,
 		ActorId:   "SYSTEM",
 		CreatedAt: timestamppb.New(fixedTime(at)),
-		Event: &corev1.Event_RoomCreated{
-			RoomCreated: &corev1.RoomCreatedEvent{
+		Event: &evtv1.Event_RoomCreated{
+			RoomCreated: &evtv1.RoomCreatedEvent{
 				RoomId: roomID,
 				Name:   name,
-				Kind:   corev1.RoomKind_ROOM_KIND_CHANNEL,
+				Kind:   evtv1.RoomKind_ROOM_KIND_CHANNEL,
 			},
 		},
 	}
 }
 
-func attachmentDeclaredEvent(roomID, attachmentID, contentType string) *corev1.Event {
-	return &corev1.Event{
+func attachmentDeclaredEvent(roomID, attachmentID, contentType string) *evtv1.Event {
+	return &evtv1.Event{
 		Id: "ENV-DECLARED-" + attachmentID,
-		Event: &corev1.Event_AssetCreated{
-			AssetCreated: &corev1.AssetCreatedEvent{
+		Event: &evtv1.Event_AssetCreated{
+			AssetCreated: &evtv1.AssetCreatedEvent{
 				OriginalBinaryAvailable: true,
-				Asset: &corev1.AssetRecord{
+				Asset: &evtv1.AssetRecord{
 					Id:          attachmentID,
 					ContentType: contentType,
 				},
@@ -251,7 +255,7 @@ func TestRoomTimeline_Empty(t *testing.T) {
 
 func TestRoomTimeline_AppendsVisibleEventKinds(t *testing.T) {
 	p := NewRoomTimelineProjection()
-	applyAll(t, p, []*corev1.Event{
+	applyAll(t, p, []*evtv1.Event{
 		roomCreatedTimelineEvent("ENV-CREATE", "R1", "general", 1),
 		joinedEvent("ENV-JOIN-U1", "R1", "U1", 2),
 		postedEvent(postedOpts{envelopeID: "ENV-M1", eventID: "M1", roomID: "R1", actorID: "U1", body: "hello", at: 3}),
@@ -262,18 +266,27 @@ func TestRoomTimeline_AppendsVisibleEventKinds(t *testing.T) {
 		leftEvent("ENV-LEFT-U2", "R1", "U2", 8),
 		callStartedTimelineEvent("ENV-CALL-STARTED", "R1", "U1", "CALL1", 9),
 		callEndedTimelineEvent("ENV-CALL-ENDED", "R1", "U1", "CALL1", 10),
+		{
+			Id:      "ENV-THREADING-MODE",
+			ActorId: "U1",
+			Event: &evtv1.Event_RoomThreadingModeChanged{
+				RoomThreadingModeChanged: &evtv1.RoomThreadingModeChangedEvent{
+					RoomId: "R1", ThreadingMode: evtv1.RoomThreadingMode_ROOM_THREADING_MODE_ENCOURAGED,
+				},
+			},
+		},
 	})
 
-	if got := p.RoomEventCount("R1"); got != 8 {
-		t.Errorf("RoomEventCount = %d, want 8 visible room entries", got)
+	if got := p.RoomEventCount("R1"); got != 9 {
+		t.Errorf("RoomEventCount = %d, want 9 visible room entries", got)
 	}
 
 	// Newest-first ordering.
 	got := p.RoomEvents("R1", 50, 0)
-	if len(got) != 8 {
-		t.Fatalf("RoomEvents len = %d, want 8", len(got))
+	if len(got) != 9 {
+		t.Fatalf("RoomEvents len = %d, want 9", len(got))
 	}
-	wantOrder := []string{"ENV-CALL-ENDED", "ENV-CALL-STARTED", "ENV-LEFT-U2", "ENV-M2", "ENV-JOIN-U2", "ENV-M1", "ENV-JOIN-U1", "ENV-CREATE"}
+	wantOrder := []string{"ENV-THREADING-MODE", "ENV-CALL-ENDED", "ENV-CALL-STARTED", "ENV-LEFT-U2", "ENV-M2", "ENV-JOIN-U2", "ENV-M1", "ENV-JOIN-U1", "ENV-CREATE"}
 	for i, e := range got {
 		if e.Event.GetId() != wantOrder[i] {
 			t.Errorf("entry[%d] envelope id = %q, want %q", i, e.Event.GetId(), wantOrder[i])
@@ -283,7 +296,7 @@ func TestRoomTimeline_AppendsVisibleEventKinds(t *testing.T) {
 
 func TestRoomTimeline_RoomIsolation(t *testing.T) {
 	p := NewRoomTimelineProjection()
-	applyAll(t, p, []*corev1.Event{
+	applyAll(t, p, []*evtv1.Event{
 		postedEvent(postedOpts{envelopeID: "ENV-A", eventID: "A", roomID: "R1", actorID: "U1", at: 1}),
 		postedEvent(postedOpts{envelopeID: "ENV-B", eventID: "B", roomID: "R2", actorID: "U1", at: 2}),
 		postedEvent(postedOpts{envelopeID: "ENV-C", eventID: "C", roomID: "R1", actorID: "U1", at: 3}),
@@ -303,7 +316,7 @@ func TestRoomTimeline_RoomIsolation(t *testing.T) {
 
 func TestRoomTimeline_PaginationByStreamSeq(t *testing.T) {
 	p := NewRoomTimelineProjection()
-	applyAll(t, p, []*corev1.Event{
+	applyAll(t, p, []*evtv1.Event{
 		postedEvent(postedOpts{envelopeID: "ENV-1", eventID: "M1", roomID: "R1", actorID: "U1", at: 1}),
 		postedEvent(postedOpts{envelopeID: "ENV-2", eventID: "M2", roomID: "R1", actorID: "U1", at: 2}),
 		postedEvent(postedOpts{envelopeID: "ENV-3", eventID: "M3", roomID: "R1", actorID: "U1", at: 3}),
@@ -325,7 +338,7 @@ func TestRoomTimeline_PaginationByStreamSeq(t *testing.T) {
 
 func TestRoomTimeline_LookupByEnvelopeID(t *testing.T) {
 	p := NewRoomTimelineProjection()
-	applyAll(t, p, []*corev1.Event{
+	applyAll(t, p, []*evtv1.Event{
 		postedEvent(postedOpts{envelopeID: "ENV-M1", eventID: "M1", roomID: "R1", actorID: "U1", body: "hello", at: 1}),
 		editedEvent("ENV-EDIT-M1", "ENV-M1", "R1", "U1", "hello (edited)", 2),
 	})
@@ -346,7 +359,7 @@ func TestRoomTimeline_LookupByEnvelopeID(t *testing.T) {
 
 func TestRoomTimeline_RetainsOnlyVisibleEntriesAndMessagePostLookups(t *testing.T) {
 	p := NewRoomTimelineProjection()
-	applyAll(t, p, []*corev1.Event{
+	applyAll(t, p, []*evtv1.Event{
 		roomCreatedTimelineEvent("ENV-CREATE", "R1", "general", 1),
 		postedEvent(postedOpts{envelopeID: "ENV-ROOT", roomID: "R1", actorID: "U1", body: "root", at: 2}),
 		threadCreatedEvent("ENV-THREAD-CREATED", "R1", "ENV-ROOT", "U1", 3),
@@ -398,12 +411,12 @@ func TestRoomTimeline_RetainsOnlyVisibleEntriesAndMessagePostLookups(t *testing.
 
 func TestRoomTimeline_LastRoomMessageEntryIncludesThreadReplies(t *testing.T) {
 	p := NewRoomTimelineProjection()
-	applyAll(t, p, []*corev1.Event{
+	applyAll(t, p, []*evtv1.Event{
 		postedEvent(postedOpts{envelopeID: "ENV-ROOT", roomID: "R1", actorID: "U1", body: "root", at: 1}),
 		postedEvent(postedOpts{envelopeID: "ENV-REPLY", roomID: "R1", actorID: "U2", body: "reply", inThread: "ENV-ROOT", at: 2}),
 	})
 
-	visibleLast, ok := p.LastVisibleRoomEntry("R1", func(e *corev1.Event) bool {
+	visibleLast, ok := p.LastVisibleRoomEntry("R1", func(e *evtv1.Event) bool {
 		return e.GetMessagePosted() != nil
 	})
 	if !ok || visibleLast.Event.GetId() != "ENV-ROOT" {
@@ -417,7 +430,7 @@ func TestRoomTimeline_LastRoomMessageEntryIncludesThreadReplies(t *testing.T) {
 
 func TestRoomTimeline_LastRoomMessageEntrySkipsHiddenEchoes(t *testing.T) {
 	p := NewRoomTimelineProjection()
-	applyAll(t, p, []*corev1.Event{
+	applyAll(t, p, []*evtv1.Event{
 		postedEvent(postedOpts{envelopeID: "ENV-ROOT", roomID: "R1", actorID: "U1", body: "root", at: 1}),
 		postedEvent(postedOpts{envelopeID: "ENV-REPLY", roomID: "R1", actorID: "U2", body: "reply", inThread: "ENV-ROOT", at: 2}),
 		postedEvent(postedOpts{envelopeID: "ENV-ECHO", roomID: "R1", actorID: "U2", body: "echo", echoOfEventID: "ENV-REPLY", echoFromThreadRootEventID: "ENV-ROOT", at: 3}),
@@ -441,7 +454,7 @@ func TestRoomTimeline_LatestBodyReturnsProtectiveCopy(t *testing.T) {
 	p := NewRoomTimelineProjection()
 	post := bodylessPostedEvent("ENV-M1", "R1", "U1", 1)
 	bodyEvent := bodyEventWithAssets("ENV-BODY-M1", "ENV-M1", "R1", "U1", "one", []string{"A1"}, 2)
-	applyAll(t, p, []*corev1.Event{post, bodyEvent})
+	applyAll(t, p, []*evtv1.Event{post, bodyEvent})
 
 	body, retracted, ok := p.LatestBody("ENV-M1")
 	if !ok || retracted || body == nil {
@@ -568,7 +581,7 @@ func TestRoomTimeline_SnapshotPreservesBodyLifecycle(t *testing.T) {
 	p := NewRoomTimelineProjection()
 	lateBody := bodyEvent("ENV-BODY-LATE", "ENV-M1", "R1", "U1", "late", 5)
 	lateBody.GetMessageBody().GetBody().AssetIds = []string{"A-LATE"}
-	applyAll(t, p, []*corev1.Event{
+	applyAll(t, p, []*evtv1.Event{
 		bodyEvent("ENV-BODY-1", "ENV-M1", "R1", "U1", "one", 1),
 		bodylessPostedEvent("ENV-M1", "R1", "U1", 2),
 		bodyEvent("ENV-BODY-2", "ENV-M1", "R1", "U1", "two", 3),
@@ -603,9 +616,37 @@ func TestRoomTimeline_SnapshotPreservesBodyLifecycle(t *testing.T) {
 	}
 }
 
+func TestRoomTimeline_SnapshotPreservesVisibleThreadingModeChanges(t *testing.T) {
+	p := NewRoomTimelineProjection()
+	event := &evtv1.Event{
+		Id:      "THREADING-MODE-CHANGED",
+		ActorId: "U1",
+		Event: &evtv1.Event_RoomThreadingModeChanged{
+			RoomThreadingModeChanged: &evtv1.RoomThreadingModeChangedEvent{
+				RoomId: "R1", ThreadingMode: evtv1.RoomThreadingMode_ROOM_THREADING_MODE_REQUIRED,
+			},
+		},
+	}
+	if err := p.Apply(event, 41); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	payload, err := p.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	restored := NewRoomTimelineProjection()
+	if err := restored.Restore(payload); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	events := restored.RoomEvents("R1", 10, 0)
+	if len(events) != 1 || events[0].Event.GetId() != event.GetId() {
+		t.Fatalf("restored room events = %+v, want threading mode change", events)
+	}
+}
+
 func TestRoomTimeline_LatestOriginalPostIndexSurvivesMutationAndRestore(t *testing.T) {
 	p := NewRoomTimelineProjection()
-	applyAll(t, p, []*corev1.Event{
+	applyAll(t, p, []*evtv1.Event{
 		postedEvent(postedOpts{envelopeID: "M1", roomID: "R1", actorID: "U1", at: 1}),
 		postedEvent(postedOpts{envelopeID: "ECHO", roomID: "R1", actorID: "U1", echoOfEventID: "M1", at: 2}),
 		editedEvent("EDIT", "M1", "R1", "U1", "edited", 3),
@@ -656,7 +697,7 @@ func TestRoomTimeline_MessageDeletedAtTracksRetractionsAndEchoes(t *testing.T) {
 		echoFromThreadRootEventID: "ENV-ROOT",
 		at:                        3,
 	})
-	applyAll(t, p, []*corev1.Event{
+	applyAll(t, p, []*evtv1.Event{
 		bodyEvent("BODY-ROOT", "ENV-ROOT", "R1", "U1", "root", 1),
 		root,
 		bodyEvent("BODY-REPLY", "ENV-REPLY", "R1", "U2", "reply", 2),
@@ -684,7 +725,7 @@ func TestRoomTimeline_MessageDeletedAtTracksRetractionsAndEchoes(t *testing.T) {
 		t.Fatalf("hydration channel echo = %q, want ENV-ECHO", state.ChannelEchoEventID)
 	}
 
-	applyAll(t, p, []*corev1.Event{
+	applyAll(t, p, []*evtv1.Event{
 		retractedEvent("RETRACT-ECHO", "ENV-ECHO", "R1", "U2", "", 5),
 	})
 	if got := p.MessageHydrationState("ENV-REPLY").ChannelEchoEventID; got != "" {
@@ -697,14 +738,14 @@ func TestRoomTimeline_MessageDeletedAtTracksRetractionsAndEchoes(t *testing.T) {
 
 func TestRoomTimeline_MessageDeletedAtUsesUserKeyShredRequestTime(t *testing.T) {
 	p := NewRoomTimelineProjection()
-	applyAll(t, p, []*corev1.Event{
+	applyAll(t, p, []*evtv1.Event{
 		bodyEvent("BODY-M1", "ENV-M1", "R1", "U1", "message", 1),
 		postedEvent(postedOpts{envelopeID: "ENV-M1", roomID: "R1", actorID: "U1", at: 1}),
 		{
 			Id:        "SHRED-U1",
 			CreatedAt: timestamppb.New(fixedTime(5)),
-			Event: &corev1.Event_UserKeyShreddingRequested{
-				UserKeyShreddingRequested: &corev1.UserKeyShreddingRequestedEvent{UserId: "U1"},
+			Event: &evtv1.Event_UserKeyShreddingRequested{
+				UserKeyShreddingRequested: &evtv1.UserKeyShreddingRequestedEvent{UserId: "U1"},
 			},
 		},
 	})
@@ -716,12 +757,12 @@ func TestRoomTimeline_MessageDeletedAtUsesUserKeyShredRequestTime(t *testing.T) 
 
 func TestRoomTimeline_MessageDeletedAtHandlesKeyShredBeforeMessageReplay(t *testing.T) {
 	p := NewRoomTimelineProjection()
-	applyAll(t, p, []*corev1.Event{
+	applyAll(t, p, []*evtv1.Event{
 		{
 			Id:        "SHRED-U1",
 			CreatedAt: timestamppb.New(fixedTime(5)),
-			Event: &corev1.Event_UserKeyShredded{
-				UserKeyShredded: &corev1.UserKeyShreddedEvent{UserId: "U1"},
+			Event: &evtv1.Event_UserKeyShredded{
+				UserKeyShredded: &evtv1.UserKeyShreddedEvent{UserId: "U1"},
 			},
 		},
 		bodyEvent("BODY-M1", "ENV-M1", "R1", "U1", "message", 1),
@@ -738,7 +779,7 @@ func TestRoomTimeline_MessageDeletedAtHandlesKeyShredBeforeMessageReplay(t *test
 
 func TestRoomTimeline_MessageDeletedAtKeepsEarliestDeletionFact(t *testing.T) {
 	p := NewRoomTimelineProjection()
-	applyAll(t, p, []*corev1.Event{
+	applyAll(t, p, []*evtv1.Event{
 		bodyEvent("BODY-M1", "ENV-M1", "R1", "U1", "message", 1),
 		postedEvent(postedOpts{envelopeID: "ENV-M1", roomID: "R1", actorID: "U1", at: 1}),
 		retractedEvent("RETRACT-5", "ENV-M1", "R1", "U1", "", 5),
@@ -753,7 +794,7 @@ func TestRoomTimeline_MessageDeletedAtKeepsEarliestDeletionFact(t *testing.T) {
 
 func TestRoomTimeline_EchoIndexedAfterRetractionInheritsDeletionTime(t *testing.T) {
 	p := NewRoomTimelineProjection()
-	applyAll(t, p, []*corev1.Event{
+	applyAll(t, p, []*evtv1.Event{
 		bodyEvent("BODY-REPLY", "ENV-REPLY", "R1", "U1", "reply", 1),
 		postedEvent(postedOpts{envelopeID: "ENV-REPLY", roomID: "R1", actorID: "U1", at: 1}),
 		retractedEvent("RETRACT-REPLY", "ENV-REPLY", "R1", "U1", "", 4),
@@ -776,7 +817,7 @@ func TestRoomTimeline_RejectsMismatchedMessageBodyEventID(t *testing.T) {
 	p := NewRoomTimelineProjection()
 	bad := bodyEvent("ENV-BODY-1", "ENV-M1", "R1", "U1", "one", 1)
 	bad.GetMessageBody().Body.BodyEventId = "OTHER-BODY"
-	applyAll(t, p, []*corev1.Event{
+	applyAll(t, p, []*evtv1.Event{
 		bad,
 		bodylessPostedEvent("ENV-M1", "R1", "U1", 2),
 	})
@@ -790,7 +831,7 @@ func TestRoomTimeline_RejectsMismatchedMessageBodyEventID(t *testing.T) {
 
 func TestRoomTimeline_RetractingEchoHidesEchoOnly(t *testing.T) {
 	p := NewRoomTimelineProjection()
-	applyAll(t, p, []*corev1.Event{
+	applyAll(t, p, []*evtv1.Event{
 		postedEvent(postedOpts{envelopeID: "ENV-ROOT", roomID: "R1", actorID: "U1", body: "root", at: 1}),
 		postedEvent(postedOpts{envelopeID: "ENV-REPLY", roomID: "R1", actorID: "U1", body: "reply", inThread: "ENV-ROOT", at: 2}),
 		postedEvent(postedOpts{envelopeID: "ENV-ECHO", roomID: "R1", actorID: "U1", body: "reply", echoOfEventID: "ENV-REPLY", echoFromThreadRootEventID: "ENV-ROOT", at: 3}),
@@ -811,7 +852,7 @@ func TestRoomTimeline_RetractingEchoHidesEchoOnly(t *testing.T) {
 
 func TestRoomTimeline_DerivedVisibleTimelineSkipsFoldedEntries(t *testing.T) {
 	p := NewRoomTimelineProjection()
-	applyAll(t, p, []*corev1.Event{
+	applyAll(t, p, []*evtv1.Event{
 		postedEvent(postedOpts{envelopeID: "ENV-ROOT", roomID: "R1", actorID: "U1", body: "root", at: 1}),
 		postedEvent(postedOpts{envelopeID: "ENV-REPLY", roomID: "R1", actorID: "U1", body: "reply", inThread: "ENV-ROOT", at: 2}),
 		postedEvent(postedOpts{envelopeID: "ENV-ECHO", roomID: "R1", actorID: "U1", body: "reply", echoOfEventID: "ENV-REPLY", echoFromThreadRootEventID: "ENV-ROOT", at: 3}),
@@ -834,7 +875,7 @@ func TestRoomTimeline_DerivedVisibleTimelineSkipsFoldedEntries(t *testing.T) {
 
 func TestRoomTimeline_CallLifecycleVisibility(t *testing.T) {
 	p := NewRoomTimelineProjection()
-	applyAll(t, p, []*corev1.Event{
+	applyAll(t, p, []*evtv1.Event{
 		postedEvent(postedOpts{envelopeID: "ENV-M1", roomID: "R1", actorID: "U1", body: "root", at: 1}),
 		callStartedTimelineEvent("ENV-CALL-STARTED", "R1", "U1", "CALL1", 2),
 		callParticipantJoinedTimelineEvent("ENV-CALL-JOINED", "R1", "U1", "CALL1", 3),
@@ -856,7 +897,7 @@ func TestRoomTimeline_CallLifecycleVisibility(t *testing.T) {
 
 func TestRoomTimeline_RetractingOriginalTombstonesEchoBody(t *testing.T) {
 	p := NewRoomTimelineProjection()
-	applyAll(t, p, []*corev1.Event{
+	applyAll(t, p, []*evtv1.Event{
 		postedEvent(postedOpts{envelopeID: "ENV-ROOT", roomID: "R1", actorID: "U1", body: "root", at: 1}),
 		postedEvent(postedOpts{envelopeID: "ENV-REPLY", roomID: "R1", actorID: "U1", body: "reply", inThread: "ENV-ROOT", at: 2}),
 		postedEvent(postedOpts{envelopeID: "ENV-ECHO", roomID: "R1", actorID: "U1", body: "reply", echoOfEventID: "ENV-REPLY", echoFromThreadRootEventID: "ENV-ROOT", at: 3}),
@@ -877,7 +918,7 @@ func TestRoomTimeline_RetractingOriginalTombstonesEchoBody(t *testing.T) {
 
 func TestRoomTimeline_VisibleRoomTimelineAroundUsesVisibleIndex(t *testing.T) {
 	p := NewRoomTimelineProjection()
-	applyAll(t, p, []*corev1.Event{
+	applyAll(t, p, []*evtv1.Event{
 		postedEvent(postedOpts{envelopeID: "M1", roomID: "R1", actorID: "U1", body: "1", at: 1}),
 		postedEvent(postedOpts{envelopeID: "REPLY-M1", roomID: "R1", actorID: "U1", body: "reply", inThread: "M1", at: 2}),
 		postedEvent(postedOpts{envelopeID: "M2", roomID: "R1", actorID: "U1", body: "2", at: 3}),
@@ -907,7 +948,7 @@ func TestRoomTimeline_VisibleRoomTimelineAroundUsesVisibleIndex(t *testing.T) {
 func TestRoomTimeline_AdminProjectionEstimateCoversDerivedIndexes(t *testing.T) {
 	p := NewRoomTimelineProjection()
 	post := postedEvent(postedOpts{envelopeID: "ENV-M1", roomID: "R1", actorID: "U1", body: "1", at: 1})
-	applyAll(t, p, []*corev1.Event{
+	applyAll(t, p, []*evtv1.Event{
 		post,
 		bodyEventWithAssets("ENV-BODY-M1", "ENV-M1", "R1", "U1", "1 edited", []string{"A-video"}, 2),
 		bodyEventWithAssets("ENV-BODY-M1-2", "ENV-M1", "R1", "U1", "1 edited again", []string{"A-video"}, 3),
@@ -918,8 +959,8 @@ func TestRoomTimeline_AdminProjectionEstimateCoversDerivedIndexes(t *testing.T) 
 			Id:        "ENV-PIN-M1",
 			ActorId:   "U1",
 			CreatedAt: timestamppb.New(fixedTime(9)),
-			Event: &corev1.Event_MessagePinned{
-				MessagePinned: &corev1.MessagePinnedEvent{RoomId: "R1", MessageEventId: "ENV-M1"},
+			Event: &evtv1.Event_MessagePinned{
+				MessagePinned: &evtv1.MessagePinnedEvent{RoomId: "R1", MessageEventId: "ENV-M1"},
 			},
 		},
 	})
@@ -981,11 +1022,11 @@ func TestRoomTimeline_NonRoomEventsSkipped(t *testing.T) {
 	// slipped through the filter, roomIDOfEvent would return "" and the
 	// entry would be skipped rather than crashing.
 	p := NewRoomTimelineProjection()
-	stray := &corev1.Event{
+	stray := &evtv1.Event{
 		Id:        "ENV-STRAY",
 		CreatedAt: timestamppb.New(fixedTime(1)),
-		Event: &corev1.Event_ServerMemberDeleted{
-			ServerMemberDeleted: &corev1.ServerMemberDeletedEvent{UserId: "U1"},
+		Event: &evtv1.Event_ServerMemberDeleted{
+			ServerMemberDeleted: &evtv1.ServerMemberDeletedEvent{UserId: "U1"},
 		},
 	}
 	if err := p.Apply(stray, 1); err != nil {
@@ -998,19 +1039,19 @@ func TestRoomTimeline_NonRoomEventsSkipped(t *testing.T) {
 
 func TestRoomTimeline_IgnoredRoomEventsDoNotRetainIdempotencyIDs(t *testing.T) {
 	p := NewRoomTimelineProjection()
-	ignored := []*corev1.Event{
+	ignored := []*evtv1.Event{
 		{
 			Id:        "ENV-REACTION",
 			CreatedAt: timestamppb.New(fixedTime(1)),
-			Event: &corev1.Event_ReactionAdded{
-				ReactionAdded: &corev1.ReactionAddedEvent{RoomId: "R1", MessageEventId: "M1", Emoji: "wave"},
+			Event: &evtv1.Event_ReactionAdded{
+				ReactionAdded: &evtv1.ReactionAddedEvent{RoomId: "R1", MessageEventId: "M1", Emoji: "wave"},
 			},
 		},
 		{
 			Id:        "ENV-CALL",
 			CreatedAt: timestamppb.New(fixedTime(2)),
-			Event: &corev1.Event_VoiceCallParticipantJoined{
-				VoiceCallParticipantJoined: &corev1.CallParticipantJoinedEvent{RoomId: "R1", CallId: "C1"},
+			Event: &evtv1.Event_VoiceCallParticipantJoined{
+				VoiceCallParticipantJoined: &evtv1.CallParticipantJoinedEvent{RoomId: "R1", CallId: "C1"},
 			},
 		},
 	}
@@ -1029,12 +1070,12 @@ func TestRoomTimeline_IgnoredRoomEventsDoNotRetainIdempotencyIDs(t *testing.T) {
 
 func TestRoomTimeline_HandledEventsRemainIdempotent(t *testing.T) {
 	p := NewRoomTimelineProjection()
-	event := &corev1.Event{
+	event := &evtv1.Event{
 		Id:        "ENV-MESSAGE",
 		ActorId:   "U1",
 		CreatedAt: timestamppb.New(fixedTime(1)),
-		Event: &corev1.Event_MessagePosted{
-			MessagePosted: &corev1.MessagePostedEvent{RoomId: "R1"},
+		Event: &evtv1.Event_MessagePosted{
+			MessagePosted: &evtv1.MessagePostedEvent{RoomId: "R1"},
 		},
 	}
 

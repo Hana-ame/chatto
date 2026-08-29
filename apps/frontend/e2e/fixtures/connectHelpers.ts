@@ -45,10 +45,12 @@ export interface E2EServerRole {
   permissionDenials: string[];
 }
 
-export type E2ENotificationMode = 'UNSPECIFIED' | 'OFF' | 'SILENT' | 'ALERT';
+export type E2ENotificationMode =
+  'UNSPECIFIED' | 'OFF' | 'UNREAD_BADGE' | 'IN_APP_NOTIFICATION' | 'PUSH_NOTIFICATION';
 
 type E2ENotificationPolicyShape<Value> = {
   directMessages: Value;
+  roomMessages: Value;
   directMentions: Value;
   replies: Value;
   roleMentions: Value;
@@ -64,10 +66,19 @@ export interface E2ENotificationPolicy {
   effective: E2ENotificationPolicyShape<E2ENotificationMode>;
 }
 
+export type E2ENotificationPolicyScope =
+  { server: Record<string, never> } | { roomGroupId: string } | { roomId: string };
+
 interface NotificationPolicyResponse {
   policy?: {
     overrides?: Partial<E2ENotificationPolicyShape<unknown>>;
     effective?: Partial<E2ENotificationPolicyShape<unknown>>;
+  };
+}
+
+interface ScopedNotificationPolicyResponse {
+  policy?: {
+    policy?: NotificationPolicyResponse['policy'];
   };
 }
 
@@ -91,7 +102,11 @@ interface JoinRoomResponse {
 }
 
 interface CreateMessageResponse {
-  event?: { id?: string };
+  message?: { id?: string };
+}
+
+interface GetMessageResponse {
+  message?: { id?: string };
 }
 
 interface ViewerResponse {
@@ -105,8 +120,9 @@ interface GetUserResponse {
 const notificationModeByNumber: Record<number, E2ENotificationMode> = {
   0: 'UNSPECIFIED',
   1: 'OFF',
-  2: 'SILENT',
-  3: 'ALERT'
+  2: 'IN_APP_NOTIFICATION',
+  3: 'PUSH_NOTIFICATION',
+  4: 'UNREAD_BADGE'
 };
 
 export async function connectPost<T>(
@@ -309,6 +325,28 @@ export async function postMessageViaConnect(
   return postMessageWithConnectInput(page, { roomId, body });
 }
 
+/** Wait until one message is observable through the viewer's room timeline projection. */
+export async function waitForMessageViaConnect(
+  page: Page,
+  roomId: string,
+  eventId: string,
+  timeout = DEFAULT_POLL_TIMEOUT
+): Promise<void> {
+  await expect(async () => {
+    const data = await connectPost<GetMessageResponse>(
+      page,
+      'chatto.api.v1.MessageService/GetMessage',
+      { roomId, eventId }
+    );
+    expect(data.message?.id).toBe(eventId);
+  }).toPass({ timeout, intervals: [100, 250, 500, 1000] });
+}
+
+/** Establish the Message Read Cursor through the room's current root event. */
+export async function markRoomAsReadViaConnect(page: Page, roomId: string): Promise<void> {
+  await connectPost(page, 'chatto.api.v1.RoomService/MarkRoomAsRead', { roomId });
+}
+
 export async function postMessagesViaConnect(
   page: Page,
   roomId: string,
@@ -410,12 +448,47 @@ export async function updateNotificationPolicy(
   return normalizeNotificationPolicy(data);
 }
 
+export async function getScopedNotificationPolicy(
+  page: Page,
+  scope: E2ENotificationPolicyScope
+): Promise<E2ENotificationPolicy> {
+  const data = await connectPost<ScopedNotificationPolicyResponse>(
+    page,
+    'chatto.api.v1.NotificationPolicyService/GetNotificationPolicy',
+    { scope }
+  );
+  return normalizeNotificationPolicy({ policy: data.policy?.policy });
+}
+
+export async function updateScopedNotificationPolicy(
+  page: Page,
+  scope: E2ENotificationPolicyScope,
+  patch: Partial<E2ENotificationPolicyShape<E2ENotificationMode | null>>
+): Promise<E2ENotificationPolicy> {
+  const fields = Object.keys(patch) as Array<keyof typeof patch>;
+  const overrides = Object.fromEntries(
+    fields.flatMap((field) => {
+      const mode = patch[field];
+      return mode === null || mode === undefined
+        ? []
+        : [[field, `NOTIFICATION_DELIVERY_MODE_${mode}`]];
+    })
+  );
+  const data = await connectPost<ScopedNotificationPolicyResponse>(
+    page,
+    'chatto.api.v1.NotificationPolicyService/UpdateNotificationPolicy',
+    { scope, overrides, updateMask: fields.join(',') }
+  );
+  return normalizeNotificationPolicy({ policy: data.policy?.policy });
+}
+
 function normalizeNotificationPolicy(data: NotificationPolicyResponse): E2ENotificationPolicy {
   const overrides = data.policy?.overrides;
   const effective = data.policy?.effective;
   return {
     overrides: {
       directMessages: normalizeNotificationOverride(overrides?.directMessages),
+      roomMessages: normalizeNotificationOverride(overrides?.roomMessages),
       directMentions: normalizeNotificationOverride(overrides?.directMentions),
       replies: normalizeNotificationOverride(overrides?.replies),
       roleMentions: normalizeNotificationOverride(overrides?.roleMentions),
@@ -427,6 +500,7 @@ function normalizeNotificationPolicy(data: NotificationPolicyResponse): E2ENotif
     },
     effective: {
       directMessages: normalizeNotificationMode(effective?.directMessages),
+      roomMessages: normalizeNotificationMode(effective?.roomMessages),
       directMentions: normalizeNotificationMode(effective?.directMentions),
       replies: normalizeNotificationMode(effective?.replies),
       roleMentions: normalizeNotificationMode(effective?.roleMentions),
@@ -451,7 +525,10 @@ function normalizeNotificationMode(value: unknown): E2ENotificationMode {
   }
 
   if (typeof value === 'string') {
-    const compact = value.replace(/^NOTIFICATION_DELIVERY_MODE_/, '') as E2ENotificationMode;
+    const raw = value.replace(/^NOTIFICATION_DELIVERY_MODE_/, '');
+    const compact = (
+      raw === 'SILENT' ? 'IN_APP_NOTIFICATION' : raw === 'ALERT' ? 'PUSH_NOTIFICATION' : raw
+    ) as E2ENotificationMode;
     if (Object.values(notificationModeByNumber).includes(compact)) return compact;
   }
 

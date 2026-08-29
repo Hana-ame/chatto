@@ -4,10 +4,24 @@
       "title": "Iestatījumi",
       "back_to_server": "Atpakaļ uz serveri",
       "profile": "Profils",
-      "display": "Displejs",
+      "display": "Preferences",
       "notifications": "Paziņojumi",
       "account": "Konts",
-      "bots": "Boti"
+      "bots": "Boti",
+      "user_preferences": "Lietotāja preferences",
+      "app_preferences": "Lietotnes preferences",
+      "your_account": "Jūsu konts",
+      "server_configuration": "Serveris"
+    },
+    "app_preferences": {
+      "title": "Lietotnes preferences",
+      "subtitle": "Šīs lietotnes izvēles, kas attiecas uz visiem jūsu reģistrētajiem serveriem",
+      "appearance": {
+        "title": "Izskats"
+      },
+      "composer": {
+        "title": "Ziņojumu rakstīšana"
+      }
     },
     "profile": {
       "title": "Profils",
@@ -94,7 +108,7 @@
       "presence": {
         "button": "Klātbūtne: {status}",
         "title": "Klātbūtne",
-        "auto": "Tiešsaistē",
+        "online": "Tiešsaistē",
         "away": "Prom",
         "do_not_disturb": "Netraucēt",
         "offline": "Bezsaistē",
@@ -102,11 +116,18 @@
       },
       "saved": "Profils ir veiksmīgi atjaunināts",
       "save_failed": "Neizdevās saglabāt profilu",
-      "save_button": "Saglabāt izmaiņas"
+      "save_button": "Saglabāt izmaiņas",
+      "bio": {
+        "label": "Apraksts",
+        "description": "Līdz {max} rakstzīmēm, redams jūsu profilā.",
+        "placeholder": "Pastāstiet īsi par sevi",
+        "too_long": "Aprakstā var būt ne vairāk kā {max} rakstzīmes."
+      }
     },
     "preferences": {
-      "title": "Displejs",
-      "subtitle": "Izvēlieties, kā parādās Chatto",
+      "title": "Laiks un reģions",
+      "subtitle": "Izvēlieties, kā šis serveris attēlo datumus un laikus",
+      "browser_scope": "Šī izvēle attiecas uz visiem Chatto serveriem šajā pārlūkā.",
       "theme": {
         "title": "Tēma",
         "system": {
@@ -120,6 +141,28 @@
         "dark": {
           "label": "Tumšs",
           "description": "Izmantojiet tumšo interfeisu šajā pārlūkprogrammā"
+        }
+      },
+      "editor": {
+        "title": "Ziņojumu redaktors",
+        "visual": {
+          "label": "Vizuāls",
+          "description": "Formatējiet ziņojumus, neredzot Markdown sintaksi"
+        },
+        "markdown": {
+          "label": "Markdown",
+          "description": "Rediģējiet Markdown avotu ar sintakses izcelšanu"
+        }
+      },
+      "send_mode": {
+        "title": "Sūtīt ziņojumus ar",
+        "enter": {
+          "label": "Return",
+          "description": "Return nosūta; Cmd/Ctrl+Return izpilda redaktora parasto Return darbību"
+        },
+        "modifier_enter": {
+          "label": "Cmd/Ctrl+Return",
+          "description": "Cmd/Ctrl+Return nosūta; Return izpilda redaktora parasto darbību"
         }
       },
       "language": {
@@ -153,9 +196,9 @@
           "description": "piemēram, 14:30"
         }
       },
-      "save_button": "Saglabājiet displeja iestatījumus",
-      "saved": "Displeja iestatījumi saglabāti",
-      "save_failed": "Neizdevās saglabāt displeja iestatījumus"
+      "save_button": "Saglabāt laika iestatījumus",
+      "saved": "Laika iestatījumi saglabāti",
+      "save_failed": "Neizdevās saglabāt laika iestatījumus"
     },
     "notifications": {
       "title": "Paziņojumi",
@@ -246,17 +289,27 @@
       },
       "policy": {
         "title": "Paziņojumu noteikumi",
-        "description": "Izvēlieties, cik izteikti katram aktivitātes veidam jāpiesaista jūsu uzmanība. Mantošana izmanto servera noklusējumu.",
+        "description": "Izvēlieties katras aktivitātes paziņošanas veidu servera, telpu grupas un telpas līmenī. Telpas manto iestatījumu no savas grupas un pēc tam no servera.",
         "load_failed": "Neizdevās ielādēt paziņojumu noteikumus",
         "save_failed": "Neizdevās saglabāt paziņojumu noteikumus",
         "effective": "Spēkā: {mode}",
+        "filter_label": "Filtrēt paziņojumu tvērumus",
+        "filter_placeholder": "Filtrēt grupas un telpas…",
+        "no_filter_matches": "Šim filtram neatbilst neviens paziņojumu tvērums.",
+        "legend": "Paziņojumu piegādes režīmi",
+        "cell_aria": "{cause}, {scope}. Pārrakstīšana: {override}. Spēkā: {effective}. Aktivizējiet, lai iestatītu {next}.",
+        "server_default_cell_aria": "{cause}, {scope}. Noklusējums: {current}. Aktivizējiet, lai iestatītu {next}.",
+        "not_applicable_cell_aria": "{cause}, {scope}. Nav piemērojams.",
         "delivery_mode": {
           "inherit": "Mantot",
           "off": "Izslēgts",
-          "silent": "Kluss",
-          "alert": "Brīdinājums"
+          "badge": "Atzīme",
+          "badge_hint": "Pievieno tikai neitrālu nelasīta satura punktu. Neizveido paziņojumu, neatskaņo skaņu un nesūta pašpiegādes paziņojumu.",
+          "notification": "Paziņojums",
+          "push_notification": "Pašpiegādes paziņojums"
         },
         "reason": {
+          "room_message": "Telpu ziņojumi",
           "direct_message": "Tiešie ziņojumi",
           "direct_mention": "Tiešie pieminējumi",
           "reply": "Atbildes uz jūsu ziņojumiem",
@@ -264,10 +317,20 @@
           "here": "@here pieminējumi",
           "all": "@all pieminējumi",
           "followed_thread": "Sekotie pavedieni",
-          "followed_room": "Sekotās telpas",
           "reaction": "Reakcijas uz jūsu ziņojumiem",
           "activity": "Aktivitāte",
           "room_invitation": "Uzaicinājumi uz telpām"
+        },
+        "reason_hint": {
+          "room_message": "Saknes ziņojumi, ko citi dalībnieki publicē tieši kanālu telpās, nevis pavedienos.",
+          "direct_message": "Ziņojumi, ko citi dalībnieki nosūta tiešo ziņojumu sarunās.",
+          "direct_mention": "Ziņojumi, kuros tieši pieminēts jūsu lietotājvārds.",
+          "reply": "Ziņojumi, kas atbild uz kādu no jūsu ziņojumiem.",
+          "role_mention": "Ziņojumi, kuros pieminēta jums piešķirta loma.",
+          "here": "Ziņojumi, kuros izmantots @here, kad jūsu klātbūtnes statuss nav bezsaistē.",
+          "all": "Ziņojumi ar @all telpā, kuras dalībnieks esat.",
+          "followed_thread": "Jaunas atbildes pavedienos, kuriem sekojat.",
+          "reaction": "Reakcijas, ko citi dalībnieki pievieno jūsu ziņojumiem."
         }
       }
     },
@@ -361,11 +424,6 @@
       "create_title": "Izveidojiet robotprogrammatūras kontu",
       "create_failed": "Neizdevās izveidot robotu",
       "created": "Bots izveidots",
-      "edit": "Rediģēt",
-      "edit_title": "Rediģēt robota kontu",
-      "updated": "Bots ir atjaunināts",
-      "update_failed": "Neizdevās atjaunināt robotu",
-      "update_conflict": "Kāds cits atjaunināja šo robotu. Pārlādē lapu un mēģini vēlreiz.",
       "username": "Lietotājvārds",
       "username_hint": "Bot lietotājvārdiem jābeidzas ar _bot.",
       "display_name": "Parādītais nosaukums",
@@ -384,6 +442,12 @@
       "rotate_warning": "Pašreizējā atslēga nekavējoties pārtrauks darboties. Jebkura integrācija, kas to izmanto, ir jāatjaunina.",
       "key_rotated": "API atslēga ir pagriezta",
       "rotate_failed": "Neizdevās pagriezt API atslēgu",
+      "webhook_title": "Ienākošie tīmekļa aizķeres punkti",
+      "webhook_description": "Publicējiet ziņojumus šī bota vārdā no ārējiem rīkiem.",
+      "webhook_created": "Ienākošais tīmekļa aizķeres punkts izveidots",
+      "webhook_url_title": "Saglabājiet šo tīmekļa aizķera URL",
+      "webhook_url_warning": "Šis URL tiek parādīts tikai vienu reizi un satur piekļuves datus. Pirms šī loga aizvēršanas glabājiet to drošā vietā.",
+      "webhook_url_copied": "Tīmekļa aizķera URL nokopēts",
       "delete_title": "Dzēst robotu",
       "delete_warning": "Vai dzēst {name}? Tā API atslēga nekavējoties pārtrauks darboties, un kontu nevarēs atkopt.",
       "deleted": "Bots ir izdzēsts",
@@ -391,7 +455,20 @@
       "permissions": {
         "owner_ceiling": "Izvēlieties, ko šis bots drīkst darīt. Varat tam piešķirt tikai tās atļaujas, kas ir jums pašam. Ja zaudēsiet kādu atļauju, arī bots to vairs nevarēs izmantot.",
         "save_failed": "Neizdevās atjaunināt robota atļauju"
-      }
+      },
+      "webhook_empty_description": "Vēl nav izveidots neviens ienākošais tīmekļa aizķeres punkts.",
+      "webhook_create": "Izveidot tīmekļa aizķeres punktu",
+      "webhook_name": "Nosaukums",
+      "webhook_created_at": "Izveidots",
+      "webhook_create_failed": "Neizdevās izveidot ienākošo tīmekļa aizķeres punktu",
+      "webhook_revoke": "Atsaukt tīmekļa aizķeres punktu",
+      "webhook_revoke_warning": "Pašreizējais tīmekļa aizķeres punkta URL nekavējoties pārstās darboties.",
+      "webhook_revoked": "Ienākošais tīmekļa aizķeres punkts atsaukts",
+      "webhook_revoke_failed": "Neizdevās atsaukt ienākošo tīmekļa aizķeres punktu",
+      "webhook_last_used": "Pēdējo reizi izmantots",
+      "webhook_no_use_recorded": "Nav reģistrēts lietojums",
+      "webhook_last_used_unavailable": "Īslaicīgi nav pieejams",
+      "webhook_limit_reached": "Ir sasniegts 20 ienākošo tīmekļa aizķeres punktu ierobežojums."
     }
   }
 }

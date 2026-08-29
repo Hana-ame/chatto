@@ -29,13 +29,14 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"hmans.de/chatto/internal/assets"
 	"hmans.de/chatto/internal/config"
+	"hmans.de/chatto/internal/connectapi"
 	"hmans.de/chatto/internal/core"
 	"hmans.de/chatto/internal/core/linkpreview"
 	"hmans.de/chatto/internal/email"
 	"hmans.de/chatto/internal/evtstream"
 	apiv1 "hmans.de/chatto/internal/pb/chatto/api/v1"
 	"hmans.de/chatto/internal/pb/chatto/api/v1/apiv1connect"
-	corev1 "hmans.de/chatto/internal/pb/chatto/core/v1"
+	evtv1 "hmans.de/chatto/internal/pb/chatto/core/evt/v1"
 	"hmans.de/chatto/internal/testutil"
 	"hmans.de/chatto/internal/testutil/fakes3"
 )
@@ -185,7 +186,14 @@ func (env *assetTestEnv) login(t *testing.T, login, password string) {
 	t.Helper()
 
 	loginBody := fmt.Sprintf(`{"login":"%s","password":"%s"}`, login, password)
-	resp, err := env.client.Post(env.server.URL+"/auth/login", "application/json", bytes.NewReader([]byte(loginBody)))
+	req, err := http.NewRequest(http.MethodPost, env.server.URL+"/auth/browser/login", bytes.NewReader([]byte(loginBody)))
+	if err != nil {
+		t.Fatalf("Create login request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(connectapi.BrowserAuthenticationModeHeader, connectapi.BrowserAuthenticationModeCookie)
+	req.Header.Set("Origin", env.server.URL)
+	resp, err := env.client.Do(req)
 	if err != nil {
 		t.Fatalf("Failed to login: %v", err)
 	}
@@ -239,7 +247,7 @@ func markPublicServerAssetForTest(t *testing.T, env *assetTestEnv, assetID strin
 	}
 }
 
-func appendRoomTimelineAssetTestEvent(t *testing.T, env *assetTestEnv, roomID string, event *corev1.Event) {
+func appendRoomTimelineAssetTestEvent(t *testing.T, env *assetTestEnv, roomID string, event *evtv1.Event) {
 	t.Helper()
 	event.Id = core.NewEventID()
 	event.ActorId = core.SystemActorID
@@ -254,7 +262,7 @@ func appendRoomTimelineAssetTestEvent(t *testing.T, env *assetTestEnv, roomID st
 	}
 }
 
-func appendAssetProjectionTestEvent(t *testing.T, env *assetTestEnv, assetID string, event *corev1.Event) {
+func appendAssetProjectionTestEvent(t *testing.T, env *assetTestEnv, assetID string, event *evtv1.Event) {
 	t.Helper()
 	event.Id = core.NewEventID()
 	event.ActorId = core.SystemActorID
@@ -867,13 +875,13 @@ func TestAsset_StableNilStorageS3VideoRedirectsViaProbe(t *testing.T) {
 		t.Fatal("Expected stable attachment URL")
 	}
 
-	appendAssetProjectionTestEvent(t, env, attachment.GetId(), &corev1.Event{
+	appendAssetProjectionTestEvent(t, env, attachment.GetId(), &evtv1.Event{
 		Id: "E-storage-less-" + attachment.GetId(),
-		Event: &corev1.Event_AssetCreated{
-			AssetCreated: &corev1.AssetCreatedEvent{
+		Event: &evtv1.Event_AssetCreated{
+			AssetCreated: &evtv1.AssetCreatedEvent{
 				OriginalBinaryAvailable: true,
 				RoomId:                  room.Id,
-				Asset: &corev1.AssetRecord{
+				Asset: &evtv1.AssetRecord{
 					Id:          attachment.GetId(),
 					Filename:    "s3-legacy-video.mp4",
 					ContentType: "video/mp4",
@@ -1405,19 +1413,19 @@ func TestAsset_LegacyFlatPublicAssetsRemainAvailable(t *testing.T) {
 	imageData := createAssetTestPNG(t, 120, 80)
 	store := env.core.ServerStore()
 
-	legacyRecord := func(assetID, filename string) *corev1.AssetRecord {
+	legacyRecord := func(assetID, filename string) *evtv1.AssetRecord {
 		if _, err := store.Put(env.ctx, jetstream.ObjectMeta{
 			Name:    assetID,
 			Headers: map[string][]string{"Content-Type": {"image/png"}},
 		}, bytes.NewReader(imageData)); err != nil {
 			t.Fatalf("store legacy public object %q: %v", assetID, err)
 		}
-		return &corev1.AssetRecord{
+		return &evtv1.AssetRecord{
 			Id:          assetID,
 			Filename:    filename,
 			ContentType: "image/png",
 			Size:        int64(len(imageData)),
-			Storage:     &corev1.AssetRecord_Nats{Nats: &corev1.NATSAsset{Key: assetID}},
+			Storage:     &evtv1.AssetRecord_Nats{Nats: &evtv1.NATSAsset{Key: assetID}},
 		}
 	}
 	assertOK := func(path string) {
@@ -1464,11 +1472,11 @@ func TestAsset_LegacyFlatPublicAssetsRemainAvailable(t *testing.T) {
 
 	previewID := core.NewAssetID()
 	legacyRecord(previewID, "link-preview.webp")
-	appendRoomTimelineAssetTestEvent(t, env, "Rlegacynamespace", &corev1.Event{
-		Event: &corev1.Event_MessageBody{MessageBody: &corev1.MessageBodyEvent{
+	appendRoomTimelineAssetTestEvent(t, env, "Rlegacynamespace", &evtv1.Event{
+		Event: &evtv1.Event_MessageBody{MessageBody: &evtv1.MessageBodyEvent{
 			RoomId:  "Rlegacynamespace",
 			EventId: "Elegacynamespacemessage",
-			Body: &corev1.MessageBody{LinkPreview: &corev1.LinkPreview{
+			Body: &evtv1.MessageBody{LinkPreview: &evtv1.LinkPreview{
 				ImageAssetId: &previewID,
 			}},
 		}},
@@ -1488,13 +1496,13 @@ func TestAsset_CacheOnlyLegacyLinkPreviewRemainsAvailable(t *testing.T) {
 	}, bytes.NewReader(imageData)); err != nil {
 		t.Fatalf("store cache-only legacy preview: %v", err)
 	}
-	if err := env.previews.Set(env.ctx, previewURL, &corev1.LinkPreview{
+	if err := env.previews.Set(env.ctx, previewURL, &evtv1.LinkPreview{
 		Url:          previewURL,
 		ImageAssetId: &assetID,
-		ImageAsset: &corev1.AssetRecord{
+		ImageAsset: &evtv1.AssetRecord{
 			Id:          assetID,
 			ContentType: "image/png",
-			Storage:     &corev1.AssetRecord_Nats{Nats: &corev1.NATSAsset{Key: assetID}},
+			Storage:     &evtv1.AssetRecord_Nats{Nats: &evtv1.NATSAsset{Key: assetID}},
 		},
 	}); err != nil {
 		t.Fatalf("cache legacy preview metadata: %v", err)
@@ -1608,8 +1616,8 @@ func TestAsset_PublicServerRouteRejectsPrivateAndUnknownNATSObjects(t *testing.T
 		t.Fatalf("UpdateMeta legacy fixture: %v", err)
 	}
 	assertStatus("/assets/server/"+assetID, http.StatusNotFound)
-	appendAssetProjectionTestEvent(t, env, assetID, &corev1.Event{
-		Event: &corev1.Event_AssetDeleted{AssetDeleted: &corev1.AssetDeletedEvent{
+	appendAssetProjectionTestEvent(t, env, assetID, &evtv1.Event{
+		Event: &evtv1.Event_AssetDeleted{AssetDeleted: &evtv1.AssetDeletedEvent{
 			AssetId: assetID,
 		}},
 	})
@@ -1725,13 +1733,13 @@ func TestAsset_PublicLinkPreviewMarkerServesWithoutAuthentication(t *testing.T) 
 	}, bytes.NewReader(imageData)); err != nil {
 		t.Fatalf("store historical link-preview image: %v", err)
 	}
-	appendRoomTimelineAssetTestEvent(t, env, "Rpreviewhistory", &corev1.Event{
-		Event: &corev1.Event_MessageBody{MessageBody: &corev1.MessageBodyEvent{
+	appendRoomTimelineAssetTestEvent(t, env, "Rpreviewhistory", &evtv1.Event{
+		Event: &evtv1.Event_MessageBody{MessageBody: &evtv1.MessageBodyEvent{
 			RoomId:  "Rpreviewhistory",
 			EventId: "Epreviewmessage",
-			Body: &corev1.MessageBody{LinkPreview: &corev1.LinkPreview{
+			Body: &evtv1.MessageBody{LinkPreview: &evtv1.LinkPreview{
 				ImageAssetId: &legacyID,
-				ImageAsset:   &corev1.AssetRecord{Id: legacyID},
+				ImageAsset:   &evtv1.AssetRecord{Id: legacyID},
 			}},
 		}},
 	})
@@ -1917,17 +1925,17 @@ func TestAsset_HLSGenerationIsAuthorizedAndBackendIndependent(t *testing.T) {
 			if err != nil {
 				t.Fatalf("UploadAttachment: %v", err)
 			}
-			segment, err := env.core.UploadDerivativeAttachment(env.ctx, original.GetId(), corev1.AssetDerivativeRole_ASSET_DERIVATIVE_ROLE_HLS_MEDIA_SEGMENT, room.Id, "segment-00000.ts", "video/mp2t", bytes.NewReader([]byte("segment-bytes")))
+			segment, err := env.core.UploadDerivativeAttachment(env.ctx, original.GetId(), evtv1.AssetDerivativeRole_ASSET_DERIVATIVE_ROLE_HLS_MEDIA_SEGMENT, room.Id, "segment-00000.ts", "video/mp2t", bytes.NewReader([]byte("segment-bytes")))
 			if err != nil {
 				t.Fatalf("UploadDerivativeAttachment(segment): %v", err)
 			}
 			if err := env.core.RecordAssetProcessingStarted(env.ctx, core.SystemActorID, room.Id, "E-hls", original.GetId()); err != nil {
 				t.Fatalf("RecordAssetProcessingStarted: %v", err)
 			}
-			hls := &corev1.AssetProcessedHLS{
-				Renditions: []*corev1.AssetHLSRendition{{
+			hls := &evtv1.AssetProcessedHLS{
+				Renditions: []*evtv1.AssetHLSRendition{{
 					Width: 640, Height: 360, Bandwidth: 500000,
-					Segments: []*corev1.AssetHLSSegment{{AssetId: segment.GetId(), DurationMs: 6000}},
+					Segments: []*evtv1.AssetHLSSegment{{AssetId: segment.GetId(), DurationMs: 6000}},
 				}},
 			}
 			if err := env.core.RecordAssetProcessedWithHLS(env.ctx, core.SystemActorID, room.Id, "E-hls", original.GetId(), 6000, 640, 360, nil, nil, hls); err != nil {
@@ -2003,11 +2011,11 @@ func TestHLSDerivativeRequiresExpectedParentAndRole(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UploadAttachment(other): %v", err)
 	}
-	wrongParent, err := env.core.UploadDerivativeAttachment(env.ctx, otherOriginal.GetId(), corev1.AssetDerivativeRole_ASSET_DERIVATIVE_ROLE_HLS_MEDIA_SEGMENT, room.Id, "other-segment.ts", "video/mp2t", bytes.NewReader([]byte("segment")))
+	wrongParent, err := env.core.UploadDerivativeAttachment(env.ctx, otherOriginal.GetId(), evtv1.AssetDerivativeRole_ASSET_DERIVATIVE_ROLE_HLS_MEDIA_SEGMENT, room.Id, "other-segment.ts", "video/mp2t", bytes.NewReader([]byte("segment")))
 	if err != nil {
 		t.Fatalf("UploadDerivativeAttachment(wrong parent): %v", err)
 	}
-	wrongRole, err := env.core.UploadDerivativeAttachment(env.ctx, original.GetId(), corev1.AssetDerivativeRole_ASSET_DERIVATIVE_ROLE_VIDEO_VARIANT, room.Id, "variant.mp4", "video/mp4", bytes.NewReader([]byte("variant")))
+	wrongRole, err := env.core.UploadDerivativeAttachment(env.ctx, original.GetId(), evtv1.AssetDerivativeRole_ASSET_DERIVATIVE_ROLE_VIDEO_VARIANT, room.Id, "variant.mp4", "video/mp4", bytes.NewReader([]byte("variant")))
 	if err != nil {
 		t.Fatalf("UploadDerivativeAttachment(wrong role): %v", err)
 	}
@@ -2023,7 +2031,7 @@ func TestHLSDerivativeRequiresExpectedParentAndRole(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			recorder := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(recorder)
-			if _, ok := server.hlsDerivative(c, original.GetId(), tt.assetID, corev1.AssetDerivativeRole_ASSET_DERIVATIVE_ROLE_HLS_MEDIA_SEGMENT); ok {
+			if _, ok := server.hlsDerivative(c, original.GetId(), tt.assetID, evtv1.AssetDerivativeRole_ASSET_DERIVATIVE_ROLE_HLS_MEDIA_SEGMENT); ok {
 				t.Fatal("hlsDerivative accepted an unrelated derivative")
 			}
 			if recorder.Code != http.StatusNotFound {
@@ -2046,9 +2054,9 @@ func firstHLSURI(t *testing.T, playlist []byte) string {
 }
 
 func TestRenderHLSPlaylistsFromManifest(t *testing.T) {
-	hls := &corev1.AssetProcessedHLS{Renditions: []*corev1.AssetHLSRendition{{
+	hls := &evtv1.AssetProcessedHLS{Renditions: []*evtv1.AssetHLSRendition{{
 		Width: 640, Height: 360, Bandwidth: 500_000,
-		Segments: []*corev1.AssetHLSSegment{{AssetId: "A-one", DurationMs: 6000}, {AssetId: "A-two", DurationMs: 1500}},
+		Segments: []*evtv1.AssetHLSSegment{{AssetId: "A-one", DurationMs: 6000}, {AssetId: "A-two", DurationMs: 1500}},
 	}}}
 	master, err := renderHLSMasterPlaylist(hls, func(index int) string { return fmt.Sprintf("/rendition/%d", index) })
 	if err != nil {
@@ -2133,5 +2141,107 @@ func TestAsset_RevokedMembership_RevokesStableURL(t *testing.T) {
 	thumb2.Body.Close()
 	if thumb2.StatusCode != http.StatusForbidden {
 		t.Errorf("expected cached thumbnail ticket to fail after leave, got %d", thumb2.StatusCode)
+	}
+}
+
+func TestAsset_RevokedMessageReadRevokesStableURL(t *testing.T) {
+	env := setupAssetTestServerWithS3(t)
+
+	viewer, err := env.core.CreateUser(env.ctx, core.SystemActorID, "asset-read-viewer", "Asset Read Viewer", "password123")
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	room, err := env.core.CreateRoom(env.ctx, viewer.Id, core.KindChannel, "", "asset-read-room", "")
+	if err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+	if _, err := env.core.JoinRoom(env.ctx, viewer.Id, core.KindChannel, viewer.Id, room.Id); err != nil {
+		t.Fatalf("JoinRoom: %v", err)
+	}
+	env.login(t, "asset-read-viewer", "password123")
+	_, attachment := env.postAssetMessageWithAttachment(t, room.Id, "private", createAssetTestPNG(t, 64, 64), "private.png")
+	attachmentURL := attachment.GetAssetUrl().GetUrl()
+	plainClient := &http.Client{CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }}
+
+	before, err := plainClient.Get(env.server.URL + attachmentURL)
+	if err != nil {
+		t.Fatalf("GET before denial: %v", err)
+	}
+	before.Body.Close()
+	if before.StatusCode != http.StatusOK {
+		t.Fatalf("status before denial = %d, want 200", before.StatusCode)
+	}
+	if err := env.core.DenyRoomPermission(env.ctx, core.SystemActorID, room.Id, core.RoleEveryone, core.PermMessageRead); err != nil {
+		t.Fatalf("DenyRoomPermission: %v", err)
+	}
+	if err := env.core.DenyRoomPermission(env.ctx, core.SystemActorID, room.Id, core.RoleEveryone, core.PermMessageReadInteractions); err != nil {
+		t.Fatalf("DenyRoomPermission message.read-interactions: %v", err)
+	}
+	after, err := plainClient.Get(env.server.URL + attachmentURL)
+	if err != nil {
+		t.Fatalf("GET after denial: %v", err)
+	}
+	after.Body.Close()
+	if after.StatusCode != http.StatusForbidden {
+		t.Fatalf("status after denial = %d, want 403", after.StatusCode)
+	}
+}
+
+func TestAsset_InteractionReaderCanFetchStableURL(t *testing.T) {
+	env := setupAssetTestServerWithS3(t)
+
+	author, err := env.core.CreateUser(env.ctx, core.SystemActorID, "asset-interaction-author", "Asset Interaction Author", "password123")
+	if err != nil {
+		t.Fatalf("CreateUser author: %v", err)
+	}
+	reader, err := env.core.CreateUser(env.ctx, core.SystemActorID, "asset-interaction-reader", "Asset Interaction Reader", "password123")
+	if err != nil {
+		t.Fatalf("CreateUser reader: %v", err)
+	}
+	room, err := env.core.CreateRoom(env.ctx, author.GetId(), core.KindChannel, "", "asset-interaction-room", "")
+	if err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+	for _, userID := range []string{author.GetId(), reader.GetId()} {
+		if _, err := env.core.JoinRoom(env.ctx, userID, core.KindChannel, userID, room.GetId()); err != nil {
+			t.Fatalf("JoinRoom %s: %v", userID, err)
+		}
+	}
+	if err := env.core.DenyRoomPermission(env.ctx, core.SystemActorID, room.GetId(), core.RoleEveryone, core.PermMessageRead); err != nil {
+		t.Fatalf("DenyRoomPermission message.read: %v", err)
+	}
+	if err := env.core.GrantUserRoomPermission(env.ctx, core.SystemActorID, room.GetId(), reader.GetId(), core.PermMessageReadInteractions); err != nil {
+		t.Fatalf("GrantUserRoomPermission message.read-interactions: %v", err)
+	}
+
+	env.login(t, "asset-interaction-author", "password123")
+	messageID, _ := env.postAssetMessageWithAttachment(
+		t, room.GetId(), "@asset-interaction-reader related attachment", createAssetTestPNG(t, 64, 64), "related.png",
+	)
+
+	env.login(t, "asset-interaction-reader", "password123")
+	messages := apiv1connect.NewMessageServiceClient(env.client, env.server.URL+connectAPIPrefix)
+	message, err := messages.GetMessage(env.ctx, connect.NewRequest(&apiv1.GetMessageRequest{
+		RoomId: room.GetId(), EventId: messageID,
+	}))
+	if err != nil {
+		t.Fatalf("GetMessage as interaction reader: %v", err)
+	}
+	attachments := message.Msg.GetMessage().GetAttachments()
+	if len(attachments) != 1 {
+		t.Fatalf("interaction-scoped message attachments = %d, want 1", len(attachments))
+	}
+	attachmentURL := attachments[0].GetAssetUrl().GetUrl()
+	if attachmentURL == "" {
+		t.Fatal("interaction-scoped attachment URL is empty")
+	}
+	plainClient := &http.Client{CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }}
+	response, err := plainClient.Get(env.server.URL + attachmentURL)
+	if err != nil {
+		t.Fatalf("GET interaction-scoped attachment: %v", err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("interaction-scoped attachment status = %d, want 200", response.StatusCode)
 	}
 }

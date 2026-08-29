@@ -13,7 +13,7 @@
       "missing_group": "Před vytvořením místnosti vyberte skupinu místností.",
       "failed": "Místnost se nepodařilo vytvořit",
       "creating": "Vytváření...",
-      "submit": "Vytvořit místnost"
+      "submit_and_configure": "Vytvořit a nastavit místnost"
     },
     "join": {
       "title": "Připojte se k místnosti",
@@ -70,7 +70,8 @@
       "remove_account_suffix": " pro tento server před jeho odebráním."
     },
     "timeline": {
-      "beginning": "Toto je začátek tohoto rozhovoru."
+      "beginning": "Toto je začátek tohoto rozhovoru.",
+      "read_denied": "Nemáte oprávnění číst zprávy v této místnosti."
     },
     "message": {
       "empty": "Zatím žádné zprávy",
@@ -87,6 +88,7 @@
         "add_reaction": "Přidejte reakci",
         "more_reactions": "Více reakcí",
         "reply": "Odpovědět",
+        "reply_room": "Odpovědět v místnosti",
         "reply_thread": "Odpověď ve vláknu",
         "open_thread": "Otevřete vlákno",
         "edit": "Upravit zprávu",
@@ -99,6 +101,8 @@
       "meta": {
         "pinned": "Připnutá zpráva",
         "thread": "Závit",
+        "edited": "Zpráva upravena",
+        "echoed_to_channel": "Také odesláno do kanálu",
         "reply_count_one": "1 odpověď",
         "reply_count_many": "{count} odpovědí",
         "follow_thread": "Sledujte vlákno",
@@ -130,6 +134,7 @@
       "unarchived": "zrušil archivaci místnosti",
       "call_started": "zahájil hovor v této místnosti",
       "call_ended": "Aktivní hovor skončil",
+      "threading_mode_changed": "změnil(a) režim vláken na {mode}",
       "and": "a",
       "other_people_count": {
         "one": "jiné",

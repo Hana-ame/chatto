@@ -1,20 +1,21 @@
 # Instructions for Agents Working in `apps/frontend/`
 
 Frontend work uses SvelteKit, Svelte 5 runes, Tailwind 4, Lingua JSON i18n,
-generated protobuf clients, Vitest browser tests, Playwright e2e, and Storybook.
+generated protobuf clients, Vitest browser tests, Playwright end-to-end tests,
+and Storybook.
 
 ## Svelte Tooling
 
-- For Svelte questions or edits, use the Svelte docs/MCP workflow available to
-  the agent session.
-- When writing or editing `.svelte`, `.svelte.ts`, or `.svelte.js`, run the
-  Svelte autofixer before handing back code.
+- For Svelte questions or edits, use the available Svelte documentation and MCP
+  workflow.
+- When you write or edit `.svelte`, `.svelte.ts`, or `.svelte.js`, run the
+  Svelte autofixer before you return the code.
 - Do not generate a Svelte playground link for code written into this repo.
 
 ## Architecture
 
-- Prefer store classes and thin components. Data lifecycle belongs in stores;
-  components render state and call named store methods.
+- Prefer store classes and small components. Stores own the data lifecycle.
+  Components render state and call named store methods.
 - Server-scoped state belongs in `ServerStateStore` or related per-server
   stores under `src/lib/state/server/`.
 - Component-local `$state` is fine for UI-only state such as open/closed, hover,
@@ -107,6 +108,14 @@ generated protobuf clients, Vitest browser tests, Playwright e2e, and Storybook.
   separate state owners. Server IDs and origins are immutable after
   registration. Never serialize Chatto bearer tokens, user summaries, or
   reauthentication state into a public or shared catalogue.
+- `StorageSlot.set` intentionally treats unavailable/full browser storage as a
+  best-effort no-op. When protocol correctness or security requires state to
+  survive a reload or lost response, persist it before the external effect and
+  read it back successfully before sending the request.
+- Persist rotating credentials and other security-sensitive cross-tab state in
+  independently keyed, versioned per-server records. Never let an ordinary
+  metadata write replace them from a whole-registry in-memory snapshot; merge
+  authoritative security fields at compatibility-adapter boundaries.
 - Treat an intentionally dormant inactive-server transport as healthy retained
   state, not as a failed connection. Only actual transport/auth/protocol
   failures should dim its server-gutter entry.
@@ -218,6 +227,10 @@ generated protobuf clients, Vitest browser tests, Playwright e2e, and Storybook.
 - Management routes live under `/chat/[serverId]/manage/`: server-scoped pages
   under `manage/server/`, rooms under `manage/rooms/`, and room groups under
   `manage/room-groups/`.
+- Server Configuration, server-scoped User Preferences, and App Preferences
+  share the standard pane-page composition. Put their content in `PaneContent`
+  and frame each page-level form or control group with a titled, padded `Panel`;
+  use `FormSection` only to subdivide one panel, never instead of its frame.
 - SvelteKit reuses resource pages when only a route parameter changes. Fence
   async loads and saves by both resource ID and load generation so late
   responses cannot update the next resource's form state.
@@ -227,6 +240,9 @@ generated protobuf clients, Vitest browser tests, Playwright e2e, and Storybook.
   replace the user's draft. Keep the form state and show a localized,
   actionable conflict message explaining that the resource changed and must be
   reloaded before saving again.
+- Destructive admin confirmations must confirm the target or effect. Do not use
+  a password prompt as reauthentication unless the server provides an explicit,
+  independently tested reauthentication contract.
 - Checkboxes and similar binary controls in Server Admin should save immediately
   and confirm through toast.
 - Use Save buttons only for multi-field forms that submit together; disable until

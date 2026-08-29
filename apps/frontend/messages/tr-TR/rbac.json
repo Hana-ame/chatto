@@ -44,6 +44,7 @@
       "allow": "izin ver",
       "deny": "inkar etmek",
       "winning_decision": "(kazanan karar)",
+      "included_by": "Included by {permission}",
       "level_server": "Sunucu",
       "level_group": "Grup",
       "level_room": "Oda",
@@ -94,6 +95,16 @@
         }
       }
     },
+    "permission_categories": {
+      "admin": "Yönetim",
+      "bot": "Botlar",
+      "message": "Mesajlar",
+      "role": "Roller",
+      "room": "Odalar",
+      "server": "Sunucu",
+      "user": "Kullanıcılar",
+      "other": "Diğer"
+    },
     "permission_descriptions": {
       "server_manage": "Sunucu ayarlarını güncelleyin (ad, açıklama, logo)",
       "room_create": "Yeni odalar oluştur",
@@ -101,6 +112,8 @@
       "room_list": "Dizindeki odalara bakın. Bir kullanıcının, bir odaya katılmasına izin verilmeden bir odayı görmesine (örneğin erişim talebinde bulunmasına) izin verilebilir.",
       "room_manage": "Bir odanın ayarlarını ve izinlerini düzenleyin ve odaları silin",
       "room_ban_member": "Üyeleri odalardan yasaklayın",
+      "message_read": "Kanal odalarındaki iletileri okuyun",
+      "message_read_interactions": "Oluşturduğunuz veya başka bir kullanıcının doğrudan sizden bahsettiği ileti dizilerinin tamamını okuyun",
       "message_post": "Odalara root mesajları gönderin ve DM'leri başlatın",
       "message_post_in_thread": "Yanıtları bir ileti dizisinde yayınlama",
       "message_attach": "Mesajlara dosya ekleyin",
@@ -116,7 +129,9 @@
       "user_delete_self": "Kendi hesabınızı silin",
       "user_invite": "Davet bağlantıları oluşturun ve yönetin",
       "user_manage_accounts": "Kullanıcı oluşturun, hesap kimliğini düzenleyin, şifreleri sıfırlayın, doğrulanmış e-postalar ekleyin ve oturum açma bekleme sürelerini temizleyin",
-      "user_manage_permissions": "Kullanıcı başına doğrudan izin geçersiz kılmalarını düzenleyin"
+      "user_manage_permissions": "Kullanıcı başına doğrudan izin geçersiz kılmalarını düzenleyin",
+      "bot_create": "Sahibi olduğunuz bot hesaplarını oluşturun",
+      "bot_manage": "Tüm bot hesaplarını görüntüleyin ve yönetin"
     }
   }
 }

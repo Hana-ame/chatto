@@ -18,6 +18,37 @@ import (
 
 var notificationDecisionSnapshotContractID = snapshotContractID("v1", &corev1.NotificationDecisionProjectionSnapshot{})
 
+// 【本地改动 e4f8f628】2026-08-29 发现 notification boundary 竞态条件导致 CPU 100%
+//
+// 问题根因：
+// - releaseAcknowledgedDecisionBoundaries 在 consumer idle 时（NumPending=0 && NumAckPending=0）
+//   会调用 ReleaseThrough(EVT tail)，删除所有 <= tail 的 boundaries
+// - 但此时可能有消息正在 redelivery 队列中或即将被 redeliver
+// - 当这些消息被 deliver 时，它们的 boundary 已被删除，返回 "unavailable" 错误
+// - Worker 不断重试失败的消息，同时 realtime 客户端不断调用 WaitCurrent/WaitThrough
+// - WaitThrough 每 5ms 轮询 consumerInfo API，产生海量系统调用 → 100% system CPU
+//
+// 触发场景：
+// 1. Consumer 短暂进入 idle 状态（网络抖动、处理间隙等）
+// 2. releaseAcknowledgedDecisionBoundaries 恰好在此时运行
+// 3. 它读取到 idle 状态，认为所有消息都已处理，调用 ReleaseThrough(tail)
+// 4. 删除所有 boundaries，包括可能还在 redelivery 中的消息
+// 5. 当这些消息被 redeliver 时，boundary 已不存在，永久失败
+//
+// 备选方案（未实施）：
+// A. 修改 notificationAcknowledgedThrough：idle 时不使用 tail，而是使用更保守的边界
+//    - 优点：从根本上解决问题
+//    - 缺点：需要深入理解 NATS consumer 语义，风险较高
+// B. 使用独立的 watermark 跟踪可安全清理的 boundaries
+//    - 优点：精确控制，无竞态
+//    - 缺点：需要持久化额外状态，增加复杂度
+// C. 在 Boundary() 中优雅降级：找不到时返回当前 evaluator 状态
+//    - 优点：简单，不会失败
+//    - 缺点：可能返回过期的 visibility 决策，影响通知准确性
+//
+// 当前采用基于时间的方案：保留最近 5 分钟的 boundaries，避免激进清理
+const notificationBoundaryRetentionDuration = 5 * time.Minute
+
 // NotificationDecisionProjection keeps the compact event-time state needed
 // to derive notification recipients and policy while enforcing persistent
 // privacy boundaries.
@@ -40,7 +71,7 @@ type NotificationDecisionProjection struct {
 	// the evaluator through deliveries in order. This keeps ordinary boundary
 	// work proportional to new EVT facts, never to total server state.
 	deltas              []notificationDecisionDelta
-	boundaries          map[uint64]struct{}
+	boundaries          map[uint64]time.Time // 【本地改动 e4f8f628】记录 boundary 创建时间，用于基于时间的清理
 	evaluatorSequence   uint64
 	evaluator           *notificationDecisionSnapshot
 	acknowledgedThrough atomic.Uint64
@@ -157,7 +188,7 @@ func (p *NotificationDecisionProjection) Apply(event *corev1.Event, seq uint64) 
 		event:    proto.Clone(event).(*corev1.Event),
 	})
 	if notificationDecisionBoundaryEvent(event) {
-		p.boundaries[seq] = struct{}{}
+		p.boundaries[seq] = time.Now().UTC() // 【本地改动 e4f8f628】记录创建时间
 	}
 	return nil
 }
@@ -222,7 +253,7 @@ func (p *NotificationDecisionProjection) Restore(data []byte) error {
 	p.rooms, p.groups, p.rbac, p.config = rooms, groups, rbac, config
 	p.activeUsers, p.threadFollows, p.followers, p.replyCounts = activeUsers, threadFollows, followers, replyCounts
 	p.deltas = nil
-	p.boundaries = make(map[uint64]struct{})
+	p.boundaries = make(map[uint64]time.Time) // 【本地改动 e4f8f628】使用 time.Time 类型
 	p.evaluatorSequence = 0
 	p.evaluator = &notificationDecisionSnapshot{
 		rooms: evaluatorRooms, groups: evaluatorGroups, rbac: evaluatorRBAC, config: evaluatorConfig,
@@ -505,6 +536,10 @@ func applyNotificationDecisionDeltas(snapshot *notificationDecisionSnapshot, del
 // durable acknowledgement has been confirmed by the shared consumer. The
 // evaluator has already advanced in the worker handler before DoubleAck, so
 // cleanup never mutates a snapshot that an active delivery is reading.
+//
+// 【本地改动 e4f8f628】保留最近 notificationBoundaryRetentionDuration (5分钟) 的 boundaries，
+// 避免 consumer idle 时激进清理导致 redelivery 消息的 boundary 丢失。
+// 详见文件顶部常量定义处的完整分析。
 func (p *NotificationDecisionProjection) ReleaseThrough(sequence uint64) error {
 	for current := p.acknowledgedThrough.Load(); sequence > current; current = p.acknowledgedThrough.Load() {
 		if p.acknowledgedThrough.CompareAndSwap(current, sequence) {
@@ -513,11 +548,15 @@ func (p *NotificationDecisionProjection) ReleaseThrough(sequence uint64) error {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	for boundary := range p.boundaries {
-		if boundary <= sequence {
+
+	// 【本地改动 e4f8f628】基于时间清理：只删除超过 retention duration 且 <= sequence 的 boundaries
+	cutoffTime := time.Now().UTC().Add(-notificationBoundaryRetentionDuration)
+	for boundary, createdAt := range p.boundaries {
+		if boundary <= sequence && createdAt.Before(cutoffTime) {
 			delete(p.boundaries, boundary)
 		}
 	}
+
 	releaseThrough := min(sequence, p.evaluatorSequence)
 	firstRetained := sort.Search(len(p.deltas), func(i int) bool { return p.deltas[i].sequence > releaseThrough })
 	if firstRetained > 0 {

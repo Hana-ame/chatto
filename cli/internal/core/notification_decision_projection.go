@@ -21,12 +21,12 @@ var notificationDecisionSnapshotContractID = snapshotContractID("v1", &corev1.No
 // 【本地改动 e4f8f628】2026-08-29 发现 notification boundary 竞态条件导致 CPU 100%
 //
 // 问题根因：
-// - releaseAcknowledgedDecisionBoundaries 在 consumer idle 时（NumPending=0 && NumAckPending=0）
-//   会调用 ReleaseThrough(EVT tail)，删除所有 <= tail 的 boundaries
-// - 但此时可能有消息正在 redelivery 队列中或即将被 redeliver
-// - 当这些消息被 deliver 时，它们的 boundary 已被删除，返回 "unavailable" 错误
-// - Worker 不断重试失败的消息，同时 realtime 客户端不断调用 WaitCurrent/WaitThrough
-// - WaitThrough 每 5ms 轮询 consumerInfo API，产生海量系统调用 → 100% system CPU
+//   - releaseAcknowledgedDecisionBoundaries 在 consumer idle 时（NumPending=0 && NumAckPending=0）
+//     会调用 ReleaseThrough(EVT tail)，删除所有 <= tail 的 boundaries
+//   - 但此时可能有消息正在 redelivery 队列中或即将被 redeliver
+//   - 当这些消息被 deliver 时，它们的 boundary 已被删除，返回 "unavailable" 错误
+//   - Worker 不断重试失败的消息，同时 realtime 客户端不断调用 WaitCurrent/WaitThrough
+//   - WaitThrough 每 5ms 轮询 consumerInfo API，产生海量系统调用 → 100% system CPU
 //
 // 触发场景：
 // 1. Consumer 短暂进入 idle 状态（网络抖动、处理间隙等）
@@ -37,14 +37,16 @@ var notificationDecisionSnapshotContractID = snapshotContractID("v1", &corev1.No
 //
 // 备选方案（未实施）：
 // A. 修改 notificationAcknowledgedThrough：idle 时不使用 tail，而是使用更保守的边界
-//    - 优点：从根本上解决问题
-//    - 缺点：需要深入理解 NATS consumer 语义，风险较高
+//   - 优点：从根本上解决问题
+//   - 缺点：需要深入理解 NATS consumer 语义，风险较高
+//
 // B. 使用独立的 watermark 跟踪可安全清理的 boundaries
-//    - 优点：精确控制，无竞态
-//    - 缺点：需要持久化额外状态，增加复杂度
+//   - 优点：精确控制，无竞态
+//   - 缺点：需要持久化额外状态，增加复杂度
+//
 // C. 在 Boundary() 中优雅降级：找不到时返回当前 evaluator 状态
-//    - 优点：简单，不会失败
-//    - 缺点：可能返回过期的 visibility 决策，影响通知准确性
+//   - 优点：简单，不会失败
+//   - 缺点：可能返回过期的 visibility 决策，影响通知准确性
 //
 // 当前采用基于时间的方案：保留最近 5 分钟的 boundaries，避免激进清理
 const notificationBoundaryRetentionDuration = 5 * time.Minute
@@ -99,7 +101,7 @@ func NewNotificationDecisionProjection() *NotificationDecisionProjection {
 		threadFollows: make(map[string]notificationThreadFollow),
 		followers:     make(map[string]map[string]struct{}),
 		replyCounts:   make(map[string]uint64),
-		boundaries:    make(map[uint64]struct{}),
+		boundaries:    make(map[uint64]time.Time), // 【本地改动 e4f8f628】随字段类型变更同步，否则 CI 编译失败（b25b49e8 曾漏改此处导致 build-linux exit 1）
 	}
 	p.evaluator = newNotificationDecisionSnapshot()
 	return p

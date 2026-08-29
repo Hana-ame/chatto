@@ -2,6 +2,7 @@
   "admin": {
     "nav": {
       "general": "Generalidades",
+      "neighbors": "Vecinos",
       "members": "Miembros",
       "rooms": "Habitaciones",
       "moderation": "Moderación",
@@ -11,6 +12,26 @@
       "system": "Sistema",
       "back_to_server": "Regresar al Servidor",
       "invitations": "Invite links"
+    },
+    "neighbors": {
+      "title": "Vecinos",
+      "subtitle": "Publica servidores de Chatto amigos en tu directorio público",
+      "add_title": "Añadir vecino",
+      "list_title": "Vecinos",
+      "origin": "Dirección del servidor",
+      "origin_help": "Introduce el nombre de host o la URL de un servidor. Chatto guarda solo su origen HTTP o HTTPS.",
+      "add": "Añadir vecino",
+      "empty": "No hay vecinos publicados",
+      "actions": "Acciones",
+      "edit": "Editar",
+      "save": "Guardar",
+      "cancel": "Cancelar",
+      "delete": "Eliminar",
+      "delete_title": "Eliminar vecino",
+      "delete_description": "¿Dejar de publicar {origin}?",
+      "created": "Vecino añadido",
+      "updated": "Vecino actualizado",
+      "deleted": "Vecino eliminado"
     },
     "common": {
       "page_title": "{title} | administrador",

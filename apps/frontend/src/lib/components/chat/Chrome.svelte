@@ -132,6 +132,7 @@
       bannerUrl: activeStore.serverInfo.bannerUrl,
       canViewAdmin: viewer.canViewAdmin,
       canManage: can('server.manage'),
+      canManageNeighbors: can('server.manage-neighbors'),
       canManageRooms: can('room.manage'),
       canManageRoles: viewer.canAdminManageRoles,
       canAssignRoles: viewer.canAssignRoles,

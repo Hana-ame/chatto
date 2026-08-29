@@ -983,6 +983,159 @@ func (x *UserRoomGroupNotificationPolicyChangedEvent) GetOverrides() *Notificati
 	return nil
 }
 
+// Records one server origin that an administrator added to the public
+// Neighbor directory. The event envelope ID is the first resource revision.
+type ServerNeighborCreatedEvent struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	NeighborId    string                 `protobuf:"bytes,1,opt,name=neighbor_id,json=neighborId,proto3" json:"neighbor_id,omitempty"`
+	Origin        string                 `protobuf:"bytes,2,opt,name=origin,proto3" json:"origin,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ServerNeighborCreatedEvent) Reset() {
+	*x = ServerNeighborCreatedEvent{}
+	mi := &file_chatto_core_evt_v1_config_events_proto_msgTypes[20]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ServerNeighborCreatedEvent) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ServerNeighborCreatedEvent) ProtoMessage() {}
+
+func (x *ServerNeighborCreatedEvent) ProtoReflect() protoreflect.Message {
+	mi := &file_chatto_core_evt_v1_config_events_proto_msgTypes[20]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ServerNeighborCreatedEvent.ProtoReflect.Descriptor instead.
+func (*ServerNeighborCreatedEvent) Descriptor() ([]byte, []int) {
+	return file_chatto_core_evt_v1_config_events_proto_rawDescGZIP(), []int{20}
+}
+
+func (x *ServerNeighborCreatedEvent) GetNeighborId() string {
+	if x != nil {
+		return x.NeighborId
+	}
+	return ""
+}
+
+func (x *ServerNeighborCreatedEvent) GetOrigin() string {
+	if x != nil {
+		return x.Origin
+	}
+	return ""
+}
+
+// Records a change to one Neighbor origin. The event envelope ID becomes the
+// resource revision.
+type ServerNeighborOriginChangedEvent struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	NeighborId    string                 `protobuf:"bytes,1,opt,name=neighbor_id,json=neighborId,proto3" json:"neighbor_id,omitempty"`
+	Origin        string                 `protobuf:"bytes,2,opt,name=origin,proto3" json:"origin,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ServerNeighborOriginChangedEvent) Reset() {
+	*x = ServerNeighborOriginChangedEvent{}
+	mi := &file_chatto_core_evt_v1_config_events_proto_msgTypes[21]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ServerNeighborOriginChangedEvent) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ServerNeighborOriginChangedEvent) ProtoMessage() {}
+
+func (x *ServerNeighborOriginChangedEvent) ProtoReflect() protoreflect.Message {
+	mi := &file_chatto_core_evt_v1_config_events_proto_msgTypes[21]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ServerNeighborOriginChangedEvent.ProtoReflect.Descriptor instead.
+func (*ServerNeighborOriginChangedEvent) Descriptor() ([]byte, []int) {
+	return file_chatto_core_evt_v1_config_events_proto_rawDescGZIP(), []int{21}
+}
+
+func (x *ServerNeighborOriginChangedEvent) GetNeighborId() string {
+	if x != nil {
+		return x.NeighborId
+	}
+	return ""
+}
+
+func (x *ServerNeighborOriginChangedEvent) GetOrigin() string {
+	if x != nil {
+		return x.Origin
+	}
+	return ""
+}
+
+// Removes one Neighbor from the public directory.
+type ServerNeighborDeletedEvent struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	NeighborId    string                 `protobuf:"bytes,1,opt,name=neighbor_id,json=neighborId,proto3" json:"neighbor_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ServerNeighborDeletedEvent) Reset() {
+	*x = ServerNeighborDeletedEvent{}
+	mi := &file_chatto_core_evt_v1_config_events_proto_msgTypes[22]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ServerNeighborDeletedEvent) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ServerNeighborDeletedEvent) ProtoMessage() {}
+
+func (x *ServerNeighborDeletedEvent) ProtoReflect() protoreflect.Message {
+	mi := &file_chatto_core_evt_v1_config_events_proto_msgTypes[22]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ServerNeighborDeletedEvent.ProtoReflect.Descriptor instead.
+func (*ServerNeighborDeletedEvent) Descriptor() ([]byte, []int) {
+	return file_chatto_core_evt_v1_config_events_proto_rawDescGZIP(), []int{22}
+}
+
+func (x *ServerNeighborDeletedEvent) GetNeighborId() string {
+	if x != nil {
+		return x.NeighborId
+	}
+	return ""
+}
+
 var File_chatto_core_evt_v1_config_events_proto protoreflect.FileDescriptor
 
 const file_chatto_core_evt_v1_config_events_proto_rawDesc = "" +
@@ -1039,7 +1192,18 @@ const file_chatto_core_evt_v1_config_events_proto_rawDesc = "" +
 	"+UserRoomGroupNotificationPolicyChangedEvent\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\"\n" +
 	"\rroom_group_id\x18\x02 \x01(\tR\vroomGroupId\x12K\n" +
-	"\toverrides\x18\x03 \x01(\v2-.chatto.core.evt.v1.NotificationDeliveryModesR\toverridesB\xcc\x01\n" +
+	"\toverrides\x18\x03 \x01(\v2-.chatto.core.evt.v1.NotificationDeliveryModesR\toverrides\"U\n" +
+	"\x1aServerNeighborCreatedEvent\x12\x1f\n" +
+	"\vneighbor_id\x18\x01 \x01(\tR\n" +
+	"neighborId\x12\x16\n" +
+	"\x06origin\x18\x02 \x01(\tR\x06origin\"[\n" +
+	" ServerNeighborOriginChangedEvent\x12\x1f\n" +
+	"\vneighbor_id\x18\x01 \x01(\tR\n" +
+	"neighborId\x12\x16\n" +
+	"\x06origin\x18\x02 \x01(\tR\x06origin\"=\n" +
+	"\x1aServerNeighborDeletedEvent\x12\x1f\n" +
+	"\vneighbor_id\x18\x01 \x01(\tR\n" +
+	"neighborIdB\xcc\x01\n" +
 	"\x16com.chatto.core.evt.v1B\x11ConfigEventsProtoP\x01Z4hmans.de/chatto/internal/pb/chatto/core/evt/v1;evtv1\xa2\x02\x03CCE\xaa\x02\x12Chatto.Core.Evt.V1\xca\x02\x12Chatto\\Core\\Evt\\V1\xe2\x02\x1eChatto\\Core\\Evt\\V1\\GPBMetadata\xea\x02\x15Chatto::Core::Evt::V1b\x06proto3"
 
 var (
@@ -1054,7 +1218,7 @@ func file_chatto_core_evt_v1_config_events_proto_rawDescGZIP() []byte {
 	return file_chatto_core_evt_v1_config_events_proto_rawDescData
 }
 
-var file_chatto_core_evt_v1_config_events_proto_msgTypes = make([]protoimpl.MessageInfo, 20)
+var file_chatto_core_evt_v1_config_events_proto_msgTypes = make([]protoimpl.MessageInfo, 23)
 var file_chatto_core_evt_v1_config_events_proto_goTypes = []any{
 	(*ServerNameChangedEvent)(nil),                      // 0: chatto.core.evt.v1.ServerNameChangedEvent
 	(*ServerDescriptionChangedEvent)(nil),               // 1: chatto.core.evt.v1.ServerDescriptionChangedEvent
@@ -1076,19 +1240,22 @@ var file_chatto_core_evt_v1_config_events_proto_goTypes = []any{
 	(*UserRoomNotificationLevelClearedEvent)(nil),       // 17: chatto.core.evt.v1.UserRoomNotificationLevelClearedEvent
 	(*UserNotificationPolicyChangedEvent)(nil),          // 18: chatto.core.evt.v1.UserNotificationPolicyChangedEvent
 	(*UserRoomGroupNotificationPolicyChangedEvent)(nil), // 19: chatto.core.evt.v1.UserRoomGroupNotificationPolicyChangedEvent
-	(*AssetRecord)(nil),                                 // 20: chatto.core.evt.v1.AssetRecord
-	(TimeFormat)(0),                                     // 21: chatto.core.evt.v1.TimeFormat
-	(NotificationLevel)(0),                              // 22: chatto.core.evt.v1.NotificationLevel
-	(*NotificationDeliveryModes)(nil),                   // 23: chatto.core.evt.v1.NotificationDeliveryModes
+	(*ServerNeighborCreatedEvent)(nil),                  // 20: chatto.core.evt.v1.ServerNeighborCreatedEvent
+	(*ServerNeighborOriginChangedEvent)(nil),            // 21: chatto.core.evt.v1.ServerNeighborOriginChangedEvent
+	(*ServerNeighborDeletedEvent)(nil),                  // 22: chatto.core.evt.v1.ServerNeighborDeletedEvent
+	(*AssetRecord)(nil),                                 // 23: chatto.core.evt.v1.AssetRecord
+	(TimeFormat)(0),                                     // 24: chatto.core.evt.v1.TimeFormat
+	(NotificationLevel)(0),                              // 25: chatto.core.evt.v1.NotificationLevel
+	(*NotificationDeliveryModes)(nil),                   // 26: chatto.core.evt.v1.NotificationDeliveryModes
 }
 var file_chatto_core_evt_v1_config_events_proto_depIdxs = []int32{
-	20, // 0: chatto.core.evt.v1.ServerLogoSetEvent.asset:type_name -> chatto.core.evt.v1.AssetRecord
-	20, // 1: chatto.core.evt.v1.ServerBannerSetEvent.asset:type_name -> chatto.core.evt.v1.AssetRecord
-	21, // 2: chatto.core.evt.v1.UserTimeFormatChangedEvent.time_format:type_name -> chatto.core.evt.v1.TimeFormat
-	22, // 3: chatto.core.evt.v1.UserServerNotificationLevelSetEvent.level:type_name -> chatto.core.evt.v1.NotificationLevel
-	22, // 4: chatto.core.evt.v1.UserRoomNotificationLevelSetEvent.level:type_name -> chatto.core.evt.v1.NotificationLevel
-	23, // 5: chatto.core.evt.v1.UserNotificationPolicyChangedEvent.overrides:type_name -> chatto.core.evt.v1.NotificationDeliveryModes
-	23, // 6: chatto.core.evt.v1.UserRoomGroupNotificationPolicyChangedEvent.overrides:type_name -> chatto.core.evt.v1.NotificationDeliveryModes
+	23, // 0: chatto.core.evt.v1.ServerLogoSetEvent.asset:type_name -> chatto.core.evt.v1.AssetRecord
+	23, // 1: chatto.core.evt.v1.ServerBannerSetEvent.asset:type_name -> chatto.core.evt.v1.AssetRecord
+	24, // 2: chatto.core.evt.v1.UserTimeFormatChangedEvent.time_format:type_name -> chatto.core.evt.v1.TimeFormat
+	25, // 3: chatto.core.evt.v1.UserServerNotificationLevelSetEvent.level:type_name -> chatto.core.evt.v1.NotificationLevel
+	25, // 4: chatto.core.evt.v1.UserRoomNotificationLevelSetEvent.level:type_name -> chatto.core.evt.v1.NotificationLevel
+	26, // 5: chatto.core.evt.v1.UserNotificationPolicyChangedEvent.overrides:type_name -> chatto.core.evt.v1.NotificationDeliveryModes
+	26, // 6: chatto.core.evt.v1.UserRoomGroupNotificationPolicyChangedEvent.overrides:type_name -> chatto.core.evt.v1.NotificationDeliveryModes
 	7,  // [7:7] is the sub-list for method output_type
 	7,  // [7:7] is the sub-list for method input_type
 	7,  // [7:7] is the sub-list for extension type_name
@@ -1111,7 +1278,7 @@ func file_chatto_core_evt_v1_config_events_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_chatto_core_evt_v1_config_events_proto_rawDesc), len(file_chatto_core_evt_v1_config_events_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   20,
+			NumMessages:   23,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

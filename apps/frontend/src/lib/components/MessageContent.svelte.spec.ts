@@ -295,11 +295,38 @@ describe('renderMarkdown', () => {
   });
 
   describe('forbidden syntax (should render as literal text)', () => {
-    it('does not render images as img tags', async () => {
+    // 【本地改动 2026-08-30】上游原断言是 expect(html).not.toContain('<img'):上游把
+    // ![alt](url) 定为禁用语法,markdown-it 解析成「!」加一个链接,不出 <img>,安全默认。
+    // fork 故意反转这个策略,所以此处的断言与上游相反。
+    // 【目的】内联图片要能显示,且统一走 https://proxy.moonchan.xyz 代理取图,隐藏观看者
+    // 的 IP/Referer(原始图片 host 看不到我们的地址)。代理实现在 src/lib/markdown.ts 的
+    // proxyImageSource,完整行为覆盖在 src/lib/markdown.test.ts(重写 path/query、fragment
+    // 位置、scheme 记录、非 http(s) 降级为 #、img 标签加固)。本 fork 的行为源自
+    // a56c26630「render inline images via proxy」。
+    // 【踩坑】这个红第一次被看到是 2026-08-30 把 build-release 触发分支从 ci/deploy 改到
+    // main 之后:ci.yml 第一次在本仓库 main 上跑完整矩阵,test-workspace 的
+    // 「does not render images as img tags」立刻红,报 expected '<p><img src=
+    // "https://proxy.moonchan.x…' not to contain '<img'。fork 的 markdown.ts 此前从未被
+    // ci.yml 覆盖过(fork 代码只在 fork 自己的 workflow 里编译),冲突一直潜伏。
+    // 【思路】保留上游的 it 位置和它的两条原始注释,只叠加 fork 断言,并改测试名让分歧显式。
+    // 这样上游再次改这个测试时冲突会落在同一个 hunk 上,取舍一目了然;若把本测试挪走或删
+    // 掉上游版本,上游合并回来会「无冲突地」加回一个和本地行为相反的用例,那是更糟的静默
+    // 失败。
+    // 【边界/风险】这是对上游安全不变量的主动放宽,不是笔误。fork 侧现有防护只有:
+    // markdown-it 的 validateLink 拦 javascript:/data:/file:,proxyImageSource 再锁死
+    // http(s),img 加 loading=lazy + referrerpolicy=no-referrer + rel=noopener。附件、头像、
+    // 链接预览等不走这条路,不受影响。若上游将来把「图片禁用」升级为安全修复,必须在此
+    // 重新评估 fork 的取舍。
+    // 【合并提醒】合回 upstream 时,把下面 4 条断言改回上游原版(not.toContain('<img')),
+    // 并同步删除 build-linux.yml 里断言产物含 proxy.moonchan.xyz 的 Verify 步骤。
+    it('renders images through the fork image proxy', async () => {
       const html = await renderMarkdown('![alt](https://example.com/img.png)');
       // Image syntax is disabled, so no <img> tag should be rendered
       // markdown-it parses this as "!" followed by a link, which is safe
-      expect(html).not.toContain('<img');
+      expect(html).toContain('<img');
+      expect(html).toContain('src="https://proxy.moonchan.xyz/img.png?proxy_host=example.com');
+      expect(html).toContain('proxy_scheme=https');
+      expect(html).toContain('alt="alt"');
     });
 
     it('does not render horizontal rules', async () => {

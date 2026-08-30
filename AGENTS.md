@@ -286,6 +286,25 @@ git log --oneline HEAD..upstream/main
 4. 审计结果写进最终报告（表格：文件 × 上游改动 × 本地改动 × 判定）；
    发现有实际语义冲突的，修复时按「如何加注释」规则补记取舍。
 
+### 已知的 fork / upstream 行为分歧（长期有效，每次合并必须逐条重审）
+
+这些**不是** git 冲突，是行为策略上的分歧：上游有明确的做法，本 fork 故意不跟。
+git 报零冲突 ≠ 这里没风险，每次合并都要逐条重审。
+
+| 区域 | 上游做法 | fork 做法 | 记录位置 |
+|---|---|---|---|
+| 消息正文内联图片 | 定为禁用语法：`![alt](url)` 不出 `<img>`，安全默认 | 出 `<img>`，src 重写为 `https://proxy.moonchan.xyz/...` 代理取图，隐藏观看者 IP/Referer | `apps/frontend/src/lib/markdown.ts` 的 `proxyImageSource`；`MessageContent.svelte.spec.ts` 的 `renders images through the fork image proxy`；`.github/workflows/build-linux.yml` 的 Verify 步骤断言产物含 `proxy.moonchan.xyz` |
+
+- **2026-08-30 发现**：`build-release` 触发分支从 `ci/deploy` 改到 main 后，ci.yml 第一次
+  在本仓库 main 上跑完整矩阵，`test-workspace` 的「does not render images as img tags」
+  立刻红。fork 的 markdown.ts 此前只在 fork 自己的 workflow 里被编译，从未被 ci.yml 的
+  单元测试覆盖，这个分歧潜伏了整个 fork 功能的生命周期。
+- 上游把「图片禁用」视为安全不变量，fork 主动放宽它。若上游将来把这一点升级为安全修复，
+  必须在此重新评估 fork 的取舍，不能默默跟随上游删除 fork 的图片能力。
+- fork 侧现有防护：markdown-it 的 `validateLink` 拦 `javascript:`/`data:`/`file:`，
+  `proxyImageSource` 再锁死 http(s)（其余降级为 `#`），img 加 `loading=lazy` +
+  `referrerpolicy=no-referrer` + `rel=noopener`。附件、头像、链接预览不走这条路。
+
 ## Testing Judgment
 
 - Pick the lowest test layer that exercises the change, but do not stop below

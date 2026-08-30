@@ -13,6 +13,7 @@ const serverFeatureMinimumVersions = {
   pinnedMessages: '0.5.0-0',
   realtimeProjection: '0.5.0-0',
   roomManagement: '0.5.0-0',
+  relativeSidebarMoves: '0.5.0-alpha.4',
   serverInvitations: '0.5.0-0'
 } as const;
 

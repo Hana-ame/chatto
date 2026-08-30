@@ -164,11 +164,13 @@ Never leave a dev stack running in a detached or yielded terminal session.
 - **永远不要用本地 `go build`/`go vet`/`mise test-cli` 等来验证编译或跑测试**：
   本地构建产物不内嵌 bundled client (`clients/` 未编译进二进制)，编译通过 ≠
   可用产物；本地测试也不能代表 CI 环境。验证直接靠 GitHub Actions：
-  改动完成后 push 到 `ci/deploy`，看 `build-release` workflow 结果。
+  改动完成后 push 到 `main`，看 `build-release` workflow 结果。
 - 部署 chatto 的唯一正确来源：**GitHub Actions `build-release` workflow
-  (push 到 `ci/deploy` 分支触发) 的 rolling release**，产物内嵌前端。
+  (push 到 `main` 分支触发) 的 rolling release**，产物内嵌前端。`build-release`
+  自身含 `Test CLI` 步骤（`mise test-cli`），测试红则不发产物。
 - 部署流程：
-  1. `git push origin ci/deploy`（可含提交改动）触发 `build-release`。
+  1. `git push origin main`（可含提交改动）触发 `build-release`（同时并行触发
+     `ci.yml` 的完整测试矩阵）。
   2. `gh run watch <run-id> -R Hana-ame/chatto --exit-status` 等构建成功。
   3. **用 `curl -L` 下载 release 资产**（rolling release tag 固定为 `ci/dev`，
      每次构建删除重建，永远指向最新）：
@@ -190,8 +192,10 @@ Never leave a dev stack running in a detached or yielded terminal session.
 
 本仓库是 `Hana-ame/chatto` fork，在 upstream（`chattocorp/chatto`）之上有
 一批本地独有改动（AVIF 附件重编码、bind_address、fork 链接、build-linux
-workflow 等）。本地改动的去向是 `ci/deploy` 分支，会持续与 upstream `main`
-合并。**所有本地改动必须就地加中文注释**，写明当时的思路、目的、踩坑。
+workflow 等）。本地改动的去向是本仓库的 `main` 分支，会持续与 upstream `main`
+合并（2026-08-30 起；此前本地改动落在旁路分支 `ci/deploy`，该分支已随
+merge commit ac7111fff 合入 `main` 并删除）。**所有本地改动必须就地加中文注释**，
+写明当时的思路、目的、踩坑。
 合并时注释会被保留；没有注释的本地代码一旦在冲突中被上游版本覆盖，
 改动就无声无息地丢了。
 
@@ -252,7 +256,7 @@ git log --oneline HEAD..upstream/main
 
 ## 合并 upstream 后的语义冲突审计（硬性要求）
 
-每次从 upstream `main` 合并进 `ci/deploy` 后、push/部署之前，必须做一次
+每次从 upstream `main` 合并进本仓库 `main` 后、push/部署之前，必须做一次
 **语义冲突审计**——git 报告零冲突 ≠ 安全：上游经常重命名符号、重构结构体、
 改同文件的相邻区域，文本上不冲突但语义上可能已经打架。
 

@@ -1,9 +1,15 @@
-# 【本地新增 workflow】push 到 ci/deploy 时构建并发布 rolling release。
+# 【本地新增 workflow】push 到 main 时构建并发布 rolling release。
 #
-# 【思路】本 fork 的部署链路:ci/deploy 分支 → GitHub Actions 编译(内嵌
+# 【思路】本 fork 的部署链路:main 分支 → GitHub Actions 编译(内嵌
 # bundled frontend,这是唯一正确来源)→ 滚动 release 资产 `ci/dev` →
 # cloudcone 用 curl 下载部署。绝不在本地 go build:本地产物不带
 # .client/200.html,部署后 SPA 全 500(2026-08-08 曾出事故)。
+#
+# 【变更 2026-08-30】触发分支从 ci/deploy 改为 main,fork 的本地改动随之合入 main
+# (merge commit ac7111fff),ci/deploy 分支被删除。理由:main 在 ci.yml 的 push
+# 白名单里,改到 main 后每次 push 会同时跑完整 ci 矩阵和 build-release,验证
+# 信号与部署链路合流,不再需要一条旁路分支。副作用是每次 push 都产出 rolling
+# release,坏提交也会被发布——靠 Test CLI 步骤挡在发布之前。
 #
 # 【踩坑】
 # 1. `gh release create ci/dev` 不带 --target 时,ci/dev tag 会被创建到默认分支
@@ -11,6 +17,10 @@
 #    2026-08-14 首次发现,当时只手动删了 tag、没修脚本;2026-08-30 复查确认问题仍在
 #    (构建 b7f991e37 而 tag 指向 main 的 50d6d3884),才补上 --target "${GITHUB_SHA}"。
 #    教训:记录踩坑不等于修好,注释里写"已删除该 tag"容易被读成"已修复"。
+#    2026-08-30 起触发分支改为 main(= 默认分支)后,这个 bug 的症状被掩盖了——
+#    不带 --target 时 tag 恰好也落在 main 的 HEAD 上,看起来完全正确。--target 仍保留:
+#    它是把「tag 指向本次构建」变成显式不变量,不依赖「触发分支恰好等于默认分支」
+#    这个巧合。
 # 2. 版本号 hash 原为 12 位,过长;22a53e10 起改为 ${sha:0:6}。
 # 3. 版本号来源:mise.toml 的 CHATTO_DEVELOPMENT_VERSION 优先(开发版),
 #    否则回退 cli/version.go 的 release version,保证 release 也能出包。
@@ -30,7 +40,12 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - ci/deploy
+      # 【本地改动 2026-08-30】触发分支从 ci/deploy 改为 main,随 fork 本地改动合入 main
+      # 而删除 ci/deploy。main 同时在 ci.yml 的白名单里,所以一次 push 会并行触发
+      # 完整 ci 矩阵和 build-release。副作用:每次 push main 都会产出 rolling release
+      # (包括坏提交),由下方 Test CLI 步骤挡在发布之前。若以后想恢复「只在通过全部
+      # 测试后才构建」,需要在 ci.yml 上加 job-level needs 依赖,而不是另开旁路分支。
+      - main
 
 permissions:
   contents: write
@@ -64,12 +79,16 @@ jobs:
           echo "version=${version}" >> "$GITHUB_OUTPUT"
 
       - name: Test CLI
-        # 【本地改动 2026-08-30】给 ci/deploy 补上测试信号,补齐 fork 的验证断层。
-        # 【背景】ci.yml(name: ci)的 push 分支白名单只有 main 与 release-*,ci/deploy
-        # 不在其中;本 workflow 原先 12 个步骤全是构建与发布,零测试。结果 fork 改动要
-        # 拿到完整测试信号,唯一路径是开 PR。2026-08-30 合并 upstream 后做语义冲突审计时
-        # 人肉发现 cli/internal/http_server/assets_test.go 的 Cache-Control 断言残留上游
-        # 语义(protectedAssetCacheControl)——本步骤跑的正是本该拦住它的那道闸。
+        # 【本地改动 2026-08-30】在发布之前跑测试,测试红则不发产物。
+        # 【背景】ci.yml(name: ci)在 push 到 main 时跑完整测试矩阵,但它是**独立**的
+        # workflow:ci.yml 失败不会阻止 build-release 继续发 rolling release。所以本步骤
+        # 不是为了重复信号,而是发布链路里唯一真正拦得住红测试的闸——删掉它,坏提交会
+        # 照样出包并被部署脚本下载。
+        # 历史沿革:2026-08-30 之前本 workflow 触发分支是 ci/deploy,不在 ci.yml 的 push
+        # 白名单里(main、release-*),fork 改动唯一能拿到完整测试信号的路径是开 PR;
+        # 语义冲突审计时人肉发现 cli/internal/http_server/assets_test.go 的 Cache-Control
+        # 断言残留上游语义(protectedAssetCacheControl)——本步骤跑的正是本该拦住它的那道闸。
+        # 同日触发分支改为 main,ci/deploy 删除,本步骤随链路一起搬到 main,定位不变。
         # 【思路】调用 mise test-cli 而不是内联 go test:该任务在 mise.toml 里定义
         # (cli 目录下 go test -trimpath -p 4 -tags test_endpoints ./...),与 AGENTS.md 的
         # Tooling 清单保持单一事实来源,上游改测试命令时这里自动跟随。

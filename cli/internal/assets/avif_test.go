@@ -1,5 +1,19 @@
 package assets
 
+// 【本地改动 32e1f566】（2026-08-14 引入）本文件整体为 fork 独有，upstream 没有同名文件。
+// 目的：为 avif.go 的 EncodeAVIF / TransformImageWithFFmpeg 两条链路提供覆盖——
+// AVIF 重编码（成功、透明、ffmpeg 缺失、开关禁用、输入非法）与 ffmpeg 衍生图
+//（AVIF 输入缩放、ffmpeg 缺失回退、统一有损 WebP、动画 GIF 分流、AVIF 输入硬错误）。
+// 思路：依赖 ffmpeg 的用例统一经 testFFmpegPath(t) 取路径，找不到就 t.Skip；
+// 不依赖 ffmpeg 的用例显式传 /nonexistent/ffmpeg 强制走回退或错误分支。两种做法
+// 让本地（无 ffmpeg）与 CI（install-ffmpeg 提供）都能全绿，且回退路径不会被 skip 掉。
+// 踩坑：各用例自己的【发现背景】【修复方式】注释记录了 2026-08-14 与 2026-08-16 两次
+// 重构中实际踩到的 bug（libsvtav1 管道挂死、空路径未解析、CGO_ENABLED=0 下没有有损
+// WebP 后端）。这些注释是回归测试价值的来源，合并时不要丢弃。
+// 边界：只测 assets 包的纯编码/转码函数，不测上传管线；管线覆盖在
+// cli/internal/core/attachments_test.go。
+// 合并提示：upstream 无此文件，正常合并不冲突；若上游将来新增同名测试，需人工合并两份。
+
 import (
 	"bytes"
 	"context"

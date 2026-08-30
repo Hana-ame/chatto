@@ -2,6 +2,15 @@
 
 2026-08-04 · chatto server `0.5.0-dev` / chatto-bot
 
+> **【本地改动 7e17ebe7】（2026-08-04 记录）** 本文件整体为 fork 独有，upstream 没有同名文件。
+>
+> - **目的**：记录 `chatto-bot` 因 realtime 协议 v2 不兼容而全部命令无响应的排查过程与 bot 侧迁移步骤。
+> - **思路**：v2 由 upstream commit `a8868531`（#1588，resumable server projection stream）引入，是 breaking change；客户端必须升握手版本并把持久事件的投递解析整体改写为 projection stream 形态。
+> - **踩坑**：握手版本不符时服务端回 `unsupported_protocol` 且 `fatal=True`，连接直接断开、没有降级路径——现象是「bot 进程活着但完全不响应」，很容易被误判成网络或鉴权问题。排查入口是服务端日志里那一行 `Realtime error: code=unsupported_protocol`。
+> - **边界**：只覆盖 chatto-bot 的 Python 侧适配。服务端协议定义在 `proto/chatto/realtime/v1/`，不受本文件影响；后续 upstream 对 v2 的增量改动需另行比对。
+> - **合并提示**：upstream 无同名文件，正常合并不冲突；本文件不会随 upstream 自动同步，upstream 协议再变时需人工更新。
+
+
 ## 背景与根因
 
 `chatto-bot` 的 `!create` 等命令无响应。排查后发现实时流根本没有建立：

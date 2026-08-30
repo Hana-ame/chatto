@@ -134,6 +134,121 @@ func TestValidateOAuthClientMetadataSupportsNativeAppRedirect(t *testing.T) {
 	}
 }
 
+func TestValidateOAuthClientMetadataSupportsNativeLoopbackRedirectsOnRemoteServer(t *testing.T) {
+	identifier, _ := url.Parse("https://native.example/oauth/metadata.json")
+	for _, redirectURI := range []string{
+		"http://127.0.0.1:49152/oauth/callback",
+		"http://[::1]:49152/oauth/callback",
+		"http://localhost:49152/oauth/callback",
+		"http://inspector.feature.localhost:49152/oauth/callback",
+	} {
+		t.Run(redirectURI, func(t *testing.T) {
+			document := cimdDocument{
+				ClientID: identifier.String(), ApplicationType: "native",
+				RedirectURIs: []string{redirectURI}, TokenEndpointAuthMethod: "none",
+			}
+			client, err := validateOAuthClientMetadata(document.ClientID, identifier, document, false)
+			if err != nil {
+				t.Fatalf("validateOAuthClientMetadata: %v", err)
+			}
+			if !client.Native {
+				t.Fatal("validated native client lost its application type")
+			}
+			if !client.allowsRedirectURI(redirectURI) {
+				t.Fatalf("client does not allow registered redirect %q", redirectURI)
+			}
+		})
+	}
+}
+
+func TestValidateOAuthClientMetadataRestrictsHTTPLoopbackRedirects(t *testing.T) {
+	identifier, _ := url.Parse("https://client.example/oauth/metadata.json")
+	tests := []struct {
+		name            string
+		applicationType string
+		redirectURI     string
+		allowLoopback   bool
+		wantValid       bool
+	}{
+		{name: "remote web client", applicationType: "web", redirectURI: "http://localhost:3000/callback"},
+		{name: "local web development", applicationType: "web", redirectURI: "http://app.feature.localhost:3000/callback", allowLoopback: true, wantValid: true},
+		{name: "public HTTP host", applicationType: "native", redirectURI: "http://client.example/callback"},
+		{name: "localhost lookalike", applicationType: "native", redirectURI: "http://localhost.example/callback"},
+		{name: "wildcard localhost", applicationType: "native", redirectURI: "http://*.localhost:3000/callback"},
+		{name: "empty localhost label", applicationType: "native", redirectURI: "http://tool..localhost:3000/callback"},
+		{name: "invalid localhost label", applicationType: "native", redirectURI: "http://tool_name.localhost:3000/callback"},
+		{name: "wildcard HTTPS", applicationType: "web", redirectURI: "https://*.example/callback"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			document := cimdDocument{
+				ClientID: identifier.String(), ApplicationType: tt.applicationType,
+				RedirectURIs: []string{tt.redirectURI}, TokenEndpointAuthMethod: "none",
+			}
+			client, err := validateOAuthClientMetadata(document.ClientID, identifier, document, tt.allowLoopback)
+			if (err == nil) != tt.wantValid {
+				t.Fatalf("validateOAuthClientMetadata error = %v, wantValid = %v", err, tt.wantValid)
+			}
+			if err == nil && client.Native != (tt.applicationType == "native") {
+				t.Fatalf("client.Native = %v, application_type = %q", client.Native, tt.applicationType)
+			}
+		})
+	}
+}
+
+func TestOAuthClientNativeLoopbackIPRedirectUsesVariablePortOnly(t *testing.T) {
+	client := OAuthClient{Native: true, RedirectURIs: []string{
+		"http://127.0.0.1:41000/oauth/callback?source=codex",
+		"http://[::1]:41000/oauth/callback",
+		"http://inspector.feature.localhost:41000/oauth/callback",
+	}}
+	tests := []struct {
+		name      string
+		candidate string
+		want      bool
+	}{
+		{name: "IPv4 different port", candidate: "http://127.0.0.1:52000/oauth/callback?source=codex", want: true},
+		{name: "IPv6 different port", candidate: "http://[::1]:52000/oauth/callback", want: true},
+		{name: "different IPv4 path", candidate: "http://127.0.0.1:52000/other?source=codex"},
+		{name: "different IPv4 query", candidate: "http://127.0.0.1:52000/oauth/callback?source=other"},
+		{name: "named localhost different port", candidate: "http://inspector.feature.localhost:52000/oauth/callback"},
+		{name: "named localhost exact", candidate: "http://inspector.feature.localhost:41000/oauth/callback", want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := client.allowsRedirectURI(tt.candidate); got != tt.want {
+				t.Fatalf("allowsRedirectURI(%q) = %v, want %v", tt.candidate, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestOAuthClientWebLoopbackIPRedirectRequiresExactPort(t *testing.T) {
+	client := OAuthClient{RedirectURIs: []string{"http://127.0.0.1:41000/oauth/callback"}}
+	if client.allowsRedirectURI("http://127.0.0.1:52000/oauth/callback") {
+		t.Fatal("web client received the native variable-port exception")
+	}
+	if !client.allowsRedirectURI("http://127.0.0.1:41000/oauth/callback") {
+		t.Fatal("web client could not use its exact registered callback")
+	}
+}
+
+func TestOAuthClientResolverRecognizesConcreteLocalhostDevelopmentHost(t *testing.T) {
+	resolver, err := newOAuthClientResolver("https://chatto.feature.localhost:42444", &http.Client{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !resolver.allowLoopback {
+		t.Fatal("concrete .localhost server URL did not enable loopback development metadata")
+	}
+	if _, err := validateOAuthClientIdentifierURL("http://client.feature.localhost/oauth/metadata.json", resolver.allowLoopback); err != nil {
+		t.Fatalf("local development CIMD URL was rejected: %v", err)
+	}
+	if _, err := validateOAuthClientIdentifierURL("http://client.feature.localhost.example/oauth/metadata.json", resolver.allowLoopback); err == nil {
+		t.Fatal("localhost lookalike CIMD URL was accepted")
+	}
+}
+
 func TestOAuthClientMetadataBlocksSpecialUseAddresses(t *testing.T) {
 	blocked := []string{
 		"127.0.0.1", "10.0.0.1", "169.254.169.254", "192.0.2.1",
@@ -152,6 +267,26 @@ func TestOAuthClientMetadataBlocksSpecialUseAddresses(t *testing.T) {
 	}
 	if blockedOAuthClientAddress(netip.MustParseAddr("2606:4700:4700::1111")) {
 		t.Fatal("public IPv6 address was blocked")
+	}
+}
+
+func TestOAuthClientMetadataAllowsLoopbackResolutionOnlyForLocalHostname(t *testing.T) {
+	loopback := netip.MustParseAddr("127.0.0.1")
+	if !allowedOAuthClientAddress("client.feature.localhost", loopback, true) {
+		t.Fatal("local development hostname could not resolve to loopback")
+	}
+	if allowedOAuthClientAddress("client.example", loopback, true) {
+		t.Fatal("public-looking metadata hostname could resolve to loopback")
+	}
+	if allowedOAuthClientAddress("client.feature.localhost", loopback, false) {
+		t.Fatal("remote Chatto server could resolve local metadata")
+	}
+	publicAddress := netip.MustParseAddr("8.8.8.8")
+	if allowedOAuthClientAddress("client.feature.localhost", publicAddress, true) {
+		t.Fatal("local metadata hostname could resolve to a public address")
+	}
+	if !allowedOAuthClientAddress("client.example", publicAddress, false) {
+		t.Fatal("public metadata address was blocked")
 	}
 }
 

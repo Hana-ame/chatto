@@ -605,21 +605,7 @@ func TestBrowserIconRoutes(t *testing.T) {
 	newServer := func(t *testing.T, chattoCore *core.ChattoCore) *HTTPServer {
 		t.Helper()
 		server := &HTTPServer{
-			config: config.ChattoConfig{
-				Webserver: config.WebserverConfig{URL: "https://example.com"},
-				// 【本地改动 2026-08-30】必须显式给出 Assets.SigningSecret。图标重定向的签名
-				// 由 HTTPServer 侧的 s.config.Core.Assets.SigningSecret 生成(见
-				// cli/internal/http_server/assets.go 的 ParseSignedTransformPath 调用点),
-				// 与 core 内部的 config 是两条独立路径。此处漏配时该字段为空串,服务端用 ""
-				// 签名,而本测试用 "test-signing-secret"(与 setupFrontendTestCoreWithLogo
-				// 喂给 core 的值一致)验签,于是报「invalid signature」。
-				// 2026-08-30 ci/deploy 首次跑 mise test-cli 时由
-				// TestBrowserIconRoutes/redirects_to_distinct_same-origin_server_logo_transforms
-				// 暴露。upstream 合并后该闭包一直是空 config,所以此前从 CI 看不出来。
-				Core: config.CoreConfig{Assets: config.AssetsConfig{
-					SigningSecret: "test-signing-secret",
-				}},
-			},
+			config: config.ChattoConfig{Webserver: config.WebserverConfig{URL: "https://example.com"}},
 			core:   chattoCore,
 			router: gin.New(),
 		}
@@ -651,6 +637,20 @@ func TestBrowserIconRoutes(t *testing.T) {
 			assert.NotContains(t, location, "assets.example.com")
 
 			signedPath := strings.TrimPrefix(location, "/assets/server/logo-asset/t/")
+			// 【本地改动 2026-08-30】fork 的 server asset transform URL 形如
+			// /assets/server/{key}/t/{params}.{sig}/{fn.ext}:文件名尾段排在签名**之后**
+			// (见 cli/internal/core/attachments.go 的 GetTransformedServerAssetURLWithFilename)。
+			// 直接整段喂给 ParseSignedTransformPath 会因 SplitN(".", 2) 把
+			// "{sig}/{fn.ext}" 整体当作签名去比,必然报 invalid signature。这里先剥掉尾段。
+			// 用 LastIndex 而非固定后缀匹配,使本断言在尾段存在与不存在两种形态下都成立,
+			// 便于将来上游回归无尾段形态时不用改测试。
+			// 发现背景:2026-08-30 ci/deploy 首次跑 mise test-cli 时由
+			// redirects_to_distinct_same-origin_server_logo_transforms 暴露;此前 fork 分支
+			// 不在 ci.yml 的 push 白名单里,该红灯从未进过 CI。
+			// 回归提示:若 fork 放弃 {fn.ext} 尾段,本处剥段逻辑自动退化为原语义,无需改动。
+			if idx := strings.LastIndex(signedPath, "/"); idx >= 0 {
+				signedPath = signedPath[:idx]
+			}
 			params, err := signedurl.ParseSignedTransformPath(
 				"test-signing-secret",
 				core.ServerAssetSignResource,

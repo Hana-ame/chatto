@@ -170,9 +170,7 @@ test.describe('Server Admin Page', () => {
     await serverAdminPage.expectSaveDisabled();
   });
 
-  test('Settings link leads each member to their first permitted Server Configuration section', async ({
-    serverAdminPage
-  }) => {
+  test('Settings link leads each member to Appearance', async ({ serverAdminPage }) => {
     const { page } = serverAdminPage;
 
     // Create first user (server admin)
@@ -199,7 +197,8 @@ test.describe('Server Admin Page', () => {
 
     await serverAdminPage.expectSettingsLinkVisible();
     await serverAdminPage.settingsLink.click();
-    await page.waitForURL(routes.serverAdminBots);
+    await page.waitForURL(routes.settingsAppearance);
+    await expect(page.getByRole('heading', { name: 'Appearance' })).toBeVisible();
     await serverAdminPage.expectBotsNavVisible();
     await serverAdminPage.expectGeneralNavNotVisible();
   });
@@ -230,7 +229,7 @@ test.describe('Server Admin Page', () => {
     // Should see success toast
     await serverAdminPage.expectToast('Logo uploaded successfully', 15000);
 
-    // Button text should change to "Change Logo"
+    // Button text should change to "Change logo"
     await serverAdminPage.expectChangeLogoButtonVisible();
 
     // Remove button should now be visible
@@ -245,7 +244,7 @@ test.describe('Server Admin Page', () => {
     // Should see success toast
     await serverAdminPage.expectToast('Logo removed');
 
-    // Button should go back to "Upload Logo"
+    // Button should go back to "Upload logo"
     await serverAdminPage.expectUploadLogoButtonVisible();
 
     // Remove button should no longer be visible
@@ -283,7 +282,7 @@ test.describe('Server Admin Page', () => {
     // Should see success toast
     await serverAdminPage.expectToast('Banner uploaded successfully', 15000);
 
-    // Button text should change to "Change Banner"
+    // Button text should change to "Change banner"
     await serverAdminPage.expectChangeBannerButtonVisible();
 
     // Remove button should now be visible
@@ -302,7 +301,7 @@ test.describe('Server Admin Page', () => {
     // Should see success toast
     await serverAdminPage.expectToast('Banner removed');
 
-    // Button should go back to "Upload Banner"
+    // Button should go back to "Upload banner"
     await serverAdminPage.expectUploadBannerButtonVisible();
 
     // Remove button should no longer be visible

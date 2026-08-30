@@ -106,9 +106,8 @@
   --color-on-success: var(--color-white);
   --color-warning: oklch(50% 0.13 60);
   --color-on-warning: var(--color-white);
-  /* Attention is brighter than warning so unread and pending states stay
-     noticeable without competing with a committed action. */
-  --color-attention: oklch(68% 0.15 80);
+  /* Notification attention stays bright and consistent across both themes. */
+  --color-attention: var(--color-amber-500);
   --color-on-attention: var(--color-neutral-950);
   --color-danger: oklch(49% 0.17 12);
   --color-on-danger: var(--color-white);
@@ -387,23 +386,31 @@
   @apply input resize-none;
 }
 
-/* Checkbox utility */
-@utility checkbox {
-  @apply h-4 w-4 cursor-pointer rounded border-input-border bg-input text-action;
-  @apply transition-[border-color,box-shadow] duration-100;
-  @apply focus:ring-2 focus:ring-action/30 focus:ring-offset-0;
-  @apply disabled:cursor-not-allowed disabled:opacity-60;
+@utility checkbox-option {
+  @apply flex cursor-pointer items-start gap-3 rounded-lg border border-border px-3 py-2;
+  @apply transition-[background-color,border-color,box-shadow] duration-100;
+  @apply hover:border-input-border hover:bg-surface;
 }
 
-@utility checkbox-option {
-  @apply flex cursor-pointer items-start gap-3 rounded-md border border-border bg-surface px-3 py-3;
-  @apply transition-[background-color,border-color,box-shadow] duration-100;
-  @apply hover:border-input-border hover:bg-surface-emphasized;
+@utility checkbox-option-selected {
+  @apply border-action bg-action/10 hover:border-action hover:bg-action/10;
+}
+
+@utility checkbox-option-error {
+  @apply border-error/70 bg-error/5 hover:border-error/80 hover:bg-error/10;
 }
 
 @utility checkbox-box {
-  @apply mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded-md border border-input-border bg-input text-transparent;
-  @apply transition-[background-color,border-color,box-shadow,color] duration-100;
+  @apply mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded-md border-2 border-muted bg-transparent text-transparent;
+  @apply transition-[background-color,border-color,color] duration-100;
+}
+
+@utility checkbox-box-selected {
+  @apply border-action bg-action text-on-action;
+}
+
+@utility checkbox-box-error {
+  @apply border-error;
 }
 
 /* Single-choice rows used by settings radio groups. */
@@ -570,7 +577,7 @@
   /* A current route declares itself semantically. The shared item then gives
    * every sidebar navigation surface the same quiet action-coloured treatment. */
   &[aria-current='page'] {
-    @apply bg-action/10 font-medium text-text-top hover:bg-action/15 hover:text-text-top active:bg-action/20;
+    @apply bg-action/10 text-text-top hover:bg-action/15 hover:text-text-top active:bg-action/20;
     @apply focus-visible:bg-action/10;
   }
 
@@ -649,6 +656,22 @@
 @utility mini-icon-action {
   @apply inline-flex shrink-0 cursor-pointer rounded text-muted transition-colors duration-150 hover:text-text focus-visible:text-text;
   @apply focus-visible:outline-2 focus-visible:outline-action;
+}
+
+/* Keep a row action visible on touch devices. Reveal it on hover or keyboard
+ * focus only when the primary input can hover precisely.
+ */
+@utility hover-reveal-action {
+  @apply transition-opacity duration-150;
+
+  @media (hover: hover) and (pointer: fine) {
+    @apply pointer-events-none opacity-0;
+
+    .group:hover &,
+    .group:focus-within & {
+      @apply pointer-events-auto opacity-100;
+    }
+  }
 }
 
 /* Hide scrollbar while maintaining scroll functionality */
@@ -776,6 +799,38 @@
 
 @utility menu-item-active {
   @apply bg-surface;
+}
+
+/* Semantic command rows for ContextMenu and related action surfaces. */
+@utility menu-entry {
+  @apply relative flex min-h-8 w-full shrink-0 cursor-pointer items-center gap-2 overflow-hidden rounded-md px-1 py-1 text-start text-text;
+  @apply transition-[background-color,color] duration-150 hover:bg-surface hover:text-text active:bg-surface-emphasized;
+  @apply focus-visible:bg-surface focus-visible:outline-2 focus-visible:outline-action;
+  @apply disabled:cursor-not-allowed disabled:opacity-50;
+
+  &[aria-disabled='true'] {
+    @apply cursor-not-allowed opacity-50;
+  }
+}
+
+@utility menu-entry-sheet {
+  @apply min-h-11 gap-3 px-3 py-2.5 text-base;
+}
+
+@utility menu-entry-selected {
+  @apply bg-surface;
+}
+
+@utility menu-entry-leading {
+  @apply flex h-5 w-5 shrink-0 items-center justify-center text-base;
+}
+
+@utility menu-entry-leading-floating {
+  @apply mt-0.5;
+}
+
+@utility menu-entry-leading-sheet {
+  @apply mt-0.5;
 }
 
 /* Simple non-interactive tooltip surface for FloatingTooltip. */

@@ -14,7 +14,7 @@ Names for visible surfaces and component groupings. When a name here disagrees w
 
 **Application Header** — Global bar across the top of the client. Client-wide navigation, notifications, and meta controls live on the left; the active server's message of the day occupies the centre; version and session controls live on the right. Implemented in `apps/frontend/src/lib/ui/AppHeader.svelte`.
 
-**App Preferences** — User choices that the current app applies to every registered server. They include appearance, language, message editor, and send-key behavior. The Application Header gear opens Appearance in unified Settings for the active authenticated server. The App preferences group also contains Language and Composer. A separate App Preferences sidebar remains available when there is no authenticated server. App Preferences do not sync to another browser or device. See [FDR-022](fdr/FDR-022-user-profile.md) and [FDR-032](fdr/FDR-032-message-formatting.md).
+**App Preferences** — User choices that the current app applies to every registered server. They include appearance, thread presentation, language, message editor, and send-key behavior. The Application Header gear opens Appearance in unified Settings for the active authenticated server. The App preferences group also contains Language and Composer. A separate App Preferences sidebar remains available when there is no authenticated server. App Preferences do not sync to another browser or device. See [FDR-002](fdr/FDR-002-replies-and-threads.md), [FDR-022](fdr/FDR-022-user-profile.md), and [FDR-032](fdr/FDR-032-message-formatting.md).
 
 **User Preferences** — A user's choices for one server. They include time and region settings and notification behavior. The server can sync a preference, or the app can store it with a key for each server. The term identifies the user and server scope, not the storage method. The unified Settings sidebar puts these pages in the Your account group. See [FDR-012](fdr/FDR-012-notifications.md) and [FDR-022](fdr/FDR-022-user-profile.md).
 
@@ -57,6 +57,12 @@ Names for visible surfaces and component groupings. When a name here disagrees w
 User-facing concepts. If a user might say the word, it goes here.
 
 **Server** — Top-level Chatto deployment: one process, one NATS account, one membership boundary. Formerly called *Instance* in the codebase. See [ADR-029](adr/ADR-029-instance-to-server-rename.md).
+
+**Neighbor** — Chatto server that another server advertises in its public directory. A Neighbor has a canonical origin and can have a public testimonial. It is a recommendation, not a trust or reciprocal relationship. See [FDR-042](fdr/FDR-042-chatto-neighbors.md).
+
+**Server Directory** — Client page that shows direct Neighbor recommendations from registered servers and follows bounded mutual recommendations recursively. It adds a direct server after its public profile loads, expands a remote server only after mutuality is observed, keeps registered results visible as joined, shows source testimonials in a tapestry layout, and also accepts a direct server address. It does not rank its results. See [FDR-042](fdr/FDR-042-chatto-neighbors.md).
+
+**Testimonial** — Optional public text in a Neighbor that explains why one server recommends another server. A testimonial belongs to the directed recommendation that supplied it. See [FDR-042](fdr/FDR-042-chatto-neighbors.md).
 
 **Client application** — Browser, desktop, mobile app, or integration that a user authorizes to access a Chatto server; its stable identity comes from CIMD or a built-in registration. A client appears in server administration after completing at least one user-approved authorization. Administrators may label it trusted or block it, but trust never replaces user consent. See [ADR-071](adr/ADR-071-cimd-identified-open-oauth-clients.md) and [FDR-023](fdr/FDR-023-authentication-and-sessions.md).
 

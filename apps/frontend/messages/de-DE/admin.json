@@ -2,6 +2,7 @@
   "admin": {
     "nav": {
       "general": "Allgemein",
+      "neighbors": "Nachbarn",
       "members": "Mitglieder",
       "rooms": "Räume",
       "moderation": "Moderation",
@@ -11,6 +12,29 @@
       "system": "System",
       "back_to_server": "Zurück zum Server",
       "invitations": "Einladungslinks"
+    },
+    "neighbors": {
+      "title": "Nachbarn",
+      "subtitle": "Bewirb befreundete Chatto-Server in deinem öffentlichen Verzeichnis",
+      "add_title": "Nachbarn hinzufügen",
+      "list_title": "Nachbarn",
+      "origin": "Serveradresse",
+      "origin_help": "Gib den Hostnamen oder die URL eines Servers ein. Chatto speichert nur dessen HTTP- oder HTTPS-Ursprung.",
+      "add": "Nachbarn hinzufügen",
+      "empty": "Es werden keine Nachbarn beworben",
+      "actions": "Aktionen",
+      "edit": "Bearbeiten",
+      "save": "Speichern",
+      "cancel": "Abbrechen",
+      "delete": "Löschen",
+      "delete_title": "Nachbarn löschen",
+      "delete_description": "{origin} nicht mehr bewerben?",
+      "created": "Nachbar hinzugefügt",
+      "updated": "Nachbar aktualisiert",
+      "deleted": "Nachbar gelöscht",
+      "testimonial": "Empfehlungstext (optional)",
+      "testimonial_help": "Erkläre, warum du diesen Server empfiehlst. Dieser Text ist öffentlich und darf bis zu 500 Zeichen enthalten.",
+      "testimonial_label": "Öffentlicher Empfehlungstext"
     },
     "common": {
       "page_title": "{title} | Admin",

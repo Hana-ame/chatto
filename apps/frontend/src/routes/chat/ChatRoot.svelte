@@ -11,14 +11,12 @@
   import { hardRedirectAfterSignOut, isExplicitSignOutRedirectInProgress } from '$lib/auth/signOut';
   import { initSessionChannel } from '$lib/auth/sessionChannel';
   import AuthStatusNotice from '$lib/components/AuthStatusNotice.svelte';
-  import PushNotificationPrompt from '$lib/components/PushNotificationPrompt.svelte';
   import PushNotificationSetup from '$lib/components/PushNotificationSetup.svelte';
   import ScreenWakeLock from '$lib/components/ScreenWakeLock.svelte';
   import WelcomeBanner from '$lib/components/WelcomeBanner.svelte';
   import { useProjectionEvent, useSessionTerminated } from '$lib/hooks/useEvent.svelte';
   import { initPresenceTracking } from '$lib/presenceTracking';
   import { serverIdToSegment } from '$lib/navigation';
-  import { getPushRegistrationTargets } from '$lib/notifications/pushNotifications';
   import { createDeviceTimezoneReportTracker, deviceTimezone } from '$lib/utils/deviceTimezone';
   import {
     updateAuthenticatedCurrentUserPresenceEntries,
@@ -60,7 +58,6 @@
     originUser && originServerId && currentUserState
       ? { user: originUser, serverId: originServerId, currentUser: currentUserState }
       : null;
-  const pushPromptTarget = $derived(getPushRegistrationTargets()[0] ?? null);
 
   if (originSession) {
     rootPresenceCache.update(
@@ -130,7 +127,7 @@
               viewer.user.avatarUrl ?? null,
               viewer.user.login,
               viewer.user.customStatus ?? null,
-              { bio: viewer.user.bio ?? null, timezone: viewer.user.settings?.timezone ?? null }
+              { bio: viewer.user.bio ?? null, timezone: viewer.user.publicTimezone ?? null }
             );
           } else if (operation.operation.case === 'userRemove') {
             rootProfileCache.remove(operation.operation.value.userId);
@@ -209,6 +206,7 @@
       const store = serverRegistry.tryGetStore(server.id);
       const user = store?.currentUser.user;
       if (!store || !user || !store.isAuthenticated) continue;
+      if (user.settings?.shareTimezone === undefined) continue;
       const key = `${server.id}:${user.id}`;
       if (!timezoneReports.begin(key)) continue;
       if (user.settings?.timezone) {
@@ -243,11 +241,6 @@
   <ScreenWakeLock />
 {/if}
 <PushNotificationSetup />
-{#if pushPromptTarget}
-  {#key `${pushPromptTarget.serverId}:${pushPromptTarget.userId}`}
-    <PushNotificationPrompt {...pushPromptTarget} />
-  {/key}
-{/if}
 {#if originSession}
   <WelcomeBanner />
 {/if}

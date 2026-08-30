@@ -2,6 +2,7 @@
   "admin": {
     "nav": {
       "general": "一般",
+      "neighbors": "ネイバー",
       "members": "メンバー",
       "rooms": "部屋",
       "moderation": "モデレーション",
@@ -11,6 +12,29 @@
       "system": "システム",
       "back_to_server": "サーバーに戻る",
       "invitations": "Invite links"
+    },
+    "neighbors": {
+      "title": "ネイバー",
+      "subtitle": "Advertise friendly Chatto servers in your public directory",
+      "add_title": "Add Neighbor",
+      "list_title": "ネイバー",
+      "origin": "Server address",
+      "origin_help": "Enter a server hostname or URL. Chatto stores only its HTTP or HTTPS origin.",
+      "add": "Add Neighbor",
+      "empty": "No Neighbors are advertised",
+      "actions": "Actions",
+      "edit": "Edit",
+      "save": "Save",
+      "cancel": "Cancel",
+      "delete": "Delete",
+      "delete_title": "Delete Neighbor",
+      "delete_description": "Stop advertising {origin}?",
+      "created": "Neighbor added",
+      "updated": "Neighbor updated",
+      "deleted": "Neighbor deleted",
+      "testimonial": "推薦文（任意）",
+      "testimonial_help": "このサーバーをおすすめする理由を説明してください。この文章は公開され、500文字まで入力できます。",
+      "testimonial_label": "公開推薦文"
     },
     "common": {
       "page_title": "{title} |管理者",

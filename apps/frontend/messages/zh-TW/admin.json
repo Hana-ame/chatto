@@ -2,6 +2,7 @@
   "admin": {
     "nav": {
       "general": "一般",
+      "neighbors": "鄰居",
       "members": "成員",
       "rooms": "聊天室",
       "moderation": "內容管理",
@@ -11,6 +12,29 @@
       "system": "系統",
       "back_to_server": "返回伺服器",
       "invitations": "Invite links"
+    },
+    "neighbors": {
+      "title": "鄰居",
+      "subtitle": "Advertise friendly Chatto servers in your public directory",
+      "add_title": "Add Neighbor",
+      "list_title": "鄰居",
+      "origin": "Server address",
+      "origin_help": "Enter a server hostname or URL. Chatto stores only its HTTP or HTTPS origin.",
+      "add": "Add Neighbor",
+      "empty": "No Neighbors are advertised",
+      "actions": "Actions",
+      "edit": "Edit",
+      "save": "Save",
+      "cancel": "Cancel",
+      "delete": "Delete",
+      "delete_title": "Delete Neighbor",
+      "delete_description": "Stop advertising {origin}?",
+      "created": "Neighbor added",
+      "updated": "Neighbor updated",
+      "deleted": "Neighbor deleted",
+      "testimonial": "推薦語（選填）",
+      "testimonial_help": "說明您推薦此伺服器的原因。這段文字會公開顯示，最多可輸入 500 個字元。",
+      "testimonial_label": "公開推薦語"
     },
     "common": {
       "page_title": "{title} | 管理後台",

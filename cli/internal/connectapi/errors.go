@@ -38,6 +38,9 @@ func connectError(err error) error {
 	if errors.Is(err, events.ErrConflict) {
 		return connect.NewError(connect.CodeAborted, err)
 	}
+	if errors.Is(err, core.ErrNeighborRevisionChanged) {
+		return connect.NewError(connect.CodeAborted, err)
+	}
 	if errors.Is(err, core.ErrNotAuthenticated) {
 		return connect.NewError(connect.CodeUnauthenticated, err)
 	}
@@ -47,7 +50,8 @@ func connectError(err error) error {
 		return connect.NewError(connect.CodePermissionDenied, err)
 	}
 	if errors.Is(err, core.ErrHumanAccountRequired) ||
-		errors.Is(err, core.ErrBotOwnerPermissionCeiling) {
+		errors.Is(err, core.ErrBotOwnerPermissionCeiling) ||
+		errors.Is(err, core.ErrNeighborMatchesServerOrigin) {
 		return connect.NewError(connect.CodeFailedPrecondition, err)
 	}
 	if errors.Is(err, core.ErrRoomNameExists) {
@@ -57,6 +61,9 @@ func connectError(err error) error {
 		errors.Is(err, core.ErrEmailAlreadyVerified) ||
 		errors.Is(err, core.ErrExternalIdentityAlreadyClaimed) ||
 		errors.Is(err, core.ErrRoleAlreadyExists) {
+		return connect.NewError(connect.CodeAlreadyExists, err)
+	}
+	if errors.Is(err, core.ErrNeighborAlreadyExists) {
 		return connect.NewError(connect.CodeAlreadyExists, err)
 	}
 	if errors.Is(err, core.ErrCustomStatusEmojiRequired) ||
@@ -101,6 +108,7 @@ func connectError(err error) error {
 		errors.Is(err, core.ErrMessageNotFound) ||
 		errors.Is(err, core.ErrMessageAttachmentNotFound) ||
 		errors.Is(err, core.ErrMessageLinkPreviewNotFound) ||
+		errors.Is(err, core.ErrNeighborNotFound) ||
 		errors.Is(err, core.ErrRoleNotFound) ||
 		errors.Is(err, jetstream.ErrKeyNotFound) {
 		return connect.NewError(connect.CodeNotFound, err)
@@ -112,6 +120,9 @@ func connectError(err error) error {
 		errors.Is(err, core.ErrReactionLimitExceeded) ||
 		errors.Is(err, core.ErrPushSubscriptionLimitReached) ||
 		errors.Is(err, core.ErrSlowModeActive) {
+		return connect.NewError(connect.CodeResourceExhausted, err)
+	}
+	if errors.Is(err, core.ErrNeighborLimitReached) {
 		return connect.NewError(connect.CodeResourceExhausted, err)
 	}
 	if errors.Is(err, core.ErrRoomArchived) ||

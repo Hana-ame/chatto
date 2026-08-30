@@ -61,9 +61,15 @@ vi.mock('$lib/hooks', () => ({
   useProjectionEvent: vi.fn(),
   useUnreadMarker: (
     getTargetId: () => string,
-    options: { markAsRead: (targetId: string, upToEventId?: string) => unknown }
+    options: {
+      markAsRead: (
+        targetId: string,
+        upToEventId: string | undefined,
+        signal: AbortSignal
+      ) => unknown;
+    }
   ) => {
-    void options.markAsRead(getTargetId());
+    void options.markAsRead(getTargetId(), undefined, new AbortController().signal);
     return {
       unreadMarkerEventId: mocks.unreadMarkerEventId,
       markAsRead: options.markAsRead,
@@ -214,14 +220,15 @@ describe('ThreadPane', () => {
         roomId: 'room-1',
         roomName: 'General',
         threadRootEventId: 'thread-root',
-        onClose: mocks.onClose
+        onClose: mocks.onClose,
+        presentation: 'split'
       }
     });
 
     const pane = q(container, '[data-testid="thread-pane"]') as HTMLElement;
     const handle = q(container, '[role="slider"][aria-label^="Resize:"]') as HTMLElement;
 
-    expect(pane.className).toContain('@min-[768px]:relative');
+    expect(pane.className).toContain('relative');
     expect(pane.style.getPropertyValue('--thread-pane-width')).toBe('420px');
 
     handle.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }));
@@ -231,6 +238,24 @@ describe('ThreadPane', () => {
       expect(handle.getAttribute('aria-valuenow')).toBe(String(THREAD_PANE_MAX_WIDTH));
     });
     expect(localStorage.getItem('chatto:threadPaneWidth')).toBe(String(THREAD_PANE_MAX_WIDTH));
+  });
+
+  it('uses the overlay by default and hides the resize handle', () => {
+    const { container } = render(ThreadPane, {
+      props: {
+        roomId: 'room-1',
+        roomName: 'General',
+        threadRootEventId: 'thread-root',
+        onClose: mocks.onClose
+      }
+    });
+
+    const pane = q(container, '[data-testid="thread-pane"]') as HTMLElement;
+    expect(pane.className).toContain('absolute');
+    expect(pane.className).toContain('inline-end-overlay-shadow');
+    expect(pane.className).toContain('lg:w-[90%]');
+    expect(pane.className).not.toContain('sm:w-[90%]');
+    expect(container.querySelector('[role="slider"]')).toBeNull();
   });
 
   it('marks the thread as read through its content cursor', async () => {
@@ -244,11 +269,14 @@ describe('ThreadPane', () => {
     });
 
     await vi.waitFor(() =>
-      expect(mocks.markThreadAsRead).toHaveBeenCalledWith({
-        roomId: 'room-1',
-        threadRootEventId: 'thread-root',
-        upToEventId: undefined
-      })
+      expect(mocks.markThreadAsRead).toHaveBeenCalledWith(
+        {
+          roomId: 'room-1',
+          threadRootEventId: 'thread-root',
+          upToEventId: undefined
+        },
+        { signal: expect.any(AbortSignal) }
+      )
     );
 
     expect(mocks.setThread).toHaveBeenCalledWith('room-1', 'thread-root');

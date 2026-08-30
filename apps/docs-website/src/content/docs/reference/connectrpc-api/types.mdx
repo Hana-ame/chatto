@@ -33,6 +33,17 @@ exposed; clients only need user-facing provider/profile hints.
 | `bound_user_id` | `string` | User ID this link flow is bound to. Empty for create flows. |
 | `redirect_path` | `string` | Internal path the client should return to after confirmation. |
 
+<a id="chatto-discovery-v1-Neighbor"></a>
+
+### Neighbor
+
+One public server recommendation.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `origin` | `string` | Canonical HTTP or HTTPS server origin. |
+| `testimonial` | `optional string` | Optional explanation from the recommending server's operator. |
+
 <a id="chatto-api-v1-ImageTransformOptions"></a>
 
 ### ImageTransformOptions
@@ -127,7 +138,7 @@ Public user fields.
 | `custom_status` | [`CustomUserStatus`](#chatto-api-v1-CustomUserStatus) | Custom profile status, when set. |
 | `is_bot` | `bool` | True when this identity represents an automated bot. |
 | `bio` | `optional string` | Short self-authored biography shown on the user's profile, when set. |
-| `timezone` | `optional string` | IANA time zone the user shares on their profile (for example "Europe/Berlin"), when set. Absent means the user has not chosen a shareable time zone. |
+| `timezone` | `optional string` | IANA time zone the user chose to share on their profile (for example "Europe/Berlin"). Absent means the user has not enabled time-zone sharing or has no stored time zone. |
 
 <a id="chatto-api-v1-CapabilityGrant"></a>
 
@@ -196,6 +207,7 @@ Server-level display settings for the authenticated user.
 | --- | --- | --- |
 | `timezone` | `optional string` | Optional IANA timezone override. Absent means the client should use the browser's local timezone. |
 | `time_format` | [`TimeFormat`](#chatto-api-v1-TimeFormat) | Preferred time format. |
+| `share_timezone` | `optional bool` | Whether the stored time zone may appear on the user's public profile. New servers always set this field. Its absence means the server does not support private time zones and may publish any stored time zone. |
 
 <a id="chatto-api-v1-ViewerCapabilities"></a>
 
@@ -1626,6 +1638,19 @@ One item reference in a sidebar order replacement.
 | --- | --- | --- |
 | `kind` | [`AdminRoomLayoutItemKind`](#chatto-admin-v1-AdminRoomLayoutItemKind) | Item kind. |
 | `id` | `string` | Room ID when kind is ROOM, sidebar link ID when kind is SIDEBAR_LINK. |
+
+<a id="chatto-admin-v1-Neighbor"></a>
+
+### Neighbor
+
+One server advertised in the public Neighbor directory.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `id` | `string` | Stable opaque resource ID. |
+| `origin` | `string` | Canonical HTTP or HTTPS server origin. |
+| `revision` | `string` | Opaque revision required for update and delete requests. |
+| `testimonial` | `optional string` | Optional public explanation of why this server is recommended. |
 
 <a id="chatto-admin-v1-ServerConfig"></a>
 

@@ -54,7 +54,11 @@ const mocks = vi.hoisted(() => {
     hardRedirectAfterSignOut: vi.fn(),
     presenceCacheUpdate: vi.fn(),
     deviceTimezone: vi.fn<() => string | null>(() => null),
-    updateSettings: vi.fn(async () => ({ timezone: 'Europe/Berlin', timeFormat: undefined }))
+    updateSettings: vi.fn(async () => ({
+      timezone: 'Europe/Berlin',
+      timeFormat: undefined,
+      shareTimezone: false
+    }))
   };
 });
 
@@ -108,13 +112,6 @@ vi.mock('$app/paths', () => ({
 
 vi.mock('$lib/navigation', () => ({
   serverIdToSegment: (serverId: string) => `${serverId}.example.test`
-}));
-
-vi.mock('$lib/notifications/pushNotifications', () => ({
-  getPushRegistrationTargets: () =>
-    mocks.originCurrentUser.user
-      ? [{ serverId: 'origin', userId: 'origin-user', vapidPublicKey: 'origin-vapid' }]
-      : [{ serverId: 'remote', userId: 'remote-user', vapidPublicKey: 'remote-vapid' }]
 }));
 
 vi.mock('$lib/hooks/useEvent.svelte', () => ({
@@ -200,10 +197,6 @@ vi.mock('$lib/components/AuthStatusNotice.svelte', async () => ({
   default: (await import('./ChatRootTestStub.svelte')).default
 }));
 
-vi.mock('$lib/components/PushNotificationPrompt.svelte', async () => ({
-  default: (await import('./ChatRootTestStub.svelte')).default
-}));
-
 vi.mock('$lib/components/PushNotificationSetup.svelte', async () => ({
   default: (await import('./ChatRootTestStub.svelte')).default
 }));
@@ -243,7 +236,8 @@ describe('ChatRoot', () => {
     };
     mocks.updateSettings.mockResolvedValue({
       timezone: 'Europe/Berlin',
-      timeFormat: undefined
+      timeFormat: undefined,
+      shareTimezone: false
     });
     mocks.lifecycle.length = 0;
     vi.clearAllMocks();
@@ -296,7 +290,7 @@ describe('ChatRoot', () => {
       PresenceStatus.AWAY
     );
     expect(container.querySelector('[data-testid="chat-root-child"]')).not.toBeNull();
-    expect(container.querySelectorAll('[data-testid="chat-root-component-stub"]')).toHaveLength(4);
+    expect(container.querySelectorAll('[data-testid="chat-root-component-stub"]')).toHaveLength(3);
 
     const [[handleCrossTabLogout]] = mocks.initSessionChannel.mock.calls as [[() => void]];
     handleCrossTabLogout();
@@ -358,7 +352,7 @@ describe('ChatRoot', () => {
       PresenceStatus.AWAY
     );
     expect(container.querySelector('[data-testid="chat-root-child"]')).not.toBeNull();
-    expect(container.querySelectorAll('[data-testid="chat-root-component-stub"]')).toHaveLength(3);
+    expect(container.querySelectorAll('[data-testid="chat-root-component-stub"]')).toHaveLength(2);
 
     unmount();
 
@@ -370,12 +364,17 @@ describe('ChatRoot', () => {
     vi.mocked(mocks.deviceTimezone).mockReturnValue('Europe/Berlin');
     mocks.updateSettings.mockResolvedValue({
       timezone: 'Europe/Berlin',
-      timeFormat: undefined
+      timeFormat: undefined,
+      shareTimezone: false
     });
     const remoteUser: CurrentUser = {
       ...originUser,
       id: 'remote-user',
-      settings: { timezone: null, timeFormat: TimeFormat.TIME_FORMAT_AUTO }
+      settings: {
+        timezone: null,
+        timeFormat: TimeFormat.TIME_FORMAT_AUTO,
+        shareTimezone: false
+      }
     };
     mocks.remoteCurrentUser.user = remoteUser;
     const presenceCache = { update: mocks.presenceCacheUpdate } as unknown as PresenceCache;
@@ -399,7 +398,11 @@ describe('ChatRoot', () => {
     mocks.remoteCurrentUser.user = {
       ...originUser,
       id: 'remote-user',
-      settings: { timezone: 'America/New_York', timeFormat: TimeFormat.TIME_FORMAT_AUTO }
+      settings: {
+        timezone: 'America/New_York',
+        timeFormat: TimeFormat.TIME_FORMAT_AUTO,
+        shareTimezone: false
+      }
     };
     const presenceCache = { update: mocks.presenceCacheUpdate } as unknown as PresenceCache;
     const profileCache = {
@@ -423,7 +426,11 @@ describe('ChatRoot', () => {
     mocks.remoteCurrentUser.user = {
       ...originUser,
       id: 'remote-user',
-      settings: { timezone: null, timeFormat: TimeFormat.TIME_FORMAT_AUTO }
+      settings: {
+        timezone: null,
+        timeFormat: TimeFormat.TIME_FORMAT_AUTO,
+        shareTimezone: false
+      }
     };
     const presenceCache = { update: mocks.presenceCacheUpdate } as unknown as PresenceCache;
     const profileCache = {
@@ -441,5 +448,28 @@ describe('ChatRoot', () => {
     await Promise.resolve();
     await Promise.resolve();
     expect(mocks.updateSettings).toHaveBeenCalledOnce();
+  });
+
+  it('does not report the device time zone when the server lacks privacy support', async () => {
+    vi.mocked(mocks.deviceTimezone).mockReturnValue('Europe/Berlin');
+    mocks.remoteCurrentUser.user = {
+      ...originUser,
+      id: 'remote-user',
+      settings: { timezone: null, timeFormat: TimeFormat.TIME_FORMAT_AUTO }
+    };
+    const presenceCache = { update: mocks.presenceCacheUpdate } as unknown as PresenceCache;
+    const profileCache = {
+      update: vi.fn(),
+      updateStatus: vi.fn(),
+      remove: vi.fn(),
+      clear: vi.fn()
+    };
+
+    render(ChatRoot, {
+      props: { user: null, profileCache, presenceCache, children }
+    });
+
+    await Promise.resolve();
+    expect(mocks.updateSettings).not.toHaveBeenCalled();
   });
 });

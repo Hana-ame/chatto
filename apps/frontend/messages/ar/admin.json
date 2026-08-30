@@ -2,6 +2,7 @@
   "admin": {
     "nav": {
       "general": "عام",
+      "neighbors": "الجيران",
       "members": "الأعضاء",
       "rooms": "الغرف",
       "moderation": "الإشراف",
@@ -11,6 +12,29 @@
       "system": "النظام",
       "back_to_server": "العودة إلى الخادم",
       "invitations": "Invite links"
+    },
+    "neighbors": {
+      "title": "الجيران",
+      "subtitle": "Advertise friendly Chatto servers in your public directory",
+      "add_title": "Add Neighbor",
+      "list_title": "الجيران",
+      "origin": "Server address",
+      "origin_help": "Enter a server hostname or URL. Chatto stores only its HTTP or HTTPS origin.",
+      "add": "Add Neighbor",
+      "empty": "No Neighbors are advertised",
+      "actions": "Actions",
+      "edit": "Edit",
+      "save": "Save",
+      "cancel": "Cancel",
+      "delete": "Delete",
+      "delete_title": "Delete Neighbor",
+      "delete_description": "Stop advertising {origin}?",
+      "created": "Neighbor added",
+      "updated": "Neighbor updated",
+      "deleted": "Neighbor deleted",
+      "testimonial": "شهادة (اختياري)",
+      "testimonial_help": "اشرح سبب توصيتك بهذا الخادم. هذا النص علني ويمكن أن يحتوي على ما يصل إلى 500 حرف.",
+      "testimonial_label": "شهادة علنية"
     },
     "common": {
       "page_title": "{title} | مسؤل",

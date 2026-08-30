@@ -2,6 +2,7 @@
   "admin": {
     "nav": {
       "general": "Ģenerālis",
+      "neighbors": "Kaimiņi",
       "members": "Biedri",
       "rooms": "Istabas",
       "moderation": "Mērenība",
@@ -11,6 +12,29 @@
       "system": "Sistēma",
       "back_to_server": "Atgriezties uz serveri",
       "invitations": "Invite links"
+    },
+    "neighbors": {
+      "title": "Kaimiņi",
+      "subtitle": "Advertise friendly Chatto servers in your public directory",
+      "add_title": "Add Neighbor",
+      "list_title": "Kaimiņi",
+      "origin": "Server address",
+      "origin_help": "Enter a server hostname or URL. Chatto stores only its HTTP or HTTPS origin.",
+      "add": "Add Neighbor",
+      "empty": "No Neighbors are advertised",
+      "actions": "Actions",
+      "edit": "Edit",
+      "save": "Save",
+      "cancel": "Cancel",
+      "delete": "Delete",
+      "delete_title": "Delete Neighbor",
+      "delete_description": "Stop advertising {origin}?",
+      "created": "Neighbor added",
+      "updated": "Neighbor updated",
+      "deleted": "Neighbor deleted",
+      "testimonial": "Atsauksme (neobligāti)",
+      "testimonial_help": "Paskaidrojiet, kāpēc iesakāt šo serveri. Šis teksts ir publisks un var saturēt līdz 500 rakstzīmēm.",
+      "testimonial_label": "Publiska atsauksme"
     },
     "common": {
       "page_title": "{title} | Administrators",

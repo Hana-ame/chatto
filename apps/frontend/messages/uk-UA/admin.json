@@ -2,6 +2,7 @@
   "admin": {
     "nav": {
       "general": "Загальне",
+      "neighbors": "Сусіди",
       "members": "Учасники",
       "rooms": "Кімнати",
       "moderation": "Модерація",
@@ -11,6 +12,29 @@
       "system": "Система",
       "back_to_server": "Повернутися на сервер",
       "invitations": "Invite links"
+    },
+    "neighbors": {
+      "title": "Сусіди",
+      "subtitle": "Advertise friendly Chatto servers in your public directory",
+      "add_title": "Add Neighbor",
+      "list_title": "Сусіди",
+      "origin": "Server address",
+      "origin_help": "Enter a server hostname or URL. Chatto stores only its HTTP or HTTPS origin.",
+      "add": "Add Neighbor",
+      "empty": "No Neighbors are advertised",
+      "actions": "Actions",
+      "edit": "Edit",
+      "save": "Save",
+      "cancel": "Cancel",
+      "delete": "Delete",
+      "delete_title": "Delete Neighbor",
+      "delete_description": "Stop advertising {origin}?",
+      "created": "Neighbor added",
+      "updated": "Neighbor updated",
+      "deleted": "Neighbor deleted",
+      "testimonial": "Відгук (необов’язково)",
+      "testimonial_help": "Поясніть, чому ви рекомендуєте цей сервер. Цей текст загальнодоступний і може містити до 500 символів.",
+      "testimonial_label": "Загальнодоступний відгук"
     },
     "common": {
       "page_title": "{title} | адмін",

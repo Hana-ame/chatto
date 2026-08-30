@@ -50,3 +50,47 @@ initial server view.
 | --- | --- | --- |
 | `profile` | `chatto.api.v1.ServerPublicProfile` | Public server profile and branding. |
 | `login` | `chatto.api.v1.ServerLogin` | Login and registration options. |
+
+
+<a id="chatto-discovery-v1-ServerDiscoveryService-ListNeighbors"></a>
+
+### ListNeighbors
+
+Returns the public Neighbor directory without requiring a session.
+
+```http
+POST /api/connect/chatto.discovery.v1.ServerDiscoveryService/ListNeighbors
+```
+
+<a id="chatto-discovery-v1-ListNeighborsRequest"></a>
+
+#### Input: ListNeighborsRequest
+
+Request for the public Neighbor directory.
+
+
+<a id="chatto-discovery-v1-ListNeighborsResponse"></a>
+
+#### Result: ListNeighborsResponse
+
+Publicly advertised servers. The response has no ordering contract.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `origins` | `repeated string` | Canonical origins for clients that do not support structured Neighbors. |
+| `neighbors` | repeated [`Neighbor`](#chatto-discovery-v1-Neighbor) | Structured recommendations with optional testimonials. |
+
+
+
+## Supporting Types
+
+<a id="chatto-discovery-v1-Neighbor"></a>
+
+### Neighbor
+
+One public server recommendation.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `origin` | `string` | Canonical HTTP or HTTPS server origin. |
+| `testimonial` | `optional string` | Optional explanation from the recommending server's operator. |

@@ -58,6 +58,12 @@ copy it again; raw bearer tokens are not stored in `EVT`. Opening
 `/invite/{token}` validates the compact capability, stores only the invitation
 ID in the signed browser session, and immediately redirects to registration.
 
+`AdminServerService` provides CRUD operations for Neighbor resources. These
+methods require `server.manage-neighbors`. `ServerDiscoveryService.ListNeighbors`
+returns structured recommendations with optional testimonials without a
+session or an ordering contract. It also returns the legacy origin list for
+older clients. The server does not contact the advertised origins.
+
 `BotService` exposes bot lifecycle, administrator-initiated owner reassignment,
 show-once API-key rotation, and create and revoke operations for as many as 20
 named incoming webhooks for each bot. Bot
@@ -131,10 +137,9 @@ ready, degraded, and unavailable states without affecting other APIs. Exact
 provider replay counts stay on the trusted NATS contract and in operator logs;
 the authenticated public status does not expose server-wide event-log scale.
 
-`ServerDiscoveryService.GetServer` is the only Connect method for which the
-bundled client enables side-effect-free GET. It also receives wildcard public
-CORS and conditional-response caching. Other bundled-client Connect traffic
-uses POST.
+`ServerDiscoveryService.GetServer` and `ListNeighbors` support side-effect-free
+GET. They also receive wildcard public CORS and conditional-response caching.
+Other bundled-client Connect traffic uses POST.
 
 The discovery response includes the server software version as public
 pre-authentication state, along with configured provider metadata and the

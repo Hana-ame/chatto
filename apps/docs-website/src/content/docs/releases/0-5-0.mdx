@@ -40,9 +40,10 @@ import ReleaseHero from "../../../components/release-notes/ReleaseHero.astro";
 
   <ReleaseFeatureCard title="More useful user profiles">
     Open a user's profile from their user card, add a Markdown bio to your own profile, and see
-    the local time that a user chooses to share. Bios can contain up to 1,000 characters. Local
-    times use your preferred 12-hour or 24-hour format. Bots use the same self-profile API when
-    authenticated with their API key.
+    the local time that a user chooses to share. Stored time zones are private by default. You
+    can use your time zone for date formatting without publishing it on your profile. Bios can
+    contain up to 1,000 characters. Local times use your preferred 12-hour or 24-hour format.
+    Bots use the same self-profile API when authenticated with their API key.
   </ReleaseFeatureCard>
 
   <ReleaseFeatureCard title="Notifications that stay useful after you read them">
@@ -86,7 +87,21 @@ import ReleaseHero from "../../../components/release-notes/ReleaseHero.astro";
   <ReleaseFeatureCard title="Version-aware compatibility">
     Public server discovery reports the running server version. The multi-server client owns
     its minimum expected server release and uses explicit release boundaries to show useful
-    upgrade guidance.
+    upgrade guidance. If a discovered server is incompatible or does not report a valid version,
+    the Server Directory opens that server's own client instead of adding it to the current app.
+  </ReleaseFeatureCard>
+
+  <ReleaseFeatureCard title="Advertise friendly Chatto servers">
+    Server administrators can maintain a public Neighbor directory. The Server
+    Directory shows direct recommendations from a user's registered servers. It
+    follows a remote server recursively only when both servers advertise each
+    other, for at most two mutual hops. Results appear as requests finish, and
+    fixed batch, concurrency, timeout, and page-session limits bound browser
+    work. Administrators can add a public testimonial to each
+    recommendation. Testimonials support paragraphs and limited inline
+    Markdown. The directory shows them as source-labelled review cards below
+    each server profile in a tapestry layout. Mutuality is a current client
+    observation, not a verified relationship or trust statement.
   </ReleaseFeatureCard>
 
   <ReleaseFeatureCard title="Remote clients connect without allowlists" size="large">
@@ -142,6 +157,10 @@ import ReleaseHero from "../../../components/release-notes/ReleaseHero.astro";
 </ReleaseFeatureGrid>
 
 ## Upgrade Notes
+
+- Upgrade every Chatto replica before you rely on private time zones. An older replica does not
+  understand the sharing setting and can expose a stored time zone. A rollback to an older
+  replica has the same risk.
 
 - Remove `current_password` from `chatto.admin.v1.DeleteUserRequest` in custom
   clients before you update generated code. A 0.5 server ignores protobuf

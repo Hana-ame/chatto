@@ -7,7 +7,7 @@
       "delete_grants": "Delete all permission grants for this role",
       "irreversible": "This action cannot be undone.",
       "deleting": "Deleting...",
-      "action": "Delete Role"
+      "action": "Delete role"
     },
     "role_form": {
       "save": "Save",
@@ -107,6 +107,7 @@
     },
     "permission_descriptions": {
       "server_manage": "Update server settings (name, description, logo)",
+      "server_manage_neighbors": "Manage the public Neighbor directory",
       "room_create": "Create new rooms",
       "room_join": "Join existing rooms",
       "room_list": "See rooms in the directory. A user can be allowed to see a room (e.g. to request access) without being allowed to join it.",

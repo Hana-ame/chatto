@@ -1,10 +1,15 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { getPublicServerInfo } from '$lib/api-client/server';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  getPublicNeighbors,
+  getPublicServerInfo,
+  InvalidPublicServerError
+} from '$lib/api-client/server';
 
 const mocks = vi.hoisted(() => ({
   createClient: vi.fn(),
   createConnectTransport: vi.fn(),
-  getServer: vi.fn()
+  getServer: vi.fn(),
+  listNeighbors: vi.fn()
 }));
 
 vi.mock('@connectrpc/connect', async (importOriginal) => {
@@ -19,13 +24,48 @@ vi.mock('@connectrpc/connect-web', () => ({
   createConnectTransport: mocks.createConnectTransport
 }));
 
-describe('getPublicServerInfo', () => {
+describe('public server discovery', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
   beforeEach(() => {
     mocks.createClient.mockReset();
     mocks.createConnectTransport.mockReset();
     mocks.getServer.mockReset();
+    mocks.listNeighbors.mockReset();
     mocks.createConnectTransport.mockReturnValue({ kind: 'transport' });
-    mocks.createClient.mockReturnValue({ getServer: mocks.getServer });
+    mocks.createClient.mockReturnValue({
+      getServer: mocks.getServer,
+      listNeighbors: mocks.listNeighbors
+    });
+  });
+
+  it('loads structured public Neighbors without authentication', async () => {
+    const signal = AbortSignal.timeout(1000);
+    mocks.listNeighbors.mockResolvedValue({
+      origins: ['https://one.example', 'https://two.example'],
+      neighbors: [
+        { origin: 'https://one.example', testimonial: 'A kind place.' },
+        { origin: 'https://two.example' }
+      ]
+    });
+
+    await expect(getPublicNeighbors('https://chat.example.test', { signal })).resolves.toEqual([
+      { origin: 'https://one.example', testimonial: 'A kind place.' },
+      { origin: 'https://two.example', testimonial: null }
+    ]);
+    expect(mocks.listNeighbors).toHaveBeenCalledWith({}, { signal });
+  });
+
+  it('falls back to origin-only Neighbor responses from older servers', async () => {
+    mocks.listNeighbors.mockResolvedValue({
+      origins: ['https://one.example', 'https://two.example'],
+      neighbors: []
+    });
+
+    await expect(getPublicNeighbors('https://chat.example.test')).resolves.toEqual([
+      { origin: 'https://one.example', testimonial: null },
+      { origin: 'https://two.example', testimonial: null }
+    ]);
   });
 
   it('loads public server metadata and maps the shared profile', async () => {
@@ -59,6 +99,7 @@ describe('getPublicServerInfo', () => {
 
     expect(mocks.createConnectTransport).toHaveBeenCalledWith({
       baseUrl: 'https://chat.example.test/api/connect',
+      fetch: expect.any(Function),
       useBinaryFormat: false
     });
     expect(mocks.getServer).toHaveBeenCalledWith({}, { signal: undefined });
@@ -86,6 +127,31 @@ describe('getPublicServerInfo', () => {
     });
   });
 
+  it('omits browser credentials, referrers, and redirects from public discovery', async () => {
+    const browserFetch = vi.fn().mockResolvedValue(new Response());
+    vi.stubGlobal('fetch', browserFetch);
+    mocks.getServer.mockResolvedValue({ profile: { name: 'Chatto', version: '0.5.0' } });
+
+    await getPublicServerInfo('https://chat.example.test');
+    const transportOptions = mocks.createConnectTransport.mock.calls[0]?.[0] as {
+      fetch: typeof fetch;
+    };
+    await transportOptions.fetch('https://chat.example.test/api/connect/discovery', {
+      credentials: 'include',
+      redirect: 'follow',
+      referrerPolicy: 'origin'
+    });
+
+    expect(browserFetch).toHaveBeenCalledWith(
+      'https://chat.example.test/api/connect/discovery',
+      expect.objectContaining({
+        credentials: 'omit',
+        redirect: 'error',
+        referrerPolicy: 'no-referrer'
+      })
+    );
+  });
+
   it('uses profile defaults when optional public profile fields are absent', async () => {
     mocks.getServer.mockResolvedValue({
       profile: {
@@ -103,5 +169,13 @@ describe('getPublicServerInfo', () => {
       iconUrl: null,
       bannerUrl: null
     });
+  });
+
+  it('rejects a response without a public server profile', async () => {
+    mocks.getServer.mockResolvedValue({});
+
+    await expect(getPublicServerInfo('https://invalid.example')).rejects.toBeInstanceOf(
+      InvalidPublicServerError
+    );
   });
 });

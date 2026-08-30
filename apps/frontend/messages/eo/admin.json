@@ -2,6 +2,7 @@
   "admin": {
     "nav": {
       "general": "Generalo",
+      "neighbors": "Najbaroj",
       "members": "Membroj",
       "rooms": "Ĉambroj",
       "moderation": "Modereco",
@@ -11,6 +12,29 @@
       "system": "Sistemo",
       "back_to_server": "Reiru al Servilo",
       "invitations": "Invite links"
+    },
+    "neighbors": {
+      "title": "Najbaroj",
+      "subtitle": "Advertise friendly Chatto servers in your public directory",
+      "add_title": "Add Neighbor",
+      "list_title": "Najbaroj",
+      "origin": "Server address",
+      "origin_help": "Enter a server hostname or URL. Chatto stores only its HTTP or HTTPS origin.",
+      "add": "Add Neighbor",
+      "empty": "No Neighbors are advertised",
+      "actions": "Actions",
+      "edit": "Edit",
+      "save": "Save",
+      "cancel": "Cancel",
+      "delete": "Delete",
+      "delete_title": "Delete Neighbor",
+      "delete_description": "Stop advertising {origin}?",
+      "created": "Neighbor added",
+      "updated": "Neighbor updated",
+      "deleted": "Neighbor deleted",
+      "testimonial": "Atesto (nedeviga)",
+      "testimonial_help": "Klarigu kial vi rekomendas ĉi tiun servilon. Ĉi tiu teksto estas publika kaj povas enhavi ĝis 500 signojn.",
+      "testimonial_label": "Publika atesto"
     },
     "common": {
       "page_title": "{title} | Admin",

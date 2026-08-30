@@ -56,6 +56,7 @@ export default defineConfig({
           items: [
             "getting-started/introduction",
             "getting-started/quick-start",
+            "getting-started/threads",
             "getting-started/message-formatting",
             "getting-started/faq",
           ],
@@ -74,6 +75,7 @@ export default defineConfig({
           label: "Operating Your Server",
           items: [
             "guides/operations/community-structure",
+            "guides/operations/neighbors",
             "guides/operations/identity-login",
             "guides/operations/permissions",
             "guides/operations/notifications-web-push",

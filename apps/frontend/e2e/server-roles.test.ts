@@ -153,7 +153,7 @@ test.describe('Server Roles Management', () => {
       await serverRolesPage.expectRoleInList('everyone');
     });
 
-    test('server admin can see Create Role button', async ({ serverRolesPage }) => {
+    test('server admin can see Create role button', async ({ serverRolesPage }) => {
       const { page } = serverRolesPage;
 
       await createAndLoginTestUser(page);
@@ -182,7 +182,7 @@ test.describe('Server Roles Management', () => {
     });
   });
 
-  test.describe('Create Role', () => {
+  test.describe('Create role', () => {
     test('server admin can create a new role', async ({ serverRolesPage }) => {
       const { page } = serverRolesPage;
 
@@ -366,7 +366,7 @@ test.describe('Server Roles Management', () => {
     });
   });
 
-  test.describe('Delete Role', () => {
+  test.describe('Delete role', () => {
     test('server admin can delete a custom role', async ({ serverRolesPage }) => {
       const { page } = serverRolesPage;
 
@@ -599,7 +599,7 @@ test.describe('Server Permission Enforcement', () => {
       // Navigate to roles list
       await serverRolesPage.gotoRolesList(server.id);
 
-      // Should see Create Role button (has roles.manage)
+      // Should see Create role button (has roles.manage)
       await serverRolesPage.expectCreateRoleButtonVisible();
     });
 
@@ -660,7 +660,8 @@ test.describe('Server Permission Enforcement', () => {
       // General stays hidden without server.manage.
       await serverAdminPage.expectSettingsLinkVisible();
       await serverAdminPage.settingsLink.click();
-      await page.waitForURL(routes.serverAdminBots);
+      await page.waitForURL(routes.settingsAppearance);
+      await expect(page.getByRole('heading', { name: 'Appearance' })).toBeVisible();
       await serverAdminPage.expectBotsNavVisible();
       await serverAdminPage.expectGeneralNavNotVisible();
     });
@@ -841,7 +842,8 @@ test.describe('Server Permission Enforcement', () => {
       // Fresh servers grant bot.create to everyone, so the administration
       // entry remains available for Bots while room management stays hidden.
       await page.getByRole('link', { name: 'Settings', exact: true }).click();
-      await page.waitForURL(routes.serverAdminBots);
+      await page.waitForURL(routes.settingsAppearance);
+      await expect(page.getByRole('heading', { name: 'Appearance' })).toBeVisible();
       await expect(page.getByRole('link', { name: 'Bots', exact: true })).toBeVisible();
       await expect(page.getByRole('link', { name: 'Rooms', exact: true })).not.toBeVisible();
     });

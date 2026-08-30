@@ -30,6 +30,12 @@
   import { getLocale } from '$lib/i18n/runtime';
   import { useLoadMoreWhenVisible } from '$lib/hooks/useLoadMoreWhenVisible.svelte';
   import { getEmojiByName } from '$lib/emoji';
+  import {
+    enablePushOnAllServers,
+    getPermission,
+    getPushCapability,
+    getPushRegistrationTargets
+  } from '$lib/notifications/pushNotifications';
 
   type ServerGroup = {
     serverId: string;
@@ -50,16 +56,23 @@
     items: ServerGroup[];
   };
 
+  type ReadOccurrenceBatch = {
+    serverId: string;
+    occurrenceIds: string[];
+  };
+
   const activeLocale = $derived(getLocale());
   const appUi = getAppUiState();
   const hydrationAttempts = new SvelteSet<string>();
-  const optimisticallyDismissedOccurrenceIds = new SvelteSet<string>();
+  const optimisticallyDismissedOccurrenceKeys = new SvelteSet<string>();
   const groups = $derived.by(notificationGroupsFromProjection);
   const pagination = $derived.by(notificationPaginationFromProjection);
   const loading = $derived(!notificationProjectionHasLoaded());
   let loadingMore = $state(false);
   let loadMoreError = $state(false);
-  let dismissingAll = $state(false);
+  let dismissingRead = $state(false);
+  let pushPermission = $state<NotificationPermission | null>(getPermission());
+  let enablingPush = $state(false);
   const pendingMutationKeys = new SvelteSet<string>();
   const hasPendingMutation = $derived(pendingMutationKeys.size > 0);
   const hasMore = $derived(pagination.some((source) => source.hasMore));
@@ -89,6 +102,12 @@
     return sorted.filter((item) => item.group.latestAt >= newestUnloadedBoundary!);
   });
   const dateSections = $derived.by(() => groupNotificationsByDate(visibleGroups));
+  const readOccurrenceBatches = $derived.by(readOccurrencesByServer);
+  const showEnablePush = $derived(
+    getPushCapability() === 'supported' &&
+      pushPermission === 'default' &&
+      getPushRegistrationTargets().length > 0
+  );
 
   // Realtime normally hydrates this retained store before the route is opened.
   // Fetch only genuinely missing projections as a transport fallback.
@@ -160,6 +179,10 @@
     return `${item.serverId}:${item.group.id}`;
   }
 
+  function occurrenceKey(serverId: string, occurrenceId: string): string {
+    return `${serverId}:${occurrenceId}`;
+  }
+
   function visibleOccurrencesForServer(
     serverId: string,
     occurrences: NotificationOccurrenceItem[]
@@ -189,7 +212,8 @@
         }
         return groupNotificationOccurrences(
           visibleOccurrencesForServer(instance.id, stores.notifications.occurrences).filter(
-            (occurrence) => !optimisticallyDismissedOccurrenceIds.has(occurrence.id)
+            (occurrence) =>
+              !optimisticallyDismissedOccurrenceKeys.has(occurrenceKey(instance.id, occurrence.id))
           )
         ).map((group): ServerGroup => ({
           serverId: instance.id,
@@ -220,6 +244,22 @@
       const stores = serverRegistry.getStore(instance.id);
       return !stores.isAuthenticated || stores.notifications.hasLoaded;
     });
+  }
+
+  function readOccurrencesByServer(): ReadOccurrenceBatch[] {
+    const occurrencesByServer = new SvelteMap<string, string[]>();
+    for (const item of groups) {
+      for (const occurrence of item.group.occurrences) {
+        if (occurrence.unread) continue;
+        const occurrenceIds = occurrencesByServer.get(item.serverId) ?? [];
+        occurrenceIds.push(occurrence.id);
+        occurrencesByServer.set(item.serverId, occurrenceIds);
+      }
+    }
+    return [...occurrencesByServer].map(([serverId, occurrenceIds]) => ({
+      serverId,
+      occurrenceIds
+    }));
   }
 
   function compareGroups(a: ServerGroup, b: ServerGroup): number {
@@ -391,7 +431,7 @@
     setMutationPending(key, true);
     const store = serverRegistry.getStore(item.serverId).notifications;
     for (const occurrence of item.group.occurrences) {
-      optimisticallyDismissedOccurrenceIds.add(occurrence.id);
+      optimisticallyDismissedOccurrenceKeys.add(occurrenceKey(item.serverId, occurrence.id));
     }
     try {
       await store.deleteOccurrences(
@@ -414,31 +454,56 @@
     }
   }
 
-  async function dismissAll() {
-    if (dismissingAll || hasPendingMutation || groups.length === 0) return;
-    dismissingAll = true;
-    for (const item of groups) {
-      for (const occurrence of item.group.occurrences) {
-        optimisticallyDismissedOccurrenceIds.add(occurrence.id);
+  async function dismissRead() {
+    if (dismissingRead || hasPendingMutation || readOccurrenceBatches.length === 0) return;
+    dismissingRead = true;
+    const batches = readOccurrenceBatches.map((batch) => ({
+      serverId: batch.serverId,
+      occurrenceIds: [...batch.occurrenceIds]
+    }));
+    for (const batch of batches) {
+      for (const occurrenceId of batch.occurrenceIds) {
+        optimisticallyDismissedOccurrenceKeys.add(occurrenceKey(batch.serverId, occurrenceId));
       }
     }
-
-    const serverIds = serverRegistry.servers.flatMap((instance) => {
-      const store = serverRegistry.getStore(instance.id);
-      return store.isAuthenticated ? [instance.id] : [];
-    });
     const results = await Promise.allSettled(
-      serverIds.map((serverId) =>
-        serverRegistry.getStore(serverId).notifications.deleteAllOccurrences()
+      batches.map((batch) =>
+        serverRegistry
+          .getStore(batch.serverId)
+          .notifications.deleteOccurrences(batch.occurrenceIds, {
+            unread: 0,
+            importantUnread: 0
+          })
       )
     );
-    const failedServerIds = new Set(
-      results.flatMap((result, index) => (result.status === 'rejected' ? [serverIds[index]!] : []))
-    );
-    if (failedServerIds.size > 0) {
+    if (results.some((result) => result.status === 'rejected')) {
       toast.error(m('common.error.network'));
     }
-    dismissingAll = false;
+    dismissingRead = false;
+  }
+
+  async function enablePushNotifications() {
+    if (enablingPush) return;
+    enablingPush = true;
+    try {
+      const result = await enablePushOnAllServers();
+      pushPermission = result.permission;
+      if (result.permission === 'denied') {
+        toast.error(m('settings.notifications.push_prompt.blocked'));
+      } else if (
+        result.permission === 'granted' &&
+        result.registrations.length > 0 &&
+        result.registrations.every((registration) => registration.registered)
+      ) {
+        toast.success(m('settings.notifications.push_prompt.enabled'));
+      } else if (result.permission === 'granted') {
+        toast.error(m('settings.notifications.push_prompt.enable_failed'));
+      }
+    } catch {
+      toast.error(m('settings.notifications.push_prompt.enable_failed'));
+    } finally {
+      enablingPush = false;
+    }
   }
 </script>
 
@@ -449,16 +514,29 @@
     showMobileNav
   >
     {#snippet actions()}
-      {#if groups.length > 0 || dismissingAll}
+      {#if showEnablePush}
+        <Button
+          size="sm"
+          disabled={enablingPush}
+          loading={enablingPush}
+          loadingText={m('settings.notifications.push_prompt.enabling')}
+          label={m('settings.notifications.push_prompt.title')}
+          onclick={enablePushNotifications}
+        >
+          <span class="iconify icon-[uil--bell] text-base" aria-hidden="true"></span>
+          <span>{m('settings.notifications.push_prompt.title')}</span>
+        </Button>
+      {/if}
+      {#if readOccurrenceBatches.length > 0 || dismissingRead}
         <Button
           variant="danger-secondary"
           size="sm"
-          disabled={dismissingAll || hasPendingMutation}
-          label={m('chat.notifications.clear_all')}
-          onclick={dismissAll}
+          disabled={dismissingRead || hasPendingMutation}
+          label={m('chat.notifications.clear_read')}
+          onclick={dismissRead}
         >
           <span class="iconify icon-[uil--trash-alt] text-base" aria-hidden="true"></span>
-          <span>{m('chat.notifications.clear_all')}</span>
+          <span>{m('chat.notifications.clear_read')}</span>
         </Button>
       {/if}
     {/snippet}
@@ -486,7 +564,8 @@
               {@const isReaction = occurrence?.signalKind === NotificationSignalKind.REACTION}
               {@const actor = occurrence?.actor ?? null}
               {@const actors = notificationActors(item.group)}
-              {@const mutationPending = dismissingAll || pendingMutationKeys.has(mutationKey(item))}
+              {@const mutationPending =
+                dismissingRead || pendingMutationKeys.has(mutationKey(item))}
               <div
                 class={[
                   'group flex w-full items-center gap-3 selectable-list-item px-3 py-2.5 transition-colors',
@@ -551,17 +630,17 @@
                     </span>
                   </span>
                 </button>
-                <div class="flex shrink-0 items-center gap-2">
-                  <Button
-                    variant="danger-secondary"
-                    size="sm"
+                <div class="hover-reveal-action flex shrink-0 items-center">
+                  <button
+                    type="button"
+                    class="icon-action hover:text-danger focus-visible:text-danger"
                     disabled={mutationPending}
-                    label={m('common.delete')}
+                    aria-label={m('common.delete')}
                     title={m('common.delete')}
                     onclick={() => dismiss(item)}
                   >
                     <span class="iconify icon-[uil--trash-alt] text-base" aria-hidden="true"></span>
-                  </Button>
+                  </button>
                 </div>
               </div>
             {/each}

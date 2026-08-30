@@ -15,6 +15,12 @@ import { NotificationStore } from '$lib/state/server/notifications.svelte';
 const { mocks } = vi.hoisted(() => ({
   mocks: {
     goto: vi.fn(),
+    pushNotifications: {
+      enablePushOnAllServers: vi.fn(),
+      getPermission: vi.fn(),
+      getPushCapability: vi.fn(),
+      getPushRegistrationTargets: vi.fn()
+    },
     servers: [{ id: 'origin', url: 'https://chat.example.test' }],
     stores: new Map<string, unknown>(),
     appUi: { disableRoomCallWideFor: vi.fn() },
@@ -79,6 +85,13 @@ vi.mock('$lib/state/appUi.svelte', () => ({
   getAppUiState: () => mocks.appUi
 }));
 
+vi.mock('$lib/notifications/pushNotifications', () => ({
+  enablePushOnAllServers: mocks.pushNotifications.enablePushOnAllServers,
+  getPermission: mocks.pushNotifications.getPermission,
+  getPushCapability: mocks.pushNotifications.getPushCapability,
+  getPushRegistrationTargets: mocks.pushNotifications.getPushRegistrationTargets
+}));
+
 vi.mock('$lib/state/presenceCache.svelte', () => ({
   getPresenceCache: () => ({
     get: (_scope: { serverId: string; userId: string }, fallback: number) => fallback
@@ -86,8 +99,8 @@ vi.mock('$lib/state/presenceCache.svelte', () => ({
 }));
 
 vi.mock('$lib/state/userProfiles.svelte', () => ({
-    getLiveBio: () => null,
-    getLiveTimezone: () => null,
+  getLiveBio: () => null,
+  getLiveTimezone: () => null,
   getLiveDisplayName: (_userId: string, fallback: string) => fallback,
   getLiveAvatarUrl: (_userId: string, fallback: string | null) => fallback,
   getLiveCustomStatus: (_userId: string, fallback: unknown) => fallback
@@ -147,11 +160,108 @@ describe('notifications page', () => {
     });
     mocks.stores.clear();
     mocks.stores.set('origin', mocks.store);
+    mocks.pushNotifications.getPermission.mockReturnValue('granted');
+    mocks.pushNotifications.getPushCapability.mockReturnValue('supported');
+    mocks.pushNotifications.getPushRegistrationTargets.mockReturnValue([
+      { serverId: 'origin', userId: 'user-1', vapidPublicKey: 'vapid-key' }
+    ]);
+    mocks.pushNotifications.enablePushOnAllServers.mockResolvedValue({
+      permission: 'granted',
+      registrations: [
+        {
+          serverId: 'origin',
+          userId: 'user-1',
+          vapidPublicKey: 'vapid-key',
+          registered: true
+        }
+      ]
+    });
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
   });
+
+  it('offers explicit push activation while browser permission is unset', async () => {
+    mocks.pushNotifications.getPermission.mockReturnValue('default');
+
+    const { container } = render(NotificationsPage);
+    const enableButton = await vi.waitFor(() => {
+      const button = Array.from(container.querySelectorAll('button')).find(
+        (candidate) => candidate.textContent?.trim() === 'Enable push notifications'
+      );
+      expect(button).toBeDefined();
+      return button as HTMLButtonElement;
+    });
+
+    enableButton.click();
+
+    await vi.waitFor(() => {
+      expect(mocks.pushNotifications.enablePushOnAllServers).toHaveBeenCalledOnce();
+      expect(getToasts().at(-1)?.message).toBe('Push notifications enabled');
+    });
+    expect(container.textContent).not.toContain('Enable push notifications');
+  });
+
+  it('reports a partial push registration failure without offering permission again', async () => {
+    mocks.pushNotifications.getPermission.mockReturnValue('default');
+    mocks.pushNotifications.enablePushOnAllServers.mockResolvedValue({
+      permission: 'granted',
+      registrations: [
+        {
+          serverId: 'origin',
+          userId: 'user-1',
+          vapidPublicKey: 'vapid-key',
+          registered: true
+        },
+        {
+          serverId: 'remote',
+          userId: 'user-2',
+          vapidPublicKey: 'remote-vapid-key',
+          registered: false
+        }
+      ]
+    });
+
+    const { container } = render(NotificationsPage);
+    const enableButton = await vi.waitFor(() => {
+      const button = Array.from(container.querySelectorAll('button')).find(
+        (candidate) => candidate.textContent?.trim() === 'Enable push notifications'
+      );
+      expect(button).toBeDefined();
+      return button as HTMLButtonElement;
+    });
+    enableButton.click();
+
+    await vi.waitFor(() => {
+      expect(getToasts().at(-1)?.message).toBe('Failed to enable push notifications');
+    });
+    expect(container.textContent).not.toContain('Enable push notifications');
+  });
+
+  it.each([
+    ['granted', 'supported', 1],
+    ['denied', 'supported', 1],
+    ['default', 'unsupported', 1],
+    ['default', 'supported', 0]
+  ] as const)(
+    'hides push activation for permission %s, capability %s, and %i targets',
+    async (permission, capability, targetCount) => {
+      mocks.pushNotifications.getPermission.mockReturnValue(permission);
+      mocks.pushNotifications.getPushCapability.mockReturnValue(capability);
+      mocks.pushNotifications.getPushRegistrationTargets.mockReturnValue(
+        targetCount === 0
+          ? []
+          : [{ serverId: 'origin', userId: 'user-1', vapidPublicKey: 'vapid-key' }]
+      );
+
+      const { container } = render(NotificationsPage);
+
+      await vi.waitFor(() => {
+        expect(container.textContent).not.toContain('Enable push notifications');
+      });
+    }
+  );
 
   it('queues an unread occurrence to be marked read after its target is displayed', async () => {
     const { container } = render(NotificationsPage);
@@ -176,7 +286,7 @@ describe('notifications page', () => {
     expect(mocks.store.notifications.markOccurrenceRead).not.toHaveBeenCalled();
   });
 
-  it('uses the notification orange and exposes only the delete action', async () => {
+  it('uses the notification orange and reveals a quiet delete action from the row', async () => {
     const { container } = render(NotificationsPage);
     const row = await vi.waitFor(() => {
       const element = q(container, '[data-testid="notification-group"]');
@@ -190,7 +300,8 @@ describe('notifications page', () => {
     expect(row.classList.contains('bg-attention/5')).toBe(true);
     expect(q(row, '[data-testid="notification-unread-dot"]')).toBeNull();
     expect(rowTarget.classList.contains('cursor-pointer')).toBe(true);
-    expect(deleteButton.classList.contains('btn-danger-secondary')).toBe(true);
+    expect(deleteButton.classList.contains('icon-action')).toBe(true);
+    expect(deleteButton.parentElement?.classList.contains('hover-reveal-action')).toBe(true);
     expect(row.querySelectorAll('button')).toHaveLength(2);
     expect(row.textContent).not.toContain('Move to inbox');
     expect(row.textContent).not.toContain('Mark done');
@@ -680,7 +791,7 @@ describe('notifications page', () => {
     });
   });
 
-  it('does not start Dismiss All while an exact dismissal is in flight', async () => {
+  it('does not start Dismiss read while an exact dismissal is in flight', async () => {
     let resolveMutation: (() => void) | undefined;
     mocks.store.notifications.deleteOccurrences.mockImplementation(
       () => new Promise<void>((resolve) => (resolveMutation = resolve))
@@ -691,28 +802,32 @@ describe('notifications page', () => {
         ...mocks.occurrence,
         id: 'mention-2',
         eventId: 'event-2',
-        createdAt: new Date(Date.now() - 1_000).toISOString()
+        createdAt: new Date(Date.now() - 1_000).toISOString(),
+        unread: false
       }
     ]);
 
     const { container } = render(NotificationsPage);
     const deleteButton = await vi.waitFor(() => {
       expect(container.querySelectorAll('[data-testid="notification-group"]')).toHaveLength(2);
-      return q(container, 'button[aria-label="Delete"]') as HTMLButtonElement;
+      return q(
+        container,
+        '[data-notification-state="unread"] button[aria-label="Delete"]'
+      ) as HTMLButtonElement;
     });
     deleteButton.click();
 
-    const dismissAll = await vi.waitFor(() => {
+    const dismissRead = await vi.waitFor(() => {
       expect(container.querySelectorAll('[data-testid="notification-group"]')).toHaveLength(1);
-      const button = q(container, 'button[aria-label="Dismiss all"]') as HTMLButtonElement;
+      const button = q(container, 'button[aria-label="Dismiss read"]') as HTMLButtonElement;
       expect(button.disabled).toBe(true);
       return button;
     });
-    dismissAll.click();
-    expect(mocks.store.notifications.deleteAllOccurrences).not.toHaveBeenCalled();
+    dismissRead.click();
+    expect(mocks.store.notifications.deleteOccurrences).toHaveBeenCalledTimes(1);
 
     resolveMutation?.();
-    await vi.waitFor(() => expect(dismissAll.disabled).toBe(false));
+    await vi.waitFor(() => expect(dismissRead.disabled).toBe(false));
   });
 
   it('groups rows by date in the viewer timezone', async () => {
@@ -750,70 +865,82 @@ describe('notifications page', () => {
     expect(firstHeading.querySelectorAll('.h-px.bg-border')).toHaveLength(2);
   });
 
-  it('dismisses all notifications optimistically with one request per server', async () => {
+  it('dismisses only the read snapshot with one exact request per server', async () => {
     let resolveOrigin: (() => void) | undefined;
     let resolveRemote: (() => void) | undefined;
-    mocks.store.notifications.deleteAllOccurrences.mockImplementation(
+    mocks.store.notifications.deleteOccurrences.mockImplementation(
       () => new Promise<void>((resolve) => (resolveOrigin = resolve))
     );
+    retainProjection([
+      { ...mocks.occurrence, id: 'origin-read', unread: false },
+      { ...mocks.occurrence, id: 'shared-id', eventId: 'event-new', unread: true }
+    ]);
     const remoteStore = {
       ...mocks.store,
       notifications: {
         ...mocks.store.notifications,
-        occurrences: [{ ...mocks.occurrence, id: 'remote-notification' }],
+        occurrences: [{ ...mocks.occurrence, id: 'shared-id', unread: false }],
         consumedCount: 1,
         totalCount: 1,
         hasMore: false,
         hasLoaded: true,
         error: null,
-        deleteAllOccurrences: vi.fn(() => new Promise<void>((resolve) => (resolveRemote = resolve)))
+        deleteOccurrences: vi.fn(() => new Promise<void>((resolve) => (resolveRemote = resolve)))
       }
     };
     mocks.servers.push({ id: 'remote', url: 'https://remote.example.test' });
     mocks.stores.set('remote', remoteStore);
 
     const { container } = render(NotificationsPage);
-    const dismissAll = await vi.waitFor(() => {
-      expect(container.querySelectorAll('[data-testid="notification-group"]')).toHaveLength(2);
-      const button = q(container, 'button[aria-label="Dismiss all"]');
+    const dismissRead = await vi.waitFor(() => {
+      expect(container.querySelectorAll('[data-testid="notification-group"]')).toHaveLength(3);
+      const button = q(container, 'button[aria-label="Dismiss read"]');
       expect(button).not.toBeNull();
       return button as HTMLButtonElement;
     });
 
-    dismissAll.click();
+    dismissRead.click();
     await vi.waitFor(() => {
-      expect(container.querySelectorAll('[data-testid="notification-group"]')).toHaveLength(0);
+      expect(container.querySelectorAll('[data-testid="notification-group"]')).toHaveLength(1);
     });
-    expect(mocks.store.notifications.deleteAllOccurrences).toHaveBeenCalledTimes(1);
-    expect(remoteStore.notifications.deleteAllOccurrences).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain('chat.example.test');
+    expect(mocks.store.notifications.deleteOccurrences).toHaveBeenCalledWith(['origin-read'], {
+      unread: 0,
+      importantUnread: 0
+    });
+    expect(remoteStore.notifications.deleteOccurrences).toHaveBeenCalledWith(['shared-id'], {
+      unread: 0,
+      importantUnread: 0
+    });
 
     resolveOrigin?.();
     resolveRemote?.();
   });
 
-  it('keeps every server absent after an ambiguous optimistic Dismiss All', async () => {
+  it('keeps the exact read snapshot absent after an ambiguous Dismiss read', async () => {
+    retainProjection([{ ...mocks.occurrence, unread: false }]);
     const remoteStore = {
       ...mocks.store,
       notifications: {
         ...mocks.store.notifications,
-        occurrences: [{ ...mocks.occurrence, id: 'remote-notification' }],
+        occurrences: [{ ...mocks.occurrence, id: 'remote-notification', unread: false }],
         consumedCount: 1,
         totalCount: 1,
         hasMore: false,
         hasLoaded: true,
         error: null,
-        deleteAllOccurrences: vi.fn().mockRejectedValue(new Error('remote offline'))
+        deleteOccurrences: vi.fn().mockRejectedValue(new Error('remote offline'))
       }
     };
     mocks.servers.push({ id: 'remote', url: 'https://remote.example.test' });
     mocks.stores.set('remote', remoteStore);
 
     const { container } = render(NotificationsPage);
-    const dismissAll = await vi.waitFor(() => {
+    const dismissRead = await vi.waitFor(() => {
       expect(container.querySelectorAll('[data-testid="notification-group"]')).toHaveLength(2);
-      return q(container, 'button[aria-label="Dismiss all"]') as HTMLButtonElement;
+      return q(container, 'button[aria-label="Dismiss read"]') as HTMLButtonElement;
     });
-    dismissAll.click();
+    dismissRead.click();
 
     await vi.waitFor(() => {
       expect(container.querySelectorAll('[data-testid="notification-group"]')).toHaveLength(0);
@@ -821,34 +948,35 @@ describe('notifications page', () => {
     });
     expect(container.textContent).not.toContain('remote.example.test');
     expect(container.textContent).not.toContain('chat.example.test');
-    expect(mocks.store.notifications.deleteAllOccurrences).toHaveBeenCalledTimes(1);
-    expect(remoteStore.notifications.deleteAllOccurrences).toHaveBeenCalledTimes(1);
+    expect(mocks.store.notifications.deleteOccurrences).toHaveBeenCalledTimes(1);
+    expect(remoteStore.notifications.deleteOccurrences).toHaveBeenCalledTimes(1);
   });
 
-  it('does not restore the origin after an ambiguous optimistic Dismiss All', async () => {
-    mocks.store.notifications.deleteAllOccurrences.mockRejectedValue(new Error('origin offline'));
+  it('does not restore the origin after an ambiguous optimistic Dismiss read', async () => {
+    retainProjection([{ ...mocks.occurrence, unread: false }]);
+    mocks.store.notifications.deleteOccurrences.mockRejectedValue(new Error('origin offline'));
     const remoteStore = {
       ...mocks.store,
       notifications: {
         ...mocks.store.notifications,
-        occurrences: [{ ...mocks.occurrence, id: 'remote-notification' }],
+        occurrences: [{ ...mocks.occurrence, id: 'remote-notification', unread: false }],
         consumedCount: 1,
         totalCount: 1,
         hasMore: false,
         hasLoaded: true,
         error: null,
-        deleteAllOccurrences: vi.fn().mockResolvedValue(undefined)
+        deleteOccurrences: vi.fn().mockResolvedValue(undefined)
       }
     };
     mocks.servers.push({ id: 'remote', url: 'https://remote.example.test' });
     mocks.stores.set('remote', remoteStore);
 
     const { container } = render(NotificationsPage);
-    const dismissAll = await vi.waitFor(() => {
+    const dismissRead = await vi.waitFor(() => {
       expect(container.querySelectorAll('[data-testid="notification-group"]')).toHaveLength(2);
-      return q(container, 'button[aria-label="Dismiss all"]') as HTMLButtonElement;
+      return q(container, 'button[aria-label="Dismiss read"]') as HTMLButtonElement;
     });
-    dismissAll.click();
+    dismissRead.click();
 
     await vi.waitFor(() => {
       expect(container.querySelectorAll('[data-testid="notification-group"]')).toHaveLength(0);

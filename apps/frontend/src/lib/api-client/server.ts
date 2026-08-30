@@ -26,6 +26,14 @@ export type PublicServerInfo = {
   authProviders: PublicAuthProvider[];
 };
 
+export type PublicNeighbor = {
+  origin: string;
+  testimonial: string | null;
+};
+
+/** The discovery response did not contain a valid public Chatto server profile. */
+export class InvalidPublicServerError extends Error {}
+
 export async function getPublicServerInfo(
   baseUrl: string,
   options: { signal?: AbortSignal } = {}
@@ -33,7 +41,7 @@ export async function getPublicServerInfo(
   const client = createPublicChattoClient(ServerDiscoveryService, baseUrl);
   const response = await client.getServer({}, { signal: options.signal });
   if (!response.profile?.name) {
-    throw new Error('This does not appear to be a Chatto server.');
+    throw new InvalidPublicServerError('The response has no public Chatto server profile.');
   }
   const profile = mapServerProfile(response.profile);
 
@@ -60,4 +68,20 @@ export async function getPublicServerInfo(
       autoProvision: provider.autoProvision ?? null
     }))
   };
+}
+
+/** Read one server's public Neighbor recommendations without requiring a session. */
+export async function getPublicNeighbors(
+  baseUrl: string,
+  options: { signal?: AbortSignal } = {}
+): Promise<PublicNeighbor[]> {
+  const client = createPublicChattoClient(ServerDiscoveryService, baseUrl);
+  const response = await client.listNeighbors({}, { signal: options.signal });
+  if (response.neighbors.length > 0) {
+    return response.neighbors.map((neighbor) => ({
+      origin: neighbor.origin,
+      testimonial: neighbor.testimonial ?? null
+    }));
+  }
+  return response.origins.map((origin) => ({ origin, testimonial: null }));
 }

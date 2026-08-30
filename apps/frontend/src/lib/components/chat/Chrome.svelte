@@ -21,6 +21,10 @@
   import { serverStorageKey } from '$lib/storage/serverStorage';
   import { getAdminNavItems } from './adminNav';
   import { m } from '$lib/i18n/messages';
+  import {
+    DEFAULT_SERVER_SETTINGS_ROUTE,
+    SERVER_SETTINGS_ROOT_ROUTE
+  } from '$lib/navigation/settingsRoutes';
 
   let { children }: { children?: Snippet } = $props();
 
@@ -40,7 +44,7 @@
   // Server preferences and permission-gated server administration share one
   // settings shell, regardless of which route family owns the content page.
   const settingsPrefix = $derived(
-    resolve('/chat/[serverId]/settings', { serverId: serverSegment })
+    resolve(SERVER_SETTINGS_ROOT_ROUTE, { serverId: serverSegment })
   );
   const isSettingsMode = $derived(page.url.pathname.startsWith(settingsPrefix));
   const isServerSettingsMode = $derived(isSettingsMode || isManageMode);
@@ -69,7 +73,7 @@
   ]);
   const appPreferenceNavItems = $derived([
     {
-      href: resolve('/chat/[serverId]/settings/appearance', { serverId: serverSegment }),
+      href: resolve(DEFAULT_SERVER_SETTINGS_ROUTE, { serverId: serverSegment }),
       label: m('settings.app_preferences.appearance.title'),
       icon: 'iconify icon-[uil--palette]'
     },
@@ -128,6 +132,7 @@
       bannerUrl: activeStore.serverInfo.bannerUrl,
       canViewAdmin: viewer.canViewAdmin,
       canManage: can('server.manage'),
+      canManageNeighbors: can('server.manage-neighbors'),
       canManageRooms: can('room.manage'),
       canManageRoles: viewer.canAdminManageRoles,
       canAssignRoles: viewer.canAssignRoles,
@@ -211,10 +216,6 @@
       )
     }
   ]);
-  const settingsHref = $derived(
-    adminNavItems[0]?.href ??
-      resolve('/chat/[serverId]/settings/profile', { serverId: serverSegment })
-  );
 </script>
 
 <ServerPresenceSync />
@@ -282,8 +283,10 @@
           </a>
         {/if}
         <MyThreadsNavItem active={isMyThreadsActive} />
-        <!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- settingsHref is resolved above -->
-        <a href={settingsHref} class="sidebar-item">
+        <a
+          href={resolve(SERVER_SETTINGS_ROOT_ROUTE, { serverId: serverSegment })}
+          class="sidebar-item"
+        >
           <span class="iconify sidebar-icon icon-[uil--setting]" aria-hidden="true"></span>
           {m('settings.nav.title')}
         </a>

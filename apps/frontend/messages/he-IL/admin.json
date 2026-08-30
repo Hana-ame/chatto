@@ -2,6 +2,7 @@
   "admin": {
     "nav": {
       "general": "כללי",
+      "neighbors": "שכנים",
       "members": "חברים",
       "rooms": "חדרים",
       "moderation": "ניהול תוכן",
@@ -11,6 +12,29 @@
       "system": "מערכת",
       "back_to_server": "חזור לשרת",
       "invitations": "Invite links"
+    },
+    "neighbors": {
+      "title": "שכנים",
+      "subtitle": "Advertise friendly Chatto servers in your public directory",
+      "add_title": "Add Neighbor",
+      "list_title": "שכנים",
+      "origin": "Server address",
+      "origin_help": "Enter a server hostname or URL. Chatto stores only its HTTP or HTTPS origin.",
+      "add": "Add Neighbor",
+      "empty": "No Neighbors are advertised",
+      "actions": "Actions",
+      "edit": "Edit",
+      "save": "Save",
+      "cancel": "Cancel",
+      "delete": "Delete",
+      "delete_title": "Delete Neighbor",
+      "delete_description": "Stop advertising {origin}?",
+      "created": "Neighbor added",
+      "updated": "Neighbor updated",
+      "deleted": "Neighbor deleted",
+      "testimonial": "המלצה (רשות)",
+      "testimonial_help": "הסבירו מדוע אתם ממליצים על שרת זה. הטקסט פומבי ויכול להכיל עד 500 תווים.",
+      "testimonial_label": "המלצה פומבית"
     },
     "common": {
       "page_title": "{title} | מנהל מערכת",

@@ -1701,10 +1701,21 @@ func TestRoomMessageAndAssetServicesListAttachmentsGetMessagesAndGetAssets(t *te
 	if fresh.GetId() != threadAttachment.Id {
 		t.Fatalf("GetMessage attachment ID = %q, want %q", fresh.GetId(), threadAttachment.Id)
 	}
-	if fresh.GetAssetUrl().GetUrl() == "" || fresh.GetAssetUrl().GetExpiresAt() == nil {
-		t.Fatalf("fresh asset URL missing: %+v", fresh.GetAssetUrl())
+	// 【本地改动 2026-08-30】上游此处要求 asset URL 带 per-user access ticket 并暴露
+	// ExpiresAt(ticket 语义:URL 每人一份、有过期、不可共享缓存)。本 fork 自 2026-08-18
+	// 起改为带 {fn.ext} 尾段的公开 URL(形如 /assets/files/<assetId>/thread.png),
+	// assetId 即凭证、无 ticket、无过期时间,故 ExpiresAt 恒为 nil,原断言必红。
+	// 2026-08-30 ci/deploy 首次跑 mise test-cli 时暴露,报
+	// 「fresh asset URL missing: url:"/assets/files/.../thread.png"」——URL 其实非空,
+	// 是 ExpiresAt 判定失败。
+	// 边界:只放宽过期断言,非空 URL 与文件名尾段仍锁死,防止公开 URL 退化成无尾段的
+	// 旧形态。取舍与回归提示见 cli/internal/http_server/assets_test.go 的
+	// TestAsset_OriginalAttachment_HasCacheHeaders【本地改动】注释:若本分支合回 upstream,
+	// 这两处断言必须改回带 ExpiresAt 的 ticket 语义。
+	if fresh.GetAssetUrl().GetUrl() == "" || !strings.HasSuffix(fresh.GetAssetUrl().GetUrl(), ".png") {
+		t.Fatalf("fresh asset URL missing or lacks filename tail: %+v", fresh.GetAssetUrl())
 	}
-	if fresh.GetThumbnailAssetUrl().GetUrl() == "" || fresh.GetThumbnailAssetUrl().GetExpiresAt() == nil {
+	if fresh.GetThumbnailAssetUrl().GetUrl() == "" {
 		t.Fatalf("fresh thumbnail URL missing: %+v", fresh.GetThumbnailAssetUrl())
 	}
 

@@ -605,7 +605,21 @@ func TestBrowserIconRoutes(t *testing.T) {
 	newServer := func(t *testing.T, chattoCore *core.ChattoCore) *HTTPServer {
 		t.Helper()
 		server := &HTTPServer{
-			config: config.ChattoConfig{Webserver: config.WebserverConfig{URL: "https://example.com"}},
+			config: config.ChattoConfig{
+				Webserver: config.WebserverConfig{URL: "https://example.com"},
+				// 【本地改动 2026-08-30】必须显式给出 Assets.SigningSecret。图标重定向的签名
+				// 由 HTTPServer 侧的 s.config.Core.Assets.SigningSecret 生成(见
+				// cli/internal/http_server/assets.go 的 ParseSignedTransformPath 调用点),
+				// 与 core 内部的 config 是两条独立路径。此处漏配时该字段为空串,服务端用 ""
+				// 签名,而本测试用 "test-signing-secret"(与 setupFrontendTestCoreWithLogo
+				// 喂给 core 的值一致)验签,于是报「invalid signature」。
+				// 2026-08-30 ci/deploy 首次跑 mise test-cli 时由
+				// TestBrowserIconRoutes/redirects_to_distinct_same-origin_server_logo_transforms
+				// 暴露。upstream 合并后该闭包一直是空 config,所以此前从 CI 看不出来。
+				Core: config.CoreConfig{Assets: config.AssetsConfig{
+					SigningSecret: "test-signing-secret",
+				}},
+			},
 			core:   chattoCore,
 			router: gin.New(),
 		}

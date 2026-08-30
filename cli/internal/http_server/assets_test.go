@@ -1341,6 +1341,14 @@ func TestAsset_NoSetCookieForLoggedInAssetFetches(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create room: %v", err)
 	}
+	// 【本地改动 2026-08-30】CreateRoom 之后必须显式 JoinRoom。upstream 已不再把房间
+	// 创建者隐式写进成员表,成员关系只由 JoinRoom 事件产生。本测试 2026-08-23 写成时
+	// 还吃隐式成员那套,所以漏了这行。2026-08-30 ci/deploy 首次跑 mise test-cli 时以
+	// 「permission_denied: not a member of this room」暴露(测试闸见 build-linux.yml 的
+	// Test CLI 步骤注释);对照同文件 TestAsset_CacheControl 一系,它们都带这一步。
+	if _, err := env.core.JoinRoom(env.ctx, user.Id, "channel", user.Id, room.Id); err != nil {
+		t.Fatalf("Failed to join room: %v", err)
+	}
 	env.login(t, "assetcookieuser", "password123")
 
 	imageData := createAssetTestPNG(t, 64, 64)
@@ -1380,6 +1388,16 @@ func TestAsset_HeadRequestsAreRoutedLikeGet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create room: %v", err)
 	}
+	// 【本地改动 2026-08-30】补 JoinRoom + 登录。CreateUpload 现要求已鉴权调用者且必须是
+	// 房间成员(见 cli/internal/connectapi/asset_uploads.go 的 requireCaller + 成员判定),
+	// 而本测试 2026-08-23 写成时上传无需会话,所以既没 JoinRoom 也没 env.login。
+	// 2026-08-30 ci/deploy 首次跑 mise test-cli 时以「unauthenticated: authentication
+	// required」暴露;下一步 postAssetMessageWithAttachment 走 env.client 的会话 cookie,
+	// 必须先用 /auth/browser/login 拿到会话。
+	if _, err := env.core.JoinRoom(env.ctx, user.Id, "channel", user.Id, room.Id); err != nil {
+		t.Fatalf("Failed to join room: %v", err)
+	}
+	env.login(t, "assetheaduser", "password123")
 
 	imageData := createAssetTestPNG(t, 64, 64)
 	_, attachment := env.postAssetMessageWithAttachment(t, room.Id, "head-probe", imageData, "head-probe.png")

@@ -114,13 +114,16 @@ message MessageReaction {
   repeated string preview_user_ids = 4;
 }
 
-// Viewer-specific state for one message thread.
+// Viewer-specific follow and reply-read state for one message thread.
 message ThreadViewerState {
+  reserved 3;
+  reserved "attention_level";
+
   // Whether the current user follows this message's thread, when known.
   optional bool is_following = 1;
-  // True when the thread has unread replies or neutral Badge attention for the
-  // current user, when known.
-  optional bool has_unread = 2;
+  // True when the thread contains replies after the current user's read
+  // cursor, when known.
+  optional bool has_unread_replies = 2;
 }
 
 // Aggregated state for one message thread.

@@ -300,7 +300,7 @@ windows (3,200 recent rows), bounding decryption and transient response memory.
 
 Every subscription emits one finite latest-value reconciliation before
 `caught_up`. It replaces the viewer resource; the complete followed-thread
-viewer-state set, including RUNTIME_STATE unread markers; notification
+viewer-state set, including RUNTIME_STATE reply-read markers; notification
 occurrences and room counts; and the server directory's current presence. Missing
 followed-thread entries authoritatively clear follow/unread state on retained
 thread roots.
@@ -512,9 +512,10 @@ attention do not use separate transient hint frames. Notification occurrence
 create, update, and delete signals assemble an authoritative
 `notification_occurrences_replace` that contains occurrences plus exact total
 and Important counts. Human connections and bot API-key connections receive
-this same viewer-scoped replacement. A live replacement can carry transition
-metadata for one-shot presentation effects, while replay and finite
-reconciliation omit it.
+this same viewer-scoped replacement. The browser can decorate followed-thread
+rows directly from matching unread occurrences in this replacement.
+A live replacement can carry transition metadata for one-shot presentation
+effects, while replay and finite reconciliation omit it.
 
 The internal signal carries no stream coordinate. Before emitting the
 replacement at that live cursor, the serving replica waits until the
@@ -527,14 +528,16 @@ bounds count staleness if a best-effort Core NATS invalidation is lost while a
 tab remains connected.
 
 Badge marker changes use a separate content-free user invalidation. The server
-maps it to an authoritative `room_viewer_state_replace` and, for thread Badge
-attention, a complete `thread_viewer_states_replace`. The public projection
-continues to use the existing `has_unread` fields. These fields report only
-Badge attention. The independent Message Read Cursor still places the New
-messages separator and does not set `has_unread`. Thus, clients do not receive
-the internal marker or a new public storage coordinate. Thread Badge state
-rolls up into the parent room, and notification orange takes visual priority
-over the neutral unread dot.
+maps it to an authoritative `room_viewer_state_replace`. The public thread
+projection reports follow and reply-unread state only. The Message Read Cursor
+determines `has_unread_replies`. Clients do not receive either internal storage
+coordinate. A thread Badge rolls up into the parent room, and notification
+orange takes visual priority over the neutral room dot.
+
+A reply post, edit, or retraction also emits a
+`thread_viewer_states_replace` for a viewer who follows the affected thread.
+This operation lets a mounted My Threads view refresh its query-backed message
+summary when the source room timeline is not retained.
 
 Viewer preferences, thread follow/read state, profile changes, server layout,
 and member removal likewise mutate the client only through projection

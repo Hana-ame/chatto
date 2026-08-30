@@ -495,7 +495,7 @@ export class MessageReaction extends Message$1<MessageReaction> {
 }
 
 /**
- * Viewer-specific state for one message thread.
+ * Viewer-specific follow and reply-read state for one message thread.
  *
  * @generated from message chatto.api.v1.ThreadViewerState
  */
@@ -508,12 +508,12 @@ export class ThreadViewerState extends Message$1<ThreadViewerState> {
   isFollowing?: boolean;
 
   /**
-   * True when the thread has unread replies or neutral Badge attention for the
-   * current user, when known.
+   * True when the thread contains replies after the current user's read
+   * cursor, when known.
    *
-   * @generated from field: optional bool has_unread = 2;
+   * @generated from field: optional bool has_unread_replies = 2;
    */
-  hasUnread?: boolean;
+  hasUnreadReplies?: boolean;
 
   constructor(data?: PartialMessage<ThreadViewerState>) {
     super();
@@ -524,7 +524,7 @@ export class ThreadViewerState extends Message$1<ThreadViewerState> {
   static readonly typeName = "chatto.api.v1.ThreadViewerState";
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
     { no: 1, name: "is_following", kind: "scalar", T: 8 /* ScalarType.BOOL */, opt: true },
-    { no: 2, name: "has_unread", kind: "scalar", T: 8 /* ScalarType.BOOL */, opt: true },
+    { no: 2, name: "has_unread_replies", kind: "scalar", T: 8 /* ScalarType.BOOL */, opt: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ThreadViewerState {

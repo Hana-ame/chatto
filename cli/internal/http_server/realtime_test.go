@@ -2364,22 +2364,20 @@ func TestRealtimeProjectionBadgeReplacesRoomThreadAndRetainedRoot(t *testing.T) 
 	if !handled {
 		t.Fatal("Badge unread invalidation was not handled")
 	}
-	var roomUnread, threadUnread, rootUnread bool
+	var roomUnread, hasThreadReplacement, hasRootUpsert bool
 	for _, operation := range frame.GetProjectionEvent().GetOperations() {
 		if replacement := operation.GetRoomViewerStateReplace(); replacement != nil {
 			roomUnread = replacement.GetViewerState().GetHasUnread()
 		}
 		if replacement := operation.GetThreadViewerStatesReplace(); replacement != nil {
-			for _, state := range replacement.GetStates() {
-				threadUnread = threadUnread || state.GetThreadRootEventId() == root.Id && state.GetViewerState().GetHasUnread()
-			}
+			hasThreadReplacement = true
 		}
 		if upsert := operation.GetRoomTimelineEventUpsert(); upsert != nil && upsert.GetEvent().GetId() == root.Id {
-			rootUnread = upsert.GetEvent().GetMessagePosted().GetMessage().GetThread().GetViewerState().GetHasUnread()
+			hasRootUpsert = true
 		}
 	}
-	if !roomUnread || !threadUnread || !rootUnread {
-		t.Fatalf("Badge projection room/thread/root unread = %v/%v/%v; frame=%+v", roomUnread, threadUnread, rootUnread, frame)
+	if !roomUnread || hasThreadReplacement || hasRootUpsert {
+		t.Fatalf("Badge projection room unread/thread replacement/root upsert = %v/%v/%v; frame=%+v", roomUnread, hasThreadReplacement, hasRootUpsert, frame)
 	}
 }
 
@@ -2568,7 +2566,7 @@ func TestRealtimeThreadReadMarkerPublishesProjectionUpdate(t *testing.T) {
 		return upsert.GetRoomId() == room.Id && upsert.GetEvent().GetId() == root.Id
 	})
 	thread := upsert.GetEvent().GetMessagePosted().GetMessage().GetThread()
-	if !thread.GetViewerState().GetIsFollowing() || thread.GetViewerState().GetHasUnread() {
+	if !thread.GetViewerState().GetIsFollowing() || thread.GetViewerState().GetHasUnreadReplies() {
 		t.Fatalf("thread viewer state after marker advance = %+v, want following and read", thread.GetViewerState())
 	}
 }
@@ -2971,13 +2969,77 @@ func TestRealtimeWebSocketThreadReplyUpdatesRootSummary(t *testing.T) {
 	if got := upsert.GetEvent().GetMessagePosted().GetMessage().GetThread().GetReplyCount(); got != 1 {
 		t.Fatalf("root reply count = %d, want 1 (reply %q)", got, reply.Id)
 	}
-	if len(states) != 1 || states[0].GetThreadRootEventId() != root.Id || !states[0].GetViewerState().GetHasUnread() {
+	if len(states) != 1 || states[0].GetThreadRootEventId() != root.Id || !states[0].GetViewerState().GetHasUnreadReplies() {
 		t.Fatalf("thread viewer states = %+v, want followed root unread", states)
 	}
 	occurrences, err := env.core.NotificationOccurrences().List(env.ctx, user.Id)
 	if err != nil || len(occurrences) != 0 {
 		t.Fatalf("off-policy notification occurrences = %+v, %v, want none", occurrences, err)
 	}
+}
+
+func TestRealtimeProjectionThreadReplyChangesRefreshUnretainedFollowedThread(t *testing.T) {
+	env := setupWebSocketTestServer(t)
+	user, err := env.core.CreateUser(env.ctx, core.SystemActorID, "rt-thread-change-member", "RT Thread Change Member", "password123")
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	room, err := env.core.CreateRoom(env.ctx, user.Id, core.KindChannel, "", "rt-thread-change-room", "")
+	if err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+	if _, err := env.core.JoinRoom(env.ctx, user.Id, core.KindChannel, user.Id, room.Id); err != nil {
+		t.Fatalf("JoinRoom: %v", err)
+	}
+	root, err := env.core.PostMessage(env.ctx, core.KindChannel, room.Id, user.Id, "root", nil, "", "", nil, false)
+	if err != nil {
+		t.Fatalf("PostMessage root: %v", err)
+	}
+	reply, err := env.core.PostMessage(env.ctx, core.KindChannel, room.Id, user.Id, "reply", nil, root.Id, "", nil, false)
+	if err != nil {
+		t.Fatalf("PostMessage reply: %v", err)
+	}
+	if err := env.core.FollowThread(env.ctx, core.KindChannel, user.Id, room.Id, root.Id); err != nil {
+		t.Fatalf("FollowThread: %v", err)
+	}
+
+	assertRefresh := func(event *evtv1.Event) {
+		t.Helper()
+		frame, handled, err := env.httpServer.realtimeProjectionFrameForEventWithRooms(env.ctx, user.Id, core.NewEVTEventEnvelope(event), map[string]struct{}{})
+		if err != nil || !handled {
+			t.Fatalf("realtimeProjectionFrameForEventWithRooms = %+v, %v, %v", frame, handled, err)
+		}
+		var refreshed bool
+		for _, operation := range frame.GetProjectionEvent().GetOperations() {
+			if operation.GetRoomTimelineEventUpsert() != nil {
+				t.Fatal("unretained room received a timeline upsert")
+			}
+			for _, state := range operation.GetThreadViewerStatesReplace().GetStates() {
+				if state.GetRoomId() == room.Id && state.GetThreadRootEventId() == root.Id && state.GetViewerState().GetIsFollowing() {
+					refreshed = true
+				}
+			}
+		}
+		if !refreshed {
+			t.Fatalf("projection frame = %+v, want followed-thread refresh", frame)
+		}
+	}
+
+	if err := env.core.EditMessage(env.ctx, user.Id, core.KindChannel, room.Id, reply.Id, "edited reply"); err != nil {
+		t.Fatalf("EditMessage: %v", err)
+	}
+	assertRefresh(&evtv1.Event{
+		Id: "thread-edit", ActorId: user.Id,
+		Event: &evtv1.Event_MessageEdited{MessageEdited: &evtv1.MessageEditedEvent{RoomId: room.Id, EventId: reply.Id}},
+	})
+
+	if err := env.core.DeleteMessage(env.ctx, user.Id, core.KindChannel, room.Id, reply.Id); err != nil {
+		t.Fatalf("DeleteMessage: %v", err)
+	}
+	assertRefresh(&evtv1.Event{
+		Id: "thread-retract", ActorId: user.Id,
+		Event: &evtv1.Event_MessageRetracted{MessageRetracted: &evtv1.MessageRetractedEvent{RoomId: room.Id, EventId: reply.Id}},
+	})
 }
 
 func TestRealtimeWebSocketMessageRetractionUpsertsDeletedRow(t *testing.T) {

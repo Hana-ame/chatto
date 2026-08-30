@@ -63,6 +63,7 @@ const { soundMocks, apiMocks, cacheMocks } = vi.hoisted(() => ({
     removeRegisteredAdminUserQueries: vi.fn(),
     removeRegisteredServerQueries: vi.fn(),
     resetFollowedThreads: vi.fn(),
+    refreshFollowedThreads: vi.fn(),
     reconcileFollowedThreads: vi.fn(),
     scrubFollowedThreadRoom: vi.fn(),
     scrubFollowedThreadMessage: vi.fn(),
@@ -431,6 +432,7 @@ beforeEach(() => {
   });
   registerFollowedThreadQueryCache({
     reset: cacheMocks.resetFollowedThreads,
+    refresh: cacheMocks.refreshFollowedThreads,
     reconcile: cacheMocks.reconcileFollowedThreads,
     scrubRoom: cacheMocks.scrubFollowedThreadRoom,
     scrubMessage: cacheMocks.scrubFollowedThreadMessage,
@@ -443,6 +445,7 @@ beforeEach(() => {
     scrubUser: cacheMocks.scrubRoomMemberUser
   });
   cacheMocks.resetFollowedThreads.mockClear();
+  cacheMocks.refreshFollowedThreads.mockClear();
   cacheMocks.reconcileFollowedThreads.mockClear();
   cacheMocks.scrubFollowedThreadRoom.mockClear();
   cacheMocks.scrubFollowedThreadMessage.mockClear();
@@ -1009,6 +1012,7 @@ describe('ServerStateStore live server updates', () => {
       registered.id,
       expect.any(Map)
     );
+    expect(cacheMocks.refreshFollowedThreads).toHaveBeenCalledWith(registered.id);
   });
 
   it('keeps a first-view room timeline loading while requesting it from realtime', () => {
@@ -1423,6 +1427,36 @@ describe('ServerStateStore live server updates', () => {
 
     expect(files.items).toEqual([]);
     expect(apiMocks.listRoomAttachments).toHaveBeenCalledOnce();
+  });
+
+  it('restarts followed-thread paging after a reply changes activity order', () => {
+    const fake = new FakeServerConnection([]);
+    const _store = makeStore(fake);
+    eventBusManager.startBus(registered.id, fake as unknown as ServerConnection);
+    flushSync();
+    const bus = eventBusManager.getBus(registered.id)!;
+    const event = projectedMessage('REPLY-1', new Date('2026-07-19T12:00:00Z'));
+    if (event.event.case !== 'messagePosted' || !event.event.value.message) {
+      throw new Error('expected projected message');
+    }
+    event.event.value.message.threadRootEventId = 'ROOT-1';
+
+    for (const handler of bus.projectionHandlers) {
+      handler(
+        new RealtimeProjectionEvent({
+          operations: [
+            new RealtimeProjectionOperation({
+              operation: {
+                case: 'roomTimelineEventUpsert',
+                value: new RealtimeProjectionRoomTimelineEventUpsert({ roomId: 'R1', event })
+              }
+            })
+          ]
+        })
+      );
+    }
+
+    expect(cacheMocks.refreshFollowedThreads).toHaveBeenCalledWith(registered.id);
   });
 
   it('ignores reaction upserts and projection-only row removals for room files', async () => {

@@ -1,7 +1,7 @@
 # FDR-012: Notifications
 
 **Status:** Experimental
-**Last reviewed:** 2026-08-29
+**Last reviewed:** 2026-08-30
 
 ## Overview
 
@@ -20,14 +20,15 @@ targets, unread counts, read state, or deletion semantics.
 
 ## Behavior
 
-- The notification page is one chronological list containing both Unread and
-  Read activity. Unread reactions are Ambient and use a neutral treatment;
-  every other current cause is Important and uses Chatto's notification
-  orange. Read rows are visually muted while remaining fully interactive. The
-  list does not use a separate unread dot on each row.
+- The notification page is one newest-activity-first chronological list that
+  contains both Unread and Read activity. Unread reactions are Ambient and use
+  a neutral treatment. Every other current cause is Important and uses Chatto's
+  notification orange. Read rows are visually muted while remaining fully
+  interactive. The list does not use a separate unread dot on each row.
 - Badge activity does not add a row to the notification page. It adds a neutral
-  unread dot to the applicable room or thread. An orange notification indicator
-  takes priority when both types of attention apply.
+  unread dot to the applicable room. A thread-scoped Badge contributes to its
+  parent room. An orange notification indicator takes priority when both types
+  of attention apply.
 - The list is divided into Today, Yesterday, This Week, and month sections
   using the preferred time zone of the account on each server.
 - Rows use concise, full localized sentences without message previews.
@@ -152,7 +153,7 @@ make the state clear without color alone.
 
 Badge decisions use the existing room and thread read boundaries. A thread
 Badge rolls up to its parent room. Reading the thread clears its contribution
-to both indicators. The Message Read Cursor remains separate and places the
+to the room indicator. The Message Read Cursor remains separate and places the
 New messages separator. Cursor lag alone does not create a room dot. Thus,
 setting Room messages to Off prevents neutral dots for ordinary root messages
 without disabling last-read tracking. Badge does not update an operating-system
@@ -232,11 +233,11 @@ success.
 
 **Decision:** Realtime notification updates tell clients to replace their
 finite notification view from authoritative server state. Badge updates tell
-clients to replace the affected room state and, when applicable, the complete
-followed-thread viewer state. Followed-thread Badge attention also contributes
-to the My Threads navigation indicator. Unread totals remain exact even when
-rows are grouped. The client also performs quiet periodic
-reconciliation so a lost transient update cannot leave counts stale
+clients to replace the affected room state. My Threads can decorate a followed
+thread from matching unread occurrences in the finite notification view. The
+thread read cursor remains the only source of reply-unread state. Unread totals
+remain exact even when rows are grouped. The client also performs quiet
+periodic reconciliation so a lost transient update cannot leave counts stale
 indefinitely.
 
 **Why:** A transient notification invalidation is not durable notification
@@ -357,4 +358,4 @@ separate permission to manage another user's notification list.
 - **ADRs:** ADR-012, ADR-028, ADR-036, ADR-038, ADR-051, ADR-069, ADR-076,
   ADR-077, ADR-080, ADR-082
 - **FDRs:** FDR-001, FDR-002, FDR-004, FDR-005, FDR-006, FDR-007, FDR-011,
-  FDR-013, FDR-018, FDR-019, FDR-027, FDR-038, FDR-039
+  FDR-013, FDR-018, FDR-019, FDR-027, FDR-038, FDR-039, FDR-044

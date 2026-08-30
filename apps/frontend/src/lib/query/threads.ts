@@ -6,7 +6,7 @@ import { queryClient } from './client';
 import { registerFollowedThreadQueryCache } from './cacheRegistry';
 
 type ThreadQueryConnection = Pick<ServerConnection, 'queryScope'>;
-type ThreadViewerState = { hasUnread?: boolean };
+type ThreadViewerState = { hasUnreadReplies?: boolean };
 
 export type FollowedThreadsQueryPage = FollowedThreadsPage & {
   /** Next server offset, preserved even when projection reconciliation filters rows. */
@@ -20,7 +20,7 @@ export type ThreadSummaryUpdate = {
   threadRootEventId: string;
   replyCount: number;
   lastReplyAt: string | null;
-  hasUnread?: boolean;
+  hasUnreadReplies?: boolean;
 };
 
 function threadRoot(serverId: string, connection: ThreadQueryConnection) {
@@ -65,7 +65,8 @@ export function updateFollowedThreadSummary(
         thread.roomId !== update.roomId ||
         thread.threadRootEventId !== update.threadRootEventId ||
         (thread.replyCount === update.replyCount &&
-          (update.hasUnread === undefined || thread.hasUnread === update.hasUnread))
+          (update.hasUnreadReplies === undefined ||
+            thread.hasUnreadReplies === update.hasUnreadReplies))
       ) {
         return thread;
       }
@@ -87,7 +88,7 @@ export function updateFollowedThreadSummary(
             : rootMessage,
         replyCount: update.replyCount,
         lastReplyAt: update.lastReplyAt ?? thread.lastReplyAt,
-        hasUnread: update.hasUnread ?? thread.hasUnread
+        hasUnreadReplies: update.hasUnreadReplies ?? thread.hasUnreadReplies
       };
     })
   }));
@@ -119,10 +120,12 @@ export function reconcileFollowedThreadViewerStates(
         changed = true;
         return [];
       }
-      const hasUnread = state.hasUnread ?? false;
-      if (thread.hasUnread === hasUnread) return [thread];
+      const hasUnreadReplies = state.hasUnreadReplies ?? false;
+      if (thread.hasUnreadReplies === hasUnreadReplies) {
+        return [thread];
+      }
       changed = true;
-      return [{ ...thread, hasUnread }];
+      return [{ ...thread, hasUnreadReplies }];
     });
     return threads.length === page.threads.length && !changed ? page : { ...page, threads };
   });
@@ -178,6 +181,12 @@ function resetFollowedThreadQueries(serverId: string): void {
         predicate: (query) => isFollowedThreadQuery(query.queryKey, serverId)
       })
     );
+}
+
+function refreshFollowedThreadQueries(serverId: string): void {
+  for (const query of followedThreadQueries(serverId)) {
+    void queryClient.invalidateQueries({ queryKey: query.queryKey, exact: true });
+  }
 }
 
 function resumeFollowedThreadQuery(queryKey: QueryKey): void {
@@ -238,15 +247,18 @@ function scrubFollowedThreadMessage(serverId: string, roomId: string, eventId: s
       const pages = current.pages.map((page) => ({
         ...page,
         threads: page.threads.map((thread) => {
-          if (
-            thread.roomId !== roomId ||
-            thread.threadRootEventId !== eventId ||
-            !thread.rootMessage
-          ) {
-            return thread;
-          }
+          if (thread.roomId !== roomId) return thread;
+          const scrubRoot =
+            thread.rootMessage !== null &&
+            (thread.threadRootEventId === eventId || thread.rootMessage.id === eventId);
+          const scrubLatestReply = thread.latestReply?.id === eventId;
+          if (!scrubRoot && !scrubLatestReply) return thread;
           changed = true;
-          return { ...thread, rootMessage: null };
+          return {
+            ...thread,
+            rootMessage: scrubRoot ? null : thread.rootMessage,
+            latestReply: scrubLatestReply ? null : thread.latestReply
+          };
         })
       }));
       return changed ? { ...current, pages } : current;
@@ -270,6 +282,7 @@ function updateFollowedThreadQueries(serverId: string, summary: ThreadSummaryUpd
 
 registerFollowedThreadQueryCache({
   reset: resetFollowedThreadQueries,
+  refresh: refreshFollowedThreadQueries,
   reconcile: reconcileFollowedThreadQueries,
   scrubRoom: scrubFollowedThreadRoom,
   scrubMessage: scrubFollowedThreadMessage,

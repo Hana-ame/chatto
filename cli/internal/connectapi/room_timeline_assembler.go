@@ -63,17 +63,27 @@ func (a *roomTimelineAssembler) hydrateEvents(ctx context.Context, viewerID stri
 	ctx = core.WithDEKRequestCache(ctx)
 
 	messageIDs := make([]string, 0, len(events))
+	threadMetadata := make(map[string]*core.ThreadMetadata)
 	for _, event := range events {
-		if event.GetMessagePosted() != nil {
+		posted := event.GetMessagePosted()
+		if posted != nil {
 			messageIDs = append(messageIDs, event.Id)
 		}
+		if posted == nil || posted.GetInThread() != "" {
+			continue
+		}
+		metadata, err := a.api.core.GetThreadMetadata(ctx, kind, posted.GetRoomId(), event.Id)
+		if err != nil && !errors.Is(err, core.ErrNotFound) {
+			return nil, nil, err
+		}
+		key := timelineThreadKey(posted.GetRoomId(), event.Id)
+		threadMetadata[key] = metadata
 	}
 
 	reactionsByMessageID, err := a.api.core.GetReactionsBatch(ctx, messageIDs)
 	if err != nil {
 		return nil, nil, err
 	}
-
 	h := &timelineHydrator{
 		api:                  a.api,
 		ctx:                  ctx,
@@ -82,6 +92,7 @@ func (a *roomTimelineAssembler) hydrateEvents(ctx context.Context, viewerID stri
 		reactionsByMessageID: reactionsByMessageID,
 		userIDs:              make(map[string]struct{}),
 		thumbnail:            a.thumbnail,
+		threadMetadata:       threadMetadata,
 	}
 
 	apiEvents, err := parallel.MapNonNil(ctx, maxConnectAPIHydrationConcurrency, events, func(ctx context.Context, _ int, event *core.RoomEvent) (*apiv1.RoomTimelineEvent, error) {
@@ -158,6 +169,11 @@ type timelineHydrator struct {
 	userMu               sync.Mutex
 	userIDs              map[string]struct{}
 	thumbnail            attachmentThumbnailRequest
+	threadMetadata       map[string]*core.ThreadMetadata
+}
+
+func timelineThreadKey(roomID, threadRootEventID string) string {
+	return roomID + "\x00" + threadRootEventID
 }
 
 func (h *timelineHydrator) event(ctx context.Context, event *core.RoomEvent) (*apiv1.RoomTimelineEvent, error) {
@@ -261,9 +277,14 @@ func (h *timelineHydrator) messagePosted(ctx context.Context, event *core.RoomEv
 	}
 
 	if payload.GetInThread() == "" {
-		metadata, err := h.api.core.GetThreadMetadata(ctx, h.kind, payload.GetRoomId(), event.Id)
-		if err != nil && !errors.Is(err, core.ErrNotFound) {
-			return nil, err
+		key := timelineThreadKey(payload.GetRoomId(), event.Id)
+		metadata, metadataKnown := h.threadMetadata[key]
+		if !metadataKnown {
+			var err error
+			metadata, err = h.api.core.GetThreadMetadata(ctx, h.kind, payload.GetRoomId(), event.Id)
+			if err != nil && !errors.Is(err, core.ErrNotFound) {
+				return nil, err
+			}
 		}
 		if metadata != nil && metadata.Exists {
 			thread := &apiv1.ThreadSummary{
@@ -280,19 +301,15 @@ func (h *timelineHydrator) messagePosted(ctx context.Context, event *core.RoomEv
 			if err != nil {
 				return nil, err
 			}
-			hasUnreadBadge, err := h.api.core.NotificationOccurrences().HasNotificationUnread(ctx, h.viewerID, payload.GetRoomId(), event.Id)
-			if err != nil {
-				return nil, err
-			}
-			hasUnread := hasUnreadBadge
+			hasUnreadReplies := false
 			if following && metadata.LastReplyAt != nil {
 				lastOpened, err := h.api.core.GetThreadLastOpened(ctx, h.kind, h.viewerID, payload.GetRoomId(), event.Id)
 				if err != nil {
 					return nil, err
 				}
-				hasUnread = hasUnread || lastOpened.IsZero() || metadata.LastReplyAt.After(lastOpened)
+				hasUnreadReplies = lastOpened.IsZero() || metadata.LastReplyAt.After(lastOpened)
 			}
-			thread.ViewerState = &apiv1.ThreadViewerState{IsFollowing: &following, HasUnread: &hasUnread}
+			thread.ViewerState = apiThreadViewerState(following, hasUnreadReplies)
 			message.Thread = thread
 		}
 	}

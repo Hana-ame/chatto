@@ -4,8 +4,13 @@ import { loadLocaleMessages } from '$lib/i18n/messages';
 import { setReactiveLocale } from '$lib/i18n/state.svelte';
 
 const mocks = vi.hoisted(() => ({
-  unreadOccurrences: [] as Array<{ room: null; eventId: string; threadRootId: string | null }>,
-  threadViewerStates: new Map<string, { isFollowing?: boolean; hasUnread?: boolean }>()
+  unreadOccurrences: [] as Array<{
+    room: { id: string } | null;
+    eventId: string;
+    threadRootId: string | null;
+    attentionLevel: number;
+  }>,
+  threadViewerStates: new Map<string, { isFollowing?: boolean; hasUnreadReplies?: boolean }>()
 }));
 
 vi.mock('$app/paths', () => ({
@@ -38,8 +43,11 @@ describe('MyThreadsNavItem', () => {
     setReactiveLocale('en-GB');
   });
 
-  it('uses a neutral dot for unread followed-thread Badge state', () => {
-    mocks.threadViewerStates.set('room-1\u0000root-1', { isFollowing: true, hasUnread: true });
+  it('uses a neutral dot for unread replies', () => {
+    mocks.threadViewerStates.set('room-1\u0000root-1', {
+      isFollowing: true,
+      hasUnreadReplies: true
+    });
 
     const { container } = render(MyThreadsNavItem, { props: { active: false } });
 
@@ -48,8 +56,18 @@ describe('MyThreadsNavItem', () => {
   });
 
   it('uses notification orange when a notification occurrence also exists', () => {
-    mocks.threadViewerStates.set('room-1\u0000root-1', { isFollowing: true, hasUnread: true });
-    mocks.unreadOccurrences = [{ room: null, eventId: 'reply-1', threadRootId: 'root-1' }];
+    mocks.threadViewerStates.set('room-1\u0000root-1', {
+      isFollowing: true,
+      hasUnreadReplies: true
+    });
+    mocks.unreadOccurrences = [
+      {
+        room: { id: 'room-1' },
+        eventId: 'reply-1',
+        threadRootId: 'root-1',
+        attentionLevel: 2
+      }
+    ];
 
     const { container } = render(MyThreadsNavItem, { props: { active: false } });
 
@@ -57,8 +75,50 @@ describe('MyThreadsNavItem', () => {
     expect(dot?.classList).toContain('bg-attention');
   });
 
-  it('ignores Badge state for a thread that is not followed', () => {
-    mocks.threadViewerStates.set('room-1\u0000root-1', { isFollowing: false, hasUnread: true });
+  it('uses a neutral dot for an Ambient notification occurrence', () => {
+    mocks.threadViewerStates.set('room-1\u0000root-1', {
+      isFollowing: true,
+      hasUnreadReplies: false
+    });
+    mocks.unreadOccurrences = [
+      {
+        room: { id: 'room-1' },
+        eventId: 'reply-1',
+        threadRootId: 'root-1',
+        attentionLevel: 1
+      }
+    ];
+
+    const { container } = render(MyThreadsNavItem, { props: { active: false } });
+
+    const dot = container.querySelector('[data-testid="my-threads-unread-dot"]');
+    expect(dot?.classList).toContain('bg-neutral-action');
+  });
+
+  it('ignores notification attention for a thread that is not followed', () => {
+    mocks.threadViewerStates.set('room-1\u0000root-1', {
+      isFollowing: false,
+      hasUnreadReplies: false
+    });
+    mocks.unreadOccurrences = [
+      {
+        room: { id: 'room-1' },
+        eventId: 'reply-1',
+        threadRootId: 'root-1',
+        attentionLevel: 2
+      }
+    ];
+
+    const { container } = render(MyThreadsNavItem, { props: { active: false } });
+
+    expect(container.querySelector('[data-testid="my-threads-unread-dot"]')).toBeNull();
+  });
+
+  it('ignores unread reply state for a thread that is not followed', () => {
+    mocks.threadViewerStates.set('room-1\u0000root-1', {
+      isFollowing: false,
+      hasUnreadReplies: true
+    });
 
     const { container } = render(MyThreadsNavItem, { props: { active: false } });
 

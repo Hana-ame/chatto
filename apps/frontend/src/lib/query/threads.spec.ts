@@ -26,9 +26,12 @@ function thread(
     roomName: 'general',
     threadRootEventId,
     rootMessage: null,
+    latestReply: null,
     replyCount: 1,
     lastReplyAt: '2026-08-01T10:00:00.000Z',
-    hasUnread: false,
+    participants: [],
+    participantCount: 0,
+    hasUnreadReplies: false,
     ...overrides
   };
 }
@@ -64,12 +67,12 @@ describe('followed thread query helpers', () => {
       totalCount: 2,
       hasMore: false
     });
-    const states = new Map([[followedThreadKey('room-1', 'retained'), { hasUnread: true }]]);
+    const states = new Map([[followedThreadKey('room-1', 'retained'), { hasUnreadReplies: true }]]);
 
     const reconciled = reconcileFollowedThreadViewerStates(current, states);
 
     expect(flattenFollowedThreads(reconciled.data)).toEqual([
-      thread('retained', { hasUnread: true })
+      thread('retained', { hasUnreadReplies: true })
     ]);
     expect(reconciled.data?.pages[0]).toMatchObject({
       totalCount: 1,
@@ -82,8 +85,8 @@ describe('followed thread query helpers', () => {
   it('reports projection threads that are missing from the cached snapshot', () => {
     const current = data({ threads: [thread('root-1')], totalCount: 2, hasMore: false });
     const states = new Map([
-      [followedThreadKey('room-1', 'root-1'), { hasUnread: false }],
-      [followedThreadKey('room-1', 'root-2'), { hasUnread: true }]
+      [followedThreadKey('room-1', 'root-1'), { hasUnreadReplies: false }],
+      [followedThreadKey('room-1', 'root-2'), { hasUnreadReplies: true }]
     ]);
 
     expect(reconcileFollowedThreadViewerStates(current, states).hasUnknownThreads).toBe(true);
@@ -92,8 +95,8 @@ describe('followed thread query helpers', () => {
   it('does not refetch merely because projected threads belong to unloaded pages', () => {
     const current = data({ threads: [thread('root-1')], totalCount: 2, hasMore: true });
     const states = new Map([
-      [followedThreadKey('room-1', 'root-1'), { hasUnread: false }],
-      [followedThreadKey('room-1', 'root-2'), { hasUnread: true }]
+      [followedThreadKey('room-1', 'root-1'), { hasUnreadReplies: false }],
+      [followedThreadKey('room-1', 'root-2'), { hasUnreadReplies: true }]
     ]);
 
     const reconciled = reconcileFollowedThreadViewerStates(current, states);
@@ -130,11 +133,14 @@ describe('followed thread query helpers', () => {
       threadRootEventId: 'root-1',
       replyCount: 3,
       lastReplyAt: '2026-08-02T10:00:00.000Z',
-      hasUnread: true
+      hasUnreadReplies: true
     });
     const result = flattenFollowedThreads(updated)[0];
 
-    expect(result).toMatchObject({ replyCount: 3, hasUnread: true });
+    expect(result).toMatchObject({
+      replyCount: 3,
+      hasUnreadReplies: true
+    });
     expect(result?.rootMessage?.event).toMatchObject({
       kind: 'messagePosted',
       replyCount: 3,
@@ -155,12 +161,12 @@ describe('followed thread query helpers', () => {
 
     reconcileRegisteredFollowedThreadQueries(
       'origin',
-      new Map([[followedThreadKey('room-1', 'retained'), { hasUnread: true }]])
+      new Map([[followedThreadKey('room-1', 'retained'), { hasUnreadReplies: true }]])
     );
 
     for (const key of [firstKey, secondKey]) {
       expect(flattenFollowedThreads(queryClient.getQueryData(key))).toEqual([
-        thread('retained', { hasUnread: true })
+        thread('retained', { hasUnreadReplies: true })
       ]);
     }
   });
@@ -180,10 +186,18 @@ describe('followed thread query helpers', () => {
         threadParticipants: []
       }
     };
+    const latestReply = {
+      ...rootMessage,
+      id: 'reply-2',
+      event: { ...rootMessage.event, body: 'Private latest reply' }
+    };
     queryClient.setQueryData(
       queryKey,
       data({
-        threads: [thread('root-1'), thread('root-2', { roomId: 'room-2', rootMessage })],
+        threads: [
+          thread('root-1'),
+          thread('root-2', { roomId: 'room-2', rootMessage, latestReply })
+        ],
         totalCount: 2,
         hasMore: false
       })
@@ -191,6 +205,12 @@ describe('followed thread query helpers', () => {
 
     scrubRegisteredFollowedThreadMessage('origin', 'room-2', 'root-2');
     expect(flattenFollowedThreads(queryClient.getQueryData(queryKey))[1]?.rootMessage).toBeNull();
+    expect(flattenFollowedThreads(queryClient.getQueryData(queryKey))[1]?.latestReply).toEqual(
+      latestReply
+    );
+
+    scrubRegisteredFollowedThreadMessage('origin', 'room-2', 'reply-2');
+    expect(flattenFollowedThreads(queryClient.getQueryData(queryKey))[1]?.latestReply).toBeNull();
 
     scrubRegisteredFollowedThreadRoom('origin', 'room-1');
     expect(flattenFollowedThreads(queryClient.getQueryData(queryKey))).toHaveLength(1);

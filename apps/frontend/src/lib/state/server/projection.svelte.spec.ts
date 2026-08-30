@@ -79,7 +79,10 @@ describe('ServerProjectionStore', () => {
             id: 'ROOT',
             thread: new ThreadSummary({
               threadRootEventId: 'ROOT',
-              viewerState: new ThreadViewerState({ isFollowing: false, hasUnread: false })
+              viewerState: new ThreadViewerState({
+                isFollowing: false,
+                hasUnreadReplies: false
+              })
             })
           })
         })
@@ -101,7 +104,10 @@ describe('ServerProjectionStore', () => {
               new RealtimeProjectionThreadViewerState({
                 roomId: 'R1',
                 threadRootEventId: 'ROOT',
-                viewerState: new ThreadViewerState({ isFollowing: true, hasUnread: true })
+                viewerState: new ThreadViewerState({
+                  isFollowing: true,
+                  hasUnreadReplies: true
+                })
               })
             ]
           })
@@ -116,8 +122,8 @@ describe('ServerProjectionStore', () => {
         : undefined;
     };
     expect(viewerState()?.isFollowing).toBe(true);
-    expect(viewerState()?.hasUnread).toBe(true);
-    expect(store.threadViewerStates.get('R1\u0000ROOT')?.hasUnread).toBe(true);
+    expect(viewerState()?.hasUnreadReplies).toBe(true);
+    expect(store.threadViewerStates.get('R1\u0000ROOT')?.hasUnreadReplies).toBe(true);
 
     store.apply(
       event(
@@ -128,7 +134,7 @@ describe('ServerProjectionStore', () => {
       )
     );
     expect(viewerState()?.isFollowing).toBe(false);
-    expect(viewerState()?.hasUnread).toBe(false);
+    expect(viewerState()?.hasUnreadReplies).toBe(false);
     expect(store.threadViewerStates.size).toBe(0);
   });
 

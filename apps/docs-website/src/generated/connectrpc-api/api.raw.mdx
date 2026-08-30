@@ -3480,8 +3480,10 @@ Manages thread follow state for the current user.
 Returns followed threads in rooms where the current user is a member.
 Channel-room threads also require message.read or an active relationship
 with message.read-interactions. Historical DM threads use DM membership.
-The result includes enough root-message data for clients to render the
-list without extra per-field fetches.
+The result includes enough root and latest-reply data for clients to render
+the list without extra per-thread fetches.
+Activity can reorder the live result between offset pages. After a thread
+activity update, clients must restart paging at offset zero.
 
 ```http
 POST /api/connect/chatto.api.v1.ThreadService/ListFollowedThreads
@@ -4482,12 +4484,12 @@ Aggregated state for one message thread.
 
 ### ThreadViewerState
 
-Viewer-specific state for one message thread.
+Viewer-specific follow and reply-read state for one message thread.
 
 | Field | Type | Description |
 | --- | --- | --- |
 | `is_following` | `optional bool` | Whether the current user follows this message's thread, when known. |
-| `has_unread` | `optional bool` | True when the thread has unread replies or neutral Badge attention for the current user, when known. |
+| `has_unread_replies` | `optional bool` | True when the thread contains replies after the current user's read cursor, when known. |
 
 
 
@@ -5257,6 +5259,7 @@ One followed thread for the current user.
 | `root_message` | [`Message`](#chatto-api-v1-Message) | Renderable root message, when the root is still visible. |
 | `room` | [`RoomSummary`](#chatto-api-v1-RoomSummary) | Room containing the thread. |
 | `thread` | [`ThreadSummary`](#chatto-api-v1-ThreadSummary) | Aggregated thread state. |
+| `latest_reply` | [`Message`](#chatto-api-v1-Message) | Most recent visible reply, when the thread has one. |
 
 
 

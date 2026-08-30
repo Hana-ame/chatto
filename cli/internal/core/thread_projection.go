@@ -16,11 +16,12 @@ type threadReplySummary struct {
 }
 
 type threadSummary struct {
-	replyIDs          []string
-	replyCount        int
-	lastReplyAt       *time.Time
-	participantIDs    []string
-	participantCounts map[string]int
+	replyIDs           []string
+	replyCount         int
+	lastReplyAt        *time.Time
+	latestReplyEventID string
+	participantIDs     []string
+	participantCounts  map[string]int
 }
 
 type ThreadFollowState string
@@ -455,6 +456,7 @@ func (p *ThreadProjection) recomputeSummaryLocked(threadRoot string) {
 
 	summary.replyCount = 0
 	summary.lastReplyAt = nil
+	summary.latestReplyEventID = ""
 	summary.participantIDs = nil
 	clear(summary.participantCounts)
 
@@ -480,7 +482,9 @@ func (p *ThreadProjection) applyReplyToSummaryLocked(summary *threadSummary, rep
 	}
 
 	summary.replyCount++
-	if !reply.createdAt.IsZero() && (summary.lastReplyAt == nil || reply.createdAt.After(*summary.lastReplyAt)) {
+	summary.latestReplyEventID = replyID
+	summary.lastReplyAt = nil
+	if !reply.createdAt.IsZero() {
 		at := reply.createdAt
 		summary.lastReplyAt = &at
 	}
@@ -534,9 +538,10 @@ func (p *ThreadProjection) ThreadMetadata(rootEventID string) *ThreadMetadata {
 		return &ThreadMetadata{}
 	}
 	metadata := &ThreadMetadata{
-		Exists:         true,
-		ReplyCount:     summary.replyCount,
-		ParticipantIDs: append([]string(nil), summary.participantIDs...),
+		Exists:             true,
+		ReplyCount:         summary.replyCount,
+		LatestReplyEventID: summary.latestReplyEventID,
+		ParticipantIDs:     append([]string(nil), summary.participantIDs...),
 	}
 	if summary.lastReplyAt != nil {
 		at := *summary.lastReplyAt

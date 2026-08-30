@@ -577,16 +577,16 @@ func (x *MessageReaction) GetPreviewUserIds() []string {
 	return nil
 }
 
-// Viewer-specific state for one message thread.
+// Viewer-specific follow and reply-read state for one message thread.
 type ThreadViewerState struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Whether the current user follows this message's thread, when known.
 	IsFollowing *bool `protobuf:"varint,1,opt,name=is_following,json=isFollowing,proto3,oneof" json:"is_following,omitempty"`
-	// True when the thread has unread replies or neutral Badge attention for the
-	// current user, when known.
-	HasUnread     *bool `protobuf:"varint,2,opt,name=has_unread,json=hasUnread,proto3,oneof" json:"has_unread,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// True when the thread contains replies after the current user's read
+	// cursor, when known.
+	HasUnreadReplies *bool `protobuf:"varint,2,opt,name=has_unread_replies,json=hasUnreadReplies,proto3,oneof" json:"has_unread_replies,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *ThreadViewerState) Reset() {
@@ -626,9 +626,9 @@ func (x *ThreadViewerState) GetIsFollowing() bool {
 	return false
 }
 
-func (x *ThreadViewerState) GetHasUnread() bool {
-	if x != nil && x.HasUnread != nil {
-		return *x.HasUnread
+func (x *ThreadViewerState) GetHasUnreadReplies() bool {
+	if x != nil && x.HasUnreadReplies != nil {
+		return *x.HasUnreadReplies
 	}
 	return false
 }
@@ -969,13 +969,12 @@ const file_chatto_api_v1_message_types_proto_rawDesc = "" +
 	"\x05count\x18\x02 \x01(\x05R\x05count\x12\x1f\n" +
 	"\vhas_reacted\x18\x03 \x01(\bR\n" +
 	"hasReacted\x12(\n" +
-	"\x10preview_user_ids\x18\x04 \x03(\tR\x0epreviewUserIds\"\x7f\n" +
+	"\x10preview_user_ids\x18\x04 \x03(\tR\x0epreviewUserIds\"\xad\x01\n" +
 	"\x11ThreadViewerState\x12&\n" +
-	"\fis_following\x18\x01 \x01(\bH\x00R\visFollowing\x88\x01\x01\x12\"\n" +
-	"\n" +
-	"has_unread\x18\x02 \x01(\bH\x01R\thasUnread\x88\x01\x01B\x0f\n" +
-	"\r_is_followingB\r\n" +
-	"\v_has_unread\"\xd4\x02\n" +
+	"\fis_following\x18\x01 \x01(\bH\x00R\visFollowing\x88\x01\x01\x121\n" +
+	"\x12has_unread_replies\x18\x02 \x01(\bH\x01R\x10hasUnreadReplies\x88\x01\x01B\x0f\n" +
+	"\r_is_followingB\x15\n" +
+	"\x13_has_unread_repliesJ\x04\b\x03\x10\x04R\x0fattention_level\"\xd4\x02\n" +
 	"\rThreadSummary\x12/\n" +
 	"\x14thread_root_event_id\x18\x01 \x01(\tR\x11threadRootEventId\x12\x1f\n" +
 	"\vreply_count\x18\x02 \x01(\x05R\n" +

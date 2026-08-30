@@ -196,6 +196,34 @@ func selectAVIFEncoder(ctx context.Context, ffmpegPath string) (avifEncoder, err
 	return selected, nil
 }
 
+// AVIFAvailable 报告当前环境下 room 附件图片上传是否真的会产出 AVIF。
+//
+// 【目的】能否编 AVIF 由三件事共同决定:cfg.AVIFEnabled 配置开关、ffmpeg
+// 二进制是否存在、该 ffmpeg 是否带 AV1 编码器(libsvtav1 或 libaom-av1)。
+// 生产探测(selectAVIFEncoder)与集成测试的 content-type 断言必须共用这同一个
+// 口径,不能各自判断。
+//
+// 【踩坑】2026-08-30 ci.yml 的 test-cli job 首次跑全量 Go 测试时暴露:该 job
+// 装了 ffmpeg(actions/setup 的 install-ffmpeg),但测试环境的 core.AVIFEnabled
+// 是零值 false——NewChattoCore 不设这个字段,生产由 cmd/run.go 从
+// AssetProcessing.AVIFEnabledOrDefault() 写入(默认 true)。于是 EncodeAVIF 在
+// 函数开头就返回 ErrAVIFUnavailable,原图 image/png 落盘;而当时只判
+// exec.LookPath("ffmpeg") 的断言期待 image/avif,必然失败。另一头 build-linux
+// 不装 ffmpeg,探测为假,断言期待 image/png 平凡通过——所以这个开关从未被
+// 集成测试真正覆盖过。
+//
+// 【边界】只报告 room 附件上传路径的 AVIF 可用性。头像、服务端 branding、
+// 链接预览是 WebP-only,不走 EncodeAVIF(见本文件顶部注释)。
+// 探测有副作用:结果按 ffmpeg 路径缓存在 selectAVIFEncoder 里,首次调用会跑一次
+// `ffmpeg -encoders`(5s 超时),后续调用直接命中缓存。
+func AVIFAvailable(ctx context.Context, cfg Config) bool {
+	if !cfg.AVIFEnabled {
+		return false
+	}
+	_, err := selectAVIFEncoder(ctx, cfg.FFmpegPath)
+	return err == nil
+}
+
 // TransformImageWithFFmpeg 产出图片衍生图(缩略图/展示图)。
 //
 // 【本地改动 2026-08-16】衍生图统一编码为有损 WebP:ffmpeg 存在时,所有

@@ -15,7 +15,6 @@ import (
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
-	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -114,6 +113,13 @@ func setupAssetTestServerWithOptions(t *testing.T, useS3 bool, videoEnabled bool
 	if err != nil {
 		t.Fatalf("Failed to create ChattoCore: %v", err)
 	}
+	// 【本地改动 2026-08-30】跟生产默认值对齐:cmd/run.go 用
+	// AssetProcessing.AVIFEnabledOrDefault() 写入 core.AVIFEnabled,默认 true。
+	// NewChattoCore 不设该字段,零值 false 让上传路径永远存原图,AVIF 集成
+	// 路径从未被覆盖;ci.yml test-cli 装了 ffmpeg 后,只看 exec.LookPath 的
+	// 断言期待 image/avif 而实际得到 image/png 必红(2026-08-30 首次跑全
+	// 矩阵时暴露)。
+	chattoCore.AVIFEnabled = true
 	startCoreServices(t, chattoCore)
 	js, err := jetstream.New(nc)
 	if err != nil {
@@ -614,12 +620,16 @@ func TestAsset_OriginalAttachment_ServesCorrectly(t *testing.T) {
 		t.Errorf("Expected Accept-Ranges: none, got %q", got)
 	}
 
-	// Should have correct content type. 上传的图片在有 ffmpeg 时会被
+	// Should have correct content type. room 附件图片在 AVIF 可用时会被
 	// 重编码为 AVIF,否则原样存储(【本地改动 32e1f566】,断言跟随
 	// 环境,不能写死 image/png)。
+	// 【本地改动 2026-08-30】探测口径与生产对齐:能否编 AVIF 由
+	// core.AVIFEnabled、ffmpeg 存在性、AV1 编码器三者共同决定,不能只看
+	// exec.LookPath("ffmpeg")。旧口径在「装了 ffmpeg 但 AVIFEnabled 为零值
+	// false」的环境里必然误判——2026-08-30 首次跑 ci.yml 全矩阵时暴露。
 	contentType := originalResp.Header.Get("Content-Type")
 	wantContentType := "image/png"
-	if _, err := exec.LookPath("ffmpeg"); err == nil {
+	if assets.AVIFAvailable(env.ctx, env.core.AssetsConfig()) {
 		wantContentType = "image/avif"
 	}
 	if contentType != wantContentType {
@@ -657,7 +667,12 @@ func TestAsset_OriginalAttachment_ServesCorrectly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to read ranged response body: %v", err)
 	}
-	if !bytes.Equal(rangeBody, imageData) {
+	// 【本地改动 2026-08-30】比较对象从输入字节改为完整 GET 的响应体。room
+	// 附件图片在 AVIF 可用时会被重编码(见 setupAssetTestServer 里
+	// chattoCore.AVIFEnabled 的注释),落盘字节不再等于上传的 PNG,拿
+	// imageData 比必然失败。这条断言保护的是上面那段注释——忽略 Range、
+	// 返回整个对象——所以应该跟完整 GET 的 body 对齐。
+	if !bytes.Equal(rangeBody, body) {
 		t.Fatal("Range request did not return the complete attachment")
 	}
 }

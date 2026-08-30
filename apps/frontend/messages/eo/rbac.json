@@ -44,6 +44,7 @@
       "allow": "permesi",
       "deny": "nei",
       "winning_decision": "(gajna decido)",
+      "included_by": "Included by {permission}",
       "level_server": "Servilo",
       "level_group": "Grupo",
       "level_room": "Ĉambro",
@@ -94,6 +95,16 @@
         }
       }
     },
+    "permission_categories": {
+      "admin": "Administrado",
+      "bot": "Robotoj",
+      "message": "Mesaĝoj",
+      "role": "Roloj",
+      "room": "Ĉambroj",
+      "server": "Servilo",
+      "user": "Uzantoj",
+      "other": "Aliaj"
+    },
     "permission_descriptions": {
       "server_manage": "Ĝisdatigu servilajn agordojn (nomo, priskribo, emblemo)",
       "room_create": "Krei novajn ĉambrojn",
@@ -102,6 +113,7 @@
       "room_manage": "Redaktu agordojn kaj permesojn de ĉambro, kaj forigu ĉambrojn",
       "room_ban_member": "Malpermesu membrojn de ĉambroj",
       "message_read": "Legi mesaĝojn en kanalĉambroj",
+      "message_read_interactions": "Legi kompletajn fadenojn, kiujn vi verkis aŭ en kiuj alia uzanto rekte menciis vin",
       "message_post": "Afiŝu radikajn mesaĝojn en ĉambroj kaj komencu DM-ojn",
       "message_post_in_thread": "Afiŝu respondojn ene de fadeno",
       "message_attach": "Aligu dosierojn al mesaĝoj",
@@ -117,7 +129,9 @@
       "user_delete_self": "Forigu vian propran konton",
       "user_invite": "Kreu kaj administru invitligilojn",
       "user_manage_accounts": "Kreu uzantojn, redaktu kontan identecon, restarigi pasvortojn, kunsendi kontrolitajn retpoŝtojn kaj malplenigi ensalutajn malfunkciojn",
-      "user_manage_permissions": "Redakti rektajn per-uzantajn permesojn anstataŭigas"
+      "user_manage_permissions": "Redakti rektajn per-uzantajn permesojn anstataŭigas",
+      "bot_create": "Krei robotajn kontojn, kiujn vi posedas",
+      "bot_manage": "Vidi kaj administri ĉiujn robotajn kontojn"
     }
   }
 }

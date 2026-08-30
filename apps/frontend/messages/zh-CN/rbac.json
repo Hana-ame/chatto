@@ -44,6 +44,7 @@
       "allow": "允许",
       "deny": "拒绝",
       "winning_decision": "（最终决定）",
+      "included_by": "Included by {permission}",
       "level_server": "服务器",
       "level_group": "群组",
       "level_room": "聊天室",
@@ -94,6 +95,16 @@
         }
       }
     },
+    "permission_categories": {
+      "admin": "管理",
+      "bot": "机器人",
+      "message": "消息",
+      "role": "角色",
+      "room": "聊天室",
+      "server": "服务器",
+      "user": "用户",
+      "other": "其他"
+    },
     "permission_descriptions": {
       "server_manage": "更新服务器设置（名称、描述、徽标）",
       "room_create": "创建新聊天室",
@@ -102,6 +113,7 @@
       "room_manage": "编辑聊天室的设置和权限，以及删除聊天室",
       "room_ban_member": "禁止成员进入聊天室",
       "message_read": "阅读频道聊天室中的消息",
+      "message_read_interactions": "阅读你创建的完整话题，或其他用户直接提及你的完整话题",
       "message_post": "在聊天室中发布根消息及发起私信",
       "message_post_in_thread": "在话题串中发布回复",
       "message_attach": "在消息中添加附件",
@@ -117,7 +129,9 @@
       "user_delete_self": "删除自己的账号",
       "user_invite": "创建和管理邀请链接",
       "user_manage_accounts": "创建用户、编辑账号身份信息、重置密码、关联已验证的电子邮箱，以及清除登录冷却时间",
-      "user_manage_permissions": "编辑针对单个用户的直接权限覆盖"
+      "user_manage_permissions": "编辑针对单个用户的直接权限覆盖",
+      "bot_create": "创建您拥有的机器人账户",
+      "bot_manage": "查看和管理所有机器人账户"
     }
   }
 }

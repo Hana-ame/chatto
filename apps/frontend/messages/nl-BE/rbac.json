@@ -44,6 +44,7 @@
       "allow": "toegestaan",
       "deny": "ontkennen",
       "winning_decision": "(winnende beslissing)",
+      "included_by": "Included by {permission}",
       "level_server": "Server",
       "level_group": "Groep",
       "level_room": "Kamer",
@@ -94,6 +95,16 @@
         }
       }
     },
+    "permission_categories": {
+      "admin": "Beheer",
+      "bot": "Bots",
+      "message": "Berichten",
+      "role": "Rollen",
+      "room": "Kamers",
+      "server": "Server",
+      "user": "Gebruikers",
+      "other": "Overig"
+    },
     "permission_descriptions": {
       "server_manage": "Serverinstellingen bijwerken (naam, beschrijving, logo)",
       "room_create": "Maak nieuwe kamers",
@@ -102,6 +113,7 @@
       "room_manage": "Bewerk de instellingen en rechten van een kamer en verwijder kamers",
       "room_ban_member": "Leden uit kamers weren",
       "message_read": "Berichten in kanaalkamers lezen",
+      "message_read_interactions": "Volledige threads lezen die je hebt gemaakt of waarin een andere gebruiker je rechtstreeks heeft vermeld",
       "message_post": "Post root-berichten in kamers en start DM's",
       "message_post_in_thread": "Plaats antwoorden in een thread",
       "message_attach": "Bestanden bij berichten voegen",
@@ -117,7 +129,9 @@
       "user_delete_self": "Verwijder je eigen account",
       "user_invite": "Uitnodigingslinks maken en beheren",
       "user_manage_accounts": "Gebruikers aanmaken, accountidentiteit bewerken, wachtwoorden opnieuw instellen, geverifieerde e-mails bijvoegen en cooldowns voor inloggen wissen",
-      "user_manage_permissions": "Wijzig directe machtigingsoverschrijvingen per gebruiker"
+      "user_manage_permissions": "Wijzig directe machtigingsoverschrijvingen per gebruiker",
+      "bot_create": "Botaccounts maken waarvan je eigenaar bent",
+      "bot_manage": "Alle botaccounts bekijken en beheren"
     }
   }
 }

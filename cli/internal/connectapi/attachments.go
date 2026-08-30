@@ -7,7 +7,7 @@ import (
 	"connectrpc.com/connect"
 	"hmans.de/chatto/internal/core"
 	apiv1 "hmans.de/chatto/internal/pb/chatto/api/v1"
-	corev1 "hmans.de/chatto/internal/pb/chatto/core/v1"
+	evtv1 "hmans.de/chatto/internal/pb/chatto/core/evt/v1"
 )
 
 type assetService struct {
@@ -100,10 +100,12 @@ func (s *assetService) BatchGetAssets(ctx context.Context, req *connect.Request[
 	return connect.NewResponse(&apiv1.BatchGetAssetsResponse{Assets: out}), nil
 }
 
-func apiAsset(api *API, attachment *corev1.Attachment, viewerID string, thumbnail attachmentThumbnailRequest) *apiv1.Asset {
+func apiAsset(api *API, attachment *evtv1.Attachment, viewerID string, thumbnail attachmentThumbnailRequest) *apiv1.Asset {
 	if attachment == nil {
 		return nil
 	}
+	// 【本地改动 2026-08-18】入口选择公开版 URL 生成（无 ticket、带 {fn.ext}，
+	// 长期可缓存）；HLS 仍走 ticket 版（GetStableHLSMasterPlaylistAssetURL）。
 	return &apiv1.Asset{
 		Id:                attachment.Id,
 		Filename:          attachment.Filename,
@@ -111,13 +113,13 @@ func apiAsset(api *API, attachment *corev1.Attachment, viewerID string, thumbnai
 		Size:              attachment.Size,
 		Width:             attachment.Width,
 		Height:            attachment.Height,
-		AssetUrl:          assetURLView(api.core.GetStableAttachmentAssetURL(attachment.Id, viewerID)),
-		ThumbnailAssetUrl: assetURLView(api.core.GetStableTransformedAttachmentAssetURL(attachment.Id, viewerID, thumbnail.width, thumbnail.height, thumbnail.fit)),
+		AssetUrl:          assetURLView(api.core.GetPublicStableAttachmentAssetURL(attachment)),
+		ThumbnailAssetUrl: assetURLView(api.core.GetPublicStableTransformedAttachmentAssetURL(attachment, thumbnail.width, thumbnail.height, thumbnail.fit)),
 		VideoProcessing:   apiVideoProcessing(api, viewerID, attachment),
 	}
 }
 
-func apiVideoProcessing(api *API, viewerID string, attachment *corev1.Attachment) *apiv1.MessageVideoProcessing {
+func apiVideoProcessing(api *API, viewerID string, attachment *evtv1.Attachment) *apiv1.MessageVideoProcessing {
 	if attachment == nil || (!strings.HasPrefix(attachment.GetContentType(), "video/") && attachment.GetContentType() != "image/gif") {
 		return nil
 	}
@@ -141,7 +143,13 @@ func apiVideoProcessing(api *API, viewerID string, attachment *corev1.Attachment
 			SourceAvailable: assetSourceAvailable(api, attachment.GetId(), true),
 		}
 		if thumbnailID := video.GetThumbnailAssetId(); thumbnailID != "" {
-			result.ThumbnailAssetUrl = assetURLView(api.core.GetStableAttachmentAssetURL(thumbnailID, viewerID))
+			// 【本地改动 2026-08-18】缩略图只有 ID，先取声明的附件对象再生成
+			// 公开 URL（需要 Filename/ContentType 拼 {fn.ext}）。
+			if created := api.core.GetAssetState(thumbnailID).Creation; created != nil {
+				if thumb := core.AttachmentFromAsset(created.GetAsset()); thumb != nil {
+					result.ThumbnailAssetUrl = assetURLView(api.core.GetPublicStableAttachmentAssetURL(thumb))
+				}
+			}
 		}
 		for _, variant := range video.GetVariants() {
 			if variant == nil {
@@ -149,12 +157,18 @@ func apiVideoProcessing(api *API, viewerID string, attachment *corev1.Attachment
 			}
 			var width, height int32
 			var size int64
+			// 【本地改动 2026-08-29】整个 variant 循环是本 fork 新增（merge-base
+			// 与 upstream 均无此段），最初按当时的 corev1.Attachment 写；合并
+			// upstream #2162 后 core/v1 pb 包被删除，Attachment 迁到 evt/v1，
+			// core.AttachmentFromAsset 的返回值也随之变成 *evtv1.Attachment。
+			var variantAttachment *evtv1.Attachment
 			if created := api.core.GetAssetState(variant.GetAssetId()).Creation; created != nil {
 				asset := created.GetAsset()
 				if asset != nil {
 					width = asset.GetWidth()
 					height = asset.GetHeight()
 					size = asset.GetSize()
+					variantAttachment = core.AttachmentFromAsset(asset)
 				}
 			}
 			result.Variants = append(result.Variants, &apiv1.MessageVideoVariant{
@@ -162,7 +176,7 @@ func apiVideoProcessing(api *API, viewerID string, attachment *corev1.Attachment
 				Width:    width,
 				Height:   height,
 				Size:     size,
-				AssetUrl: assetURLView(api.core.GetStableAttachmentAssetURL(variant.GetAssetId(), viewerID)),
+				AssetUrl: assetURLView(api.core.GetPublicStableAttachmentAssetURL(variantAttachment)),
 			})
 		}
 		if hls := video.GetHls(); hls != nil && len(hls.GetRenditions()) > 0 {
@@ -200,11 +214,11 @@ func assetSourceAvailable(api *API, assetID string, fallback bool) bool {
 	return created.GetOriginalBinaryAvailable()
 }
 
-func assetProcessingFailureReasonCode(code corev1.AssetProcessingFailureCode) string {
+func assetProcessingFailureReasonCode(code evtv1.AssetProcessingFailureCode) string {
 	switch code {
-	case corev1.AssetProcessingFailureCode_ASSET_PROCESSING_FAILURE_CODE_SOURCE_MISSING:
+	case evtv1.AssetProcessingFailureCode_ASSET_PROCESSING_FAILURE_CODE_SOURCE_MISSING:
 		return "original_missing"
-	case corev1.AssetProcessingFailureCode_ASSET_PROCESSING_FAILURE_CODE_PROCESSING_FAILED:
+	case evtv1.AssetProcessingFailureCode_ASSET_PROCESSING_FAILURE_CODE_PROCESSING_FAILED:
 		return "processing_failed"
 	default:
 		return "processing_failed"

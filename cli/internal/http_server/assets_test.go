@@ -15,6 +15,7 @@ import (
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -28,13 +29,14 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"hmans.de/chatto/internal/assets"
 	"hmans.de/chatto/internal/config"
+	"hmans.de/chatto/internal/connectapi"
 	"hmans.de/chatto/internal/core"
 	"hmans.de/chatto/internal/core/linkpreview"
 	"hmans.de/chatto/internal/email"
 	"hmans.de/chatto/internal/evtstream"
 	apiv1 "hmans.de/chatto/internal/pb/chatto/api/v1"
 	"hmans.de/chatto/internal/pb/chatto/api/v1/apiv1connect"
-	corev1 "hmans.de/chatto/internal/pb/chatto/core/v1"
+	evtv1 "hmans.de/chatto/internal/pb/chatto/core/evt/v1"
 	"hmans.de/chatto/internal/testutil"
 	"hmans.de/chatto/internal/testutil/fakes3"
 )
@@ -184,7 +186,14 @@ func (env *assetTestEnv) login(t *testing.T, login, password string) {
 	t.Helper()
 
 	loginBody := fmt.Sprintf(`{"login":"%s","password":"%s"}`, login, password)
-	resp, err := env.client.Post(env.server.URL+"/auth/login", "application/json", bytes.NewReader([]byte(loginBody)))
+	req, err := http.NewRequest(http.MethodPost, env.server.URL+"/auth/browser/login", bytes.NewReader([]byte(loginBody)))
+	if err != nil {
+		t.Fatalf("Create login request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(connectapi.BrowserAuthenticationModeHeader, connectapi.BrowserAuthenticationModeCookie)
+	req.Header.Set("Origin", env.server.URL)
+	resp, err := env.client.Do(req)
 	if err != nil {
 		t.Fatalf("Failed to login: %v", err)
 	}
@@ -238,7 +247,7 @@ func markPublicServerAssetForTest(t *testing.T, env *assetTestEnv, assetID strin
 	}
 }
 
-func appendRoomTimelineAssetTestEvent(t *testing.T, env *assetTestEnv, roomID string, event *corev1.Event) {
+func appendRoomTimelineAssetTestEvent(t *testing.T, env *assetTestEnv, roomID string, event *evtv1.Event) {
 	t.Helper()
 	event.Id = core.NewEventID()
 	event.ActorId = core.SystemActorID
@@ -253,7 +262,7 @@ func appendRoomTimelineAssetTestEvent(t *testing.T, env *assetTestEnv, roomID st
 	}
 }
 
-func appendAssetProjectionTestEvent(t *testing.T, env *assetTestEnv, assetID string, event *corev1.Event) {
+func appendAssetProjectionTestEvent(t *testing.T, env *assetTestEnv, assetID string, event *evtv1.Event) {
 	t.Helper()
 	event.Id = core.NewEventID()
 	event.ActorId = core.SystemActorID
@@ -452,9 +461,12 @@ func TestAsset_TransformedAttachmentUsesCompressedProfileAndVersionedCache(t *te
 		t.Fatalf("Failed to read transformed attachment: %v", err)
 	}
 
-	wantResult, err := assets.TransformImageWithOptions(imageData, 960, 400, assets.FitContain, assets.TransformOptions{
+	// 【本地改动 2026-08-16】期望值必须与服务器走同一条衍生图路径
+	// (TransformImageWithFFmpeg,带 ffmpeg 时输出有损 WebP),否则本地有
+	// ffmpeg 时字节对不上(服务器 WebP vs 旧期望 JPEG)。
+	wantResult, err := assets.TransformImageWithFFmpeg(imageData, 960, 400, assets.FitContain, assets.TransformOptions{
 		JPEGQuality: AttachmentDerivativeJPEGQuality,
-	})
+	}, env.core.AssetsConfig().FFmpegPath)
 	if err != nil {
 		t.Fatalf("Failed to build expected transform: %v", err)
 	}
@@ -602,10 +614,16 @@ func TestAsset_OriginalAttachment_ServesCorrectly(t *testing.T) {
 		t.Errorf("Expected Accept-Ranges: none, got %q", got)
 	}
 
-	// Should have correct content type
+	// Should have correct content type. 上传的图片在有 ffmpeg 时会被
+	// 重编码为 AVIF,否则原样存储(【本地改动 32e1f566】,断言跟随
+	// 环境,不能写死 image/png)。
 	contentType := originalResp.Header.Get("Content-Type")
-	if contentType != "image/png" {
-		t.Errorf("Expected Content-Type: image/png, got: %s", contentType)
+	wantContentType := "image/png"
+	if _, err := exec.LookPath("ffmpeg"); err == nil {
+		wantContentType = "image/avif"
+	}
+	if contentType != wantContentType {
+		t.Errorf("Expected Content-Type: %s, got: %s", wantContentType, contentType)
 	}
 
 	// Body should be readable
@@ -769,8 +787,18 @@ func TestAsset_StableS3ImageStreamsThroughChattoByDefault(t *testing.T) {
 	if got := resp.Header.Get("Location"); got != "" {
 		t.Fatalf("Expected no redirect Location for ordinary S3 image, got %q", got)
 	}
-	if got := resp.Header.Get("Cache-Control"); got != protectedAssetCacheControl {
-		t.Fatalf("Cache-Control = %q, want %q", got, protectedAssetCacheControl)
+	// 【本地改动 2026-08-29】期望值从 protectedAssetCacheControl 改为 publicAssetCacheControl。
+	// 本测试的 URL 来自 ConnectRPC attachment 字段，fork 自 2026-08-18 起返回带 {fn.ext} 的公开
+	// URL（assetID 即凭证），图片经 Chatto 流式传输时命中 servePublicStableAttachment，其字节路径
+	// 按 public, max-age=31536000, immutable 下发。测试名（StreamsThroughChattoByDefault）与 200
+	// / 无 Location 断言均仍成立，仅缓存头期望需随公开 URL 语义同步。
+	// 边界（重要）：302 presigned 重定向分支不受此改动影响——servePublicStableAttachment 在
+	// deliveryS3Redirect 路径显式仍下发 protectedAssetCacheControl（见 assets.go 该分支注释
+	// 「302 重定向本身不缓存；presigned URL 短期有效」），下方
+	// TestAsset_StableS3VideoRedirectsUnlessProxyForcesStream 因此无需改动。
+	// 回归提示：若本分支合回 upstream，此断言必须改回 protectedAssetCacheControl。
+	if got := resp.Header.Get("Cache-Control"); got != publicAssetCacheControl {
+		t.Fatalf("Cache-Control = %q, want %q", got, publicAssetCacheControl)
 	}
 }
 
@@ -857,13 +885,13 @@ func TestAsset_StableNilStorageS3VideoRedirectsViaProbe(t *testing.T) {
 		t.Fatal("Expected stable attachment URL")
 	}
 
-	appendAssetProjectionTestEvent(t, env, attachment.GetId(), &corev1.Event{
+	appendAssetProjectionTestEvent(t, env, attachment.GetId(), &evtv1.Event{
 		Id: "E-storage-less-" + attachment.GetId(),
-		Event: &corev1.Event_AssetCreated{
-			AssetCreated: &corev1.AssetCreatedEvent{
+		Event: &evtv1.Event_AssetCreated{
+			AssetCreated: &evtv1.AssetCreatedEvent{
 				OriginalBinaryAvailable: true,
 				RoomId:                  room.Id,
-				Asset: &corev1.AssetRecord{
+				Asset: &evtv1.AssetRecord{
 					Id:          attachment.GetId(),
 					Filename:    "s3-legacy-video.mp4",
 					ContentType: "video/mp4",
@@ -976,9 +1004,18 @@ func TestAsset_OriginalAttachment_HasCacheHeaders(t *testing.T) {
 	}
 
 	// Verify caching headers
+	// 【本地改动 2026-08-29】期望值从 protectedAssetCacheControl 改为 publicAssetCacheControl。
+	// 上游此断言假设 URL 带 per-user access ticket、必须禁缓存；本 fork 自 2026-08-18 起改成带
+	// {fn.ext} 的公开 URL（assetID 即凭证，无 ticket、无成员校验，见 resolvePublicAttachment
+	// 注释），命中 servePublicStableAttachment 后按 public, max-age=31536000, immutable 下发，
+	// 让 CDN/浏览器长缓存。发现背景：2026-08-29 合并 upstream 84 个提交后做语义冲突审计时发现——
+	// 本测试内 Vary 断言已在 2026-08-23 改成 Accept-Encoding，但紧邻上方的 Cache-Control 期望值
+	// 漏改，残留上游语义成红灯。边界：与下方 Vary 断言一致，两处都按公开 URL 语义。
+	// 取舍：代价是退群/被踢不吊销已发出的 URL（上游 cli/AGENTS.md 契约要求吊销），本 fork 接受。
+	// 回归提示：若本分支合回 upstream，此断言必须改回 protectedAssetCacheControl。
 	cacheControl := originalResp.Header.Get("Cache-Control")
-	if cacheControl != protectedAssetCacheControl {
-		t.Errorf("Expected Cache-Control: %s, got: %s", protectedAssetCacheControl, cacheControl)
+	if cacheControl != publicAssetCacheControl {
+		t.Errorf("Expected Cache-Control: %s, got: %s", publicAssetCacheControl, cacheControl)
 	}
 
 	etag := originalResp.Header.Get("ETag")
@@ -986,13 +1023,30 @@ func TestAsset_OriginalAttachment_HasCacheHeaders(t *testing.T) {
 		t.Error("Expected ETag header to be set")
 	}
 
+	// 【本地改动 2026-08-23】Vary 收紧为 Accept-Encoding：响应字节只由
+	// assetID 决定，凭据是访问门控而非表示选择器；ticket URL 已被带
+	// {fn.ext} 的公开 URL 取代，按凭据分片缓存毫无收益。
 	vary := originalResp.Header.Get("Vary")
-	if vary != "Accept-Encoding, Authorization, Cookie" {
-		t.Errorf("Expected Vary: Accept-Encoding, Authorization, Cookie, got: %s", vary)
+	if vary != "Accept-Encoding" {
+		t.Errorf("Expected Vary: Accept-Encoding, got: %s", vary)
 	}
 }
 
-func TestAsset_StableURLAcceptsAccessTicketAndBearerAuth(t *testing.T) {
+// TestAsset_ForkPublicStableURLNeedsNoAuth verifies that the URL the fork hands the
+// browser needs no credentials of any kind.
+//
+// 【本地改动 2026-08-30】改名为 TestAsset_ForkPublicStableURLNeedsNoAuth。
+// 上游原名：TestAsset_StableURLAcceptsAccessTicketAndBearerAuth（grep 上游原名仍可定位本测试；
+// 原名的断言方向与 fork 语义完全相反，不改名会让后来人误以为本文件仍在守护「URL 是凭据能力」）。
+// 上游此测试断言「无凭据 401 / 无 access ticket 403 / 篡改 ticket 403」，即 URL 是需要凭据的能力。
+// 本 fork 自 2026-08-18 起把 ConnectRPC 下发的附件 URL 换成带 {fn.ext} 的公开 URL
+// （assetID 即凭证，无 ticket、无会话、无成员校验、filename 段被服务端忽略），
+// 故三处断言反转为 200，本测试守护「fork 的浏览器 URL 确实无需任何凭据」这一回归面。
+// 上游语义在 fork 里对应无尾段的 /assets/files/{assetID}（serveStableAttachment），该路由未被触碰。
+// 发现背景：2026-08-29 合并 upstream 84 个提交后做语义冲突审计时发现（审计初报漏掉此测试的
+// 3 个断言，经全文件按 URL 来源分类扫描后补全）。
+// 回归提示：若本分支合回 upstream，401/403 三处断言必须全部改回，函数名恢复上游原名。
+func TestAsset_ForkPublicStableURLNeedsNoAuth(t *testing.T) {
 	env := setupAssetTestServer(t)
 
 	user, err := env.core.CreateUser(env.ctx, "system", "bearerassetuser", "Bearer Asset User", "password123")
@@ -1029,8 +1083,10 @@ func TestAsset_StableURLAcceptsAccessTicketAndBearerAuth(t *testing.T) {
 		t.Fatalf("Failed to get stable URL without credentials: %v", err)
 	}
 	unauthResp.Body.Close()
-	if unauthResp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("Expected stable URL without credentials to return 401, got %d", unauthResp.StatusCode)
+	// 【本地改动 2026-08-29】上游期望 401；fork 的公开 URL 无需凭据。上方 RawQuery="" 在 fork 下
+	// 是无操作（公开 URL 本就无 access 查询串），此处保留上游构造步骤以证明「剥掉查询串」不改变结果。
+	if unauthResp.StatusCode != http.StatusOK {
+		t.Fatalf("fork public URL needs no credentials: status = %d, want 200", unauthResp.StatusCode)
 	}
 
 	ticketResp, err := unauthClient.Get(env.server.URL + attachmentURL)
@@ -1078,8 +1134,13 @@ func TestAsset_StableURLAcceptsAccessTicketAndBearerAuth(t *testing.T) {
 		t.Fatalf("Failed to get mutated stable thumbnail URL: %v", err)
 	}
 	mutatedResp.Body.Close()
-	if mutatedResp.StatusCode != http.StatusForbidden {
-		t.Fatalf("Expected mutated stable thumbnail request to return 403, got %d", mutatedResp.StatusCode)
+	// 【本地改动 2026-08-29】上游期望 403（transform 尺寸绑定在 access ticket 上，改一个字节即失效）；
+	// fork 的公开 transform 路由无签名，尺寸是自由 URL 参数，只受 parseStableTransformParams 的
+	// [1,2048] 与 fit 闭集校验约束，故 961x400 被当成另一个合法 rendition 正常返回。
+	// 安全注记：无鉴权 transform 面因此开放，但单请求开销有上限（2048x2048 封顶 + 派生结果按
+	// CachePrefix 缓存），不是开放型放大面。
+	if mutatedResp.StatusCode != http.StatusOK {
+		t.Fatalf("fork transform dims are unbound: status = %d, want 200", mutatedResp.StatusCode)
 	}
 
 	thumbnailWithoutAccess, err := url.Parse(thumbnailURL)
@@ -1097,8 +1158,10 @@ func TestAsset_StableURLAcceptsAccessTicketAndBearerAuth(t *testing.T) {
 		t.Fatalf("Failed to get unsigned stable thumbnail URL with bearer: %v", err)
 	}
 	unsignedThumbResp.Body.Close()
-	if unsignedThumbResp.StatusCode != http.StatusForbidden {
-		t.Fatalf("Expected unsigned stable thumbnail request with bearer to return 403, got %d", unsignedThumbResp.StatusCode)
+	// 【本地改动 2026-08-29】上游期望 403（剥掉 access ticket 后即使带 bearer 也必须拒绝）；
+	// fork 的公开 URL 本就无查询串，RawQuery="" 是无操作，bearer 头被服务端忽略，故返回 200。
+	if unsignedThumbResp.StatusCode != http.StatusOK {
+		t.Fatalf("fork public thumbnail needs no signature: status = %d, want 200", unsignedThumbResp.StatusCode)
 	}
 }
 
@@ -1172,6 +1235,191 @@ func TestAsset_ServerAsset_HasCacheHeaders(t *testing.T) {
 	}
 }
 
+// 【本地改动 2026-08-23】server 资产公开 URL 统一带 {fn.ext} 尾段的回归测试。
+//
+// 发现背景：用户要求附件/头像全部使用带扩展名的 public URL（public
+// immutable 缓存 + 浏览器按扩展名识别类型），并要求 Vary 去掉
+// Authorization/Cookie。实现：core 侧 ServerAssetURLFilename 与
+// GetTransformedServerAssetURLWithFilename 在 URL 末尾追加安全文件名段；
+// serving 端 serveServerAsset 对整路径分类失败时剥掉最后一个点段重试，
+// 剥尾后的 key 仍走完整公开分类（transform 分支则先截掉签名后的尾段再验签）。
+// 本测试保护：原始与 transform URL 都以 .webp 结尾且可匿名访问、缓存头正确、
+// ETag 用剥尾后的 key；伪造多段尾缀不能让未知 key 变得可达（fail closed）。
+func TestAsset_ServerAsset_FilenameTailURLs(t *testing.T) {
+	env := setupAssetTestServer(t)
+
+	user, err := env.core.CreateUser(env.ctx, "system", "tailurluser", "Tail URL User", "password123")
+	if err != nil {
+		t.Fatalf("Failed to create user: %v", err)
+	}
+	avatarData := createAssetTestPNG(t, 200, 200)
+	avatar, err := env.core.UploadUserAvatar(env.ctx, user.Id, bytes.NewReader(avatarData))
+	if err != nil {
+		t.Fatalf("Failed to upload avatar: %v", err)
+	}
+	if err := env.core.SetUserAvatar(env.ctx, user.Id, avatar); err != nil {
+		t.Fatalf("Failed to set avatar: %v", err)
+	}
+	avatarKey := core.ServerAssetDeliveryKey(avatar)
+
+	originalURL, err := env.core.GetUserAvatarURL(env.ctx, user.Id, nil, nil, "")
+	if err != nil {
+		t.Fatalf("Failed to get avatar URL: %v", err)
+	}
+	if !strings.HasSuffix(originalURL, "/avatar.webp") {
+		t.Fatalf("Original avatar URL = %q, want /avatar.webp tail", originalURL)
+	}
+
+	originalResp, err := env.client.Get(env.server.URL + originalURL)
+	if err != nil {
+		t.Fatalf("Failed to get original avatar: %v", err)
+	}
+	defer originalResp.Body.Close()
+	if originalResp.StatusCode != http.StatusOK {
+		t.Fatalf("Original avatar status = %d, want 200", originalResp.StatusCode)
+	}
+	if got := originalResp.Header.Get("Cache-Control"); got != publicAssetCacheControl {
+		t.Errorf("Original avatar Cache-Control = %q, want %q", got, publicAssetCacheControl)
+	}
+	if got := originalResp.Header.Get("Vary"); got != "Accept-Encoding" {
+		t.Errorf("Original avatar Vary = %q, want Accept-Encoding", got)
+	}
+	if expectedETag := fmt.Sprintf("%q", avatarKey); originalResp.Header.Get("ETag") != expectedETag {
+		t.Errorf("Original avatar ETag = %q, want %q (stripped key)", originalResp.Header.Get("ETag"), expectedETag)
+	}
+
+	width, height := 96, 96
+	transformedURL, err := env.core.GetUserAvatarURL(env.ctx, user.Id, &width, &height, "cover")
+	if err != nil {
+		t.Fatalf("Failed to get transformed avatar URL: %v", err)
+	}
+	if !strings.Contains(transformedURL, "/t/") || !strings.HasSuffix(transformedURL, ".webp") {
+		t.Fatalf("Transformed avatar URL = %q, want signed transform path with .webp tail", transformedURL)
+	}
+	transformedResp, err := env.client.Get(env.server.URL + transformedURL)
+	if err != nil {
+		t.Fatalf("Failed to get transformed avatar: %v", err)
+	}
+	defer transformedResp.Body.Close()
+	if transformedResp.StatusCode != http.StatusOK {
+		t.Fatalf("Transformed avatar status = %d, want 200", transformedResp.StatusCode)
+	}
+
+	// 未知 key 即使带上合法形状的文件名尾段也必须保持不可达。
+	guessResp, err := env.client.Get(env.server.URL + "/assets/server/" + avatar.GetId() + "/extra/notreal.png")
+	if err != nil {
+		t.Fatalf("Failed to probe unknown key with tail: %v", err)
+	}
+	guessResp.Body.Close()
+	if guessResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("Unknown key with extra tail status = %d, want 404", guessResp.StatusCode)
+	}
+	fakeResp, err := env.client.Get(env.server.URL + "/assets/server/Anotarealkey0000/guess.png")
+	if err != nil {
+		t.Fatalf("Failed to probe fake key with tail: %v", err)
+	}
+	fakeResp.Body.Close()
+	if fakeResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("Fake key with tail status = %d, want 404", fakeResp.StatusCode)
+	}
+}
+
+// 【本地改动 2026-08-23】资产响应禁止携带 Set-Cookie 的回归测试。
+//
+// 发现背景：用户报告登录状态下所有附件请求 cf-cache-status: BYPASS。根因是
+// csrfMiddleware 对携带会话的每个安全方法请求都重发 chatto_csrf cookie，而
+// Cloudflare 等共享缓存对带 Set-Cookie 的响应一律不缓存。修复后 /assets/*
+// 不再下发 CSRF cookie；本测试以已登录客户端断言响应无 Set-Cookie。
+func TestAsset_NoSetCookieForLoggedInAssetFetches(t *testing.T) {
+	env := setupAssetTestServer(t)
+
+	user, err := env.core.CreateUser(env.ctx, "system", "assetcookieuser", "Asset Cookie User", "password123")
+	if err != nil {
+		t.Fatalf("Failed to create user: %v", err)
+	}
+	room, err := env.core.CreateRoom(env.ctx, user.Id, "channel", "", "asset-cookie-room", "Asset Cookie Room")
+	if err != nil {
+		t.Fatalf("Failed to create room: %v", err)
+	}
+	// 【本地改动 2026-08-30】CreateRoom 之后必须显式 JoinRoom。upstream 已不再把房间
+	// 创建者隐式写进成员表,成员关系只由 JoinRoom 事件产生。本测试 2026-08-23 写成时
+	// 还吃隐式成员那套,所以漏了这行。2026-08-30 ci/deploy 首次跑 mise test-cli 时以
+	// 「permission_denied: not a member of this room」暴露(测试闸见 build-linux.yml 的
+	// Test CLI 步骤注释);对照同文件 TestAsset_CacheControl 一系,它们都带这一步。
+	if _, err := env.core.JoinRoom(env.ctx, user.Id, "channel", user.Id, room.Id); err != nil {
+		t.Fatalf("Failed to join room: %v", err)
+	}
+	env.login(t, "assetcookieuser", "password123")
+
+	imageData := createAssetTestPNG(t, 64, 64)
+	_, attachment := env.postAssetMessageWithAttachment(t, room.Id, "cacheable", imageData, "cookie-probe.png")
+	assetURL := attachment.GetAssetUrl().GetUrl()
+	if assetURL == "" {
+		t.Fatal("Expected original asset URL")
+	}
+
+	resp, err := env.client.Get(env.server.URL + assetURL)
+	if err != nil {
+		t.Fatalf("Failed to get asset as logged-in user: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("Asset status = %d, want 200", resp.StatusCode)
+	}
+	if setCookie := resp.Header.Get("Set-Cookie"); setCookie != "" {
+		t.Errorf("Asset response carried Set-Cookie %q; shared caches must bypass it", setCookie)
+	}
+}
+
+// 【本地改动 2026-08-23】HEAD 必须与 GET 同路由的回归测试。
+//
+// 发现背景：gin 不会把 HEAD 映射到 GET 路由，源站对所有 /assets/* 的 HEAD
+// 返回 404；Cloudflare 边缘未命中时转发 HEAD 拿到 404+no-store 后把缓存
+// 状态标为 BYPASS。补注册 HEAD 路由后，本测试锁死 HEAD 可用且返回与 GET
+// 相同的缓存语义。
+func TestAsset_HeadRequestsAreRoutedLikeGet(t *testing.T) {
+	env := setupAssetTestServer(t)
+
+	user, err := env.core.CreateUser(env.ctx, "system", "assetheaduser", "Asset Head User", "password123")
+	if err != nil {
+		t.Fatalf("Failed to create user: %v", err)
+	}
+	room, err := env.core.CreateRoom(env.ctx, user.Id, "channel", "", "asset-head-room", "Asset Head Room")
+	if err != nil {
+		t.Fatalf("Failed to create room: %v", err)
+	}
+	// 【本地改动 2026-08-30】补 JoinRoom + 登录。CreateUpload 现要求已鉴权调用者且必须是
+	// 房间成员(见 cli/internal/connectapi/asset_uploads.go 的 requireCaller + 成员判定),
+	// 而本测试 2026-08-23 写成时上传无需会话,所以既没 JoinRoom 也没 env.login。
+	// 2026-08-30 ci/deploy 首次跑 mise test-cli 时以「unauthenticated: authentication
+	// required」暴露;下一步 postAssetMessageWithAttachment 走 env.client 的会话 cookie,
+	// 必须先用 /auth/browser/login 拿到会话。
+	if _, err := env.core.JoinRoom(env.ctx, user.Id, "channel", user.Id, room.Id); err != nil {
+		t.Fatalf("Failed to join room: %v", err)
+	}
+	env.login(t, "assetheaduser", "password123")
+
+	imageData := createAssetTestPNG(t, 64, 64)
+	_, attachment := env.postAssetMessageWithAttachment(t, room.Id, "head-probe", imageData, "head-probe.png")
+	assetURL := attachment.GetAssetUrl().GetUrl()
+
+	req, err := http.NewRequest(http.MethodHead, env.server.URL+assetURL, nil)
+	if err != nil {
+		t.Fatalf("Failed to build HEAD request: %v", err)
+	}
+	resp, err := env.client.Do(req)
+	if err != nil {
+		t.Fatalf("HEAD request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("HEAD asset status = %d, want 200", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Cache-Control"); got == "" {
+		t.Error("HEAD asset response missing Cache-Control")
+	}
+}
+
 func TestAsset_ServerAssetTransformKeepsDefaultQuality(t *testing.T) {
 	env := setupAssetTestServer(t)
 
@@ -1202,7 +1450,12 @@ func TestAsset_ServerAssetTransformKeepsDefaultQuality(t *testing.T) {
 		t.Fatalf("Failed to read transformed server asset: %v", err)
 	}
 
-	wantResult, err := assets.TransformImage(imageData, 200, 200, assets.FitContain)
+	// 【本地改动 2026-08-16】期望值走服务器同一条衍生图路径(见
+	// TestAsset_TransformedAttachmentUsesCompressedProfileAndVersionedCache
+	// 的同类注释):有 ffmpeg 时服务器输出有损 WebP,期望必须一致。
+	wantResult, err := assets.TransformImageWithFFmpeg(imageData, 200, 200, assets.FitContain, assets.TransformOptions{
+		JPEGQuality: assets.DefaultTransformJPEGQuality,
+	}, env.core.AssetsConfig().FFmpegPath)
 	if err != nil {
 		t.Fatalf("Failed to build expected server transform: %v", err)
 	}
@@ -1220,19 +1473,19 @@ func TestAsset_LegacyFlatPublicAssetsRemainAvailable(t *testing.T) {
 	imageData := createAssetTestPNG(t, 120, 80)
 	store := env.core.ServerStore()
 
-	legacyRecord := func(assetID, filename string) *corev1.AssetRecord {
+	legacyRecord := func(assetID, filename string) *evtv1.AssetRecord {
 		if _, err := store.Put(env.ctx, jetstream.ObjectMeta{
 			Name:    assetID,
 			Headers: map[string][]string{"Content-Type": {"image/png"}},
 		}, bytes.NewReader(imageData)); err != nil {
 			t.Fatalf("store legacy public object %q: %v", assetID, err)
 		}
-		return &corev1.AssetRecord{
+		return &evtv1.AssetRecord{
 			Id:          assetID,
 			Filename:    filename,
 			ContentType: "image/png",
 			Size:        int64(len(imageData)),
-			Storage:     &corev1.AssetRecord_Nats{Nats: &corev1.NATSAsset{Key: assetID}},
+			Storage:     &evtv1.AssetRecord_Nats{Nats: &evtv1.NATSAsset{Key: assetID}},
 		}
 	}
 	assertOK := func(path string) {
@@ -1279,11 +1532,11 @@ func TestAsset_LegacyFlatPublicAssetsRemainAvailable(t *testing.T) {
 
 	previewID := core.NewAssetID()
 	legacyRecord(previewID, "link-preview.webp")
-	appendRoomTimelineAssetTestEvent(t, env, "Rlegacynamespace", &corev1.Event{
-		Event: &corev1.Event_MessageBody{MessageBody: &corev1.MessageBodyEvent{
+	appendRoomTimelineAssetTestEvent(t, env, "Rlegacynamespace", &evtv1.Event{
+		Event: &evtv1.Event_MessageBody{MessageBody: &evtv1.MessageBodyEvent{
 			RoomId:  "Rlegacynamespace",
 			EventId: "Elegacynamespacemessage",
-			Body: &corev1.MessageBody{LinkPreview: &corev1.LinkPreview{
+			Body: &evtv1.MessageBody{LinkPreview: &evtv1.LinkPreview{
 				ImageAssetId: &previewID,
 			}},
 		}},
@@ -1303,13 +1556,13 @@ func TestAsset_CacheOnlyLegacyLinkPreviewRemainsAvailable(t *testing.T) {
 	}, bytes.NewReader(imageData)); err != nil {
 		t.Fatalf("store cache-only legacy preview: %v", err)
 	}
-	if err := env.previews.Set(env.ctx, previewURL, &corev1.LinkPreview{
+	if err := env.previews.Set(env.ctx, previewURL, &evtv1.LinkPreview{
 		Url:          previewURL,
 		ImageAssetId: &assetID,
-		ImageAsset: &corev1.AssetRecord{
+		ImageAsset: &evtv1.AssetRecord{
 			Id:          assetID,
 			ContentType: "image/png",
-			Storage:     &corev1.AssetRecord_Nats{Nats: &corev1.NATSAsset{Key: assetID}},
+			Storage:     &evtv1.AssetRecord_Nats{Nats: &evtv1.NATSAsset{Key: assetID}},
 		},
 	}); err != nil {
 		t.Fatalf("cache legacy preview metadata: %v", err)
@@ -1423,8 +1676,8 @@ func TestAsset_PublicServerRouteRejectsPrivateAndUnknownNATSObjects(t *testing.T
 		t.Fatalf("UpdateMeta legacy fixture: %v", err)
 	}
 	assertStatus("/assets/server/"+assetID, http.StatusNotFound)
-	appendAssetProjectionTestEvent(t, env, assetID, &corev1.Event{
-		Event: &corev1.Event_AssetDeleted{AssetDeleted: &corev1.AssetDeletedEvent{
+	appendAssetProjectionTestEvent(t, env, assetID, &evtv1.Event{
+		Event: &evtv1.Event_AssetDeleted{AssetDeleted: &evtv1.AssetDeletedEvent{
 			AssetId: assetID,
 		}},
 	})
@@ -1540,13 +1793,13 @@ func TestAsset_PublicLinkPreviewMarkerServesWithoutAuthentication(t *testing.T) 
 	}, bytes.NewReader(imageData)); err != nil {
 		t.Fatalf("store historical link-preview image: %v", err)
 	}
-	appendRoomTimelineAssetTestEvent(t, env, "Rpreviewhistory", &corev1.Event{
-		Event: &corev1.Event_MessageBody{MessageBody: &corev1.MessageBodyEvent{
+	appendRoomTimelineAssetTestEvent(t, env, "Rpreviewhistory", &evtv1.Event{
+		Event: &evtv1.Event_MessageBody{MessageBody: &evtv1.MessageBodyEvent{
 			RoomId:  "Rpreviewhistory",
 			EventId: "Epreviewmessage",
-			Body: &corev1.MessageBody{LinkPreview: &corev1.LinkPreview{
+			Body: &evtv1.MessageBody{LinkPreview: &evtv1.LinkPreview{
 				ImageAssetId: &legacyID,
-				ImageAsset:   &corev1.AssetRecord{Id: legacyID},
+				ImageAsset:   &evtv1.AssetRecord{Id: legacyID},
 			}},
 		}},
 	})
@@ -1573,7 +1826,21 @@ func TestAsset_LegacyAttachmentRouteIsGone(t *testing.T) {
 	}
 }
 
-func TestAsset_StableURLIsCapability(t *testing.T) {
+// TestAsset_ForkPublicStableURLIgnoresTampering verifies that the fork's browser-facing
+// asset URL is not signed: URL tampering changes nothing.
+//
+// 【本地改动 2026-08-30】改名为 TestAsset_ForkPublicStableURLIgnoresTampering。
+// 上游原名：TestAsset_StableURLIsCapability（grep 上游原名仍可定位本测试；原名叫「URL 是能力」，
+// 而本测试现在断言 URL 不是能力，留着原名会给出反向的假信号）。
+// 上游此测试借「篡改 access ticket 必须 403」证明 URL 是签名能力。
+// 本 fork 的 ConnectRPC 下发 URL 是带 {fn.ext} 的公开 URL（无 ticket、无签名、filename 段被忽略），
+// 故该断言反转为 200。测试里其余「无尾段 canonical URL 仍需凭据」的分支不受影响：fork 保留
+// /assets/files/{assetID} → serveStableAttachment（ticket 语义），只是 attachment.GetAssetUrl()
+// 这个字段本身换成了公开 URL。
+// 发现背景：2026-08-29 合并 upstream 后语义冲突审计发现；审计初报只列出 4 处，按 URL 来源
+// 全文件分类扫描后补全为本处。
+// 回归提示：若本分支合回 upstream，篡改断言必须改回 403，函数名恢复上游原名。
+func TestAsset_ForkPublicStableURLIgnoresTampering(t *testing.T) {
 	env := setupAssetTestServer(t)
 
 	user, err := env.core.CreateUser(env.ctx, "system", "authuser", "Auth User", "password123")
@@ -1629,8 +1896,13 @@ func TestAsset_StableURLIsCapability(t *testing.T) {
 		t.Fatalf("Failed to make request: %v", err)
 	}
 	tamperedResp.Body.Close()
-	if tamperedResp.StatusCode != http.StatusForbidden {
-		t.Errorf("Expected 403 for tampered access ticket, got %d", tamperedResp.StatusCode)
+	// 【本地改动 2026-08-29】上游期望 403（篡改 access ticket 必须拒绝）；fork 的公开 URL 无 ticket，
+	// 末段是 {fn.ext} 而非签名串——TrimSuffix(..., "X") 对 .png 结尾是无操作，"z" 只是把文件名变成
+	// photo.pngz，而服务端 stableAttachmentPath 明确「按 ID 解析、忽略 filename 段」，故仍 200。
+	// 这同时说明：fork 的公开 URL 对 URL 内容零校验（含任意篡改），取舍同
+	// resolvePublicAttachment 注释。回归提示：若本分支合回 upstream，此断言必须改回 403。
+	if tamperedResp.StatusCode != http.StatusOK {
+		t.Errorf("fork public URL ignores URL tampering: status = %d, want 200", tamperedResp.StatusCode)
 	}
 }
 
@@ -1732,17 +2004,17 @@ func TestAsset_HLSGenerationIsAuthorizedAndBackendIndependent(t *testing.T) {
 			if err != nil {
 				t.Fatalf("UploadAttachment: %v", err)
 			}
-			segment, err := env.core.UploadDerivativeAttachment(env.ctx, original.GetId(), corev1.AssetDerivativeRole_ASSET_DERIVATIVE_ROLE_HLS_MEDIA_SEGMENT, room.Id, "segment-00000.ts", "video/mp2t", bytes.NewReader([]byte("segment-bytes")))
+			segment, err := env.core.UploadDerivativeAttachment(env.ctx, original.GetId(), evtv1.AssetDerivativeRole_ASSET_DERIVATIVE_ROLE_HLS_MEDIA_SEGMENT, room.Id, "segment-00000.ts", "video/mp2t", bytes.NewReader([]byte("segment-bytes")))
 			if err != nil {
 				t.Fatalf("UploadDerivativeAttachment(segment): %v", err)
 			}
 			if err := env.core.RecordAssetProcessingStarted(env.ctx, core.SystemActorID, room.Id, "E-hls", original.GetId()); err != nil {
 				t.Fatalf("RecordAssetProcessingStarted: %v", err)
 			}
-			hls := &corev1.AssetProcessedHLS{
-				Renditions: []*corev1.AssetHLSRendition{{
+			hls := &evtv1.AssetProcessedHLS{
+				Renditions: []*evtv1.AssetHLSRendition{{
 					Width: 640, Height: 360, Bandwidth: 500000,
-					Segments: []*corev1.AssetHLSSegment{{AssetId: segment.GetId(), DurationMs: 6000}},
+					Segments: []*evtv1.AssetHLSSegment{{AssetId: segment.GetId(), DurationMs: 6000}},
 				}},
 			}
 			if err := env.core.RecordAssetProcessedWithHLS(env.ctx, core.SystemActorID, room.Id, "E-hls", original.GetId(), 6000, 640, 360, nil, nil, hls); err != nil {
@@ -1818,11 +2090,11 @@ func TestHLSDerivativeRequiresExpectedParentAndRole(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UploadAttachment(other): %v", err)
 	}
-	wrongParent, err := env.core.UploadDerivativeAttachment(env.ctx, otherOriginal.GetId(), corev1.AssetDerivativeRole_ASSET_DERIVATIVE_ROLE_HLS_MEDIA_SEGMENT, room.Id, "other-segment.ts", "video/mp2t", bytes.NewReader([]byte("segment")))
+	wrongParent, err := env.core.UploadDerivativeAttachment(env.ctx, otherOriginal.GetId(), evtv1.AssetDerivativeRole_ASSET_DERIVATIVE_ROLE_HLS_MEDIA_SEGMENT, room.Id, "other-segment.ts", "video/mp2t", bytes.NewReader([]byte("segment")))
 	if err != nil {
 		t.Fatalf("UploadDerivativeAttachment(wrong parent): %v", err)
 	}
-	wrongRole, err := env.core.UploadDerivativeAttachment(env.ctx, original.GetId(), corev1.AssetDerivativeRole_ASSET_DERIVATIVE_ROLE_VIDEO_VARIANT, room.Id, "variant.mp4", "video/mp4", bytes.NewReader([]byte("variant")))
+	wrongRole, err := env.core.UploadDerivativeAttachment(env.ctx, original.GetId(), evtv1.AssetDerivativeRole_ASSET_DERIVATIVE_ROLE_VIDEO_VARIANT, room.Id, "variant.mp4", "video/mp4", bytes.NewReader([]byte("variant")))
 	if err != nil {
 		t.Fatalf("UploadDerivativeAttachment(wrong role): %v", err)
 	}
@@ -1838,7 +2110,7 @@ func TestHLSDerivativeRequiresExpectedParentAndRole(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			recorder := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(recorder)
-			if _, ok := server.hlsDerivative(c, original.GetId(), tt.assetID, corev1.AssetDerivativeRole_ASSET_DERIVATIVE_ROLE_HLS_MEDIA_SEGMENT); ok {
+			if _, ok := server.hlsDerivative(c, original.GetId(), tt.assetID, evtv1.AssetDerivativeRole_ASSET_DERIVATIVE_ROLE_HLS_MEDIA_SEGMENT); ok {
 				t.Fatal("hlsDerivative accepted an unrelated derivative")
 			}
 			if recorder.Code != http.StatusNotFound {
@@ -1861,9 +2133,9 @@ func firstHLSURI(t *testing.T, playlist []byte) string {
 }
 
 func TestRenderHLSPlaylistsFromManifest(t *testing.T) {
-	hls := &corev1.AssetProcessedHLS{Renditions: []*corev1.AssetHLSRendition{{
+	hls := &evtv1.AssetProcessedHLS{Renditions: []*evtv1.AssetHLSRendition{{
 		Width: 640, Height: 360, Bandwidth: 500_000,
-		Segments: []*corev1.AssetHLSSegment{{AssetId: "A-one", DurationMs: 6000}, {AssetId: "A-two", DurationMs: 1500}},
+		Segments: []*evtv1.AssetHLSSegment{{AssetId: "A-one", DurationMs: 6000}, {AssetId: "A-two", DurationMs: 1500}},
 	}}}
 	master, err := renderHLSMasterPlaylist(hls, func(index int) string { return fmt.Sprintf("/rendition/%d", index) })
 	if err != nil {
@@ -1881,9 +2153,19 @@ func TestRenderHLSPlaylistsFromManifest(t *testing.T) {
 	}
 }
 
-// TestAsset_RevokedMembership_RevokesStableURL covers the "kick / leave"
-// path under the per-user access-ticket model.
-func TestAsset_RevokedMembership_RevokesStableURL(t *testing.T) {
+// TestAsset_ForkPublicStableURLSurvivesLeaveRoom covers the "kick / leave" path.
+//
+// 【本地改动 2026-08-30】改名为 TestAsset_ForkPublicStableURLSurvivesLeaveRoom。
+// 上游原名：TestAsset_RevokedMembership_RevokesStableURL（grep 上游原名仍可定位本测试；原名
+// 断言「退群即吊销」，与 fork 语义完全相反）。
+// 上游此测试断言退群后 ticket URL 立即失效（403）；本 fork 的公开 URL 无 ticket、无成员校验，
+// 退群不吊销已发出的 URL，故 post-leave 期望值改成 200，本测试守护「fork 刻意不吊销」这一
+// 回归面（防止有人半吊子加回成员校验却漏了路由）。
+// 取舍详见 resolvePublicAttachment 与 TestAsset_OriginalAttachment_HasCacheHeaders 的
+// 【本地改动】注释。
+// 回归提示：若本分支合回 upstream，post-leave 两处断言必须改回 http.StatusForbidden，
+// 函数名恢复上游原名。
+func TestAsset_ForkPublicStableURLSurvivesLeaveRoom(t *testing.T) {
 	env := setupAssetTestServerWithS3(t)
 
 	owner, err := env.core.CreateUser(env.ctx, "system", "asset-owner", "Owner", "password123")
@@ -1929,6 +2211,8 @@ func TestAsset_RevokedMembership_RevokesStableURL(t *testing.T) {
 	}
 
 	// Owner leaves the room, so their stable access-ticket URL should stop working.
+	// 【本地改动 2026-08-29】上游注释在此：fork 无 ticket、无成员校验，退群不影响 URL 可用性，
+	// 所以下方断言与上游相反。
 	if err := env.core.LeaveRoom(env.ctx, owner.Id, "channel", owner.Id, room.Id); err != nil {
 		t.Fatalf("LeaveRoom: %v", err)
 	}
@@ -1938,20 +2222,32 @@ func TestAsset_RevokedMembership_RevokesStableURL(t *testing.T) {
 		t.Fatalf("post-leave GET: %v", err)
 	}
 	r2.Body.Close()
-	if r2.StatusCode != http.StatusForbidden {
-		t.Errorf("expected 403 after ticket user left the room, got %d", r2.StatusCode)
+	if r2.StatusCode != http.StatusOK {
+		t.Errorf("fork expects public URL to keep serving after leave (200), got %d", r2.StatusCode)
 	}
 	thumb2, err := plainClient.Get(env.server.URL + thumbnailURL)
 	if err != nil {
 		t.Fatalf("post-leave thumbnail GET: %v", err)
 	}
 	thumb2.Body.Close()
-	if thumb2.StatusCode != http.StatusForbidden {
-		t.Errorf("expected cached thumbnail ticket to fail after leave, got %d", thumb2.StatusCode)
+	if thumb2.StatusCode != http.StatusOK {
+		t.Errorf("fork expects public thumbnail URL to keep serving after leave (200), got %d", thumb2.StatusCode)
 	}
 }
 
-func TestAsset_RevokedMessageReadRevokesStableURL(t *testing.T) {
+// TestAsset_ForkPublicStableURLSurvivesDenyRead covers permission denial on a room.
+//
+// 【本地改动 2026-08-30】改名为 TestAsset_ForkPublicStableURLSurvivesDenyRead。
+// 上游原名：TestAsset_RevokedMessageReadRevokesStableURL（grep 上游原名仍可定位本测试；
+// 上游原版无 doc comment，原名断言「撤权即吊销」，与 fork 语义完全相反）。
+// 上游此测试断言撤销 message.read 权限后 ticket URL 立即 403；本 fork 的公开 URL 无 ticket、
+// 无成员校验、无权限校验，撤权不吊销已发出的 URL，故 post-denial 期望值改成 200。
+// 取舍背景：本 fork 自 2026-08-18 起以 assetID 作为唯一凭证换取 CDN/浏览器长缓存
+// （public, max-age=31536000, immutable），代价是权限收回对已发出的 URL 无效——
+// 上游 cli/AGENTS.md 契约要求吊销。
+// 回归提示：若本分支合回 upstream，下方断言必须改回 http.StatusForbidden / want 403，
+// 函数名恢复上游原名。
+func TestAsset_ForkPublicStableURLSurvivesDenyRead(t *testing.T) {
 	env := setupAssetTestServerWithS3(t)
 
 	viewer, err := env.core.CreateUser(env.ctx, core.SystemActorID, "asset-read-viewer", "Asset Read Viewer", "password123")
@@ -1981,12 +2277,86 @@ func TestAsset_RevokedMessageReadRevokesStableURL(t *testing.T) {
 	if err := env.core.DenyRoomPermission(env.ctx, core.SystemActorID, room.Id, core.RoleEveryone, core.PermMessageRead); err != nil {
 		t.Fatalf("DenyRoomPermission: %v", err)
 	}
+	if err := env.core.DenyRoomPermission(env.ctx, core.SystemActorID, room.Id, core.RoleEveryone, core.PermMessageReadInteractions); err != nil {
+		t.Fatalf("DenyRoomPermission message.read-interactions: %v", err)
+	}
+	// 【本地改动 2026-08-29】上游在此期望 403；fork 的公开 URL 不做权限校验，撤权后仍 200。
+	// 上方两个 DenyRoomPermission 保留（上游设置步骤），用于证明 fork 确实收到撤权事实后
+	// 依然放行，即本 fork 的「已发出 URL 不吊销」是刻意语义而非漏校验。
 	after, err := plainClient.Get(env.server.URL + attachmentURL)
 	if err != nil {
 		t.Fatalf("GET after denial: %v", err)
 	}
 	after.Body.Close()
-	if after.StatusCode != http.StatusForbidden {
-		t.Fatalf("status after denial = %d, want 403", after.StatusCode)
+	if after.StatusCode != http.StatusOK {
+		t.Fatalf("status after denial = %d, want 200 (fork public URLs are not revoked)", after.StatusCode)
+	}
+}
+
+// 【本地改动 2026-08-29】上游此测试借 ticket URL 验证「只有 message.read-interactions 的
+// reader 也能取附件、但不能读正文」的权限边界。fork 的公开 URL 不校验任何权限，
+// 末尾的 GET 断言因此在 fork 下退化为平凡真（任何人拿到 assetID 都能取到），不再构成
+// 权限边界的正向证据；上游原版无 doc comment，此处补记以免后来人误以为该测试仍在守护
+// 交互级读者的取图权限。
+// 保留：上方 GetMessage 作为 interaction reader 成功返回 1 条 attachment 的断言仍有意义——
+// 它验证的是 ConnectRPC 层的交互级读取边界，与 URL 无关，fork 未改动。
+// 取舍与回归提示：若本分支合回 upstream，本测试无需改动（它在上游语义下本来通过）；
+// 但 fork 侧不要把「GET 断言通过」当成权限边界已通过。
+func TestAsset_InteractionReaderCanFetchStableURL(t *testing.T) {
+	env := setupAssetTestServerWithS3(t)
+
+	author, err := env.core.CreateUser(env.ctx, core.SystemActorID, "asset-interaction-author", "Asset Interaction Author", "password123")
+	if err != nil {
+		t.Fatalf("CreateUser author: %v", err)
+	}
+	reader, err := env.core.CreateUser(env.ctx, core.SystemActorID, "asset-interaction-reader", "Asset Interaction Reader", "password123")
+	if err != nil {
+		t.Fatalf("CreateUser reader: %v", err)
+	}
+	room, err := env.core.CreateRoom(env.ctx, author.GetId(), core.KindChannel, "", "asset-interaction-room", "")
+	if err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+	for _, userID := range []string{author.GetId(), reader.GetId()} {
+		if _, err := env.core.JoinRoom(env.ctx, userID, core.KindChannel, userID, room.GetId()); err != nil {
+			t.Fatalf("JoinRoom %s: %v", userID, err)
+		}
+	}
+	if err := env.core.DenyRoomPermission(env.ctx, core.SystemActorID, room.GetId(), core.RoleEveryone, core.PermMessageRead); err != nil {
+		t.Fatalf("DenyRoomPermission message.read: %v", err)
+	}
+	if err := env.core.GrantUserRoomPermission(env.ctx, core.SystemActorID, room.GetId(), reader.GetId(), core.PermMessageReadInteractions); err != nil {
+		t.Fatalf("GrantUserRoomPermission message.read-interactions: %v", err)
+	}
+
+	env.login(t, "asset-interaction-author", "password123")
+	messageID, _ := env.postAssetMessageWithAttachment(
+		t, room.GetId(), "@asset-interaction-reader related attachment", createAssetTestPNG(t, 64, 64), "related.png",
+	)
+
+	env.login(t, "asset-interaction-reader", "password123")
+	messages := apiv1connect.NewMessageServiceClient(env.client, env.server.URL+connectAPIPrefix)
+	message, err := messages.GetMessage(env.ctx, connect.NewRequest(&apiv1.GetMessageRequest{
+		RoomId: room.GetId(), EventId: messageID,
+	}))
+	if err != nil {
+		t.Fatalf("GetMessage as interaction reader: %v", err)
+	}
+	attachments := message.Msg.GetMessage().GetAttachments()
+	if len(attachments) != 1 {
+		t.Fatalf("interaction-scoped message attachments = %d, want 1", len(attachments))
+	}
+	attachmentURL := attachments[0].GetAssetUrl().GetUrl()
+	if attachmentURL == "" {
+		t.Fatal("interaction-scoped attachment URL is empty")
+	}
+	plainClient := &http.Client{CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }}
+	response, err := plainClient.Get(env.server.URL + attachmentURL)
+	if err != nil {
+		t.Fatalf("GET interaction-scoped attachment: %v", err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("interaction-scoped attachment status = %d, want 200", response.StatusCode)
 	}
 }

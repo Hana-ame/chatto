@@ -3,6 +3,27 @@
 **Status:** Active
 **Last reviewed:** 2026-08-25
 
+> **【本地改动 32e1f566】（2026-08-14 引入，AVIF 附件重编码）** 本文件属 upstream 所有；
+> 下列两处是 fork 独有的文字改动，合并 upstream 时会被上游版本覆盖，需要人工恢复
+>（正文各处以 `【本地改动 32e1f566】` HTML 注释就地标记）。
+>
+> 1. **`## Behavior` 段「room timeline loads attachment images」一行** —— 上游原文
+>    "The untouched upload remains available"，fork 改为 "The uploaded image (re-encoded
+>    to AVIF when ffmpeg is available) remains available"。
+>    **原因**：fork 里「原图」不是原始上传字节，而是 ffmpeg 可用时的 AVIF 重编码结果；
+>    沿用上游措辞会误导读者以为原字节始终被保留。
+> 2. **`### 10. Displayed images use bounded derivatives` 的 Decision / Why / Tradeoff 三行**
+>    —— 补记 fork 在上传时用 ffmpeg 重编码为 AVIF（CRF 30，优先 `libsvtav1`，回退
+>    `libaom-av1`），ffmpeg 或 AV1 编码器不可用时存原字节；动画 GIF 永不重编码以便
+>    视频管线转 MP4。
+>
+> **边界**：只影响 room 附件图片。头像与链接预览始终走 WebP 衍生图，不参与 AVIF 重编码。
+>
+> **已知文档缺口（未擅自改）**：上游的 "Opaque static attachment derivatives use
+> JPEG quality 75" 在本 fork 已不准确 —— fork 自 2026-08-16 起在无 ffmpeg 回退路径之外
+> 一律输出有损 WebP。该措辞出现在上游所有的两处（`## Behavior` 段与 `### 10` 的 Decision
+> 开头），属 upstream 正文，改它会新增合并冲突面，留给人决定。
+
 ## Overview
 
 Users can attach files to messages — images, videos, documents — via drag-and-drop, paste, or file picker. Images are dimensioned and resizable on the fly via signed URLs. When video processing is enabled, new videos are transcoded into adaptive HLS streams; animated GIFs and historical processed videos retain the MP4 path.
@@ -17,9 +38,13 @@ Users can attach files to messages — images, videos, documents — via drag-an
 - Default upload size limits: 25 MB for general files, 100 MB for videos when video processing is enabled.
 - Video uploads require server-side video processing to be enabled. When it is disabled, the composer rejects `video/*` files immediately and the message-post API rejects them before storage.
 - Images are inspected for dimensions at upload time and can be resized at render time via URL parameters (width, height, fit mode). Public attachment and avatar APIs expose transform parameters; public server branding images expose canonical URLs only.
-- The room timeline loads attachment images within 960×400 bounds, while the lightbox loads a separate derivative within 2048×2048 bounds. The untouched upload remains available through Open original and file-download actions.
+- The room timeline loads attachment images within 960×400 bounds, while the lightbox loads a separate derivative within 2048×2048 bounds. The uploaded image (re-encoded to AVIF when ffmpeg is available) remains available through Open original and file-download actions.
+
+<!-- 【本地改动 32e1f566】fork 把上游的 "The untouched upload remains available" 改成
+     "The uploaded image (re-encoded to AVIF when ffmpeg is available) remains available"：
+     fork 的「原图」在 ffmpeg 可用时是 AVIF 重编码产物，原始上传字节不会保留。 -->
 - When enabled, videos and animated GIFs are processed by durable `asset-processing` runtime-unit workers. The processing marker commits atomically with the owning message, so a rejected message cannot create work and an accepted message remains queued while workers are offline. Workers may run inside `chatto run` or as separate `chatto asset-processing` processes.
-- Processing status: durable STARTED / COMPLETED / FAILED outcomes are stored as asset aggregate events (`evt.asset.{assetId}.*`) and delivered through the normal live EVT subscription path after room-membership authorization and the applicable channel-room `message.read` check. DM membership authorizes DM delivery. There is no separate `video_processed` live event or new runtime KV state for video progress; failed videos keep the original message visible and show a processing-failed state, while the retained original remains available through the attachment's original/download action.
+- Processing status: durable STARTED / COMPLETED / FAILED outcomes are stored as asset aggregate events (`evt.asset.{assetId}.*`) and delivered through the normal live EVT subscription path after room-membership authorization and the applicable channel-room message-read check for the owning thread. DM membership authorizes DM delivery. There is no separate `video_processed` live event or new runtime KV state for video progress; failed videos keep the original message visible and show a processing-failed state, while the retained original remains available through the attachment's original/download action.
 - Processed video dimensions are display dimensions used for layout, not necessarily raw encoded storage pixels. Non-square-pixel and rotated sources should render in their intended orientation and aspect ratio. The room timeline displays every posted video uncropped at its measured aspect ratio, including unusual near-square dimensions and converted animated GIF loops. The player canvas is bounded to the available timeline width and a maximum height; for ratios beyond 9:16 or 16:9, it uses letterboxing so playback controls remain usable without cropping the video.
 - A thumbnail is generated from an early video frame using the same display dimensions, so non-square-pixel sources do not persist squished or pillarboxed poster images.
 - For newly processed ordinary videos, the public attachment view exposes a signed HLS master-playlist URL. The durable processing manifest stores HLS rendition metadata and no MP4 variant. Existing processed videos are not backfilled; when HLS metadata is absent, the new client continues through their historical MP4 path.
@@ -71,9 +96,9 @@ Users can attach files to messages — images, videos, documents — via drag-an
 
 ### 7. Attachment URLs are per-user signed capabilities
 
-**Decision:** Public attachment APIs expose attachment media as stable asset paths plus per-user access tickets: `/assets/files/{assetId}?access={ticket}` for originals and `/assets/files/{assetId}/image/{width}x{height}/{fit}?access={ticket}` for image derivatives. HLS uses a domain-separated, source-video-scoped ticket on `/assets/hls/{assetId}/master.m3u8`; Chatto generates each playlist with authorised child routes and checks every requested segment against the durable derivative manifest. Attachment, thumbnail, video thumbnail, HLS master, and historical variant URLs expose the ticket expiry so the client can refresh before or after a lazy-load miss. Every fetch verifies that the signed user is still a room member and has applicable channel-room `message.read` authority. DM membership authorizes DM reads.
+**Decision:** Public attachment APIs expose attachment media as stable asset paths plus per-user access tickets: `/assets/files/{assetId}?access={ticket}` for originals and `/assets/files/{assetId}/image/{width}x{height}/{fit}?access={ticket}` for image derivatives. HLS uses a domain-separated, source-video-scoped ticket on `/assets/hls/{assetId}/master.m3u8`; Chatto generates each playlist with authorised child routes and checks every requested segment against the durable derivative manifest. Attachment, thumbnail, video thumbnail, HLS master, and historical variant URLs expose the ticket expiry so the client can refresh before or after a lazy-load miss. Every fetch verifies that the signed user is still a room member and has broad `message.read`, or `message.read-interactions` with a relationship to the asset's owning thread. DM membership authorizes DM reads.
 **Why:** Cross-origin `<img>` tags (used when the SPA loads attachments from a _remote_ registered server) can't carry session cookies (SameSite) or Authorization headers. A signed per-user access ticket lets browsers load remote attachments directly, while current membership and applicable permission checks revoke access after an access boundary changes.
-**Tradeoff:** The access ticket is a bearer capability — anyone holding it can fetch until the expiry passes, the signed user loses room membership, or the signed user loses applicable channel-room `message.read` authority. Tickets use hourly issuance buckets and retain **23–24 hours** of validity, so repeated reads within a bucket return the same URL while normal rendering, lazy loading, deferred media startup, and lightbox use remain reliable across long-lived room views. Timeline, preview, and room-files clients use the exposed expiry to refresh shortly before it; the lightbox refreshes after 22 hours to preserve roughly an hour of margin at minimum ticket validity. Media load errors also trigger refreshes. Protected asset responses use `private, no-store`, so browser-visible protected bytes are not reused as authorization state. HLS segments stream through Chatto on both backends, while short-lived S3 redirects remain reserved for heavy passive originals such as video, audio, and large files. Rotating `[core.assets].signing_secret` invalidates all outstanding access tickets.
+**Tradeoff:** The access ticket is a bearer capability — anyone holding it can fetch until the expiry passes, the signed user loses room membership, or the signed user loses applicable channel-room message-read authority. Tickets use hourly issuance buckets and retain **23–24 hours** of validity, so repeated reads within a bucket return the same URL while normal rendering, lazy loading, deferred media startup, and lightbox use remain reliable across long-lived room views. Timeline, preview, and room-files clients use the exposed expiry to refresh shortly before it; the lightbox refreshes after 22 hours to preserve roughly an hour of margin at minimum ticket validity. Media load errors also trigger refreshes. Protected asset responses use `private, no-store`, so browser-visible protected bytes are not reused as authorization state. HLS segments stream through Chatto on both backends, while short-lived S3 redirects remain reserved for heavy passive originals such as video, audio, and large files. Rotating `[core.assets].signing_secret` invalidates all outstanding access tickets.
 
 ### 8. Active document attachments render in a browser sandbox
 
@@ -89,9 +114,17 @@ Users can attach files to messages — images, videos, documents — via drag-an
 
 ### 10. Displayed images use bounded derivatives
 
-**Decision:** Timeline images fit within 960×400 bounds and lightbox images fit within 2048×2048 bounds. Opaque static derivatives use JPEG quality 75, while transparency and animation continue to use lossless WebP. Original uploads remain unchanged and available separately.
-**Why:** Timeline frames are much smaller than typical camera and screenshot uploads, and even full-screen viewing rarely benefits from transferring the source resolution. Separate display sizes reduce bandwidth without sacrificing the original file-sharing behavior.
-**Tradeoff:** Opaque displayed images are lossy and capped in resolution. Transparent and animated images may see smaller savings because preserving their behavior requires lossless encoding.
+<!-- 【本地改动 32e1f566】fork 重写了下方 Decision / Why / Tradeoff 三行：上游原文只讲
+     JPEG 75 + 无损 WebP，fork 补记上传时用 ffmpeg 重编码为 AVIF（CRF 30，优先 libsvtav1、
+     回退 libaom-av1），ffmpeg 或 AV1 编码器不可用时存原字节，动画 GIF 永不重编码以便
+     视频管线转 MP4。合并 upstream 时这三行会被上游版本覆盖，需人工恢复。
+
+     已知不一致（未改）：Decision 开头的 "Opaque static derivatives use JPEG quality 75"
+     在 fork 里只在无 ffmpeg 回退路径成立，2026-08-16 起正常路径输出有损 WebP。 -->
+
+**Decision:** Timeline images fit within 960×400 bounds and lightbox images fit within 2048×2048 bounds. Opaque static derivatives use JPEG quality 75, while transparency and animation continue to use lossless WebP. Newly uploaded image attachments are re-encoded to AVIF through ffmpeg (the binary the video pipeline already requires) at CRF 30 using the fastest available encoder (`libsvtav1`, falling back to `libaom-av1`); when ffmpeg or an AV1 encoder is unavailable, uploads are stored unchanged. Animated GIFs are never re-encoded so the video pipeline can convert them to MP4.
+**Why:** Timeline frames are much smaller than typical camera and screenshot uploads, and even full-screen viewing rarely benefits from transferring the source resolution. Separate display sizes reduce bandwidth without sacrificing the original file-sharing behavior. AVIF compresses camera and screenshot uploads better than the original JPEG/PNG bytes while remaining universally supported in modern browsers.
+**Tradeoff:** Opaque displayed images are lossy and capped in resolution. Transparent and animated images may see smaller savings because preserving their behavior requires lossless encoding. Upload-time re-encoding adds latency proportional to image size and depends on ffmpeg availability; deployments without ffmpeg fall back to storing original bytes, and mixed-version deployments may serve both formats. Stored content type follows the encoded format (`image/avif` or the original type).
 
 ### 11. Message-owned asset deletion is replayable
 
@@ -110,12 +143,14 @@ Users can attach files to messages — images, videos, documents — via drag-an
 Posting an attachment requires room membership, the relevant message-posting permission (`message.post` or `message.post-in-thread`), and `message.attach`. The `message.attach` permission is configurable at server, group, and room scope and only gates message attachments; server branding uploads, user avatars, link previews, and attachment deletion use their existing checks.
 
 Reading attachment metadata or bytes requires room membership. Channel-room
-reads also require `message.read`. This check applies again when a client uses
-an existing signed or ticketed asset URL. DM membership authorizes DM reads.
+reads also require broad `message.read`, or `message.read-interactions` with a
+relationship to the asset's owning thread. This check applies again when a
+client uses an existing signed or ticketed asset URL. DM membership authorizes
+DM reads.
 
 Fresh servers seed `message.attach` for `everyone` so new deployments keep uploads enabled by default. Existing servers are not automatically backfilled after upgrade; operators should grant `message.attach` manually or through their chosen RBAC maintenance flow if existing rooms should keep allowing uploads.
 
 ## Related
 
-- **ADRs:** ADR-021 (dual asset storage), ADR-023 (HMAC-signed image transform URLs), ADR-032 (self-describing signed attachment URLs), ADR-036 (runtime state in `RUNTIME_STATE`), ADR-041 (runtime units for optional processes), ADR-045 (public API stability tiers), ADR-047 (direct ticketed asset URLs), ADR-066 (durable asset processing runtime unit), ADR-067 (Electron desktop packaging), ADR-069 (explicit durable consumer lifecycle), ADR-080 (explicit message-read permissions)
+- **ADRs:** ADR-021 (dual asset storage), ADR-023 (HMAC-signed image transform URLs), ADR-032 (self-describing signed attachment URLs), ADR-036 (runtime state in `RUNTIME_STATE`), ADR-041 (runtime units for optional processes), ADR-045 (public API stability tiers), ADR-047 (direct ticketed asset URLs), ADR-066 (durable asset processing runtime unit), ADR-067 (Electron desktop packaging), ADR-069 (explicit durable consumer lifecycle), ADR-080 (explicit message-read permissions), ADR-082 (derived thread interactions)
 - **FDRs:** FDR-002 (Replies & Threads), FDR-004 (Message Editing & Deletion), FDR-034 (Chatto Desktop), FDR-039 (Message Access & Interactions)

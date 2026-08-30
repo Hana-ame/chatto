@@ -44,6 +44,7 @@
       "allow": "erlauben",
       "deny": "verweigern",
       "winning_decision": "(entscheidende Entscheidung)",
+      "included_by": "Included by {permission}",
       "level_server": "Server",
       "level_group": "Gruppe",
       "level_room": "Raum",
@@ -94,6 +95,16 @@
         }
       }
     },
+    "permission_categories": {
+      "admin": "Administration",
+      "bot": "Bots",
+      "message": "Nachrichten",
+      "role": "Rollen",
+      "room": "Räume",
+      "server": "Server",
+      "user": "Benutzer",
+      "other": "Sonstige"
+    },
     "permission_descriptions": {
       "server_manage": "Servereinstellungen aktualisieren (Name, Beschreibung, Logo)",
       "room_create": "Neue Räume erstellen",
@@ -102,6 +113,7 @@
       "room_manage": "Einstellungen und Berechtigungen eines Raums bearbeiten und Räume löschen",
       "room_ban_member": "Mitglieder aus Räumen sperren",
       "message_read": "Nachrichten in Kanalräumen lesen",
+      "message_read_interactions": "Vollständige Threads lesen, die du erstellt hast oder in denen dich ein anderer Benutzer direkt erwähnt hat",
       "message_post": "Root-Nachrichten in Räumen posten und DMs starten",
       "message_post_in_thread": "Antworten in einem Thread posten",
       "message_attach": "Dateien an Nachrichten anhängen",
@@ -117,7 +129,9 @@
       "user_delete_self": "Eigenes Konto löschen",
       "user_invite": "Einladungslinks erstellen und verwalten",
       "user_manage_accounts": "Benutzer erstellen, Kontoidentität bearbeiten, Passwörter zurücksetzen, verifizierte E-Mails hinzufügen und Login-Sperren zurücksetzen",
-      "user_manage_permissions": "Direkte benutzerbezogene Berechtigungsüberschreibungen bearbeiten"
+      "user_manage_permissions": "Direkte benutzerbezogene Berechtigungsüberschreibungen bearbeiten",
+      "bot_create": "Bot-Konten erstellen, die dir gehören",
+      "bot_manage": "Alle Bot-Konten ansehen und verwalten"
     }
   }
 }

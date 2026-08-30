@@ -46,12 +46,22 @@ const (
 type Config struct {
 	// MaxUploadSize is the maximum size for uploaded files in bytes.
 	MaxUploadSize int64
+	// FFmpegPath 是用于把上传的附件图片重编码为 AVIF 的 ffmpeg 二进制。
+	// 【本地改动 32e1f566】为空时从 PATH 解析。
+	FFmpegPath string
+	// AVIFEnabled 控制 room 附件图片上传时是否重编码为 AVIF。
+	// 【本地改动 218426d6】关闭时保持原字节且完全不探测/不调用 ffmpeg。
+	// 头像、branding、链接预览是 WebP-only,不受此开关影响。
+	AVIFEnabled bool
 }
 
 // DefaultConfig returns a Config with default values.
 func DefaultConfig() Config {
 	return Config{
 		MaxUploadSize: DefaultMaxUploadSize,
+		// 【本地改动 218426d6】AVIF 默认 best-effort 开启(历史行为);
+		// 显式配置可关闭(见 AssetProcessingConfig.AVIFEnabled)。
+		AVIFEnabled: true,
 	}
 }
 
@@ -246,9 +256,10 @@ func ProcessAvatarImage(input io.Reader) (io.Reader, error) {
 	return ProcessAvatarImageWithConfig(input, DefaultConfig())
 }
 
-// ProcessAvatarImageWithConfig reads an image from the input reader, resizes it to fit
-// within MaxAvatarDim x MaxAvatarDim while maintaining aspect ratio, and
-// encodes it as WebP. Returns an error if the input exceeds cfg.MaxUploadSize.
+// ProcessAvatarImageWithConfig 从输入 reader 读图,缩放到 MaxAvatarDim 范围内
+// 并保持宽高比,编码为 WebP。输入超过 cfg.MaxUploadSize 时报错。
+// 【本地改动说明 32e1f566】此路径刻意与 AVIF 无关:AVIF 重编码只作用于
+// room 附件图片(见 EncodeAVIF),绝不用于头像。
 func ProcessAvatarImageWithConfig(input io.Reader, cfg Config) (io.Reader, error) {
 	// Limit input size to prevent memory exhaustion
 	img, err := decodeBoundedImage(input, cfg)
@@ -275,9 +286,10 @@ func ProcessLogoImage(input io.Reader) (io.Reader, error) {
 	return ProcessLogoImageWithConfig(input, DefaultConfig())
 }
 
-// ProcessLogoImageWithConfig reads an image from the input reader, resizes it to fit
-// within MaxLogoDim x MaxLogoDim while maintaining aspect ratio, and
-// encodes it as WebP. Returns an error if the input exceeds cfg.MaxUploadSize.
+// ProcessLogoImageWithConfig 从输入 reader 读图,缩放到 MaxLogoDim 范围内
+// 并保持宽高比,编码为 WebP。输入超过 cfg.MaxUploadSize 时报错。
+// 【本地改动说明 32e1f566】此路径刻意与 AVIF 无关:AVIF 重编码只作用于
+// room 附件图片(见 EncodeAVIF),绝不用于服务端 branding logo。
 func ProcessLogoImageWithConfig(input io.Reader, cfg Config) (io.Reader, error) {
 	// Limit input size to prevent memory exhaustion
 	img, err := decodeBoundedImage(input, cfg)
@@ -333,9 +345,11 @@ const MaxLinkPreviewWidth = 1200
 // MaxLinkPreviewHeight is the maximum height for link preview OG images.
 const MaxLinkPreviewHeight = 630
 
-// ProcessLinkPreviewImageWithConfig reads an image from the input reader, resizes it to fit
-// within MaxLinkPreviewWidth x MaxLinkPreviewHeight while maintaining aspect ratio, and
-// encodes it as WebP. Returns an error if the input exceeds cfg.MaxUploadSize.
+// ProcessLinkPreviewImageWithConfig 从输入 reader 读图,缩放到
+// MaxLinkPreviewWidth x MaxLinkPreviewHeight 范围内并保持宽高比,编码为
+// WebP。输入超过 cfg.MaxUploadSize 时报错。
+// 【本地改动说明 32e1f566】此路径刻意与 AVIF 无关:AVIF 重编码只作用于
+// room 附件图片(见 EncodeAVIF),绝不用于链接预览图。
 func ProcessLinkPreviewImageWithConfig(input io.Reader, cfg Config) (io.Reader, error) {
 	// Limit input size to prevent memory exhaustion
 	img, err := decodeBoundedImage(input, cfg)
@@ -373,10 +387,12 @@ func ProcessAttachmentImage(input io.Reader) (*AttachmentImageResult, error) {
 	return ProcessAttachmentImageWithConfig(input, DefaultConfig())
 }
 
-// ProcessAttachmentImageWithConfig reads an image and extracts metadata (dimensions).
-// The original image is returned as-is (not re-encoded).
-// Thumbnails are generated on-the-fly via the transform system.
-// Returns an error if the input exceeds cfg.MaxUploadSize or cannot be decoded.
+// ProcessAttachmentImageWithConfig 读图并提取元数据(尺寸)。
+// 原图原样返回(这里不重编码)。缩略图由 transform 系统按需生成。
+// 输入超过 cfg.MaxUploadSize 或无法解码时报错。
+// 【本地改动说明 32e1f566】这是唯一允许 AVIF 重编码的上传路径:调用方
+// (room 附件上传)在开关开启且有 ffmpeg AV1 编码器时对结果调用
+// EncodeAVIF。头像、服务端 branding、链接预览永不经过 AVIF。
 func ProcessAttachmentImageWithConfig(input io.Reader, cfg Config) (*AttachmentImageResult, error) {
 	// Read all input into memory (limited to MaxUploadSize)
 	originalBytes, err := readAndValidateImage(input, cfg.MaxUploadSize)

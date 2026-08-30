@@ -666,7 +666,9 @@ describe('ModalContainer About Chatto modal', () => {
     expect(q(container, 'dialog')?.getAttribute('aria-label')).toBe('About Chatto');
     expect(container.textContent ?? '').toContain('v0.5.0-test');
     expect(
-      container.querySelector('a[href="https://github.com/chattocorp/chatto"]')
+      // 【本地改动】与 AboutChattoModal 的 fork 仓库链接保持一致;
+      // 上游断言的是 chattocorp/chatto。
+      container.querySelector('a[href="https://github.com/Hana-ame/chatto"]')
     ).not.toBeNull();
     expect(container.querySelector('a[href="https://docs.chatto.run"]')).not.toBeNull();
     await vi.waitFor(

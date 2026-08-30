@@ -77,6 +77,7 @@ class FakeServerConnection {
   client = {};
   statusUpdates: ConnectionStatus[] = [];
   authRequiredCalls = 0;
+  browserRenewalCalls = 0;
   authRenewed = false;
   #reconnect: ((reason: string) => void) | null = null;
   #wasDisconnected = false;
@@ -111,6 +112,11 @@ class FakeServerConnection {
     this.authRequiredCalls++;
     if (this.authRenewed) this.bearerToken = 'token-2';
     return this.authRenewed;
+  }
+
+  async renewBrowserSession(): Promise<boolean> {
+    this.browserRenewalCalls++;
+    return true;
   }
 }
 
@@ -807,6 +813,27 @@ describe('eventBusManager realtime transport', () => {
     const hello = RealtimeClientFrame.fromBinary(sockets[1].sent[0]);
     if (hello.frame.case !== 'hello') throw new Error('replacement socket did not send hello');
     expect(hello.frame.value.bearerToken).toBe('token-2');
+  });
+
+  it('reconnects cookie sessions when the server requests automatic renewal', async () => {
+    vi.useFakeTimers();
+    const { fake, socket } = await startAndSubscribe();
+
+    await socket.receive(
+      serverFrame({
+        case: 'close',
+        value: new RealtimeClose({
+          code: 'session_renewal_required',
+          message: 'browser session ready for renewal',
+          reconnect: true
+        })
+      })
+    );
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(fake.authRequiredCalls).toBe(0);
+    expect(fake.browserRenewalCalls).toBe(1);
+    expect(sockets).toHaveLength(2);
   });
 
   it('reconnects when the ServerConnection retry bridge requests it', async () => {

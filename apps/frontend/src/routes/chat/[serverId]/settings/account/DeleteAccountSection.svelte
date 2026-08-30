@@ -1,8 +1,9 @@
 <script lang="ts">
   import type { AccountAPI } from '$lib/api-client/account';
+  import { browserCookieAuthenticationHeaders } from '$lib/auth/authenticationMode';
   import { csrfFetch } from '$lib/auth/csrf';
   import { notifyLogout } from '$lib/auth/sessionChannel';
-  import { Panel } from '$lib/components/admin';
+  import Panel from '$lib/ui/Panel.svelte';
   import { m } from '$lib/i18n/messages';
   import { serverRegistry } from '$lib/state/server/registry.svelte';
   import { Dialog, Hint } from '$lib/ui';
@@ -50,9 +51,14 @@
 
       if (await getAccountAPI().deleteMyAccount(confirmationToken)) {
         const originToken = serverRegistry.originServer?.token;
-        await csrfFetch('/auth/logout', {
+        await csrfFetch('/auth/browser/logout', {
           method: 'POST',
-          headers: originToken ? { Authorization: `Bearer ${originToken}` } : undefined
+          headers: {
+            'Content-Type': 'application/json',
+            ...browserCookieAuthenticationHeaders,
+            ...(originToken ? { Authorization: `Bearer ${originToken}` } : {})
+          },
+          body: '{}'
         });
         notifyLogout();
         window.location.href = '/';

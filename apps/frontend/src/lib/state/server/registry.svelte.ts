@@ -4,6 +4,7 @@ import { serverConnectionManager } from './serverConnection.svelte';
 import { eventBusManager } from './eventBus.svelte';
 import { Codecs, globalSlot, serverSlot } from '$lib/storage/slot';
 import { getPublicServerInfo } from '$lib/api-client/server';
+import type { PublicServerInfo } from '$lib/api-client/server';
 import { removeRegisteredServerQueries } from '$lib/query/cacheRegistry';
 import { isBackendCapableOrigin } from '$lib/runtimeOrigin';
 import {
@@ -340,6 +341,7 @@ class ServerRegistry {
 	readonly sessions: ServerSessions;
 	#stores = new SvelteMap<string, ServerStateStore>();
 	#renewalPromises = new Map<string, Promise<string | null>>();
+	#originProbe: Promise<void> | null = null;
 
 	constructor() {
 		const persisted = restorePersistedServerState();
@@ -411,7 +413,11 @@ class ServerRegistry {
 	 *
 	 * No-ops if the origin is already registered (e.g., from localStorage).
 	 */
-	probeOrigin(knownServer = false, location?: Pick<Location, 'origin' | 'protocol'> | URL): void {
+	async probeOrigin(
+		knownServer = false,
+		location?: Pick<Location, 'origin' | 'protocol'> | URL,
+		discoveredServerInfo?: PublicServerInfo
+	): Promise<void> {
 		if (typeof window === 'undefined') return;
 		const currentLocation = location ?? window.location;
 		if (!isBackendCapableOrigin(currentLocation)) {
@@ -439,8 +445,31 @@ class ServerRegistry {
 			return;
 		}
 
+		// Root layout load already retrieves this data for the public shell. Reuse
+		// that result so route bootstrap does not issue a second discovery request.
+		if (discoveredServerInfo !== undefined) {
+			const id = generateServerId(
+				origin,
+				this.servers.map((s) => s.id)
+			);
+			this.#registerOrigin(
+				id,
+				origin,
+				discoveredServerInfo.name || 'Chatto',
+				discoveredServerInfo.iconUrl ?? null
+			);
+			this.settleOriginUnauthenticated();
+			this.originProbed = true;
+			return;
+		}
+
+		if (this.#originProbe) {
+			await this.#originProbe;
+			return;
+		}
+
 		// Async probe — detect if the origin is a Chatto server
-		getPublicServerInfo(origin)
+		const probe = getPublicServerInfo(origin)
 			.then((info) => {
 				if (this.originServer) return; // Registered while we were fetching
 
@@ -456,7 +485,10 @@ class ServerRegistry {
 			})
 			.finally(() => {
 				this.originProbed = true;
+				if (this.#originProbe === probe) this.#originProbe = null;
 			});
+		this.#originProbe = probe;
+		await probe;
 	}
 
 	#registerOrigin(
@@ -490,10 +522,8 @@ class ServerRegistry {
 		);
 	}
 
-	authenticateOrigin(
-		credentials: string | NewBearerSession,
-		user: AuthenticatedUserSummary | null = null
-	): void {
+	/** Install origin cookie authentication and discard any legacy origin bearer session. */
+	authenticateOriginCookie(user: AuthenticatedUserSummary | null = null): void {
 		if (typeof window === 'undefined') return;
 		const origin = this.originServer;
 		if (!origin) {
@@ -502,21 +532,38 @@ class ServerRegistry {
 				originUrl,
 				this.servers.map((s) => s.id)
 			);
-			this.#registerOrigin(id, originUrl, 'Chatto', null, credentials, user);
+			this.#registerOrigin(id, originUrl, 'Chatto', null, null, user);
 			this.originProbed = true;
 			return;
 		}
 
-		this.#replaceServerAuth(origin.id, {
-			...(typeof credentials === 'string'
-				? { token: credentials }
-				: persistedBearerSession(credentials)),
+		const cookieSession: ServerSession = {
+			token: null,
+			refreshToken: null,
+			accessTokenExpiresAt: null,
+			refreshTokenExpiresAt: null,
+			oauthClientId: null,
+			refreshRequestId: null,
 			userId: user?.id ?? origin.userId,
 			userLogin: user?.login ?? origin.userLogin,
 			userDisplayName: user?.displayName ?? user?.login ?? origin.userDisplayName,
 			userAvatarUrl: user?.avatarUrl ?? origin.userAvatarUrl,
 			reauthRequiredAt: null
-		});
+		};
+		if (
+			origin.token === null &&
+			origin.refreshToken === null &&
+			origin.accessTokenExpiresAt === null &&
+			origin.refreshTokenExpiresAt === null &&
+			origin.oauthClientId === null &&
+			origin.refreshRequestId === null
+		) {
+			this.sessions.replace(origin.id, cookieSession);
+			this.#persistAuthentication(origin.id);
+			this.#persist();
+		} else {
+			this.#replaceServerAuth(origin.id, cookieSession);
+		}
 		this.originProbed = true;
 	}
 

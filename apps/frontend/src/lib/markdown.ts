@@ -17,7 +17,7 @@ const DISABLED_RULES = [
   'hr',
   'reference',
   // Inline
-  'image',
+  // 【本地改动】重新启用 image 规则以渲染消息正文内联 ![]() 图片；实际 <img> 由下方 image 渲染器走图片代理重写（见 IMAGE_PROXY_BASE / proxyImageSource）。
   'html_inline',
   // Backslash escapes turn `\_` into a literal `_`, which eats the arms of
   // common kaomoji like ¯\_(ツ)_/¯. Chat users type literal backslashes far
@@ -411,6 +411,43 @@ async function ensureFenceLanguagesLoaded(languages: string[]): Promise<void> {
 }
 
 /**
+ * Base URL of Chatto's image proxy. Every inline `![]()` image is rewritten
+ * through it so the viewer's IP/Referer is hidden from the original source
+ * host. The proxy re-fetches the original using the `proxy_host` and
+ * `proxy_scheme` params; the original path/query are preserved and any
+ * fragment stays at the end.
+ */
+// 【本地改动】内联图片统一走该图片代理：隐藏观看者的 IP/Referer，避免消息正文直接暴露原始图片 host。
+// 目的：让 `![alt](https://外链)` 渲染成图片但由代理去取图。思路：用 URL + searchParams 保留原始
+// path/query，并追加 proxy_host / proxy_scheme，fragment 留在最末尾（与用户约定一致）。踩坑：带端口的
+// host 会被 searchParams 编码成 host%3Aport（`:` → `%3A`），代理端按 query param 正常解码即可。
+// 边界：仅影响消息正文 inline image；现有附件（走独立签名 URL + MessageAttachments 渲染）完全不受影响。
+const IMAGE_PROXY_BASE = 'https://proxy.moonchan.xyz';
+
+// 【本地改动】把原始图片 src 重写为代理 URL；非 http(s)（含 javascript:/data:/相对路径/ftp:/mailto: 等）
+// 一律返回 '#'，与下方 image 渲染器的安全兜底一致。注意 markdown-it 自带 validateLink 已先拦掉
+// javascript:/vbscript:/file:/data: 等危险协议，这里再锁死 http(s)。
+function proxyImageSource(src: string): string {
+  let original: URL;
+  try {
+    original = new URL(src);
+  } catch {
+    return '#';
+  }
+  if (original.protocol !== 'http:' && original.protocol !== 'https:') {
+    return '#';
+  }
+
+  const proxy = new URL(IMAGE_PROXY_BASE);
+  proxy.pathname = original.pathname;
+  proxy.search = original.search;
+  proxy.searchParams.set('proxy_host', original.host);
+  proxy.searchParams.set('proxy_scheme', original.protocol === 'https:' ? 'https' : 'http');
+  proxy.hash = original.hash;
+  return proxy.toString();
+}
+
+/**
  * Initialize the markdown-it instance.
  * Called once on first render.
  */
@@ -497,6 +534,34 @@ function initialize(): void {
     }
 
     return defaultLinkRender(tokens, idx, options, env, self);
+  };
+
+  // 【本地改动】内联图片渲染：先把 src 经代理重写（proxyImageSource），再加固输出标签。
+  // 思路：沿用 link_open 的安全处理——只放 http(s) 源、去掉可选 title 防 tooltip 注入、加
+  // loading=lazy / referrerpolicy=no-referrer / rel=noopener noreferrer。踩坑：markdown-it 会把属性里的
+  // `&` 转义成 `&amp;`，所以单测断言要避开跨参数的 `&`、只校验各片段。输出仍只经 MarkdownHtml 的
+  // Trusted Types 注入点，安全边界不变。
+  // Customize image rendering: route every inline image through the Chatto image
+  // proxy (hides the viewer from the source host) and harden the emitted tag.
+  const defaultImageRender =
+    md.renderer.rules.image ||
+    function (tokens, idx, options, _env, self) {
+      return self.renderToken(tokens, idx, options);
+    };
+
+  md.renderer.rules.image = function (tokens, idx, options, env, self) {
+    const token = tokens[idx];
+    const srcIndex = token.attrIndex('src');
+    if (srcIndex >= 0) {
+      token.attrs![srcIndex][1] = proxyImageSource(token.attrs![srcIndex][1]);
+    }
+    // Drop the optional title to avoid tooltip injection/abuse.
+    const titleIndex = token.attrIndex('title');
+    if (titleIndex >= 0) token.attrs!.splice(titleIndex, 1);
+    token.attrSet('loading', 'lazy');
+    token.attrSet('referrerpolicy', 'no-referrer');
+    token.attrSet('rel', 'noopener noreferrer');
+    return defaultImageRender(tokens, idx, options, env, self);
   };
 }
 

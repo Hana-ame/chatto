@@ -3,13 +3,15 @@ package core
 import (
 	"context"
 	"errors"
+	"hmans.de/chatto/internal/pb/chatto/core/notification/v1"
 	"testing"
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
 
 	"hmans.de/chatto/internal/notificationstream"
-	corev1 "hmans.de/chatto/internal/pb/chatto/core/v1"
+	evtv1 "hmans.de/chatto/internal/pb/chatto/core/evt/v1"
 )
 
 func TestNotificationStreamAndAlertConsumerConfiguration(t *testing.T) {
@@ -35,16 +37,73 @@ func TestNotificationStreamAndAlertConsumerConfiguration(t *testing.T) {
 
 func TestNotificationAlertEligibleRejectsUnsupportedFutureSignal(t *testing.T) {
 	chattoCore, _ := setupTestCore(t)
-	eligible, err := chattoCore.NotificationAlertEligible(testContext(t), &corev1.NotificationOccurrence{Signal: testUnsupportedNotificationSignal()})
+	eligible, err := chattoCore.NotificationAlertEligible(testContext(t), &notificationv1.NotificationOccurrence{Signal: testUnsupportedNotificationSignal()})
 	if eligible || !errors.Is(err, ErrUnsupportedNotificationSignal) {
 		t.Fatalf("NotificationAlertEligible = (%v, %v), want false and unsupported-signal error", eligible, err)
 	}
 }
 
+func TestNotificationSoundEligibleAllowsInAppNotificationWithoutPush(t *testing.T) {
+	chattoCore, _ := newTestCore(t)
+	startCoreServices(t, chattoCore)
+	ctx := testContext(t)
+	recipient, err := chattoCore.CreateUser(ctx, SystemActorID, "sound-recipient", "Sound Recipient", "password")
+	if err != nil {
+		t.Fatalf("CreateUser recipient: %v", err)
+	}
+	author, err := chattoCore.CreateUser(ctx, SystemActorID, "sound-author", "Sound Author", "password")
+	if err != nil {
+		t.Fatalf("CreateUser author: %v", err)
+	}
+	room, err := chattoCore.CreateRoom(ctx, SystemActorID, KindChannel, "", "sound-room", "")
+	if err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+	for _, userID := range []string{recipient.Id, author.Id} {
+		if _, err := chattoCore.JoinRoom(ctx, userID, KindChannel, userID, room.Id); err != nil {
+			t.Fatalf("JoinRoom %s: %v", userID, err)
+		}
+	}
+	if _, err := chattoCore.NotificationPolicy().SetServerNotificationMode(ctx, recipient.Id,
+		notificationTestSignalDirectMention,
+		evtv1.NotificationDeliveryMode_NOTIFICATION_DELIVERY_MODE_IN_APP_NOTIFICATION,
+	); err != nil {
+		t.Fatalf("SetServerNotificationMode: %v", err)
+	}
+	posted, err := chattoCore.PostMessage(ctx, KindChannel, room.Id, author.Id, "hello @sound-recipient", nil, "", "", nil, false)
+	if err != nil {
+		t.Fatalf("PostMessage: %v", err)
+	}
+	waitForNotificationMaterializer(t, chattoCore)
+	wantID := notificationOccurrenceID(recipient.Id, posted.GetId(), "direct_mention_received")
+	occurrence, err := chattoCore.NotificationOccurrences().Get(ctx, recipient.Id, wantID)
+	if err != nil {
+		t.Fatalf("Get occurrence: %v", err)
+	}
+	soundEligible, err := chattoCore.NotificationSoundEligible(ctx, occurrence)
+	if err != nil || !soundEligible {
+		t.Fatalf("NotificationSoundEligible = (%v, %v), want true, nil", soundEligible, err)
+	}
+	pushEligible, err := chattoCore.NotificationAlertEligible(ctx, occurrence)
+	if err != nil || pushEligible {
+		t.Fatalf("NotificationAlertEligible = (%v, %v), want false, nil", pushEligible, err)
+	}
+	if _, err := chattoCore.NotificationPolicy().SetServerNotificationMode(ctx, recipient.Id,
+		notificationTestSignalDirectMention,
+		evtv1.NotificationDeliveryMode_NOTIFICATION_DELIVERY_MODE_OFF,
+	); err != nil {
+		t.Fatalf("disable notification policy: %v", err)
+	}
+	soundEligible, err = chattoCore.NotificationSoundEligible(ctx, occurrence)
+	if err != nil || soundEligible {
+		t.Fatalf("NotificationSoundEligible after Off = (%v, %v), want false, nil", soundEligible, err)
+	}
+}
+
 func TestNotificationAlertWorkerConsumesSignalledEvent(t *testing.T) {
 	chattoCore, _ := newTestCore(t)
-	delivered := make(chan *corev1.NotificationOccurrence, 1)
-	chattoCore.SetNotificationAlertHandler(func(_ context.Context, occurrence *corev1.NotificationOccurrence) error {
+	delivered := make(chan *notificationv1.NotificationOccurrence, 1)
+	chattoCore.SetNotificationAlertHandler(func(_ context.Context, occurrence *notificationv1.NotificationOccurrence) error {
 		delivered <- occurrence
 		return nil
 	})
@@ -84,4 +143,61 @@ func TestNotificationAlertWorkerConsumesSignalledEvent(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("notification alert did not reach terminal delivered state")
+}
+
+func TestNotificationAlertWorkerUsesRoomGroupPolicy(t *testing.T) {
+	chattoCore, _ := newTestCore(t)
+	delivered := make(chan *notificationv1.NotificationOccurrence, 1)
+	chattoCore.SetNotificationAlertHandler(func(_ context.Context, occurrence *notificationv1.NotificationOccurrence) error {
+		delivered <- occurrence
+		return nil
+	})
+	startCoreServices(t, chattoCore)
+	ctx := testContext(t)
+	recipient, err := chattoCore.CreateUser(ctx, SystemActorID, "group-alert-recipient", "Group Alert Recipient", "password")
+	if err != nil {
+		t.Fatalf("CreateUser recipient: %v", err)
+	}
+	author, err := chattoCore.CreateUser(ctx, SystemActorID, "group-alert-author", "Group Alert Author", "password")
+	if err != nil {
+		t.Fatalf("CreateUser author: %v", err)
+	}
+	group, err := chattoCore.CreateRoomGroup(ctx, SystemActorID, "Group Alerts", "")
+	if err != nil {
+		t.Fatalf("CreateRoomGroup: %v", err)
+	}
+	room, err := chattoCore.CreateRoom(ctx, SystemActorID, KindChannel, group.Id, "group-alert-room", "")
+	if err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+	for _, userID := range []string{recipient.Id, author.Id} {
+		if _, err := chattoCore.JoinRoom(ctx, userID, KindChannel, userID, room.Id); err != nil {
+			t.Fatalf("JoinRoom %s: %v", userID, err)
+		}
+	}
+	if _, err := chattoCore.NotificationPolicy().SetServerNotificationMode(ctx, recipient.Id,
+		notificationTestSignalDirectMention,
+		evtv1.NotificationDeliveryMode_NOTIFICATION_DELIVERY_MODE_OFF,
+	); err != nil {
+		t.Fatalf("SetServerNotificationMode: %v", err)
+	}
+	if _, err := chattoCore.NotificationPolicy().UpdateScopedNotificationPolicy(ctx, recipient.Id,
+		NotificationPolicyScope{Kind: NotificationPolicyScopeRoomGroup, ID: group.Id},
+		&evtv1.NotificationDeliveryModes{DirectMentions: evtv1.NotificationDeliveryMode_NOTIFICATION_DELIVERY_MODE_PUSH_NOTIFICATION.Enum()},
+		&fieldmaskpb.FieldMask{Paths: []string{"direct_mentions"}},
+	); err != nil {
+		t.Fatalf("UpdateScopedNotificationPolicy: %v", err)
+	}
+	posted, err := chattoCore.PostMessage(ctx, KindChannel, room.Id, author.Id, "@group-alert-recipient hello", nil, "", "", nil, false)
+	if err != nil {
+		t.Fatalf("PostMessage: %v", err)
+	}
+	select {
+	case occurrence := <-delivered:
+		if occurrence.GetRecipientId() != recipient.Id || occurrence.GetSourceEventId() != posted.GetId() {
+			t.Fatalf("delivered group-policy occurrence = %+v", occurrence)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("group-policy alert was not delivered")
+	}
 }

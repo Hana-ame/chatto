@@ -87,6 +87,10 @@ enabled = true
 
 [asset_processing]
 enabled = true
+# 【本地改动 218426d6】avif_enabled:room 附件图片上传时重编码为 AVIF
+# (默认 true,需 ffmpeg + AV1 编码器,从 PATH 自动探测)。设 false 则
+# 原样存储。只影响 room 附件;头像/branding/链接预览始终 WebP。
+# avif_enabled = true   # re-encode room attachment images to AVIF (default: true; set false to store original bytes)
 
 # LiveKit voice calls. For local development, run `mise dev-livekit`.
 [livekit]

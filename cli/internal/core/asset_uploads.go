@@ -18,7 +18,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"google.golang.org/protobuf/proto"
 	"hmans.de/chatto/internal/assets"
-	corev1 "hmans.de/chatto/internal/pb/chatto/core/v1"
+	evtv1 "hmans.de/chatto/internal/pb/chatto/core/evt/v1"
 )
 
 const (
@@ -194,7 +194,7 @@ func (m *AssetUploadModel) UploadChunk(ctx context.Context, input AssetUploadChu
 	return session, nil
 }
 
-func (m *AssetUploadModel) CompleteUpload(ctx context.Context, input AssetUploadCompleteInput) (*AssetUploadSession, *corev1.Attachment, error) {
+func (m *AssetUploadModel) CompleteUpload(ctx context.Context, input AssetUploadCompleteInput) (*AssetUploadSession, *evtv1.Attachment, error) {
 	session, revision, err := m.loadUpload(ctx, input.UploadID)
 	if err != nil {
 		return nil, nil, err
@@ -460,7 +460,7 @@ func (m *AssetUploadModel) updateUpload(ctx context.Context, session *AssetUploa
 	if ttl <= 0 {
 		ttl = time.Second
 	}
-	if _, err := m.core.updateRuntimeStateTokenTTL(ctx, assetUploadKey(session.UploadID), value, revision, ttl); err != nil {
+	if _, err := m.core.updateRuntimeStateWithTTL(ctx, assetUploadKey(session.UploadID), value, revision, ttl); err != nil {
 		return fmt.Errorf("update upload session: %w", err)
 	}
 	return nil
@@ -507,7 +507,7 @@ func (m *AssetUploadModel) materializeUpload(ctx context.Context, session *Asset
 	return tmp, nil
 }
 
-func (m *AssetUploadModel) storeCompletedUpload(ctx context.Context, session *AssetUploadSession, reader io.ReadSeeker) (*corev1.Attachment, bool, error) {
+func (m *AssetUploadModel) storeCompletedUpload(ctx context.Context, session *AssetUploadSession, reader io.ReadSeeker) (*evtv1.Attachment, bool, error) {
 	attachmentID := NewAssetID()
 	contentType := session.ContentType
 	isImage := strings.HasPrefix(contentType, "image/")
@@ -517,15 +517,30 @@ func (m *AssetUploadModel) storeCompletedUpload(ctx context.Context, session *As
 	var animatedGIF bool
 
 	if isImage {
-		result, err := assets.ProcessAttachmentImageWithConfig(reader, m.core.AssetsConfig())
+		assetsCfg := m.core.AssetsConfig()
+		result, err := assets.ProcessAttachmentImageWithConfig(reader, assetsCfg)
 		if err != nil {
 			return nil, false, fmt.Errorf("failed to process image: %w", err)
 		}
 		content = result.Original
-		size = int64(len(content))
 		width = int32(result.Width)
 		height = int32(result.Height)
 		animatedGIF = contentType == "image/gif" && assets.IsAnimatedGIF(content)
+		// 【本地改动 32e1f566】动画 GIF 保留原字节:视频管线会把它们转成
+		// MP4/HLS,若在此重编码成静态 AVIF 会丢掉动画。
+		if !animatedGIF {
+			// 【本地改动 32e1f566】best-effort 重编码为 AVIF:成功就换
+			// content,失败时 ErrAVIFUnavailable(没 ffmpeg/没编码器/
+			// avif_enabled=false)静默存原图;其他瞬时错误记日志但也不
+			// 阻塞上传。
+			if encoded, encErr := assets.EncodeAVIF(ctx, content, assetsCfg); encErr == nil {
+				content = encoded
+				contentType = "image/avif"
+			} else if !errors.Is(encErr, assets.ErrAVIFUnavailable) {
+				m.core.logger.Warn("Failed to re-encode attachment image to AVIF; storing original", "error", encErr, "attachment_id", attachmentID)
+			}
+		}
+		size = int64(len(content))
 		reader = bytes.NewReader(content)
 	} else {
 		size = session.Size
@@ -534,15 +549,15 @@ func (m *AssetUploadModel) storeCompletedUpload(ctx context.Context, session *As
 		}
 	}
 
-	var storage *corev1.DeprecatedAsset
+	var storage *evtv1.DeprecatedAsset
 	if m.core.ShouldUseS3() {
 		s3Key := S3KeyAttachment(attachmentID)
 		if _, err := m.core.s3Client.PutObject(ctx, s3Key, reader, size, contentType); err != nil {
 			return nil, false, fmt.Errorf("failed to upload attachment to S3: %w", err)
 		}
-		storage = &corev1.DeprecatedAsset{
-			Asset: &corev1.DeprecatedAsset_S3{
-				S3: &corev1.S3Asset{Key: s3Key, Bucket: proto.String(m.core.s3Client.Bucket())},
+		storage = &evtv1.DeprecatedAsset{
+			Asset: &evtv1.DeprecatedAsset_S3{
+				S3: &evtv1.S3Asset{Key: s3Key, Bucket: proto.String(m.core.s3Client.Bucket())},
 			},
 		}
 	} else {
@@ -559,14 +574,14 @@ func (m *AssetUploadModel) storeCompletedUpload(ctx context.Context, session *As
 		}, reader); err != nil {
 			return nil, false, fmt.Errorf("failed to store attachment: %w", err)
 		}
-		storage = &corev1.DeprecatedAsset{
-			Asset: &corev1.DeprecatedAsset_Nats{
-				Nats: &corev1.NATSAsset{Key: attachmentID},
+		storage = &evtv1.DeprecatedAsset{
+			Asset: &evtv1.DeprecatedAsset_Nats{
+				Nats: &evtv1.NATSAsset{Key: attachmentID},
 			},
 		}
 	}
 
-	return &corev1.Attachment{
+	return &evtv1.Attachment{
 		Id:          attachmentID,
 		RoomId:      session.RoomID,
 		Filename:    session.Filename,

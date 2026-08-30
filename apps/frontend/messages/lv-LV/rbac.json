@@ -44,6 +44,7 @@
       "allow": "atļaut",
       "deny": "noliegt",
       "winning_decision": "(uzvarējušais lēmums)",
+      "included_by": "Included by {permission}",
       "level_server": "Serveris",
       "level_group": "Grupa",
       "level_room": "Istaba",
@@ -94,6 +95,16 @@
         }
       }
     },
+    "permission_categories": {
+      "admin": "Administrēšana",
+      "bot": "Boti",
+      "message": "Ziņojumi",
+      "role": "Lomas",
+      "room": "Telpas",
+      "server": "Serveris",
+      "user": "Lietotāji",
+      "other": "Citi"
+    },
     "permission_descriptions": {
       "server_manage": "Atjaunināt servera iestatījumus (nosaukums, apraksts, logotips)",
       "room_create": "Izveidojiet jaunas telpas",
@@ -102,6 +113,7 @@
       "room_manage": "Rediģējiet telpas iestatījumus un atļaujas un dzēsiet telpas",
       "room_ban_member": "Aizliegt dalībniekus no telpām",
       "message_read": "Lasīt ziņojumus kanālu telpās",
+      "message_read_interactions": "Lasīt pilnus pavedienus, kurus izveidojāt vai kuros cits lietotājs jūs tieši pieminēja",
       "message_post": "Publicējiet saknes ziņojumus telpās un sāciet DM",
       "message_post_in_thread": "Publicējiet atbildes pavedienā",
       "message_attach": "Pievienojiet ziņojumiem failus",
@@ -117,7 +129,9 @@
       "user_delete_self": "Izdzēsiet savu kontu",
       "user_invite": "Izveidojiet un pārvaldiet uzaicinājumu saites",
       "user_manage_accounts": "Izveidojiet lietotājus, rediģējiet konta identitāti, atiestatiet paroles, pievienojiet pārbaudītus e-pastus un notīriet pieteikšanās atdzišanu",
-      "user_manage_permissions": "Rediģēt tiešos katra lietotāja atļauju ignorēšanu"
+      "user_manage_permissions": "Rediģēt tiešos katra lietotāja atļauju ignorēšanu",
+      "bot_create": "Izveidot sev piederošus botu kontus",
+      "bot_manage": "Skatīt un pārvaldīt visus botu kontus"
     }
   }
 }

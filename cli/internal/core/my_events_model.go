@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"hmans.de/chatto/internal/pb/chatto/core/live/v1"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -11,7 +12,8 @@ import (
 	"github.com/nats-io/nats.go"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"hmans.de/chatto/internal/core/subjects"
-	corev1 "hmans.de/chatto/internal/pb/chatto/core/v1"
+	"hmans.de/chatto/internal/evtstream"
+	evtv1 "hmans.de/chatto/internal/pb/chatto/core/evt/v1"
 	"hmans.de/chatto/pkg/events"
 )
 
@@ -240,9 +242,9 @@ func (s *MyEventsModel) StreamMyEvents(ctx context.Context, userID string, optio
 					s.slowDisconnects.Add(1)
 					return
 				}
-				live := newLiveEvent(update.UserID, &corev1.LiveEvent{
-					Event: &corev1.LiveEvent_PresenceChanged{
-						PresenceChanged: &corev1.PresenceChangedEvent{Status: update.Status},
+				live := newLiveEvent(update.UserID, &livev1.LiveEvent{
+					Event: &livev1.LiveEvent_PresenceChanged{
+						PresenceChanged: &livev1.PresenceChangedEvent{Status: update.Status},
 					},
 				})
 				if !send(NewLiveEventEnvelope(live)) {
@@ -290,11 +292,11 @@ func (s *MyEventsModel) populateMemberRoomsCache(ctx context.Context, userID str
 	return nil
 }
 
-func (c *ChattoCore) filterLiveSyncEvent(ctx context.Context, userID string, memberRooms map[string]struct{}, msg *nats.Msg, event *corev1.LiveEvent) (EventEnvelope, bool) {
+func (c *ChattoCore) filterLiveSyncEvent(ctx context.Context, userID string, memberRooms map[string]struct{}, msg *nats.Msg, event *livev1.LiveEvent) (EventEnvelope, bool) {
 	return c.myEventsModel.filterLiveSyncEvent(ctx, userID, memberRooms, msg, event)
 }
 
-func (s *MyEventsModel) filterLiveSyncEvent(ctx context.Context, userID string, memberRooms map[string]struct{}, msg *nats.Msg, event *corev1.LiveEvent) (EventEnvelope, bool) {
+func (s *MyEventsModel) filterLiveSyncEvent(ctx context.Context, userID string, memberRooms map[string]struct{}, msg *nats.Msg, event *livev1.LiveEvent) (EventEnvelope, bool) {
 	if event == nil || event.Event == nil {
 		s.core.logger.Warn("Dropping live sync event without payload", "subject", msg.Subject)
 		return nil, false
@@ -317,7 +319,14 @@ func (s *MyEventsModel) filterLiveSyncEvent(ctx context.Context, userID string, 
 			return nil, false
 		}
 		if event.GetUserTyping() != nil {
-			canRead, err := s.core.CanReadMessages(ctx, userID, RoomKind(kind), roomID)
+			typing := event.GetUserTyping()
+			var canRead bool
+			var err error
+			if typing.GetThreadRootEventId() != "" {
+				canRead, err = s.core.CanReadThreadMessages(ctx, userID, RoomKind(kind), roomID, typing.GetThreadRootEventId())
+			} else {
+				canRead, err = s.core.CanReadMessages(ctx, userID, RoomKind(kind), roomID)
+			}
 			if err != nil || !canRead {
 				return nil, false
 			}
@@ -343,21 +352,21 @@ func liveEVTMsgSeq(msg *nats.Msg) uint64 {
 	return seq
 }
 
-func (s *MyEventsModel) filterReadyEVTRoomSubjectEvent(userID string, memberRooms map[string]struct{}, roomID string, event *corev1.Event, seq uint64) (EventEnvelope, bool) {
+func (s *MyEventsModel) filterReadyEVTRoomSubjectEvent(userID string, memberRooms map[string]struct{}, roomID string, event *evtv1.Event, seq uint64) (EventEnvelope, bool) {
 	if roomID == "" || event == nil || !isDeliverableLiveEVTRoomEvent(event) || seq == 0 {
 		return nil, false
 	}
 
 	_, isMember := memberRooms[roomID]
 	switch e := event.Event.(type) {
-	case *corev1.Event_RoomCreated:
+	case *evtv1.Event_RoomCreated:
 		if e.RoomCreated.GetUniversal() {
 			if isEffective, err := s.core.RoomMembershipExists(context.Background(), KindChannel, userID, roomID); err == nil && isEffective {
 				memberRooms[roomID] = struct{}{}
 				isMember = true
 			}
 		}
-	case *corev1.Event_RoomUniversalChanged:
+	case *evtv1.Event_RoomUniversalChanged:
 		isEffective, err := s.core.RoomMembershipExists(context.Background(), KindChannel, userID, roomID)
 		if err == nil && isEffective {
 			memberRooms[roomID] = struct{}{}
@@ -367,31 +376,31 @@ func (s *MyEventsModel) filterReadyEVTRoomSubjectEvent(userID string, memberRoom
 			delete(memberRooms, roomID)
 			isMember = wasMember
 		}
-	case *corev1.Event_UserJoinedRoom:
+	case *evtv1.Event_UserJoinedRoom:
 		joinedUserID := event.ActorId
 		if joinedUserID == userID {
 			memberRooms[roomID] = struct{}{}
 			isMember = true
 		}
-	case *corev1.Event_UserLeftRoom:
+	case *evtv1.Event_UserLeftRoom:
 		leftUserID := event.ActorId
 		if leftUserID == userID {
 			delete(memberRooms, roomID)
 		}
-	case *corev1.Event_RoomMemberBanned:
+	case *evtv1.Event_RoomMemberBanned:
 		if e.RoomMemberBanned.GetUserId() == userID {
 			delete(memberRooms, roomID)
 		}
-	case *corev1.Event_RoomMemberAdded:
+	case *evtv1.Event_RoomMemberAdded:
 		if e.RoomMemberAdded.GetUserId() == userID {
 			memberRooms[roomID] = struct{}{}
 			isMember = true
 		}
-	case *corev1.Event_RoomMemberRemoved:
+	case *evtv1.Event_RoomMemberRemoved:
 		if e.RoomMemberRemoved.GetUserId() == userID {
 			delete(memberRooms, roomID)
 		}
-	case *corev1.Event_RoomDeleted:
+	case *evtv1.Event_RoomDeleted:
 		delete(memberRooms, roomID)
 	}
 	if !isMember {
@@ -402,7 +411,7 @@ func (s *MyEventsModel) filterReadyEVTRoomSubjectEvent(userID string, memberRoom
 		if err != nil {
 			return nil, false
 		}
-		canRead, err := s.core.CanReadMessages(context.Background(), userID, kind, protectedRoomID)
+		canRead, err := s.core.CanReadMessageEvent(context.Background(), userID, kind, protectedRoomID, event)
 		if err != nil || !canRead {
 			return nil, false
 		}
@@ -410,7 +419,7 @@ func (s *MyEventsModel) filterReadyEVTRoomSubjectEvent(userID string, memberRoom
 	return NewEVTEventEnvelopeWithDeliverySeq(event, seq), true
 }
 
-func (s *MyEventsModel) filterReadyEVTAssetSubjectEvent(userID string, memberRooms map[string]struct{}, roomID string, event *corev1.Event, seq uint64) (EventEnvelope, bool) {
+func (s *MyEventsModel) filterReadyEVTAssetSubjectEvent(userID string, memberRooms map[string]struct{}, roomID string, event *evtv1.Event, seq uint64) (EventEnvelope, bool) {
 	if roomID == "" || event == nil || !isDeliverableLiveEVTAssetEvent(event) || seq == 0 {
 		return nil, false
 	}
@@ -421,14 +430,14 @@ func (s *MyEventsModel) filterReadyEVTAssetSubjectEvent(userID string, memberRoo
 	if err != nil {
 		return nil, false
 	}
-	canRead, err := s.core.CanReadMessages(context.Background(), userID, kind, roomID)
+	canRead, err := s.core.CanReadMessageEvent(context.Background(), userID, kind, roomID, event)
 	if err != nil || !canRead {
 		return nil, false
 	}
 	return NewEVTEventEnvelopeWithDeliverySeq(event, seq), true
 }
 
-func (s *MyEventsModel) waitForLiveEVTRoomEvent(ctx context.Context, subject string, event *corev1.Event, seq uint64) error {
+func (s *MyEventsModel) waitForLiveEVTRoomEvent(ctx context.Context, subject string, event *evtv1.Event, seq uint64) error {
 	pos := events.SubjectPosition(subject, seq)
 	if err := s.core.roomModel.waitForLiveEVTEvent(ctx, pos, event); err != nil {
 		return err
@@ -445,11 +454,34 @@ func (s *MyEventsModel) waitForLiveEVTRoomEvent(ctx context.Context, subject str
 			return err
 		}
 	}
-	return nil
+	return s.waitForLiveMessageAuthorization(ctx, event)
 }
 
-func (s *MyEventsModel) waitForLiveEVTAssetEvent(ctx context.Context, subject string, seq uint64) error {
-	return s.core.assetModel.waitForAssets(ctx, events.SubjectPosition(subject, seq))
+func (s *MyEventsModel) waitForLiveEVTAssetEvent(ctx context.Context, subject string, event *evtv1.Event, seq uint64) error {
+	if err := s.core.assetModel.waitForAssets(ctx, events.SubjectPosition(subject, seq)); err != nil {
+		return err
+	}
+	return s.waitForLiveMessageAuthorization(ctx, event)
+}
+
+func (s *MyEventsModel) waitForLiveMessageAuthorization(ctx context.Context, event *evtv1.Event) error {
+	roomID, protected := s.core.MessageReadProtectedEventRoomID(event)
+	if !protected {
+		return nil
+	}
+	messageEventID, hasSource := s.core.MessageEventSourceMessageID(roomID, event)
+	if !hasSource {
+		return nil
+	}
+	entry, ok := s.core.roomModel.timelineEntry(messageEventID)
+	if !ok || entry == nil || entry.Event == nil || entry.StreamSeq == 0 {
+		return fmt.Errorf("message authorization source %q is not projected", messageEventID)
+	}
+	position := events.SubjectPosition(evtstream.RoomAggregate(roomID).SubjectFor(entry.Event), entry.StreamSeq)
+	if err := s.core.roomModel.waitForThreads(ctx, position); err != nil {
+		return fmt.Errorf("wait for message authorization source %q: %w", messageEventID, err)
+	}
+	return nil
 }
 
 func (s *MyEventsModel) waitForLiveEVTUserEvent(ctx context.Context, subject string, seq uint64) error {

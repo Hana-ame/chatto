@@ -44,6 +44,7 @@
       "allow": "autoriser",
       "deny": "refuser",
       "winning_decision": "(décision gagnante)",
+      "included_by": "Included by {permission}",
       "level_server": "Serveur",
       "level_group": "Groupe",
       "level_room": "Chambre",
@@ -94,6 +95,16 @@
         }
       }
     },
+    "permission_categories": {
+      "admin": "Administration",
+      "bot": "Bots",
+      "message": "Messages",
+      "role": "Rôles",
+      "room": "Salles",
+      "server": "Serveur",
+      "user": "Utilisateurs",
+      "other": "Autres"
+    },
     "permission_descriptions": {
       "server_manage": "Mettre à jour les paramètres du serveur (nom, description, logo)",
       "room_create": "Créer de nouvelles salles",
@@ -102,6 +113,7 @@
       "room_manage": "Modifier les paramètres et les autorisations d'une salle et supprimer des salles",
       "room_ban_member": "Interdire les membres des salles",
       "message_read": "Lire les messages dans les salons",
+      "message_read_interactions": "Lire les fils complets que vous avez créés ou dans lesquels un autre utilisateur vous a mentionné directement",
       "message_post": "Publiez des messages root dans les salons et démarrez des DM",
       "message_post_in_thread": "Publier des réponses dans un fil de discussion",
       "message_attach": "Joindre des fichiers aux messages",
@@ -117,7 +129,9 @@
       "user_delete_self": "Supprimez votre propre compte",
       "user_invite": "Créez et gérez les liens d’invitation",
       "user_manage_accounts": "Créez des utilisateurs, modifiez l'identité du compte, réinitialisez les mots de passe, joignez des courriels vérifiés et effacez les délais de connexion.",
-      "user_manage_permissions": "Modifier les remplacements d'autorisations directes par utilisateur"
+      "user_manage_permissions": "Modifier les remplacements d'autorisations directes par utilisateur",
+      "bot_create": "Créer des comptes de bot dont vous êtes propriétaire",
+      "bot_manage": "Voir et gérer tous les comptes de bot"
     }
   }
 }

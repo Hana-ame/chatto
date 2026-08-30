@@ -1,7 +1,7 @@
 # FDR-002: Replies & Threads
 
 **Status:** Active
-**Last reviewed:** 2026-08-25
+**Last reviewed:** 2026-08-27
 
 ## Overview
 
@@ -20,6 +20,9 @@ Chatto messages can link to one another via reply attribution, and channel-room 
   earlier unfollow. The first reply also attempts to follow the root author when
   they have never made a follow choice. These post-commit subscription writes
   are best-effort and cannot roll back the message.
+- A delivered direct mention in a channel-room root or reply attempts to
+  follow that thread when the recipient has no prior follow state. For a root
+  mention, the root message ID identifies the thread for future replies.
 - Every channel room has a Threading Mode:
   - **Required** — every new root atomically establishes its thread. The room composer keeps **Post as thread** visible, selected, and locked so the policy is explicit without presenting a false choice. The standard **Reply** action and adjacent **Reply in thread** action keep their usual order; either opens the root's thread, while **Reply** also preserves reply attribution. Inside the thread, **Reply** creates attribution in that thread. The server rejects replies to roots unless they are placed in that root's thread. Automatic root-thread creation needs `message.post`; posting an actual thread reply still needs `message.post-in-thread`.
   - **Encouraged** — both flat and threaded conversation remain valid. The standard **Reply** action opens the root's thread with reply attribution, while the adjacent **Reply in thread** action keeps its usual position. **Reply in room** remains available as a secondary expanded-menu action. **Post as thread** starts selected for each new root draft, but the author may turn it off. If a member can post in the room but cannot post in threads, the standard reply falls back to the room and the composer cannot establish a thread.
@@ -101,12 +104,15 @@ Chatto messages can link to one another via reply attribution, and channel-room 
 ## Permissions
 
 - `message.read` — read channel-room and thread timelines. Channel-room
-  membership is also required. DM membership authorizes historical DM thread
-  reads.
+  membership is also required.
+- `message.read-interactions` — read a complete channel-room thread when the
+  account authored its root or another account directly mentioned it in that
+  thread. Channel-room membership is also required. DM membership authorizes
+  historical DM thread reads without either read permission.
 - `message.post` — post a root message (with or without `inReplyTo`) in a room. Explicitly establishing that root as a thread also requires `message.post-in-thread`; automatic root-thread creation in Required rooms does not.
 - `message.post-in-thread` — post a message inside a channel-room thread (with or without `inReplyTo`), and—together with `message.post`—explicitly establish a root as a thread. This permission does not make threads available in DMs.
 
 ## Related
 
-- **ADRs:** ADR-011 (message body/event split), ADR-026 (event identity via NanoID), ADR-038 (room-owned thread state), ADR-050 (ephemeral encrypted projection snapshots), ADR-076 (deterministic notification occurrences), ADR-077 (persistent notification list), ADR-080 (explicit message-read permissions)
+- **ADRs:** ADR-011 (message body/event split), ADR-026 (event identity via NanoID), ADR-038 (room-owned thread state), ADR-050 (ephemeral encrypted projection snapshots), ADR-076 (deterministic notification occurrences), ADR-077 (persistent notification list), ADR-080 (explicit message-read permissions), ADR-082 (derived thread interactions)
 - **FDRs:** FDR-003 (Thread Reply Echo), FDR-012 (Notifications), FDR-039 (Message Access & Interactions)

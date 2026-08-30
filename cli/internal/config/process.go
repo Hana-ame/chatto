@@ -47,14 +47,23 @@ func (c *TLSConfig) HTTPPortOrDefault() int {
 }
 
 type WebserverConfig struct {
-	URL                    string        `toml:"url" env:"CHATTO_WEBSERVER_URL" comment:"Public URL where the webserver is accessible. Used for generating absolute URLs."`
-	Port                   int           `toml:"port" env:"CHATTO_WEBSERVER_PORT" comment:"Port for the webserver to listen on."`
+	URL            string   `toml:"url" env:"CHATTO_WEBSERVER_URL" comment:"Public URL where the webserver is accessible. Used for generating absolute URLs."`
+	AllowedOrigins []string `toml:"allowed_origins,commented" env:"CHATTO_WEBSERVER_ALLOWED_ORIGINS" comment:"Additional exact browser origins that can use cookie authentication and publish the bundled frontend OAuth identity through a reverse proxy. Do not include paths or configure both HTTP and HTTPS for the same request host. Wildcards apply only to CORS and authorize neither behavior."`
+	Port           int      `toml:"port" env:"CHATTO_WEBSERVER_PORT" comment:"Port for the webserver to listen on."`
+	// 【本地改动 92d33bff】webserver 监听地址。上游只有 :port(绑定所有接口)，
+	// 本地加此字段是为了 cloudcone 部署：nginx 反代 + chatto 只监听 127.0.0.1，
+	// 避免端口直接暴露公网。
+	// 2026-08-29 合并 upstream：保留本字段。此前注释写过"跟随上游删除
+	// AllowedOrigins/OAuthRedirectOrigins"，那次判断已被推翻——upstream 仍在使用
+	// AllowedOrigins（config.go 校验、http_server/cimd.go、request_auth.go 三处），
+	// OAuthRedirectOrigins 已被上游删除，AllowedOrigins 保留不动。
+	BindAddress            string        `toml:"bind_address,commented" env:"CHATTO_WEBSERVER_BIND_ADDRESS" comment:"Address to bind the webserver. Default: all interfaces (0.0.0.0). Set to 127.0.0.1 to restrict access to localhost only."`
 	TrustedProxies         []string      `toml:"trusted_proxies,commented" env:"CHATTO_WEBSERVER_TRUSTED_PROXIES" comment:"IP addresses or CIDR ranges of reverse proxies allowed to supply forwarded host and client-IP headers. Default: none."`
 	APICompression         *bool         `toml:"api_compression" env:"CHATTO_WEBSERVER_API_COMPRESSION" comment:"Compress eligible ConnectRPC API responses with gzip. Disable to reduce compressor memory and CPU at the cost of higher network usage. Default: true."`
 	APICompressionMinBytes *int          `toml:"api_compression_min_bytes" env:"CHATTO_WEBSERVER_API_COMPRESSION_MIN_BYTES" comment:"Minimum uncompressed ConnectRPC response size eligible for gzip compression. Default: 1024."`
 	WebSocketCompression   *bool         `toml:"websocket_compression" env:"CHATTO_WEBSERVER_WEBSOCKET_COMPRESSION" comment:"Enable WebSocket compression for eligible realtime frames. Default: true."`
 	RequestLogging         *bool         `toml:"request_logging" env:"CHATTO_WEBSERVER_REQUEST_LOGGING" comment:"Log HTTP requests. Successful requests are debug-level; 4xx responses are warnings; 5xx responses are errors. Useful for debugging but can be noisy in production. Default: false."`
-	CookieSigningSecret    string        `toml:"cookie_signing_secret" env:"CHATTO_WEBSERVER_COOKIE_SIGNING_SECRET" comment:"Secret for signing session cookies. NEVER SHARE THIS!\nIf it leaks, change it immediately, but please note that all existing sessions will become invalid."`
+	CookieSigningSecret    string        `toml:"cookie_signing_secret" env:"CHATTO_WEBSERVER_COOKIE_SIGNING_SECRET" comment:"Secret for signing browser-flow cookies and CSRF proofs. NEVER SHARE THIS!\nIf it leaks, change it immediately. Existing browser flows must restart and CSRF cookies will refresh; opaque chatto_auth_* sessions use core.secret_key instead."`
 	CookieEncryptionSecret string        `toml:"cookie_encryption_secret" env:"CHATTO_WEBSERVER_COOKIE_ENCRYPTION_SECRET" comment:"Optional hex-encoded secret used to encrypt session cookies (in addition to signing). Must decode to 16, 24, or 32 bytes (AES-128/192/256). If unset, cookies are signed but not encrypted — anything ever written to the session is readable by anyone who steals the cookie."`
 	TLS                    TLSConfig     `toml:"tls" comment:"Automatic TLS configuration via Let's Encrypt."`
 	Shields                ShieldsConfig `toml:"shields,commented" comment:"Public Shields.io-compatible community badges. Disabled by default."`
@@ -269,6 +278,56 @@ func validateAbsoluteHTTPURL(name, raw string) error {
 	return nil
 }
 
+func validateHTTPOrigin(name, raw string) error {
+	if err := validateAbsoluteHTTPURL(name, raw); err != nil {
+		return err
+	}
+	u, _ := url.Parse(raw)
+	if u.Path != "" || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
+		return fmt.Errorf("%s must not include a path, query, or fragment", name)
+	}
+	return nil
+}
+
+func canonicalHTTPOriginAndRequestHost(raw string) (string, string, bool) {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return "", "", false
+	}
+	hostname, err := idna.Lookup.ToASCII(strings.ToLower(u.Hostname()))
+	if err != nil {
+		return "", "", false
+	}
+	if address, err := netip.ParseAddr(hostname); err == nil {
+		hostname = address.String()
+	}
+	port := u.Port()
+	if numericPort, err := strconv.ParseUint(port, 10, 16); err == nil {
+		port = strconv.FormatUint(numericPort, 10)
+		if (u.Scheme == "http" && port == "80") || (u.Scheme == "https" && port == "443") {
+			port = ""
+		}
+	}
+	host := hostname
+	if port != "" {
+		host = net.JoinHostPort(hostname, port)
+	} else if strings.Contains(hostname, ":") {
+		host = "[" + hostname + "]"
+	}
+	return u.Scheme + "://" + host, host, true
+}
+
+func validateAbsoluteHTTPSURL(name, raw string) error {
+	if err := validateAbsoluteHTTPURL(name, raw); err != nil {
+		return err
+	}
+	u, _ := url.Parse(raw)
+	if u.Scheme != "https" {
+		return fmt.Errorf("%s must use https", name)
+	}
+	return nil
+}
+
 // hostnameEndsInNumber detects hostnames that browsers interpret using their
 // legacy IPv4 parser. Requiring modern dotted IPv4 spelling prevents the
 // browser and server from serializing the same configured origin differently.
@@ -370,4 +429,14 @@ func (c *WebserverConfig) EffectivePort() int {
 		return 443
 	}
 	return c.Port
+}
+
+// BindAddressOrDefault 返回监听地址;未配置时返回 ":"(监听所有接口,
+// 与上游原行为一致)。
+// 【本地改动 92d33bff】见 WebserverConfig.BindAddress 注释。
+func (c *WebserverConfig) BindAddressOrDefault() string {
+	if c.BindAddress == "" {
+		return ":"
+	}
+	return c.BindAddress
 }

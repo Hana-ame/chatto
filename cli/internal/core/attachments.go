@@ -8,13 +8,14 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
 	"google.golang.org/protobuf/proto"
 	"hmans.de/chatto/internal/assets"
-	corev1 "hmans.de/chatto/internal/pb/chatto/core/v1"
+	evtv1 "hmans.de/chatto/internal/pb/chatto/core/evt/v1"
 	"hmans.de/chatto/pkg/signedurl"
 )
 
@@ -43,7 +44,7 @@ func PublicServerAssetObjectKey(assetID string) string {
 // ServerAssetDeliveryKey returns the storage-aware key used in public server
 // asset URLs. New NATS assets carry their explicit public/ object key, while
 // S3 and historical records continue to use their logical asset ID.
-func ServerAssetDeliveryKey(asset *corev1.AssetRecord) string {
+func ServerAssetDeliveryKey(asset *evtv1.AssetRecord) string {
 	if asset == nil {
 		return ""
 	}
@@ -87,7 +88,7 @@ func (c *MediaModel) UploadAttachment(
 	filename string,
 	contentType string,
 	reader io.Reader,
-) (*corev1.Attachment, error) {
+) (*evtv1.Attachment, error) {
 	if actorID == "" {
 		return nil, fmt.Errorf("upload missing actor id")
 	}
@@ -122,7 +123,7 @@ func (c *MediaModel) uploadAttachmentBinary(
 	filename string,
 	contentType string,
 	reader io.Reader,
-) (*corev1.Attachment, error) {
+) (*evtv1.Attachment, error) {
 	attachmentID := NewAssetID()
 
 	isImage := strings.HasPrefix(contentType, "image/")
@@ -131,17 +132,32 @@ func (c *MediaModel) uploadAttachmentBinary(
 	var size int64
 	var width, height int32
 
+	assetsCfg := c.AssetsConfig()
+
 	if isImage {
-		result, err := assets.ProcessAttachmentImageWithConfig(reader, c.AssetsConfig())
+		result, err := assets.ProcessAttachmentImageWithConfig(reader, assetsCfg)
 		if err != nil {
 			return nil, fmt.Errorf("failed to process image: %w", err)
 		}
 		content = result.Original
-		size = int64(len(result.Original))
 		width = int32(result.Width)
 		height = int32(result.Height)
+		// 【本地改动 32e1f566】动画 GIF 保留原字节:视频管线会把它们转成
+		// MP4/HLS,若在此重编码成静态 AVIF 会丢掉动画。
+		if !assets.IsAnimatedGIF(content) {
+			// 【本地改动 32e1f566】best-effort 重编码为 AVIF:成功就换
+			// content,失败时 ErrAVIFUnavailable(没 ffmpeg/没编码器/
+			// avif_enabled=false)静默存原图;其他瞬时错误记日志但也不
+			// 阻塞上传。
+			if encoded, encErr := assets.EncodeAVIF(ctx, content, assetsCfg); encErr == nil {
+				content = encoded
+				contentType = "image/avif"
+			} else if !errors.Is(encErr, assets.ErrAVIFUnavailable) {
+				c.logger.Warn("Failed to re-encode attachment image to AVIF; storing original", "error", encErr, "attachment_id", attachmentID)
+			}
+		}
+		size = int64(len(content))
 	} else {
-		assetsCfg := c.AssetsConfig()
 		maxSize := assetsCfg.MaxUploadSize
 		if strings.HasPrefix(contentType, "video/") && c.VideoMaxUploadSize > 0 {
 			maxSize = c.VideoMaxUploadSize
@@ -157,15 +173,15 @@ func (c *MediaModel) uploadAttachmentBinary(
 		size = int64(len(content))
 	}
 
-	var storage *corev1.DeprecatedAsset
+	var storage *evtv1.DeprecatedAsset
 	if c.ShouldUseS3() {
 		s3Key := S3KeyAttachment(attachmentID)
 		if _, err := c.s3Client.PutObjectFromBytes(ctx, s3Key, content, contentType); err != nil {
 			return nil, fmt.Errorf("failed to upload attachment to S3: %w", err)
 		}
-		storage = &corev1.DeprecatedAsset{
-			Asset: &corev1.DeprecatedAsset_S3{
-				S3: &corev1.S3Asset{
+		storage = &evtv1.DeprecatedAsset{
+			Asset: &evtv1.DeprecatedAsset_S3{
+				S3: &evtv1.S3Asset{
 					Key:    s3Key,
 					Bucket: proto.String(c.s3Client.Bucket()),
 				},
@@ -186,14 +202,14 @@ func (c *MediaModel) uploadAttachmentBinary(
 		}, bytes.NewReader(content)); err != nil {
 			return nil, fmt.Errorf("failed to store attachment: %w", err)
 		}
-		storage = &corev1.DeprecatedAsset{
-			Asset: &corev1.DeprecatedAsset_Nats{
-				Nats: &corev1.NATSAsset{Key: attachmentID},
+		storage = &evtv1.DeprecatedAsset{
+			Asset: &evtv1.DeprecatedAsset_Nats{
+				Nats: &evtv1.NATSAsset{Key: attachmentID},
 			},
 		}
 	}
 
-	return &corev1.Attachment{
+	return &evtv1.Attachment{
 		Id:          attachmentID,
 		RoomId:      roomID,
 		Filename:    filename,
@@ -214,12 +230,12 @@ func (c *MediaModel) uploadAttachmentBinary(
 func (c *MediaModel) UploadDerivativeAttachment(
 	ctx context.Context,
 	parentAssetID string,
-	derivativeRole corev1.AssetDerivativeRole,
+	derivativeRole evtv1.AssetDerivativeRole,
 	roomID string,
 	filename string,
 	contentType string,
 	reader io.Reader,
-) (*corev1.Attachment, error) {
+) (*evtv1.Attachment, error) {
 	return c.UploadDerivativeAttachmentWithDimensions(ctx, parentAssetID, derivativeRole, roomID, filename, contentType, reader, 0, 0)
 }
 
@@ -229,14 +245,14 @@ func (c *MediaModel) UploadDerivativeAttachment(
 func (c *MediaModel) UploadDerivativeAttachmentWithDimensions(
 	ctx context.Context,
 	parentAssetID string,
-	derivativeRole corev1.AssetDerivativeRole,
+	derivativeRole evtv1.AssetDerivativeRole,
 	roomID string,
 	filename string,
 	contentType string,
 	reader io.Reader,
 	width int32,
 	height int32,
-) (*corev1.Attachment, error) {
+) (*evtv1.Attachment, error) {
 	attachment, err := c.uploadAttachmentBinary(ctx, roomID, filename, contentType, reader)
 	if err != nil {
 		return nil, err
@@ -328,7 +344,7 @@ func (c *MediaModel) GetS3Attachment(ctx context.Context, s3Key string) (io.Read
 // for the binary by attachment ID — this handles pre-locator video
 // variants and thumbnails whose backfilled Attachment protos came from
 // minimal standalone records that lacked a `Storage` field.
-func (c *MediaModel) GetAttachmentReader(ctx context.Context, attachment *corev1.Attachment) (io.Reader, *AttachmentInfo, error) {
+func (c *MediaModel) GetAttachmentReader(ctx context.Context, attachment *evtv1.Attachment) (io.Reader, *AttachmentInfo, error) {
 	if attachment == nil {
 		return nil, nil, fmt.Errorf("attachment is nil")
 	}
@@ -336,7 +352,7 @@ func (c *MediaModel) GetAttachmentReader(ctx context.Context, attachment *corev1
 		return c.probeAttachmentReaderByID(ctx, attachment.Id)
 	}
 	switch asset := attachment.Storage.Asset.(type) {
-	case *corev1.DeprecatedAsset_Nats:
+	case *evtv1.DeprecatedAsset_Nats:
 		reader, info, err := c.GetAttachment(ctx, asset.Nats.Key)
 		if err != nil {
 			return nil, nil, err
@@ -347,7 +363,7 @@ func (c *MediaModel) GetAttachmentReader(ctx context.Context, attachment *corev1
 			Filename:    info.Headers.Get("Filename"),
 			RoomID:      info.Headers.Get("Room-Id"),
 		}, nil
-	case *corev1.DeprecatedAsset_S3:
+	case *evtv1.DeprecatedAsset_S3:
 		if c.s3Client == nil {
 			return nil, nil, fmt.Errorf("S3 client not configured")
 		}
@@ -397,11 +413,11 @@ func legacyAttachmentS3KeyCandidates(attachmentID string) []string {
 	}
 }
 
-func assetFromAttachment(attachment *corev1.Attachment) *corev1.AssetRecord {
+func assetFromAttachment(attachment *evtv1.Attachment) *evtv1.AssetRecord {
 	if attachment == nil {
 		return nil
 	}
-	asset := &corev1.AssetRecord{
+	asset := &evtv1.AssetRecord{
 		Id:          attachment.GetId(),
 		Filename:    attachment.GetFilename(),
 		ContentType: attachment.GetContentType(),
@@ -412,12 +428,12 @@ func assetFromAttachment(attachment *corev1.Attachment) *corev1.AssetRecord {
 	return asset
 }
 
-func attachmentFromAsset(asset *corev1.AssetRecord) *corev1.Attachment {
+func attachmentFromAsset(asset *evtv1.AssetRecord) *evtv1.Attachment {
 	if asset == nil {
 		return nil
 	}
 	width, height := assetDimensions(asset)
-	return &corev1.Attachment{
+	return &evtv1.Attachment{
 		Id:          asset.GetId(),
 		Filename:    asset.GetFilename(),
 		ContentType: asset.GetContentType(),
@@ -430,11 +446,11 @@ func attachmentFromAsset(asset *corev1.AssetRecord) *corev1.Attachment {
 
 // AttachmentFromAsset converts the Asset model into the message-facing
 // Attachment view used by API response mapping and asset URL helpers.
-func AttachmentFromAsset(asset *corev1.AssetRecord) *corev1.Attachment {
+func AttachmentFromAsset(asset *evtv1.AssetRecord) *evtv1.Attachment {
 	return attachmentFromAsset(asset)
 }
 
-func assetRecordMatchesKey(asset *corev1.AssetRecord, key string) bool {
+func assetRecordMatchesKey(asset *evtv1.AssetRecord, key string) bool {
 	if asset == nil || key == "" {
 		return false
 	}
@@ -447,49 +463,49 @@ func assetRecordMatchesKey(asset *corev1.AssetRecord, key string) bool {
 	return asset.GetS3() != nil && asset.GetS3().GetKey() == key
 }
 
-func applyDeprecatedAssetFromAttachmentStorage(asset *corev1.AssetRecord, storage *corev1.DeprecatedAsset) {
+func applyDeprecatedAssetFromAttachmentStorage(asset *evtv1.AssetRecord, storage *evtv1.DeprecatedAsset) {
 	if asset == nil || storage == nil {
 		return
 	}
 	switch stored := storage.GetAsset().(type) {
-	case *corev1.DeprecatedAsset_Nats:
+	case *evtv1.DeprecatedAsset_Nats:
 		if stored.Nats != nil {
-			asset.Storage = &corev1.AssetRecord_Nats{Nats: proto.Clone(stored.Nats).(*corev1.NATSAsset)}
+			asset.Storage = &evtv1.AssetRecord_Nats{Nats: proto.Clone(stored.Nats).(*evtv1.NATSAsset)}
 		}
-	case *corev1.DeprecatedAsset_S3:
+	case *evtv1.DeprecatedAsset_S3:
 		if stored.S3 != nil {
-			asset.Storage = &corev1.AssetRecord_S3{S3: proto.Clone(stored.S3).(*corev1.S3Asset)}
+			asset.Storage = &evtv1.AssetRecord_S3{S3: proto.Clone(stored.S3).(*evtv1.S3Asset)}
 		}
 	}
 }
 
-func assetStorageFromAsset(asset *corev1.AssetRecord) *corev1.DeprecatedAsset {
+func assetStorageFromAsset(asset *evtv1.AssetRecord) *evtv1.DeprecatedAsset {
 	if asset == nil {
 		return nil
 	}
 	switch {
 	case asset.GetNats() != nil:
-		return &corev1.DeprecatedAsset{
-			Asset: &corev1.DeprecatedAsset_Nats{Nats: proto.Clone(asset.GetNats()).(*corev1.NATSAsset)},
+		return &evtv1.DeprecatedAsset{
+			Asset: &evtv1.DeprecatedAsset_Nats{Nats: proto.Clone(asset.GetNats()).(*evtv1.NATSAsset)},
 		}
 	case asset.GetS3() != nil:
-		return &corev1.DeprecatedAsset{
-			Asset: &corev1.DeprecatedAsset_S3{S3: proto.Clone(asset.GetS3()).(*corev1.S3Asset)},
+		return &evtv1.DeprecatedAsset{
+			Asset: &evtv1.DeprecatedAsset_S3{S3: proto.Clone(asset.GetS3()).(*evtv1.S3Asset)},
 		}
 	default:
 		return nil
 	}
 }
 
-func DeprecatedAssetFromAsset(asset *corev1.AssetRecord) *corev1.DeprecatedAsset {
+func DeprecatedAssetFromAsset(asset *evtv1.AssetRecord) *evtv1.DeprecatedAsset {
 	return assetStorageFromAsset(asset)
 }
 
-func assetFromDeprecatedAsset(storage *corev1.DeprecatedAsset, filename, contentType string) *corev1.AssetRecord {
+func assetFromDeprecatedAsset(storage *evtv1.DeprecatedAsset, filename, contentType string) *evtv1.AssetRecord {
 	if storage == nil {
 		return nil
 	}
-	asset := &corev1.AssetRecord{
+	asset := &evtv1.AssetRecord{
 		Id:          assetIDFromAsset(storage),
 		Filename:    filename,
 		ContentType: contentType,
@@ -498,7 +514,7 @@ func assetFromDeprecatedAsset(storage *corev1.DeprecatedAsset, filename, content
 	return asset
 }
 
-func applyAssetMetadataFromAttachment(asset *corev1.AssetRecord, attachment *corev1.Attachment) {
+func applyAssetMetadataFromAttachment(asset *evtv1.AssetRecord, attachment *evtv1.Attachment) {
 	if asset == nil || attachment == nil || (attachment.GetWidth() == 0 && attachment.GetHeight() == 0) {
 		return
 	}
@@ -506,25 +522,25 @@ func applyAssetMetadataFromAttachment(asset *corev1.AssetRecord, attachment *cor
 	asset.Height = attachment.GetHeight()
 }
 
-func assetDimensions(asset *corev1.AssetRecord) (int32, int32) {
+func assetDimensions(asset *evtv1.AssetRecord) (int32, int32) {
 	if asset == nil {
 		return 0, 0
 	}
 	return asset.GetWidth(), asset.GetHeight()
 }
 
-func cloneDeprecatedAsset(storage *corev1.DeprecatedAsset) *corev1.DeprecatedAsset {
+func cloneDeprecatedAsset(storage *evtv1.DeprecatedAsset) *evtv1.DeprecatedAsset {
 	if storage == nil {
 		return nil
 	}
-	return proto.Clone(storage).(*corev1.DeprecatedAsset)
+	return proto.Clone(storage).(*evtv1.DeprecatedAsset)
 }
 
-func cloneAssetRecord(asset *corev1.AssetRecord) *corev1.AssetRecord {
+func cloneAssetRecord(asset *evtv1.AssetRecord) *evtv1.AssetRecord {
 	if asset == nil {
 		return nil
 	}
-	return proto.Clone(asset).(*corev1.AssetRecord)
+	return proto.Clone(asset).(*evtv1.AssetRecord)
 }
 
 // MessageBodyAttachments returns the materialised attachments for a
@@ -532,7 +548,7 @@ func cloneAssetRecord(asset *corev1.AssetRecord) *corev1.AssetRecord {
 // asset_ids (current format) and falling back to the legacy embedded
 // attachments slice otherwise. The returned slice preserves the body's
 // declared order; missing projection entries are skipped.
-func (c *MediaModel) MessageBodyAttachments(body *corev1.MessageBody) []*corev1.Attachment {
+func (c *MediaModel) MessageBodyAttachments(body *evtv1.MessageBody) []*evtv1.Attachment {
 	if body == nil {
 		return nil
 	}
@@ -540,7 +556,7 @@ func (c *MediaModel) MessageBodyAttachments(body *corev1.MessageBody) []*corev1.
 	if len(ids) == 0 {
 		return body.GetAttachments()
 	}
-	out := make([]*corev1.Attachment, 0, len(ids))
+	out := make([]*evtv1.Attachment, 0, len(ids))
 	for _, id := range ids {
 		if id == "" {
 			continue
@@ -559,7 +575,7 @@ func (c *MediaModel) MessageBodyAttachments(body *corev1.MessageBody) []*corev1.
 // DeleteAttachmentFromStorage deletes an attachment's binary and its
 // cached resizes. When Storage is missing for legacy imported derivatives,
 // it falls back to known backend key layouts by attachment ID.
-func (c *MediaModel) DeleteAttachmentFromStorage(ctx context.Context, attachment *corev1.Attachment) error {
+func (c *MediaModel) DeleteAttachmentFromStorage(ctx context.Context, attachment *evtv1.Attachment) error {
 	if attachment == nil {
 		return fmt.Errorf("attachment is nil")
 	}
@@ -569,12 +585,12 @@ func (c *MediaModel) DeleteAttachmentFromStorage(ctx context.Context, attachment
 	return errors.Join(deleteErr, cacheErr)
 }
 
-func (c *MediaModel) deleteAttachmentBinary(ctx context.Context, attachment *corev1.Attachment) error {
+func (c *MediaModel) deleteAttachmentBinary(ctx context.Context, attachment *evtv1.Attachment) error {
 	if attachment.Storage == nil {
 		return c.deleteAttachmentBinaryByID(ctx, attachment.Id)
 	}
 	switch storage := attachment.Storage.Asset.(type) {
-	case *corev1.DeprecatedAsset_Nats:
+	case *evtv1.DeprecatedAsset_Nats:
 		store, err := c.GetAttachmentsStore(ctx)
 		if err != nil {
 			return fmt.Errorf("failed to get attachments store: %w", err)
@@ -583,7 +599,7 @@ func (c *MediaModel) deleteAttachmentBinary(ctx context.Context, attachment *cor
 			return fmt.Errorf("failed to delete attachment from NATS: %w", err)
 		}
 		c.logger.Debug("Deleted NATS attachment", "attachment_id", attachment.Id, "key", storage.Nats.Key)
-	case *corev1.DeprecatedAsset_S3:
+	case *evtv1.DeprecatedAsset_S3:
 		if c.s3Client == nil {
 			return fmt.Errorf("S3 client not configured")
 		}
@@ -653,7 +669,7 @@ func (c *MediaModel) deleteAttachmentBinaryByID(ctx context.Context, attachmentI
 // layouts. See `GetAttachmentReader` for why this exists.
 //
 // Authorization is the caller's responsibility.
-func (c *MediaModel) TryPresignedAttachmentURL(ctx context.Context, attachment *corev1.Attachment, ttl time.Duration) (string, error) {
+func (c *MediaModel) TryPresignedAttachmentURL(ctx context.Context, attachment *evtv1.Attachment, ttl time.Duration) (string, error) {
 	if c.s3Client == nil {
 		return "", fmt.Errorf("S3 not configured")
 	}
@@ -666,7 +682,7 @@ func (c *MediaModel) TryPresignedAttachmentURL(ctx context.Context, attachment *
 	if attachment.Storage == nil {
 		return c.probePresignedAttachmentURL(ctx, attachment.Id, ttl)
 	}
-	s3, ok := attachment.Storage.Asset.(*corev1.DeprecatedAsset_S3)
+	s3, ok := attachment.Storage.Asset.(*evtv1.DeprecatedAsset_S3)
 	if !ok {
 		return "", fmt.Errorf("attachment %s is not stored in S3", attachment.Id)
 	}
@@ -831,17 +847,209 @@ func (c *MediaModel) stableAttachmentPathWithAccess(assetID, userID, path string
 	return path + "?" + values.Encode()
 }
 
+// ----------------------------------------------------------------------------
+// 【本地改动 2026-08-18】公开附件 URL（不删除上面的 ticket 实现，只是新增）
+// 附件访问由「仅凭 URL 中 assetID 可读 + public immutable 缓存」的公开版
+// 承担：URL 形如 /assets/files/{assetID}/{fn.ext}，无签名 ticket、无会话/
+// 成员校验，assetID 本身就是访问凭证（URL 泄露即可读取，已缓存内容在成员
+// 移除后仍有效）。connectapi 这层入口选择调用 Public* 版本；ticket 版保留
+// 给旧的无文件名 URL 继续使用，两套实现并存。
+// ----------------------------------------------------------------------------
+//
+// 【本地改动 2026-08-29】合并 upstream #2162 后把本节所有 corev1.Attachment /
+// corev1.AssetRecord 迁移为 evtv1.*：upstream 删除了 core/v1 pb 包，类型分散到
+// evt/v1、runtime_state/v1、notification/v1 等。上游迁移了它自己拥有的调用点，
+// 本节的公开 URL 构造器全是本 fork 新增（GetPublicStable*、stableAttachmentPath、
+// ServerAssetURLFilename），无人迁移，若不手动改会直接编译失败。
+// ----------------------------------------------------------------------------
+
+// GetPublicStableAttachmentAssetURL returns the canonical public URL for an
+// asset binary: /assets/files/{assetID}/{fn.ext}. The trailing filename is
+// derived from stored attachment metadata, keeping the URL stable for the
+// asset's lifetime so browsers and CDNs can cache it immutably.
+func (c *MediaModel) GetPublicStableAttachmentAssetURL(attachment *evtv1.Attachment) StableAssetURL {
+	if attachment == nil || attachment.GetId() == "" {
+		return StableAssetURL{}
+	}
+	return StableAssetURL{URL: c.assetURL(stableAttachmentPath(attachment, ""))}
+}
+
+// GetPublicStableTransformedAttachmentAssetURL returns the canonical public
+// URL for a derived image form factor:
+// /assets/files/{assetID}/image/{width}x{height}/{fit}/{fn.ext}
+func (c *MediaModel) GetPublicStableTransformedAttachmentAssetURL(attachment *evtv1.Attachment, width, height int, fit string) StableAssetURL {
+	if attachment == nil || attachment.GetId() == "" {
+		return StableAssetURL{}
+	}
+	// 【本地改动 2026-08-23】修复：这里只能传「尾段」(/image/{w}x{h}/{fit})，
+	// 不能传完整路径——stableAttachmentPath 自己会拼 /assets/files/{id} 前缀。
+	// 此前误传完整路径导致线上缩略图 URL 双重前缀全部 404（2026-08-23 部署
+	// 后由用户浏览器控制台发现；CI 的 HasPrefix 断言与 build-linux 不跑全量
+	// 测试叠加，未能拦截）。
+	transformPath := fmt.Sprintf("/image/%dx%d/%s", width, height, url.PathEscape(fit))
+	return StableAssetURL{URL: c.assetURL(stableAttachmentPath(attachment, transformPath))}
+}
+
+// stableAttachmentPath builds /assets/files/{assetID}/{suffix}/{fn.ext} where
+// suffix is empty or "/image/{w}x{h}/{fit}". The trailing filename is part of
+// the URL purely for readability and cache-key variety; the server resolves
+// the asset by ID alone and ignores the filename segment.
+func stableAttachmentPath(attachment *evtv1.Attachment, suffix string) string {
+	base := fmt.Sprintf("/assets/files/%s", url.PathEscape(attachment.GetId()))
+	if suffix != "" {
+		base += suffix
+	}
+	if fn := attachmentURLFilename(attachment.GetFilename(), attachment.GetContentType()); fn != "" {
+		base += "/" + url.PathEscape(fn)
+	}
+	return base
+}
+
+// attachmentURLFilename builds the {fn.ext} tail of stable attachment URLs.
+// 原始用户文件名不可信（可能含路径分隔符/../、非 ASCII、控制字符），这里
+// 只保留 [A-Za-z0-9._-] 的安全子集；扩展名必须匹配白名单，否则按
+// ContentType 映射兜底，保证 URL 后缀与真实字节格式一致（例如 AVIF 重编码
+// 后的 image/avif 附件落到 .avif）。
+func attachmentURLFilename(filename, contentType string) string {
+	base := sanitizeAttachmentFilename(filename)
+	ext := safeAttachmentExtension(base, contentType)
+	base = strings.TrimSuffix(base, filepath.Ext(base))
+	base = strings.Trim(base, ".-")
+	if base == "" {
+		base = "file"
+	}
+	return base + ext
+}
+
+// sanitizeAttachmentFilename keeps only [A-Za-z0-9._-] from the filename base,
+// collapsing every other run into a single dash.
+func sanitizeAttachmentFilename(filename string) string {
+	base := filepath.Base(filename)
+	var b strings.Builder
+	lastDash := false
+	for _, r := range base {
+		ok := r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '-' || r == '_'
+		if ok {
+			b.WriteRune(r)
+			lastDash = false
+		} else if !lastDash {
+			b.WriteByte('-')
+			lastDash = true
+		}
+	}
+	return b.String()
+}
+
+// attachmentExtWhitelist receives URL-visible extensions from user filenames.
+// Anything else falls back to ContentType mapping so the extension never lies
+// about the byte format.
+var attachmentExtWhitelist = map[string]bool{
+	".jpg": true, ".jpeg": true, ".png": true, ".gif": true, ".webp": true,
+	".avif": true, ".mp4": true, ".webm": true, ".mov": true, ".ogg": true,
+	".m4a": true, ".mp3": true, ".wav": true, ".flac": true, ".pdf": true,
+	".txt": true, ".zip": true, ".7z": true, ".tar": true, ".gz": true,
+}
+
+// safeAttachmentExtension prefers the sanitized filename's own extension when
+// it is whitelisted, otherwise derives one from ContentType.
+func safeAttachmentExtension(filename, contentType string) string {
+	ext := strings.ToLower(filepath.Ext(filename))
+	if attachmentExtWhitelist[ext] {
+		return ext
+	}
+	switch strings.ToLower(strings.TrimSpace(strings.Split(contentType, ";")[0])) {
+	case "image/jpeg":
+		return ".jpg"
+	case "image/png":
+		return ".png"
+	case "image/gif":
+		return ".gif"
+	case "image/webp":
+		return ".webp"
+	case "image/avif":
+		return ".avif"
+	case "video/mp4":
+		return ".mp4"
+	case "video/webm":
+		return ".webm"
+	case "video/quicktime":
+		return ".mov"
+	case "video/ogg":
+		return ".ogg"
+	case "audio/mpeg":
+		return ".mp3"
+	case "audio/ogg":
+		return ".ogg"
+	case "audio/mp4":
+		return ".m4a"
+	case "audio/wav":
+		return ".wav"
+	case "audio/flac":
+		return ".flac"
+	case "application/pdf":
+		return ".pdf"
+	case "text/plain":
+		return ".txt"
+	case "application/zip":
+		return ".zip"
+	}
+	return ""
+}
+
 // GetTransformedServerAssetURL returns the URL for accessing a transformed version of an server asset.
 // Server assets include server logos, server banners, and user avatars stored in SERVER_ASSETS.
 // The URL includes HMAC signature to prevent parameter tampering.
 // Format: /assets/server/{key}/t/{params}.{signature}
 // where {params} is base64url-encoded JSON: {"w":width,"h":height,"f":"fit"}
 func (c *MediaModel) GetTransformedServerAssetURL(key string, width, height int, fit string) string {
+	return c.GetTransformedServerAssetURLWithFilename(key, "", width, height, fit)
+}
+
+// GetTransformedServerAssetURLWithFilename is GetTransformedServerAssetURL
+// with a trailing {fn.ext} URL segment.
+//
+// 【本地改动 2026-08-23】头像/logo/banner/链接预览的公开 URL 统一带 {fn.ext}
+// 尾段：浏览器按扩展名嗅探类型、CDN 缓存键更可读。签名仍只覆盖 {key} 与
+// transform 参数，文件名段纯粹是装饰，serving 端会剥掉它再验证。
+// filename 为空时保持旧的无尾段形态（推导不出安全扩展名的兜底）。
+func (c *MediaModel) GetTransformedServerAssetURLWithFilename(key, filename string, width, height int, fit string) string {
 	// Generate signed transform path component using the server asset resource ID.
 	signedPath := signedurl.SignedTransformPath(c.config.Assets.SigningSecret, ServerAssetSignResource, key, width, height, fit)
 
+	path := fmt.Sprintf("/assets/server/%s/t/%s", key, signedPath)
+	if filename != "" {
+		path += "/" + url.PathEscape(filename)
+	}
+
 	// Return signed transform URL
-	return c.assetURL(fmt.Sprintf("/assets/server/%s/t/%s", key, signedPath))
+	return c.assetURL(path)
+}
+
+// ServerAssetURLFilename builds the safe {fn.ext} tail for public
+// /assets/server/ URLs from the asset record. It prefers the stored filename's
+// sanitized base and falls back to fallbackBase (e.g. "avatar"/"logo"); the
+// extension must be derivable and URL-safe, otherwise the returned string is
+// empty and callers keep the legacy filename-less URL shape.
+//
+// 【本地改动 2026-08-23】与附件的 attachmentURLFilename 同一套白名单逻辑，
+// 保证 URL 扩展名永远不撒谎（如头像统一转 WebP 后落 .webp）。
+func ServerAssetURLFilename(record *evtv1.AssetRecord, fallbackBase string) string {
+	name := ""
+	contentType := ""
+	if record != nil {
+		if fn := record.GetFilename(); fn != "" {
+			name = fn
+		}
+		contentType = record.GetContentType()
+	}
+	if name == "" {
+		name = fallbackBase
+	}
+	out := attachmentURLFilename(name, contentType)
+	if out == "" || filepath.Ext(out) == "" {
+		return ""
+	}
+	return out
 }
 
 // ============================================================================
@@ -975,7 +1183,7 @@ func (c *MediaModel) DeleteCachedResizesForKey(ctx context.Context, prefix, asse
 // AttachmentNeedsVideoProcessing returns whether an attachment should enter the
 // video processing pipeline. Static GIFs stay image-only; callers that inspect
 // the upload bytes can set animatedGIF for GIF-to-MP4 conversion.
-func AttachmentNeedsVideoProcessing(attachment *corev1.Attachment, animatedGIF bool) bool {
+func AttachmentNeedsVideoProcessing(attachment *evtv1.Attachment, animatedGIF bool) bool {
 	if attachment == nil {
 		return false
 	}
@@ -1012,7 +1220,7 @@ const (
 // result. The intent is to let callers distinguish "we know it's gone" from
 // "we couldn't reach storage" so transient S3 or configuration issues do not
 // get recorded as durable SOURCE_MISSING events.
-func (c *ChattoCore) attachmentBinaryStatus(ctx context.Context, attachment *corev1.Attachment) AttachmentBinaryStatus {
+func (c *ChattoCore) attachmentBinaryStatus(ctx context.Context, attachment *evtv1.Attachment) AttachmentBinaryStatus {
 	reader, _, err := c.GetAttachmentReader(ctx, attachment)
 	if err == nil {
 		if closer, ok := reader.(io.Closer); ok {

@@ -1,6 +1,28 @@
 import { describe, expect, it } from 'vitest';
 import { Schema } from '@tiptap/pm/model';
-import { buildQuoteContent, createClipboardContent, prepareMarkdownForEditor } from './markdown';
+import type { Editor } from '@tiptap/core';
+import {
+  buildQuoteContent,
+  createClipboardContent,
+  // 【本地改动】getSerializedMarkdown 服务于内联图片序列化回归测试
+  // （inline image serialization）；isHttpMarkdownAutolink 是 upstream 新增。
+  // 2026-08-29 合并 upstream：两者都保留。本地原有的
+  // normalizeQuoteInsertionContent 已由 upstream 删除（markdown.ts 不再导出该函数，
+  // 相关测试也一并移除），因此不能保留此导入，否则 TS 报未定义导出。
+  getSerializedMarkdown,
+  isHttpMarkdownAutolink,
+  prepareMarkdownForEditor
+} from './markdown';
+
+describe('isHttpMarkdownAutolink', () => {
+  it('accepts only complete angle-bracket HTTP(S) URLs', () => {
+    expect(isHttpMarkdownAutolink('<https://example.com/story>')).toBe(true);
+    expect(isHttpMarkdownAutolink('<HTTP://example.com/story>')).toBe(true);
+    expect(isHttpMarkdownAutolink('<example.com>')).toBe(false);
+    expect(isHttpMarkdownAutolink('<https://example.com/story')).toBe(false);
+    expect(isHttpMarkdownAutolink('See <https://example.com/story>')).toBe(false);
+  });
+});
 
 describe('prepareMarkdownForEditor', () => {
   it('escapes HTML-looking prose without changing link destinations', () => {
@@ -21,6 +43,33 @@ describe('prepareMarkdownForEditor', () => {
     const prepared = prepareMarkdownForEditor('| One | Two |\n| --- | --- |\n| A | B |');
 
     expect(prepared).toBe('| One | Two |\n| -\u2060-- | --- |\n| A | B |');
+  });
+
+  // 【本地改动】回归测试：编辑框无 image 节点时，escapeImagesForEditor 用 \u2060 把 ![]() 当纯文本保留，
+  // 普通链接不受影响；序列化时 normalizeSerializedImages 还原。发现背景：避免「编辑含内联图的消息」时图片丢失。
+  it('keeps inline image syntax as literal text via an invisible marker', () => {
+    const prepared = prepareMarkdownForEditor('see ![alt](https://example.com/a.png) here');
+    // the marker sits right after the opening paren of the destination
+    expect(prepared).toContain('](\u2060');
+    expect(prepared).toContain('https://example.com/a.png');
+  });
+
+  it('does not escape plain links', () => {
+    expect(prepareMarkdownForEditor('[alt](https://example.com)')).toBe('[alt](https://example.com)');
+  });
+});
+
+describe('inline image serialization', () => {
+  it('restores the original image source when serializing edited content', () => {
+    const fakeEditor = {
+      getMarkdown: () => 'see ![alt](\u2060https://example.com/a.png) here',
+      state: {
+        doc: { childCount: 1, lastChild: { type: { name: 'paragraph' }, content: { size: 5 } } }
+      }
+    } as unknown as Editor;
+    const serialized = getSerializedMarkdown(fakeEditor);
+    expect(serialized).toBe('see ![alt](https://example.com/a.png) here');
+    expect(serialized).not.toContain('\u2060');
   });
 });
 

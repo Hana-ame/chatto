@@ -6,7 +6,7 @@ import (
 	"connectrpc.com/connect"
 	"hmans.de/chatto/internal/core"
 	apiv1 "hmans.de/chatto/internal/pb/chatto/api/v1"
-	corev1 "hmans.de/chatto/internal/pb/chatto/core/v1"
+	evtv1 "hmans.de/chatto/internal/pb/chatto/core/evt/v1"
 )
 
 func (s *messageService) FetchLinkPreview(ctx context.Context, req *connect.Request[apiv1.FetchLinkPreviewRequest]) (*connect.Response[apiv1.FetchLinkPreviewResponse], error) {
@@ -36,7 +36,7 @@ func (s *messageService) FetchLinkPreview(ctx context.Context, req *connect.Requ
 	}), nil
 }
 
-func apiLinkPreview(api *API, preview *corev1.LinkPreview) *apiv1.LinkPreview {
+func apiLinkPreview(api *API, preview *evtv1.LinkPreview) *apiv1.LinkPreview {
 	if preview == nil {
 		return nil
 	}
@@ -50,7 +50,10 @@ func apiLinkPreview(api *API, preview *corev1.LinkPreview) *apiv1.LinkPreview {
 
 	imageURL := ""
 	if imageAssetKey != "" {
-		imageURL = api.core.GetTransformedServerAssetURL(imageAssetKey, 600, 314, "contain")
+		// 【本地改动 2026-08-23】URL 追加 {fn.ext} 尾段；image 记录缺失时
+		// 推导不出扩展名，保持无尾段旧形态。
+		imageURL = api.core.GetTransformedServerAssetURLWithFilename(
+			imageAssetKey, core.ServerAssetURLFilename(preview.GetImageAsset(), "preview"), 600, 314, "contain")
 	}
 
 	out := &apiv1.LinkPreview{
@@ -83,7 +86,7 @@ func apiLinkPreview(api *API, preview *corev1.LinkPreview) *apiv1.LinkPreview {
 	return out
 }
 
-func apiSocialPostPreview(api *API, socialPost *corev1.SocialPostPreview, quoteDepth int) *apiv1.SocialPostPreview {
+func apiSocialPostPreview(api *API, socialPost *evtv1.SocialPostPreview, quoteDepth int) *apiv1.SocialPostPreview {
 	if socialPost == nil {
 		return nil
 	}
@@ -125,12 +128,14 @@ func apiSocialPostPreview(api *API, socialPost *corev1.SocialPostPreview, quoteD
 	return mapped
 }
 
-func linkPreviewAsset(api *API, asset *corev1.AssetRecord, width, height int, fit string) (*string, *string) {
+func linkPreviewAsset(api *API, asset *evtv1.AssetRecord, width, height int, fit string) (*string, *string) {
 	if asset == nil || asset.GetId() == "" {
 		return nil, nil
 	}
 	assetID := asset.GetId()
-	url := api.core.GetTransformedServerAssetURL(core.ServerAssetDeliveryKey(asset), width, height, fit)
+	// 【本地改动 2026-08-23】URL 追加 {fn.ext} 尾段（公开 immutable 缓存）。
+	url := api.core.GetTransformedServerAssetURLWithFilename(
+		core.ServerAssetDeliveryKey(asset), core.ServerAssetURLFilename(asset, "preview"), width, height, fit)
 	if url == "" {
 		return nil, &assetID
 	}

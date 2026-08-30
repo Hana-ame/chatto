@@ -7,13 +7,12 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"errors"
+	"hmans.de/chatto/internal/pb/chatto/core/runtime_state/v1"
 	"net/http"
 	"strconv"
 	"strings"
 
-	"github.com/gin-contrib/sessions"
 	"github.com/gin-gonic/gin"
-	corev1 "hmans.de/chatto/internal/pb/chatto/core/v1"
 )
 
 const (
@@ -26,7 +25,13 @@ const (
 func (s *HTTPServer) csrfMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if s.requiresCSRF(c) {
-			valid, err := s.validCSRFToken(c)
+			var valid bool
+			var err error
+			if c.Request.URL.Path == "/auth/browser/logout" {
+				valid, err = s.validBrowserLogoutCSRF(c)
+			} else {
+				valid, err = s.validCSRFToken(c)
+			}
 			if err != nil {
 				c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "Authentication service temporarily unavailable"})
 				return
@@ -37,8 +42,22 @@ func (s *HTTPServer) csrfMiddleware() gin.HandlerFunc {
 			}
 		}
 
-		session := sessions.Default(c)
-		if isSafeHTTPMethod(c.Request.Method) && hasCookieCredential(session) {
+		// 【本地改动 2026-08-23】跳过 /assets/*：这些是可被 Cloudflare 等
+		// 共享缓存的二进制/衍生图路由，响应一旦携带 Set-Cookie，缓存层必须
+		// BYPASS——登录用户的所有图片请求都因此永远打不满边缘缓存
+		// （2026-08-23 用户报告 cf-cache-status: BYPASS 定位到此）。
+		// CSRF cookie 由 SPA 页面与其余 GET 响应照常下发；<img> 加载不消费
+		// 它，token 校验只发生在 unsafe 方法上，跳过不影响任何防护。
+		// 2026-08-29 合并 upstream：保留本条 /assets/* 判断（upstream 新增的
+		// isImmutableFrontendAsset 只覆盖 /_app/immutable/，不覆盖附件/服务器资产），
+		// 同时叠加 upstream 的 serverDiscoveryConnectPath 跳过与 isImmutableFrontendAsset
+		// 两条。本地原用的 hasCookieCredential(session) 已被 upstream 改为 HTTPServer
+		// 方法 hasCookieCredential(c)，跟随上游。
+		if isSafeHTTPMethod(c.Request.Method) &&
+			s.hasCookieCredential(c) &&
+			c.Request.URL.Path != serverDiscoveryConnectPath &&
+			!isImmutableFrontendAsset(c.Request.URL.Path) &&
+			!isCacheableAssetPath(c.Request.URL.Path) {
 			if err := s.ensureCSRFToken(c); err != nil {
 				if errors.Is(err, errAuthenticationServiceUnavailable) {
 					c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "Authentication service temporarily unavailable"})
@@ -53,6 +72,12 @@ func (s *HTTPServer) csrfMiddleware() gin.HandlerFunc {
 	}
 }
 
+// isCacheableAssetPath reports whether the path serves shareable binary assets
+// whose responses must stay free of Set-Cookie to remain cacheable.
+func isCacheableAssetPath(path string) bool {
+	return strings.HasPrefix(path, "/assets/")
+}
+
 func (s *HTTPServer) ensureCSRFToken(c *gin.Context) error {
 	binding, ok, err := s.csrfBinding(c)
 	if err != nil {
@@ -62,7 +87,6 @@ func (s *HTTPServer) ensureCSRFToken(c *gin.Context) error {
 		return nil
 	}
 	if existingToken, err := c.Cookie(csrfCookieName); err == nil && s.validSignedCSRFToken(existingToken, binding) {
-		s.setCSRFCookie(c, existingToken)
 		return nil
 	}
 	token, err := s.generateCSRFToken(binding)
@@ -77,7 +101,7 @@ func (s *HTTPServer) requiresCSRF(c *gin.Context) bool {
 	if isSafeHTTPMethod(c.Request.Method) {
 		return false
 	}
-	if !hasCookieCredential(sessions.Default(c)) {
+	if !s.hasCookieCredential(c) {
 		return false
 	}
 	return !isCSRFExemptUnsafePath(c.Request.URL.Path)
@@ -94,9 +118,13 @@ func isCSRFExemptUnsafePath(path string) bool {
 	}
 	switch path {
 	case "/auth/login",
+		"/auth/browser/login",
+		"/auth/browser/session/migrate",
+		"/auth/browser/revoke-bearer-session",
 		"/auth/register",
 		"/auth/register/verify-code",
 		"/auth/register/complete",
+		"/auth/browser/register/complete",
 		"/auth/forgot-password",
 		"/auth/reset-password",
 		"/oauth/token":
@@ -107,21 +135,46 @@ func isCSRFExemptUnsafePath(path string) bool {
 }
 
 func (s *HTTPServer) validCSRFToken(c *gin.Context) (bool, error) {
-	headerToken := c.GetHeader(csrfHeaderName)
-	cookieToken, err := c.Cookie(csrfCookieName)
-	if err != nil || headerToken == "" || cookieToken == "" {
+	token, ok := s.matchingCSRFToken(c)
+	if !ok {
 		return false, nil
 	}
-
-	if subtle.ConstantTimeCompare([]byte(headerToken), []byte(cookieToken)) != 1 {
-		return false, nil
-	}
-
 	binding, ok, err := s.csrfBinding(c)
 	if err != nil {
 		return false, err
 	}
-	return ok && s.validSignedCSRFToken(cookieToken, binding), nil
+	return ok && s.validSignedCSRFToken(token, binding), nil
+}
+
+// validBrowserLogoutCSRF keeps the signed CSRF proof mandatory while a valid
+// cookie authority exists. If every presented handle is already invalid, there
+// is no ambient authority left to protect. In that case, the independent
+// browser-route proof can authorize clearing the stale browser cookies.
+func (s *HTTPServer) validBrowserLogoutCSRF(c *gin.Context) (bool, error) {
+	binding, ok, err := s.csrfBinding(c)
+	if err != nil {
+		return false, err
+	}
+	if !ok {
+		return isJSONAuthenticationRequest(c) &&
+			requestsCookieOnlyAuthentication(c) &&
+			s.requestIsSameOrigin(c.Request), nil
+	}
+	token, ok := s.matchingCSRFToken(c)
+	return ok && s.validSignedCSRFToken(token, binding), nil
+}
+
+func (s *HTTPServer) matchingCSRFToken(c *gin.Context) (string, bool) {
+	headerToken := c.GetHeader(csrfHeaderName)
+	cookieToken, err := c.Cookie(csrfCookieName)
+	if err != nil || headerToken == "" || cookieToken == "" {
+		return "", false
+	}
+
+	if subtle.ConstantTimeCompare([]byte(headerToken), []byte(cookieToken)) != 1 {
+		return "", false
+	}
+	return cookieToken, true
 }
 
 type csrfBinding struct {
@@ -140,12 +193,12 @@ func (s *HTTPServer) csrfBinding(c *gin.Context) (csrfBinding, bool, error) {
 	return csrfBindingForSession(credential.auth.UserID, credential.cookieRecord), true, nil
 }
 
-func hasCookieCredential(session sessions.Session) bool {
-	_, ok := cookieCredentialIDFromSession(session)
-	return ok
+func (s *HTTPServer) hasCookieCredential(c *gin.Context) bool {
+	cookies, err := browserSessionCookies(c.Request)
+	return err != nil || len(cookies) != 0
 }
 
-func csrfBindingForSession(userID string, record *corev1.CookieSession) csrfBinding {
+func csrfBindingForSession(userID string, record *runtimestatev1.CookieSession) csrfBinding {
 	if record == nil {
 		return csrfBinding{userID: userID}
 	}
@@ -204,7 +257,7 @@ func (s *HTTPServer) setCSRFCookie(c *gin.Context, token string) {
 	c.SetCookie(
 		csrfCookieName,
 		token,
-		60*60*24*90,
+		int(s.config.Auth.TokenTTLOrDefault().Seconds()),
 		"/",
 		"",
 		strings.HasPrefix(s.config.Webserver.URL, "https"),

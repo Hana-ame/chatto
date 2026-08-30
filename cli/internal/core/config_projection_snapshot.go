@@ -2,27 +2,28 @@ package core
 
 import (
 	"fmt"
+	"hmans.de/chatto/internal/pb/chatto/core/projection/v1"
 
 	"google.golang.org/protobuf/proto"
 
-	corev1 "hmans.de/chatto/internal/pb/chatto/core/v1"
+	evtv1 "hmans.de/chatto/internal/pb/chatto/core/evt/v1"
 )
 
-var configSnapshotContractID = snapshotContractID("v1", &corev1.ConfigProjectionSnapshot{})
+var configSnapshotContractID = snapshotContractID("v1", &projectionv1.ConfigProjectionSnapshot{})
 
 func (*ConfigProjection) SnapshotContractID() string { return configSnapshotContractID }
 
 func (p *ConfigProjection) Snapshot() ([]byte, error) {
 	p.RLock()
 	defer p.RUnlock()
-	snapshot := &corev1.ConfigProjectionSnapshot{ServerName: p.server.serverName, Description: p.server.description, WelcomeMessage: p.server.welcomeMessage, Motd: p.server.motd, Logo: cloneAssetRecord(p.server.logo), Banner: cloneAssetRecord(p.server.banner)}
+	snapshot := &projectionv1.ConfigProjectionSnapshot{ServerName: p.server.serverName, Description: p.server.description, WelcomeMessage: p.server.welcomeMessage, Motd: p.server.motd, Logo: cloneAssetRecord(p.server.logo), Banner: cloneAssetRecord(p.server.banner)}
 	if p.server.blockedUsernames != nil {
 		value := *p.server.blockedUsernames
 		snapshot.BlockedUsernames = &value
 	}
 	for _, userID := range sortedMapKeys(p.users) {
 		user := p.users[userID]
-		row := &corev1.UserConfigSnapshot{UserId: userID}
+		row := &projectionv1.UserConfigSnapshot{UserId: userID}
 		if user.timezone != nil {
 			value := *user.timezone
 			row.Timezone = &value
@@ -32,8 +33,14 @@ func (p *ConfigProjection) Snapshot() ([]byte, error) {
 			row.TimeFormat = &value
 		}
 		row.ServerNotificationModes = cloneNotificationDeliveryModes(user.serverModes)
+		for _, groupID := range sortedMapKeys(user.roomGroupModesByGroup) {
+			row.RoomGroupNotificationModes = append(row.RoomGroupNotificationModes, &projectionv1.RoomGroupNotificationModesSnapshot{
+				RoomGroupId: groupID,
+				Modes:       cloneNotificationDeliveryModes(user.roomGroupModesByGroup[groupID]),
+			})
+		}
 		for _, roomID := range sortedMapKeys(user.roomModesByRoom) {
-			row.RoomNotificationModes = append(row.RoomNotificationModes, &corev1.RoomNotificationModesSnapshot{
+			row.RoomNotificationModes = append(row.RoomNotificationModes, &projectionv1.RoomNotificationModesSnapshot{
 				RoomId: roomID,
 				Modes:  cloneNotificationDeliveryModes(user.roomModesByRoom[roomID]),
 			})
@@ -44,7 +51,7 @@ func (p *ConfigProjection) Snapshot() ([]byte, error) {
 }
 
 func (p *ConfigProjection) Restore(data []byte) error {
-	snapshot := &corev1.ConfigProjectionSnapshot{}
+	snapshot := &projectionv1.ConfigProjectionSnapshot{}
 	if len(data) > 0 {
 		if err := proto.Unmarshal(data, snapshot); err != nil {
 			return fmt.Errorf("unmarshal config snapshot: %w", err)
@@ -63,7 +70,10 @@ func (p *ConfigProjection) Restore(data []byte) error {
 		if _, duplicate := users[row.GetUserId()]; duplicate {
 			return fmt.Errorf("config snapshot repeats user %q", row.GetUserId())
 		}
-		user := &userConfigState{roomModesByRoom: make(map[string]*corev1.NotificationDeliveryModes)}
+		user := &userConfigState{
+			roomGroupModesByGroup: make(map[string]*evtv1.NotificationDeliveryModes),
+			roomModesByRoom:       make(map[string]*evtv1.NotificationDeliveryModes),
+		}
 		if row.Timezone != nil {
 			value := row.GetTimezone()
 			user.timezone = &value
@@ -73,6 +83,15 @@ func (p *ConfigProjection) Restore(data []byte) error {
 			user.timeFormat = &value
 		}
 		user.serverModes = cloneNotificationDeliveryModes(row.GetServerNotificationModes())
+		for _, group := range row.GetRoomGroupNotificationModes() {
+			if group.GetRoomGroupId() == "" {
+				return fmt.Errorf("config snapshot has empty notification preference room group ID")
+			}
+			if _, duplicate := user.roomGroupModesByGroup[group.GetRoomGroupId()]; duplicate {
+				return fmt.Errorf("config snapshot repeats room group notification preferences")
+			}
+			user.roomGroupModesByGroup[group.GetRoomGroupId()] = cloneNotificationDeliveryModes(group.GetModes())
+		}
 		for _, room := range row.GetRoomNotificationModes() {
 			if room.GetRoomId() == "" {
 				return fmt.Errorf("config snapshot has empty notification preference room ID")

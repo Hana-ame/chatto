@@ -61,6 +61,9 @@ func TestInitGeneratesCoreSecret(t *testing.T) {
 	if cfg.SMTP.TLS != config.SMTPTLSMandatory {
 		t.Fatalf("generated SMTP TLS policy = %q, want %q", cfg.SMTP.TLS, config.SMTPTLSMandatory)
 	}
+	if cfg.Email.Transport != config.EmailTransportSMTP {
+		t.Fatalf("generated email transport = %q, want %q", cfg.Email.Transport, config.EmailTransportSMTP)
+	}
 	if !cfg.AssetProcessing.Enabled {
 		t.Fatal("generated config should enable the built-in asset-processing worker")
 	}
@@ -97,8 +100,8 @@ func TestInitGeneratesCoreSecret(t *testing.T) {
 			t.Fatalf("generated [asset_processing] config should include %q", setting)
 		}
 	}
-	if strings.Contains(rawText, "allowed_origins") || strings.Contains(rawText, "oauth_redirect_origins") {
-		t.Fatal("generated config should not include retired origin allow-list settings")
+	if strings.Contains(rawText, "oauth_redirect_origins") {
+		t.Fatal("generated config should not include the retired OAuth redirect-origin setting")
 	}
 	if strings.Contains(rawText, "\nproviders = []") {
 		t.Fatal("generated config should not include an active empty auth.providers array")

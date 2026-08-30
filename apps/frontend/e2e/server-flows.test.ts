@@ -51,7 +51,7 @@ test.describe('Landing Page', () => {
     await withFreshPage(browser, async ({ page }) => {
       await page.goto(routes.login);
 
-      // Sidebar nav icons for DMs, Browse Spaces, and Create Space should not be present
+      // Retired DM browse and Space creation navigation must not be present.
       await expect(page.getByTestId('dm-icon')).not.toBeVisible();
       await expect(page.getByRole('link', { name: 'Explore Spaces' })).not.toBeVisible();
       await expect(page.getByRole('link', { name: 'Create Space' })).not.toBeVisible();
@@ -64,8 +64,8 @@ test.describe('Landing Page', () => {
     serverURL
   }) => {
     await createAndLoginTestUser(page);
-    const sessionCookie = (await page.context().cookies()).find(
-      (cookie) => cookie.name === 'chatto_session'
+    const sessionCookie = (await page.context().cookies()).find((cookie) =>
+      cookie.name.startsWith('chatto_auth_')
     );
     expect(sessionCookie).toBeDefined();
 
@@ -74,7 +74,14 @@ test.describe('Landing Page', () => {
       async ({ context, page: freshPage }) => {
         await context.addCookies([sessionCookie!]);
 
-        const rejectedResponse = await freshPage.request.post('/auth/logout');
+        const rejectedResponse = await freshPage.request.post('/auth/browser/logout', {
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Chatto-Authentication-Mode': 'cookie',
+            Origin: new URL(serverURL).origin
+          },
+          data: {}
+        });
         expect(rejectedResponse.status()).toBe(403);
 
         const viewer = await connectPost<ViewerResponse>(
@@ -84,9 +91,7 @@ test.describe('Landing Page', () => {
         expect(viewer.user?.profile?.id).toBeTruthy();
 
         await freshPage.goto(routes.settings);
-        await expect(
-          freshPage.getByRole('heading', { name: 'Profile', level: 1 })
-        ).toBeVisible();
+        await expect(freshPage.getByRole('heading', { name: 'Profile', level: 1 })).toBeVisible();
         await expect(freshPage).not.toHaveURL(routes.login);
       },
       { baseURL: serverURL }
@@ -115,8 +120,9 @@ test.describe('Last-Room Memory', () => {
     const roomName = await chatPage.createRoom();
     const roomUrl = page.url();
 
-    // Navigate to the server root — should redirect back to the room.
-    await page.goto(routes.chat);
+    // The server-gutter link uses SvelteKit client-side navigation. Its route
+    // load must redirect before the server-root page can render.
+    await page.getByTestId('server-icon').first().click();
     await expect(page).toHaveURL(roomUrl);
     await expect(chatPage.getRoomHeader(roomName)).toBeVisible();
   });
@@ -183,7 +189,7 @@ test.describe('Last-Room Memory', () => {
 
       // Navigating directly to the Overview URL should stay on Overview,
       // not bounce to the last room.
-      await page2.goto(routes.browseRooms);
+      await page2.goto(routes.serverOverview);
       await expect(page2).toHaveURL(/\/chat\/-\/overview$/);
       await expect(page2.getByRole('heading', { name: 'Overview' })).toBeVisible();
     });
@@ -321,9 +327,7 @@ test.describe('Add Server - Remote Auth Flow', () => {
 
     // Fill in credentials on the remote's login page
     await remoteLoginPage.locator('input[autocomplete="username"]').fill('remoteuser');
-    await remoteLoginPage
-      .locator('input[autocomplete="current-password"]')
-      .fill('password123');
+    await remoteLoginPage.locator('input[autocomplete="current-password"]').fill('password123');
     await remoteLoginPage.getByRole('button', { name: 'Sign In' }).click();
     await expect(remoteLoginPage).toHaveURL(/\/oauth\/consent/, {
       timeout: TIMEOUTS.REALTIME_EVENT
@@ -365,9 +369,7 @@ test.describe('Add Server - Remote Auth Flow', () => {
     });
 
     await remoteLoginPage.locator('input[autocomplete="username"]').fill('remoteonlyuser');
-    await remoteLoginPage
-      .locator('input[autocomplete="current-password"]')
-      .fill('password123');
+    await remoteLoginPage.locator('input[autocomplete="current-password"]').fill('password123');
     await remoteLoginPage.getByRole('button', { name: 'Sign In' }).click();
     await expect(remoteLoginPage).toHaveURL(/\/oauth\/consent/, {
       timeout: TIMEOUTS.REALTIME_EVENT
@@ -418,9 +420,7 @@ test.describe('Add Server - Remote Auth Flow', () => {
     });
 
     await remoteLoginPage.locator('input[autocomplete="username"]').fill('wronguser');
-    await remoteLoginPage
-      .locator('input[autocomplete="current-password"]')
-      .fill('wrongpassword');
+    await remoteLoginPage.locator('input[autocomplete="current-password"]').fill('wrongpassword');
     await remoteLoginPage.getByRole('button', { name: 'Sign In' }).click();
 
     // Should show an auth error on the remote's login page
@@ -434,10 +434,7 @@ test.describe('Add Server - Remote Auth Flow', () => {
 });
 
 test.describe('Sign Out', () => {
-  test('sign out removes all instances and redirects to landing page', async ({
-    page,
-    chatPage
-  }) => {
+  test('sign out removes all instances and redirects to sign in', async ({ page, chatPage }) => {
     await createAndLoginTestUser(page);
     await chatPage.goto();
 
@@ -467,25 +464,17 @@ test.describe('Sign Out', () => {
 });
 
 test.describe('/chat backward compatibility', () => {
-  test('/chat redirects to / for unauthenticated users', async ({ browser }) => {
+  test('/chat redirects unauthenticated users to login', async ({ browser }) => {
     await withFreshPage(browser, async ({ page }) => {
-      const navigatedPaths: string[] = [];
-      page.on('framenavigated', (frame) => {
-        if (frame === page.mainFrame()) navigatedPaths.push(new URL(frame.url()).pathname);
-      });
-
       await page.goto('/chat');
-      await page.waitForURL((url) => url.pathname === '/' || url.pathname === '/login');
-
-      expect(navigatedPaths).toContain('/');
+      await page.waitForURL(routes.login);
     });
   });
 
-  test('/chat redirects authenticated users to /', async ({ page }) => {
+  test('/chat redirects authenticated users into chat', async ({ page }) => {
     await createAndLoginTestUser(page);
     await page.goto('/chat');
 
-    // / then redirects to /chat/spaces for authenticated users
-    await page.waitForURL((url) => url.pathname === '/' || url.pathname.startsWith('/chat/'));
+    await page.waitForURL(routes.patterns.chatRedirect);
   });
 });

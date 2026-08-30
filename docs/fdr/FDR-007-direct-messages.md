@@ -1,7 +1,7 @@
 # FDR-007: Direct Messages
 
 **Status:** Active
-**Last reviewed:** 2026-08-25
+**Last reviewed:** 2026-08-28
 
 ## Overview
 
@@ -28,10 +28,12 @@ its own DM scope. Chatto does not have a cross-server DM inbox.
   participants. Exhaustive authenticated state also retains membership-derived
   room metadata for routing.
 - Inside a DM room, the room extras sidebar is available but starts closed and does not show the Members panel. The current Files panel and future non-member panels are shared, while channel-style moderation actions such as banning/removing room members remain unavailable.
-- A user can read a DM only when they are a participant. `message.read` does
-  not apply to DMs, and there is no `dm.*` read permission.
-- Operators can prevent a human user from starting DMs, or any user from
-  sending messages in existing DMs, by revoking `message.post`.
+- A user can read a DM only when they are a participant. `message.read` and
+  `message.read-interactions` do not apply to DMs, and there is no `dm.*` read
+  permission.
+- Operators can prevent a human user from creating new DMs, or any user from
+  sending messages in existing DMs, by revoking `message.post`. A human user
+  can still open an existing DM that they are a participant in.
 - Operators cannot ban or remove participants from an existing DM room. Channel member bans are a `room.ban-member` action and are rejected for DMs.
 - Inside a DM room, ordinary message-related features apply: posting, flat reply attribution, reactions, edits, deletes, mentions, and attachments.
 - DMs do not support threads. The client does not offer thread actions, and the server rejects attempts to create or extend a DM thread even for owners. Thread data written by older versions remains readable but read-only.
@@ -48,16 +50,17 @@ its own DM scope. Chatto does not have a cross-server DM inbox.
 ### 2. Membership authorizes DM reads
 
 **Decision:** DM membership authorizes complete DM reads for humans and bots.
-`message.read` grants and denials do not change DM access. A human needs
-`message.post` to start a DM. All users need `message.post` to post messages in
-an existing DM. Reply attribution does not change that permission, and thread
-posting does not apply to DMs.
+`message.read` and `message.read-interactions` grants and denials do not change
+DM access. A human needs `message.post` to create a DM. A human participant
+can open an existing DM without that permission. All users need `message.post`
+to post messages in an existing DM. Reply attribution does not
+change that permission, and thread posting does not apply to DMs.
 **Why:** Membership is the fixed private participant boundary. Chatto has no
 permission UI for one DM, and hiding a DM from its participant is surprising.
 See ADR-037 and ADR-080.
-**Tradeoff:** Operators cannot use `message.read` to hide an existing DM from
-one of its participants. They can revoke posting authority or suspend the
-account.
+**Tradeoff:** Operators cannot use a message-read permission to hide an
+existing DM from one of its participants. They can revoke posting authority or
+suspend the account.
 
 ### 3. Threads are channel-room-only
 
@@ -83,7 +86,8 @@ conversation. The notification page may combine exact DM occurrences from all
 authenticated servers, but it is an attention list rather than a cross-server
 conversation browser. Each incoming DM is one exact occurrence; the client may
 group a conversation into one row while its badge still counts every unread
-message. Self-DMs do not notify their author, and ordinary DMs default to Alert.
+message. Self-DMs do not notify their author, and ordinary DMs default to Push
+notification.
 
 ### 6. Moderation deny-list inside DMs
 
@@ -109,8 +113,9 @@ realtime events.
 
 ## Permissions
 
-- `message.post` — let a human start DMs, and let a human or bot send messages
-  in existing DM rooms.
+- `message.post` — let a human create DMs, and let a human or bot send messages
+  in existing DM rooms. It does not prevent a human participant from opening
+  an existing DM.
 - `message.react` — add and remove reactions in DM rooms.
 
 DMs have no `dm.*` permissions. Membership authorizes reads. Message-action and

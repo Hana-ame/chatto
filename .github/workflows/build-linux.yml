@@ -1,0 +1,223 @@
+# 【本地新增 workflow】push 到 ci/deploy 时构建并发布 rolling release。
+#
+# 【思路】本 fork 的部署链路:ci/deploy 分支 → GitHub Actions 编译(内嵌
+# bundled frontend,这是唯一正确来源)→ 滚动 release 资产 `ci/dev` →
+# cloudcone 用 curl 下载部署。绝不在本地 go build:本地产物不带
+# .client/200.html,部署后 SPA 全 500(2026-08-08 曾出事故)。
+#
+# 【踩坑】
+# 1. `gh release create ci/dev` 不带 --target 时,ci/dev tag 会被创建到默认分支
+#    (main)的 HEAD 上,而非本次构建的 commit,造成"当前部署的是 main 版本"的误导。
+#    2026-08-14 首次发现,当时只手动删了 tag、没修脚本;2026-08-30 复查确认问题仍在
+#    (构建 b7f991e37 而 tag 指向 main 的 50d6d3884),才补上 --target "${GITHUB_SHA}"。
+#    教训:记录踩坑不等于修好,注释里写"已删除该 tag"容易被读成"已修复"。
+# 2. 版本号 hash 原为 12 位,过长;22a53e10 起改为 ${sha:0:6}。
+# 3. 版本号来源:mise.toml 的 CHATTO_DEVELOPMENT_VERSION 优先(开发版),
+#    否则回退 cli/version.go 的 release version,保证 release 也能出包。
+# 4. 滚动 release 每次都先 `gh release delete ci/dev --cleanup-tag` 再重建,
+#    所以 ci/dev 永远指向最新构建,部署脚本无需知道具体 tag。注意这是「指向最新」
+#    而不是「可回滚」:坏版本一旦滚动前进就没有锚点,回滚要另想办法。
+# 5. 2026-08-30 起加入 Test CLI 步骤:mise test-cli 在编译之前跑,测试红则不发产物。
+#    理由与取舍见该步骤的【本地改动】注释。该步骤的 env 必须与 Build frontend assets
+#    步骤一致(CHATTO_FRONTEND_PRECOMPRESS=1),否则 test-cli 的 build-frontend 依赖会
+#    产出非压缩前端并让下一步被 mise 缓存跳过,Verify 步骤必红——详见该步骤的【踩坑】。
+# 6. 新增步骤后,「新增一处构建」会让下游缓存判定失真。改本文件的步骤顺序或增删步骤时,
+#    必须重新核对 build-frontend / .client / prepare-embedded-frontend.sh 三者的产出关系。
+
+name: build-release
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - ci/deploy
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup environment
+        uses: ./.github/actions/setup
+
+      - name: Resolve version
+        id: version
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse HEAD)"
+          development_version="$(mise env --json | jq -r '.CHATTO_DEVELOPMENT_VERSION // empty')"
+          if [[ -n "$development_version" ]]; then
+            version="${development_version}+${sha:0:6}"
+          else
+            release_version="$(sed -n 's/.*Version = "\([^"]*\)".*/\1/p' cli/version.go)"
+            version="${release_version}+${sha:0:6}"
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Test CLI
+        # 【本地改动 2026-08-30】给 ci/deploy 补上测试信号,补齐 fork 的验证断层。
+        # 【背景】ci.yml(name: ci)的 push 分支白名单只有 main 与 release-*,ci/deploy
+        # 不在其中;本 workflow 原先 12 个步骤全是构建与发布,零测试。结果 fork 改动要
+        # 拿到完整测试信号,唯一路径是开 PR。2026-08-30 合并 upstream 后做语义冲突审计时
+        # 人肉发现 cli/internal/http_server/assets_test.go 的 Cache-Control 断言残留上游
+        # 语义(protectedAssetCacheControl)——本步骤跑的正是本该拦住它的那道闸。
+        # 【思路】调用 mise test-cli 而不是内联 go test:该任务在 mise.toml 里定义
+        # (cli 目录下 go test -trimpath -p 4 -tags test_endpoints ./...),与 AGENTS.md 的
+        # Tooling 清单保持单一事实来源,上游改测试命令时这里自动跟随。
+        # 【顺序】刻意放在 Build frontend assets 之前:test-cli 依赖 build-frontend,在干净
+        # checkout 上跑不会踩「.client 陈旧」的坑(见下方 Verify 步骤的本地改动注释);
+        # 最终嵌入二进制的 .client 仍由 Verify 步骤显式重建定稿,编译读到的就是定稿版本。
+        # 【踩坑】env 必须与下方 Build frontend assets 步骤完全一致。test-cli 的依赖
+        # build-frontend 会真的执行 pnpm build:不带 CHATTO_FRONTEND_PRECOMPRESS=1 时
+        # SvelteKit 只产出 raw 文件,而 tools/prepare-embedded-frontend.sh 的设计是删掉
+        # raw、只保留 .gz 作为 canonical 副本。于是本步骤产出非压缩版,下一步的
+        # build-frontend 因 sources 未变被 mise 判为缓存命中而跳过,压缩版永远不生成,
+        # Verify 步骤的「missing proxy in .client (gz) after prepare」因此必红。
+        # 2026-08-30 首版本步骤只写了 run 没写 env,就是踩的这个坑。
+        # 【取舍】测试红 = 不发产物,即质量闸与部署闸耦合。fork 上这是有意为之:AGENTS.md
+        # 禁止本地 go build/mise test-cli 验证,CI 是唯一信号,不测就发等于裸奔。
+        # 【代价】build-frontend 会因此多跑一次(test-cli 的依赖 + 下一步各一次)。
+        run: mise test-cli
+        env:
+          CHATTO_BUILD_VERSION: ${{ steps.version.outputs.version }}
+          CHATTO_FRONTEND_PRECOMPRESS: "1"
+
+      - name: Build frontend assets
+        run: mise build-frontend
+        env:
+          CHATTO_BUILD_VERSION: ${{ steps.version.outputs.version }}
+          CHATTO_FRONTEND_PRECOMPRESS: "1"
+
+      - name: Verify frontend contains image proxy
+        run: |
+          set -euo pipefail
+          echo "=== check markdown.ts source ==="
+          grep -q "proxy.moonchan.xyz" apps/frontend/src/lib/markdown.ts
+          echo "=== check built frontend ==="
+          grep -r "proxy.moonchan.xyz" apps/frontend/build || (echo "missing proxy in apps/frontend/build" && exit 1)
+          echo "=== before prepare ==="
+          ls -lh apps/frontend/build/ 2>&1 | head -40
+          ls -lh cli/internal/http_server/.client/ 2>&1 | head -40 || echo "no .client"
+          # 【本地改动】mise 的 build-frontend 任务可能因 outputs 缓存未重跑 prepare-embedded-frontend.sh，
+          # 导致 apps/frontend/build 已更新但 cli/internal/http_server/.client 仍为旧版。
+          # 此处显式重跑以保证嵌入的前端与构建产物一致。
+          # 直接 cp 避免 prepare 脚本的 200.html 检查与 pipefail 干扰，先保证 .client 与 build 一致
+          rm -rf cli/internal/http_server/.client
+          cp -R apps/frontend/build cli/internal/http_server/.client
+          echo "=== after cp ==="
+          ls -lh cli/internal/http_server/.client/ 2>&1 | head -40
+          grep -r "proxy.moonchan.xyz" cli/internal/http_server/.client || (echo "missing proxy in .client" && exit 1)
+          echo "frontend proxy verified after cp"
+          # 再按原脚本清理 raw 保留压缩版（与上游一致，减小二进制体积），关闭 pipefail 避免 cat 截断导致误判
+          set +o pipefail
+          ls -lh apps/frontend/build/200.html* 2>&1 | head -20
+          echo "=== running prepare-embedded-frontend.sh ==="
+          bash -x tools/prepare-embedded-frontend.sh apps/frontend/build cli/internal/http_server/.client 2>&1 | cat
+          echo "prepare exit: $?"
+          set -o pipefail
+          echo "=== after prepare (compressed) ==="
+          ls -lh cli/internal/http_server/.client/ 2>&1 | head -40
+          ls -lh cli/internal/http_server/.client/200.html* 2>&1 | head -20
+          if ! find cli/internal/http_server/.client -name "*.gz" -exec gzip -dc {} \; 2>/dev/null | grep -q "proxy.moonchan.xyz"; then
+            echo "missing proxy in .client (gz) after prepare"
+            exit 1
+          fi
+          echo "frontend proxy verified after prepare"
+
+      - name: Build Linux binary
+        run: |
+          set -euo pipefail
+          cd cli
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
+            -ldflags="-s -w -X main.Version=${VERSION}" \
+            -o /tmp/chatto .
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+
+      - name: Build Windows binary
+        run: |
+          set -euo pipefail
+          cd cli
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath \
+            -ldflags="-s -w -X main.Version=${VERSION}" \
+            -o /tmp/staging-windows/chatto.exe .
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+
+      - name: Package release assets
+        run: |
+          set -euo pipefail
+
+          linux_dir="/tmp/staging-linux"
+          win_dir="/tmp/staging-windows"
+          out_dir="/tmp/release"
+          mkdir -p "$linux_dir" "$win_dir" "$out_dir"
+
+          cp /tmp/chatto "$linux_dir/chatto"
+          cp LICENSES/AGPL-3.0-or-later.txt NOTICE "$linux_dir/"
+          cp LICENSES/AGPL-3.0-or-later.txt NOTICE "$win_dir/"
+
+          tar -czf "$out_dir/chatto_Linux_x86_64.tar.gz" \
+            -C "$linux_dir" chatto AGPL-3.0-or-later.txt NOTICE
+          (
+            cd "$win_dir"
+            zip -q -r "$out_dir/chatto_Windows_x86_64.zip" chatto.exe AGPL-3.0-or-later.txt NOTICE
+          )
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: chatto-linux-amd64
+          path: /tmp/chatto
+          if-no-files-found: error
+
+      - name: Delete previous rolling release
+        # 【踩坑】|| true:首次构建时 release 不存在,delete 失败是预期行为,
+        # 不能因此中断 workflow。--cleanup-tag 连带删掉旧的 ci/dev tag。
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release delete "ci/dev" --yes --cleanup-tag || true
+
+      - name: Publish rolling release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          cat > /tmp/release/notes.md <<EOF
+          Dev build for ${GITHUB_REF_NAME}.
+
+          - Version: \`${VERSION}\`
+          - Commit: \`${GITHUB_SHA}\`
+          - Platforms: Linux (amd64), Windows (amd64)
+
+          Windows users: download \`chatto_Windows_x86_64.zip\`, unzip, and run \`chatto.exe\`.
+          EOF
+
+          # 【本地改动 2026-08-30】必须显式 --target 到本次构建的 commit。
+          # 【踩坑】不带 --target 时,gh release create 会把 ci/dev tag 建在仓库默认分支
+          # (本 fork 是 main)的 HEAD 上,而不是 GITHUB_SHA。2026-08-30 排查发现:构建的是
+          # ci/deploy 的 b7f991e37,tag 却指向 main 的 50d6d3884;release 元数据
+          # targetCommitish 记为 "main" 即为直接证据。
+          # 【边界】只影响 tag 指向,不影响资产内容——资产从 GITHUB_SHA 编译,notes 里
+          # 也有正确 commit,所以 AGENTS.md 里「curl 下载 release 资产」的部署链路一直是安全的。
+          # 受害的是把 ci/dev 当 commit 用的场景:git checkout ci/dev、用 tag 校验部署版本、
+          # 想拿 tag 当回滚锚点,这些都会拿到错的 commit。
+          gh release create "ci/dev" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "${GITHUB_SHA}" \
+            --title "Dev build ${VERSION}" \
+            --notes-file /tmp/release/notes.md \
+            --prerelease \
+            /tmp/release/chatto_Linux_x86_64.tar.gz \
+            /tmp/release/chatto_Windows_x86_64.zip

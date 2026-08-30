@@ -4,6 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hmans.de/chatto/internal/pb/chatto/core/notification/v1"
+	"hmans.de/chatto/internal/pb/chatto/core/runtime_state/v1"
+	// 【本地改动 92d33bff】bind_address 支持需要 net.JoinHostPort 拼监听地址；
+	// 2026-08-29 合并 upstream 时本地导入与 upstream 新增的两个 pb 导入同处冲突，
+	// 两者都保留（upstream 侧 notificationv1/runtimestatev1 均为有效引用）。
+	"net"
 	"net/url"
 	"os"
 	"os/signal"
@@ -21,7 +27,7 @@ import (
 	"hmans.de/chatto/internal/embedded_nats"
 	"hmans.de/chatto/internal/exporter"
 	"hmans.de/chatto/internal/http_server"
-	corev1 "hmans.de/chatto/internal/pb/chatto/core/v1"
+	evtv1 "hmans.de/chatto/internal/pb/chatto/core/evt/v1"
 	"hmans.de/chatto/internal/push"
 	"hmans.de/chatto/internal/runtimeunit"
 	searchbleve "hmans.de/chatto/internal/search/bleve"
@@ -192,6 +198,16 @@ func runServer(configPath string) {
 		chattoCore.VideoUploadsEnabled = true
 	}
 
+	// ffmpeg 重编码上传的附件图片为 AVIF。优先用配置的路径;为空则从
+	// PATH 查找;ffmpeg 缺失时保持原图字节。
+	// 【背景 2026-08-14】合并 upstream main 后,上游把 ffmpeg 配置从
+	// VideoConfig 移到了 AssetProcessingConfig(上游把视频处理改成
+	// durable worker 架构),这里跟着改读取位置,否则编译不过。
+	chattoCore.FFmpegPath = cfg.AssetProcessing.FFmpegPath
+	// avif_enabled = false 时保持原图,且完全不探测/不调用 ffmpeg。
+	// 只影响 room 附件(头像/branding/链接预览始终 WebP)。
+	chattoCore.AVIFEnabled = cfg.AssetProcessing.AVIFEnabledOrDefault()
+
 	if err := chattoCore.EnableLiveKitCallReconciliation(cfg.LiveKit); err != nil {
 		log.Error("Failed to configure LiveKit call-state reconciliation", "error", err)
 		exitCode = 1
@@ -262,7 +278,18 @@ func runServer(configPath string) {
 	}
 
 	// Create and run HTTP server
-	addr := fmt.Sprintf(":%d", cfg.Webserver.EffectivePort())
+	// 【本地改动 92d33bff】支持配置 webserver 监听地址 bind_address。
+	// 【目的】cloudcone 部署时通过 nginx 反代,chatto 只需监听
+	// 127.0.0.1,不暴露公网端口。上游只有 :port 一种写法(绑定全部
+	// 接口),本地加了 BindAddressOrDefault():未配置时返回 ":" 保持
+	// 上游行为不变;配置了则用 net.JoinHostPort 拼地址。
+	bind := cfg.Webserver.BindAddressOrDefault()
+	var addr string
+	if bind == ":" {
+		addr = fmt.Sprintf(":%d", cfg.Webserver.EffectivePort())
+	} else {
+		addr = net.JoinHostPort(bind, fmt.Sprint(cfg.Webserver.EffectivePort()))
+	}
 	httpServer, err := http_server.NewHTTPServer(http_server.HTTPServerConfig{
 		Config:  cfg,
 		NC:      nc,
@@ -420,7 +447,7 @@ func setupPushNotifications(chattoCore *core.ChattoCore, cfg config.ChattoConfig
 		if len(subscriptions) == 0 {
 			return errors.New("no current push subscriptions registered")
 		}
-		results := sender.SendToManyMapped(ctx, subscriptions, func(subscription *corev1.PushSubscription) *push.Payload {
+		results := sender.SendToManyMapped(ctx, subscriptions, func(subscription *runtimestatev1.PushSubscription) *push.Payload {
 			return &push.Payload{
 				Title: "Test notification",
 				Body:  "Push notifications are working.",
@@ -456,13 +483,13 @@ func setupPushNotifications(chattoCore *core.ChattoCore, cfg config.ChattoConfig
 }
 
 type notificationPushSender interface {
-	SendToManyMapped(context.Context, []*corev1.PushSubscription, func(*corev1.PushSubscription) *push.Payload) []*push.SendResult
+	SendToManyMapped(context.Context, []*runtimestatev1.PushSubscription, func(*runtimestatev1.PushSubscription) *push.Payload) []*push.SendResult
 }
 
 // notificationAlertHandler keeps the production provider seam independently
 // testable while ChattoCore owns durable signal consumption and terminal occurrence state.
-func notificationAlertHandler(chattoCore *core.ChattoCore, cfg config.ChattoConfig, sender notificationPushSender, logger *log.Logger) func(context.Context, *corev1.NotificationOccurrence) error {
-	return func(ctx context.Context, occurrence *corev1.NotificationOccurrence) error {
+func notificationAlertHandler(chattoCore *core.ChattoCore, cfg config.ChattoConfig, sender notificationPushSender, logger *log.Logger) func(context.Context, *notificationv1.NotificationOccurrence) error {
+	return func(ctx context.Context, occurrence *notificationv1.NotificationOccurrence) error {
 		if core.NotificationOccurrenceHasUnsupportedSignal(occurrence) {
 			return core.ErrUnsupportedNotificationSignal
 		}
@@ -521,7 +548,7 @@ func notificationAlertHandler(chattoCore *core.ChattoCore, cfg config.ChattoConf
 		}
 		sendCtx, cancel := context.WithDeadline(ctx, alertDeadline)
 		defer cancel()
-		results := sender.SendToManyMapped(sendCtx, subscriptions, func(subscription *corev1.PushSubscription) *push.Payload {
+		results := sender.SendToManyMapped(sendCtx, subscriptions, func(subscription *runtimestatev1.PushSubscription) *push.Payload {
 			payload := push.BuildPayloadFromOccurrenceForSubscription(
 				occurrence,
 				actorName,
@@ -565,9 +592,9 @@ func filterOwnedPushSubscriptions(
 	ctx context.Context,
 	chattoCore *core.ChattoCore,
 	userID string,
-	subscriptions []*corev1.PushSubscription,
-) ([]*corev1.PushSubscription, error) {
-	owned := make([]*corev1.PushSubscription, 0, len(subscriptions))
+	subscriptions []*runtimestatev1.PushSubscription,
+) ([]*runtimestatev1.PushSubscription, error) {
+	owned := make([]*runtimestatev1.PushSubscription, 0, len(subscriptions))
 	for _, subscription := range subscriptions {
 		isOwned, err := chattoCore.PushSubscriptionCurrentForUser(ctx, userID, subscription)
 		if err != nil {
@@ -582,7 +609,7 @@ func filterOwnedPushSubscriptions(
 
 // fetchOccurrencePayloadContext builds a best-effort message preview and room
 // name for an occurrence-backed push payload.
-func fetchOccurrencePayloadContext(ctx context.Context, chattoCore *core.ChattoCore, occurrence *corev1.NotificationOccurrence, logger *log.Logger) *push.PayloadContext {
+func fetchOccurrencePayloadContext(ctx context.Context, chattoCore *core.ChattoCore, occurrence *notificationv1.NotificationOccurrence, logger *log.Logger) *push.PayloadContext {
 	target := core.NotificationOccurrenceMessageReference(occurrence)
 	if target == nil {
 		return nil
@@ -616,7 +643,7 @@ func fetchOccurrencePayloadContext(ctx context.Context, chattoCore *core.ChattoC
 	}
 
 	// Extract message body from the event
-	if _, ok := event.Event.(*corev1.Event_MessagePosted); ok {
+	if _, ok := event.Event.(*evtv1.Event_MessagePosted); ok {
 		body, err := chattoCore.GetMessageBody(ctx, event.Id)
 		if err != nil {
 			logger.Debug("Failed to fetch message body for push notification preview",

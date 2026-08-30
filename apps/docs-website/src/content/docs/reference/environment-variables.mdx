@@ -28,11 +28,11 @@ Every `chatto.toml` setting can be overridden with an environment variable. The 
 </EnvVar>
 
 <EnvVar name="CHATTO_WEBSERVER_COOKIE_SIGNING_SECRET" toml="webserver.cookie_signing_secret" required>
-  256-bit hex secret for signing session cookies. Generate with `openssl rand -hex 32`.
+  256-bit hex secret for signing browser-flow cookies and CSRF proofs. The opaque `chatto_auth_*` authentication cookies do not contain signed user data. Generate with `openssl rand -hex 32`.
 </EnvVar>
 
 <EnvVar name="CHATTO_WEBSERVER_COOKIE_ENCRYPTION_SECRET" toml="webserver.cookie_encryption_secret">
-  Optional hex secret for encrypting session cookies after signing. Must decode to 16, 24, or 32 bytes. Generate an AES-256 key with `openssl rand -hex 32`.
+  Optional hex secret for encrypting browser-flow cookies after signing. Must decode to 16, 24, or 32 bytes. Generate an AES-256 key with `openssl rand -hex 32`.
 </EnvVar>
 
 <EnvVar name="CHATTO_WEBSERVER_API_COMPRESSION" toml="webserver.api_compression" default="true">
@@ -53,6 +53,10 @@ Every `chatto.toml` setting can be overridden with an environment variable. The 
 
 <EnvVar name="CHATTO_WEBSERVER_TRUSTED_PROXIES" toml="webserver.trusted_proxies">
   Comma-separated IP addresses or CIDR ranges for reverse proxies that Chatto may trust to supply `X-Forwarded-For`, `X-Real-IP`, and `X-Forwarded-Host`. The default is empty, so direct clients cannot spoof audit attribution or WebSocket same-origin checks with forwarded headers. Configure the narrow network used by your proxy—for example, `127.0.0.1` for a same-host proxy or the specific container-network CIDR—and make the proxy overwrite forwarded headers rather than preserving client-supplied values. This does not make forwarded protocol headers authoritative for public URL generation; continue setting `webserver.url`.
+</EnvVar>
+
+<EnvVar name="CHATTO_WEBSERVER_ALLOWED_ORIGINS" toml="webserver.allowed_origins">
+  Comma-separated exact additional HTTPS origins for reverse-proxy aliases. Each origin can use browser cookie authentication and publishes a matching bundled frontend OAuth identity. Do not include a path, query, or fragment. Do not configure HTTP and HTTPS origins that produce the same request host. Do not use `*`; it permits neither behavior. Upgrade all serving replicas before you add an alias, because older replicas do not use this setting.
 </EnvVar>
 
 ### TLS
@@ -332,7 +336,7 @@ Only used when `storage_backend` is set to `s3`. See the [S3 Storage guide](/gui
 </EnvVar>
 
 <EnvVar name="CHATTO_AUTH_TOKEN_TTL" toml="auth.token_ttl" default="90d">
-  Maximum lifetime of a renewable human bearer session and lifetime of each same-origin cookie credential. Bearer refresh never extends this maximum; cookie credentials keep their existing sliding rotation. Supports durations like `90d` or `2160h`.
+  Renewal window for active human sessions and initial lifetime of each same-origin cookie credential. Active bearer sessions advance this window during background refresh. In the final quarter, the bundled browser automatically renews the same cookie handle through a dedicated route. Ordinary validation does not write the session. An inactive session expires after one complete window. Supports durations like `90d` or `2160h`.
 </EnvVar>
 
 <EnvVar name="CHATTO_AUTH_ACCESS_TOKEN_TTL" toml="auth.access_token_ttl" default="15m">
@@ -387,7 +391,41 @@ Set `auto_provision = true` only for providers whose users should be allowed to 
 
 See [External Login Providers](/guides/integrations/external-login-providers/) for callback URLs, provider-specific examples, and discovery behavior.
 
-## SMTP
+## Transactional Email
+
+SMTP is the default transactional email transport. Set `email.transport = "jmap"` when your provider exposes JMAP submission and you want Chatto to authenticate with a bearer token instead.
+
+<EnvVar name="CHATTO_EMAIL_TRANSPORT" toml="email.transport" default="smtp">
+  Transactional email transport. Supported values are `smtp` and `jmap`.
+</EnvVar>
+
+### JMAP
+
+<EnvVar name="CHATTO_EMAIL_JMAP_SESSION_URL" toml="email.jmap.session_url">
+  HTTPS JMAP session resource URL. Required when `email.transport` is `jmap`.
+</EnvVar>
+
+<EnvVar name="CHATTO_EMAIL_JMAP_ACCESS_TOKEN" toml="email.jmap.access_token">
+  Bearer access token for the JMAP account. Required when `email.transport` is `jmap`.
+</EnvVar>
+
+<EnvVar name="CHATTO_EMAIL_JMAP_FROM" toml="email.jmap.from">
+  From address for outgoing email. It must match a sending identity in the JMAP account. Required when `email.transport` is `jmap`.
+</EnvVar>
+
+<EnvVar name="CHATTO_EMAIL_JMAP_ACCOUNT_ID" toml="email.jmap.account_id">
+  Optional JMAP account ID. By default, Chatto uses the session's primary submission account.
+</EnvVar>
+
+<EnvVar name="CHATTO_EMAIL_JMAP_IDENTITY_ID" toml="email.jmap.identity_id">
+  Optional JMAP identity ID. By default, Chatto uses the identity matching `email.jmap.from`.
+</EnvVar>
+
+<EnvVar name="CHATTO_EMAIL_JMAP_DRAFT_MAILBOX_ID" toml="email.jmap.draft_mailbox_id">
+  Optional JMAP Drafts mailbox ID. By default, Chatto uses the mailbox with the `drafts` role.
+</EnvVar>
+
+### SMTP
 
 <EnvVar name="CHATTO_SMTP_ENABLED" toml="smtp.enabled" default="false">
   Enable SMTP email sending.

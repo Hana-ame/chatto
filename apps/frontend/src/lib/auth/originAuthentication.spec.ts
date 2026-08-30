@@ -1,13 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
-  authenticateOriginMock,
   clearCachedUserMock,
   hasPendingReturnNavigationMock,
   invalidateAllMock,
   resumeReturnNavigationMock
 } = vi.hoisted(() => ({
-  authenticateOriginMock: vi.fn(),
   clearCachedUserMock: vi.fn(),
   hasPendingReturnNavigationMock: vi.fn(),
   invalidateAllMock: vi.fn(),
@@ -20,7 +18,7 @@ vi.mock('$app/navigation', () => ({
 
 vi.mock('$lib/state/server/registry.svelte', () => ({
   serverRegistry: {
-    authenticateOrigin: authenticateOriginMock
+    originServer: { id: 'origin' }
   }
 }));
 
@@ -32,11 +30,6 @@ vi.mock('./returnNavigation', () => ({
   hasPendingReturnNavigation: hasPendingReturnNavigationMock,
   resumeReturnNavigation: resumeReturnNavigationMock
 }));
-
-const user = {
-  id: 'user-1',
-  login: 'alice'
-};
 
 async function loadModule() {
   vi.resetModules();
@@ -57,15 +50,17 @@ describe('completeOriginAuthentication', () => {
     vi.unstubAllGlobals();
   });
 
-  it('installs only origin authentication and refreshes route data', async () => {
+  it('clears cached state before the cookie-backed route reload', async () => {
     hasPendingReturnNavigationMock.mockReturnValue(false);
     const { completeOriginAuthentication } = await loadModule();
 
-    await expect(completeOriginAuthentication('origin-token', user)).resolves.toBe(false);
+    await expect(completeOriginAuthentication()).resolves.toBe(false);
 
-    expect(authenticateOriginMock).toHaveBeenCalledWith('origin-token', user);
     expect(clearCachedUserMock).toHaveBeenCalledOnce();
     expect(invalidateAllMock).toHaveBeenCalledOnce();
+    expect(clearCachedUserMock.mock.invocationCallOrder[0]).toBeLessThan(
+      invalidateAllMock.mock.invocationCallOrder[0]
+    );
     expect(resumeReturnNavigationMock).not.toHaveBeenCalled();
   });
 
@@ -73,7 +68,7 @@ describe('completeOriginAuthentication', () => {
     hasPendingReturnNavigationMock.mockReturnValue(true);
     const { completeOriginAuthentication } = await loadModule();
 
-    await expect(completeOriginAuthentication('origin-token', user)).resolves.toBe(true);
+    await expect(completeOriginAuthentication()).resolves.toBe(true);
 
     expect(invalidateAllMock).toHaveBeenCalledOnce();
     expect(resumeReturnNavigationMock).toHaveBeenCalledOnce();
@@ -86,7 +81,7 @@ describe('completeOriginAuthentication', () => {
     });
     const { completeOriginAuthentication } = await loadModule();
 
-    await expect(completeOriginAuthentication('origin-token', user)).resolves.toBe(true);
+    await expect(completeOriginAuthentication()).resolves.toBe(true);
 
     expect(resumeReturnNavigationMock).not.toHaveBeenCalled();
   });

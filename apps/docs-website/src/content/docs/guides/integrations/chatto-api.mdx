@@ -32,7 +32,7 @@ Discovery is also the right place for custom clients to learn public server iden
 
 | Client shape | Credential |
 | ------------ | ---------- |
-| Same-origin browser app | HTTP-only cookie session, with renewable bearer-session support in the bundled client. |
+| Same-origin browser app | HttpOnly cookie session. Dedicated bundled-browser authentication does not create or return bearer credentials. |
 | Cross-origin Chatto frontend | OAuth authorization code with PKCE, then a renewable opaque bearer session. |
 | Bot integration | Bot API key created in Server Admin → Bots. |
 | User-authorized client | OAuth authorization code with PKCE, then a renewable opaque bearer session. |
@@ -42,14 +42,15 @@ Human bearer sessions return a short-lived access token, a rotating refresh
 credential, and both lifetimes. Send only the access token to ConnectRPC and
 realtime. Rotate through `/oauth/token` with `grant_type=refresh_token`, the
 issuing `client_id` when applicable, and a client-generated
-`refresh_request_id`. The request ID must contain 16–128 ASCII letters, digits,
-underscores, or hyphens (`[A-Za-z0-9_-]`). Persist it before sending and reuse
-it until the complete response has been persisted. An exact retry can recover
-only the immediately previous refresh generation, and only during the access
-token lifetime created by that rotation. A retry outside that boundary is
-stale reuse and revokes the renewable session. Serialize refresh attempts. An
-`invalid_grant` response requires explicit authentication, while network
-failures and `5xx` responses may be retried promptly with the same request ID.
+`refresh_request_id`. Generate a cryptographically random UUID version 4 for
+each rotation. Treat it as a show-once recovery nonce. Persist it before you
+send the request, and reuse it until you persist the complete response. An
+exact retry can recover only the immediately previous refresh generation, and
+only during the access-token lifetime created by that rotation. A retry outside
+that boundary is stale reuse and revokes the renewable session. Serialize
+refresh attempts. An `invalid_grant` response requires explicit authentication.
+You can retry network failures and `5xx` responses promptly with the same
+request ID.
 
 Bearer credentials and bot API keys are opaque. They are not JWTs. See
 [Bot Accounts](/guides/integrations/bot-accounts/) for unattended integration
@@ -61,7 +62,13 @@ Authenticated realtime clients connect to `/api/realtime` and exchange protobuf 
 
 For 0.5, durable message, reaction, room, asset, and call changes are `RealtimeProjectionEvent` operations, not `RealtimeEventEnvelope` alternatives. The latter is reserved for transient, non-replayable signals. This is a breaking migration from the 0.4 live-event contract.
 
-Notification, viewer-preference, thread follow/read, profile, layout, and member changes also arrive as authoritative projection operations. A live notification replacement can carry optional transition metadata for effects such as sounds; bootstrap, resume reconciliation, and reset omit that metadata. The remaining transient envelopes are typing, presence, mention/new-DM attention hints, and session termination.
+Notification, viewer-preference, thread follow/read, profile, layout, and
+member changes also arrive as authoritative projection operations. A live
+notification replacement can carry optional transition metadata for effects
+such as sounds; bootstrap, resume reconciliation, and reset omit that metadata.
+Mention and new-DM attention use notification occurrences, not separate
+transient hints. The remaining transient envelopes are typing, presence, and
+session termination.
 
 The projection stream does not replace `chatto.api.v1`. Integrations should continue to use its resource-oriented ConnectRPC services for explicit reads, pagination, commands, and read-your-writes responses, and add realtime protocol 2 only when they need an ordered local projection that can resume after a disconnect.
 
@@ -76,6 +83,7 @@ Realtime delivery uses the same room membership, RBAC, projection readiness, and
 | Post, edit, or delete messages | `MessageService` |
 | React to messages | `ReactionService` |
 | Track unread state | `RoomService.MarkRoomAsRead` and `ThreadService.MarkThreadAsRead` |
+| React to bot activations | `notification_occurrences_replace` and `NotificationService.ListNotificationOccurrences` |
 | Start DMs | `RoomService` |
 | Read users and profiles | `UserService.ListUsers`, `GetUser`, and `BatchGetUsers` |
 | Manage bot identities and keys | `BotService` |

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hmans.de/chatto/internal/pb/chatto/core/notification/v1"
 	"sync/atomic"
 	"time"
 
@@ -15,7 +16,6 @@ import (
 	"hmans.de/chatto/internal/config"
 	"hmans.de/chatto/internal/core/linkpreview"
 	"hmans.de/chatto/internal/evtstream"
-	corev1 "hmans.de/chatto/internal/pb/chatto/core/v1"
 )
 
 // ============================================================================
@@ -66,6 +66,7 @@ type ChattoCore struct {
 	linkPreviewCache          *linkpreview.Cache   // Cache for link preview metadata
 	linkPreviewFetcher        *linkpreview.Fetcher // Fetcher for link preview metadata
 	projectionSnapshotWorker  *projectionSnapshotWorker
+	credentialUsage           *credentialUsageRecorder
 	natsRecoveryState         atomic.Int32
 	natsRecoveryStartedAt     atomic.Int64
 	natsRecoveredReconnects   atomic.Uint64
@@ -75,12 +76,25 @@ type ChattoCore struct {
 	// Set this after ChattoCore is created, from VideoConfig.
 	VideoMaxUploadSize int64
 
+	// FFmpegPath 是用于把上传的附件图片重编码为 AVIF 的 ffmpeg 二进制。
+	// 为空时从 PATH 解析;ffmpeg 不可用时附件保持原图存储。
+	// 【本地改动 32e1f566 + 218426d6】ChattoCore 创建后设置,数据来源为
+	// AssetProcessingConfig。merge upstream 后字段本身保留(上游没有
+	// AVIF 功能),但配置读取位置从 cfg.Video 移到 cfg.AssetProcessing。
+	FFmpegPath string
+
+	// AVIFEnabled 控制 room 附件图片上传时是否重编码为 AVIF。
+	// 【本地改动 218426d6】ChattoCore 创建后设置,数据来源为
+	// AssetProcessingConfig.AVIFEnabledOrDefault()。只影响 room 附件;
+	// 头像/branding/链接预览始终 WebP。
+	AVIFEnabled bool
+
 	// VideoUploadsEnabled makes message commits enqueue durable processing work
 	// for accepted video-shaped attachments. Worker placement is configured
 	// independently; the main process does not hand work to a local callback.
 	VideoUploadsEnabled bool
 
-	notificationAlertHandler func(ctx context.Context, occurrence *corev1.NotificationOccurrence) error
+	notificationAlertHandler func(ctx context.Context, occurrence *notificationv1.NotificationOccurrence) error
 
 	// OnPushTestRequested sends a test notification to a user's push subscriptions.
 	OnPushTestRequested func(ctx context.Context, userID string) error
@@ -205,6 +219,7 @@ func (c *ChattoCore) Run(ctx context.Context) error {
 	g.Go(func() error { return c.assetModel.Run(gctx) })
 	g.Go(func() error { return c.assetUploadModel.RunCleanup(gctx) })
 	g.Go(func() error { return c.keyShredding.Run(gctx) })
+	g.Go(func() error { return c.credentialUsage.Run(gctx) })
 	if c.projectionSnapshotWorker != nil {
 		g.Go(func() error {
 			err := c.projectionSnapshotWorker.Run(gctx, c.bootDone)

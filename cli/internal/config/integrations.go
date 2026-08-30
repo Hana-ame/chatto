@@ -46,6 +46,43 @@ type SMTPConfig struct {
 	From          string        `toml:"from" env:"CHATTO_SMTP_FROM" comment:"From address for outgoing emails. Example: noreply@example.com"`
 }
 
+// EmailTransport identifies the configured transactional email submission transport.
+type EmailTransport string
+
+const (
+	// EmailTransportSMTP submits transactional email through SMTP.
+	EmailTransportSMTP EmailTransport = "smtp"
+	// EmailTransportJMAP submits transactional email through JMAP.
+	EmailTransportJMAP EmailTransport = "jmap"
+)
+
+// JMAPConfig contains settings for transactional email submitted through JMAP.
+type JMAPConfig struct {
+	SessionURL     string `toml:"session_url,commented" env:"CHATTO_EMAIL_JMAP_SESSION_URL" comment:"JMAP session resource URL. Must use HTTPS."`
+	AccessToken    string `toml:"access_token,commented" env:"CHATTO_EMAIL_JMAP_ACCESS_TOKEN" comment:"Bearer access token for the JMAP account. NEVER SHARE THIS!"`
+	From           string `toml:"from,commented" env:"CHATTO_EMAIL_JMAP_FROM" comment:"From address for outgoing emails. It must match a JMAP identity. Example: noreply@example.com"`
+	AccountID      string `toml:"account_id,commented" env:"CHATTO_EMAIL_JMAP_ACCOUNT_ID" comment:"Optional JMAP account ID. Defaults to the session's primary submission account."`
+	IdentityID     string `toml:"identity_id,commented" env:"CHATTO_EMAIL_JMAP_IDENTITY_ID" comment:"Optional JMAP identity ID. Defaults to the identity matching jmap.from."`
+	DraftMailboxID string `toml:"draft_mailbox_id,commented" env:"CHATTO_EMAIL_JMAP_DRAFT_MAILBOX_ID" comment:"Optional JMAP Drafts mailbox ID. Defaults to the mailbox with role 'drafts'."`
+}
+
+// EmailConfig contains transactional email transport settings. SMTP remains the
+// default so existing configurations continue to work without changes.
+type EmailConfig struct {
+	Transport EmailTransport `toml:"transport" env:"CHATTO_EMAIL_TRANSPORT" comment:"Transactional email transport: smtp (default) or jmap."`
+	JMAP      JMAPConfig     `toml:"jmap,commented" comment:"JMAP transactional email configuration. Used only when email.transport = 'jmap'."`
+}
+
+// TransportOrDefault returns the selected transport, defaulting to SMTP for
+// backward compatibility with existing SMTP-only configurations.
+func (c EmailConfig) TransportOrDefault() EmailTransport {
+	transport := EmailTransport(strings.ToLower(strings.TrimSpace(string(c.Transport))))
+	if transport == "" {
+		return EmailTransportSMTP
+	}
+	return transport
+}
+
 // PushConfig contains settings for Web Push notifications.
 // Push notifications allow messages to be delivered even when the browser is closed.
 type PushConfig struct {
@@ -66,15 +103,34 @@ type VideoConfig struct {
 	MaxUploadSize datasize.ByteSize `toml:"max_upload_size,commented" env:"CHATTO_VIDEO_MAX_UPLOAD_SIZE" comment:"Maximum size for video uploads. Supports human-readable formats like '100 MB'. Default: 100 MB."`
 }
 
-// AssetProcessingConfig controls the durable asset-processing worker. Enabled
-// determines whether chatto run embeds the worker; the standalone chatto
-// asset-processing command runs explicitly but uses the remaining settings.
+// AssetProcessingConfig 控制 durable asset-processing worker。Enabled
+// 决定 chatto run 是否内嵌 worker;独立命令 chatto asset-processing 显式
+// 运行但共用其余设置。
+//
+// 【本地改动 218426d6】新增 AVIFEnabled:room 附件图片上传时是否重编码
+// 为 AVIF。用 *bool 是为了区分"没配置"(默认 true,保持原行为)和
+// "显式配置 false"(关掉)。项目里 APICompression 用的是同款模式。
+// 之所以要显式开关:此前只要服务器装了带 AV1 编码器的 ffmpeg,AVIF
+// 就自动生效,想关都关不掉。
 type AssetProcessingConfig struct {
 	Enabled           bool   `toml:"enabled" env:"CHATTO_ASSET_PROCESSING_ENABLED" comment:"Start the built-in asset-processing worker inside chatto run."`
+	AVIFEnabled       *bool  `toml:"avif_enabled,commented" env:"CHATTO_ASSET_PROCESSING_AVIF_ENABLED" comment:"Re-encode eligible room attachment images to AVIF on upload. Requires an ffmpeg binary with an AV1 encoder (auto-detected from PATH when ffmpeg_path is empty). When disabled, original image bytes are stored unchanged. Affects room attachments only; avatars, server branding, and link previews stay WebP regardless. Default: true."`
 	FFmpegPath        string `toml:"ffmpeg_path,commented" env:"CHATTO_ASSET_PROCESSING_FFMPEG_PATH" comment:"Path to ffmpeg binary. Auto-detected from PATH if empty."`
 	FFprobePath       string `toml:"ffprobe_path,commented" env:"CHATTO_ASSET_PROCESSING_FFPROBE_PATH" comment:"Path to ffprobe binary. Auto-detected from PATH if empty."`
 	MaxConcurrentJobs int    `toml:"max_concurrent_jobs,commented" env:"CHATTO_ASSET_PROCESSING_MAX_CONCURRENT_JOBS" comment:"Maximum number of asset-processing jobs to run simultaneously in this process. Default: 2."`
 	TempDir           string `toml:"temp_dir,commented" env:"CHATTO_ASSET_PROCESSING_TEMP_DIR" comment:"Temporary directory for asset processing. Default: system temp directory."`
+}
+
+// AVIFEnabledOrDefault 报告 room 附件 AVIF 重编码是否开启,默认 true
+// (best-effort AVIF 是历史行为;没装 ffmpeg 的服务器本来就静默存原图)。
+// 【踩坑】故意不参考 worker 的 Enabled:AVIF 重编码在上传路径上用普通
+// ffmpeg 完成,与 durable worker 无关。最初实现把两者绑在一起,会错误地
+// 在 worker 关闭时把 AVIF 也关掉,已修正。
+func (c *AssetProcessingConfig) AVIFEnabledOrDefault() bool {
+	if c.AVIFEnabled == nil {
+		return true
+	}
+	return *c.AVIFEnabled
 }
 
 // DefaultVideoMaxUploadSize is the default maximum size for video uploads (100 MB).

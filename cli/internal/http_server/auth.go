@@ -3,6 +3,7 @@ package http_server
 import (
 	"errors"
 	"fmt"
+	"mime"
 	"net/http"
 	"regexp"
 	"strings"
@@ -13,9 +14,10 @@ import (
 	"github.com/gin-gonic/gin"
 	"golang.org/x/crypto/bcrypt"
 	"hmans.de/chatto/internal/authctx"
+	"hmans.de/chatto/internal/connectapi"
 	"hmans.de/chatto/internal/core"
 	"hmans.de/chatto/internal/email"
-	corev1 "hmans.de/chatto/internal/pb/chatto/core/v1"
+	evtv1 "hmans.de/chatto/internal/pb/chatto/core/evt/v1"
 )
 
 // Pre-compiled regexes for login validation
@@ -41,6 +43,48 @@ func addBearerSessionResponse(response gin.H, credentials core.BearerSessionCred
 	response["refreshToken"] = credentials.RefreshToken
 	response["expiresIn"] = bearerSessionLifetimeSeconds(credentials.AccessTokenExpiresAt)
 	response["refreshTokenExpiresIn"] = bearerSessionLifetimeSeconds(credentials.SessionExpiresAt)
+}
+
+func requestsCookieOnlyAuthentication(c *gin.Context) bool {
+	return strings.EqualFold(
+		strings.TrimSpace(c.GetHeader(connectapi.BrowserAuthenticationModeHeader)),
+		connectapi.BrowserAuthenticationModeCookie,
+	)
+}
+
+func requireJSONAuthenticationRequest(c *gin.Context) {
+	if !isJSONAuthenticationRequest(c) {
+		c.AbortWithStatusJSON(http.StatusUnsupportedMediaType, gin.H{"error": "Content-Type must be application/json"})
+		return
+	}
+	c.Next()
+}
+
+func isJSONAuthenticationRequest(c *gin.Context) bool {
+	mediaType, _, err := mime.ParseMediaType(c.GetHeader("Content-Type"))
+	return err == nil && strings.EqualFold(mediaType, "application/json")
+}
+
+// requireBrowserAuthenticationRequest blocks login CSRF before a browser route
+// can replace ambient authentication. Plain HTML forms are rejected and the
+// Origin must match the request target or configured public origin. The mode
+// header is optional for compatibility with legacy browser requests.
+func (s *HTTPServer) requireBrowserAuthenticationRequest(c *gin.Context) {
+	if !isJSONAuthenticationRequest(c) {
+		c.AbortWithStatusJSON(http.StatusUnsupportedMediaType, gin.H{"error": "Content-Type must be application/json"})
+		return
+	}
+	mode := strings.TrimSpace(c.GetHeader(connectapi.BrowserAuthenticationModeHeader))
+	if (mode != "" && !requestsCookieOnlyAuthentication(c)) || !s.requestIsSameOrigin(c.Request) {
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "Same-origin browser authentication required"})
+		return
+	}
+	// Browser-only routes always create cookie authority. Treat an absent header
+	// as that mode after the same-origin validation above has made the request
+	// safe.
+	if mode == "" {
+		c.Request.Header.Set(connectapi.BrowserAuthenticationModeHeader, connectapi.BrowserAuthenticationModeCookie)
+	}
 }
 
 func (s *HTTPServer) authEmailServerName() string {
@@ -114,70 +158,261 @@ func (s *HTTPServer) setupAuthRoutes() {
 		s.requestContextWithAuditMetadata(c)
 		c.Next()
 	})
+	auth.GET("browser/csrf", func(c *gin.Context) {
+		c.Header("Cache-Control", "no-store")
+		c.Header("Pragma", "no-cache")
+		_, ok, err := s.cookiePresentedCredential(c)
+		if err != nil {
+			writeAuthenticationUnavailable(c)
+			return
+		}
+		if !ok {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+			return
+		}
+		if err := s.ensureCSRFToken(c); err != nil {
+			writeAuthenticationUnavailable(c)
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"success": true})
+	})
 
-	auth.POST("logout", func(c *gin.Context) {
-		ctx := c.Request.Context()
+	logout := func(browserOnly bool) gin.HandlerFunc {
+		return func(c *gin.Context) {
+			ctx := c.Request.Context()
+			c.Header("Cache-Control", "no-store")
+			c.Header("Pragma", "no-cache")
 
-		loggedOutUserIDs := make(map[string]struct{}, 2)
-		session := sessions.Default(c)
-		cookieCredential, cookieOK, _ := s.cookiePresentedCredential(c)
+			loggedOutUserIDs := make(map[string]struct{}, 2)
+			revocationFailed := false
+			var cookieCredential presentedRuntimeCredential
+			if browserOnly {
+				var cookieValidationErr error
+				cookieCredential, _, cookieValidationErr = s.cookiePresentedCredential(c)
+				revocationFailed = cookieValidationErr != nil
+				if cookieValidationErr != nil {
+					log.Warn("Failed to inspect cookie credential during logout", "error", cookieValidationErr)
+				}
+			}
 
-		if authHeader := c.GetHeader("Authorization"); authHeader != "" {
-			if token, ok := strings.CutPrefix(authHeader, "Bearer "); ok && strings.TrimSpace(token) != "" {
-				userID, revoked, err := s.core.RevokePresentedRuntimeCredentialWithReason(ctx, strings.TrimSpace(token), core.AuthTokenPresentationBearer, "logout")
+			if authHeader := c.GetHeader("Authorization"); authHeader != "" {
+				if token, ok := strings.CutPrefix(authHeader, "Bearer "); ok && strings.TrimSpace(token) != "" {
+					userID, revoked, err := s.core.RevokePresentedRuntimeCredentialWithReason(ctx, strings.TrimSpace(token), core.AuthTokenPresentationBearer, "logout")
+					if err != nil {
+						log.Warn("Failed to revoke bearer runtime credential on logout", "error", err)
+						revocationFailed = true
+					}
+					if revoked && userID != "" {
+						loggedOutUserIDs[userID] = struct{}{}
+					}
+				}
+			}
+
+			var logoutRequest struct {
+				RefreshToken string `json:"refreshToken"`
+			}
+			if c.Request.Body != nil && c.Request.ContentLength != 0 {
+				if err := c.ShouldBindJSON(&logoutRequest); err != nil {
+					c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+					return
+				}
+			}
+			if strings.TrimSpace(logoutRequest.RefreshToken) != "" {
+				userID, revoked, err := s.core.RevokeRefreshTokenWithReasonResult(ctx, strings.TrimSpace(logoutRequest.RefreshToken), "logout")
 				if err != nil {
-					log.Warn("Failed to revoke bearer runtime credential on logout", "error", err)
+					log.Warn("Failed to revoke renewable session on logout", "error", err)
+					revocationFailed = true
 				}
 				if revoked && userID != "" {
 					loggedOutUserIDs[userID] = struct{}{}
 				}
 			}
+
+			if browserOnly {
+				for _, session := range cookieCredential.presentedSessions {
+					if err := s.core.RevokeCookieSession(ctx, session.handle); err != nil {
+						log.Warn("Failed to revoke cookie runtime credential on logout", "error", err)
+						revocationFailed = true
+					}
+					if session.userID != "" {
+						loggedOutUserIDs[session.userID] = struct{}{}
+					}
+				}
+			}
+
+			if revocationFailed {
+				c.JSON(http.StatusServiceUnavailable, gin.H{
+					"success": false,
+					"error":   "Logout could not be completed",
+				})
+				return
+			}
+
+			if browserOnly {
+				// Clear browser state only after authoritative credentials are
+				// revoked. The programmatic route never changes ambient cookies.
+				session := sessions.Default(c)
+				session.Clear()
+				if err := session.Save(); err != nil {
+					log.Warn("Failed to clear browser session after logout", "error", err)
+					c.JSON(http.StatusServiceUnavailable, gin.H{
+						"success": false,
+						"error":   "Logout could not be completed",
+					})
+					return
+				}
+				s.clearBrowserSessionCookie(c)
+				clearCSRFCookie(c)
+			}
+
+			for userID := range loggedOutUserIDs {
+				if err := s.core.PublishSessionTerminated(ctx, userID, "logout"); err != nil {
+					log.Warn("Failed to publish session terminated event", "error", err)
+				}
+				if err := s.core.RecordLogoutSucceeded(ctx, userID); err != nil {
+					log.Warn("Failed to append logout audit event", "error", err)
+				}
+			}
+
+			c.JSON(http.StatusOK, gin.H{"success": true})
+		}
+	}
+	auth.POST("logout", logout(false))
+	auth.POST("browser/logout", s.requireBrowserAuthenticationRequest, logout(true))
+
+	// The 0.5 bundled frontend calls this route only after its first cookie probe
+	// fails. It upgrades the typed session record and signed cookie written by
+	// 0.4 without accepting the legacy cookie on ordinary authenticated routes.
+	// Remove this compatibility bridge in 0.6.
+	auth.POST("browser/session/migrate", s.requireBrowserAuthenticationRequest, func(c *gin.Context) {
+		c.Header("Cache-Control", "no-store")
+		c.Header("Pragma", "no-cache")
+
+		if _, ok, err := s.cookiePresentedCredential(c); err != nil {
+			writeAuthenticationUnavailable(c)
+			return
+		} else if ok {
+			if err := removeLegacyCookieAuthentication(sessions.Default(c)); err != nil {
+				writeAuthenticationUnavailable(c)
+				return
+			}
+			if err := s.ensureCSRFToken(c); err != nil {
+				writeAuthenticationUnavailable(c)
+				return
+			}
+			c.Status(http.StatusNoContent)
+			return
 		}
 
-		var logoutRequest struct {
-			RefreshToken string `json:"refreshToken"`
+		session := sessions.Default(c)
+		sessionID, ok := legacyCookieSessionID(session)
+		if !ok {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+			return
 		}
-		if c.Request.Body != nil && c.Request.ContentLength != 0 {
-			if err := c.ShouldBindJSON(&logoutRequest); err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		record, err := s.core.MigrateLegacyCookieSession(c.Request.Context(), sessionID, time.Now())
+		if err != nil {
+			if errors.Is(err, core.ErrCookieSessionNotFound) {
+				if err := removeLegacyCookieAuthentication(session); err != nil {
+					writeAuthenticationUnavailable(c)
+					return
+				}
+				c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+				return
+			}
+			writeAuthenticationUnavailable(c)
+			return
+		}
+		if record.GetExpiresAt() == nil {
+			writeAuthenticationUnavailable(c)
+			return
+		}
+
+		cookieName, err := newBrowserSessionCookieName()
+		if err != nil {
+			writeAuthenticationUnavailable(c)
+			return
+		}
+		csrfToken, err := s.generateCSRFToken(csrfBindingForSession(record.GetUserId(), record))
+		if err != nil {
+			writeAuthenticationUnavailable(c)
+			return
+		}
+		if err := removeLegacyCookieAuthentication(session); err != nil {
+			writeAuthenticationUnavailable(c)
+			return
+		}
+
+		markAuthenticationCookieResponsePrivate(c)
+		s.clearBrowserSessionCookie(c)
+		s.setCSRFCookie(c, csrfToken)
+		c.Set(issuedBrowserSessionKey, issuedBrowserSession{name: cookieName, token: sessionID})
+		s.writeBrowserSessionCookie(c, cookieName, sessionID, record.GetExpiresAt().AsTime())
+		c.Status(http.StatusNoContent)
+	})
+
+	// Browser renewal is an explicit, CSRF-protected operation. Ordinary API,
+	// frontend, and WebSocket requests only validate the stable session handle,
+	// so a slow response cannot unexpectedly replace authentication state.
+	auth.POST("browser/session/renew", s.requireBrowserAuthenticationRequest, func(c *gin.Context) {
+		c.Header("Cache-Control", "no-store")
+		c.Header("Pragma", "no-cache")
+
+		credential, ok, err := s.cookiePresentedCredential(c)
+		if err != nil {
+			writeAuthenticationUnavailable(c)
+			return
+		}
+		if !ok {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+			return
+		}
+
+		now := time.Now()
+		if s.cookieSessionRenewalNow != nil {
+			now = s.cookieSessionRenewalNow()
+		}
+		record, renewed, err := s.core.RenewCookieSession(c.Request.Context(), credential.auth.Handle, now)
+		if err != nil {
+			if errors.Is(err, core.ErrCookieSessionNotFound) {
+				c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+				return
+			}
+			writeAuthenticationUnavailable(c)
+			return
+		}
+		if record.GetExpiresAt() == nil {
+			writeAuthenticationUnavailable(c)
+			return
+		}
+		for _, session := range credential.presentedSessions {
+			if session.handle == credential.auth.Handle {
+				continue
+			}
+			if err := s.core.RevokeCookieSession(c.Request.Context(), session.handle); err != nil {
+				writeAuthenticationUnavailable(c)
 				return
 			}
 		}
-		if strings.TrimSpace(logoutRequest.RefreshToken) != "" {
-			userID, revoked, err := s.core.RevokeRefreshTokenWithReasonResult(ctx, strings.TrimSpace(logoutRequest.RefreshToken), "logout")
-			if err != nil {
-				log.Warn("Failed to revoke renewable session on logout", "error", err)
-			}
-			if revoked && userID != "" {
-				loggedOutUserIDs[userID] = struct{}{}
-			}
+
+		cookieName, err := newBrowserSessionCookieName()
+		if err != nil {
+			writeAuthenticationUnavailable(c)
+			return
 		}
-
-		if cookieOK {
-			if err := s.core.RevokeCookieSession(ctx, cookieCredential.auth.Handle); err != nil {
-				log.Warn("Failed to revoke cookie runtime credential on logout", "error", err)
-			}
-			if cookieCredential.auth.UserID != "" {
-				loggedOutUserIDs[cookieCredential.auth.UserID] = struct{}{}
-			}
-		}
-
-		// Clear the session cookie
-		session.Clear()
-		session.Save()
-		clearCSRFCookie(c)
-
-		// Publish session terminated events so other tabs/devices disconnect.
-		for userID := range loggedOutUserIDs {
-			if err := s.core.PublishSessionTerminated(ctx, userID, "logout"); err != nil {
-				log.Warn("Failed to publish session terminated event", "error", err)
-			}
-			if err := s.core.RecordLogoutSucceeded(ctx, userID); err != nil {
-				log.Warn("Failed to append logout audit event", "error", err, "userId", userID)
-			}
-		}
-
-		c.JSON(http.StatusOK, gin.H{"success": true})
+		// A fresh cookie name makes response application commutative. A delayed
+		// renewal can re-add only its old (now revoked) handle; it cannot replace
+		// a newer login's cookie. Reissuing on no-op retries also repairs a lost
+		// successful renewal response.
+		markAuthenticationCookieResponsePrivate(c)
+		s.clearBrowserSessionCookie(c)
+		s.writeBrowserSessionCookie(c, cookieName, credential.auth.Handle, record.GetExpiresAt().AsTime())
+		c.JSON(http.StatusOK, gin.H{
+			"success":    true,
+			"renewed":    renewed,
+			"expiresAt":  record.GetExpiresAt().AsTime().UTC().Format(time.RFC3339),
+			"renewAfter": record.GetExpiresAt().AsTime().Add(-s.config.Auth.TokenTTLOrDefault() / 4).UTC().Format(time.RFC3339),
+		})
 	})
 
 	// Revoke a specific bearer token
@@ -200,9 +435,42 @@ func (s *HTTPServer) setupAuthRoutes() {
 		c.JSON(http.StatusOK, gin.H{"success": true})
 	})
 
+	// Revoke portable bearer authority while preserving the browser cookie.
+	// The bundled frontend uses this once when it migrates persisted origin
+	// credentials to the dedicated HttpOnly session.
+	auth.POST("browser/revoke-bearer-session", s.requireBrowserAuthenticationRequest, func(c *gin.Context) {
+		c.Header("Cache-Control", "no-store")
+		var req struct {
+			AccessToken  string `json:"accessToken"`
+			RefreshToken string `json:"refreshToken"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+			return
+		}
+		revocationFailed := false
+		if strings.TrimSpace(req.RefreshToken) != "" {
+			if err := s.core.RevokeRefreshTokenWithReason(c.Request.Context(), strings.TrimSpace(req.RefreshToken), "browser_cookie_migration"); err != nil {
+				revocationFailed = true
+			}
+		}
+		if strings.TrimSpace(req.AccessToken) != "" {
+			if err := s.core.RevokeAuthTokenWithReason(c.Request.Context(), strings.TrimSpace(req.AccessToken), "browser_cookie_migration"); err != nil {
+				revocationFailed = true
+			}
+		}
+		if revocationFailed {
+			writeAuthenticationUnavailable(c)
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"success": true})
+	})
+
 	// Password login endpoint
 	// Accepts login name (username) via "login" or "identifier" field
-	auth.POST("login", func(c *gin.Context) {
+	login := func(c *gin.Context) {
+		c.Header("Cache-Control", "no-store")
+		c.Header("Pragma", "no-cache")
 		if !s.config.Auth.DirectLoginOrDefault() {
 			c.JSON(http.StatusForbidden, gin.H{"error": "Password login is disabled"})
 			return
@@ -254,76 +522,80 @@ func (s *HTTPServer) setupAuthRoutes() {
 			return
 		}
 
-		// Create server-side cookie session
-		if err := s.createCookieSessionForGeneration(c, user.Id, "password_login", authGeneration); err != nil {
-			if isStaleLoginCredentialError(err) {
-				if auditErr := s.core.RecordLoginFailed(ctx, login); auditErr != nil {
-					log.Warn("Failed to append stale-login audit event", "error", auditErr)
-				}
-				log.Warn("Login became stale before session creation", "userId", user.Id)
-				c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
-				return
-			}
-			log.Error("Failed to save session", "error", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create session"})
-			return
-		}
-		if s.passwordLoginSessionCreatedHook != nil {
-			s.passwordLoginSessionCreatedHook(c, user.Id, authGeneration)
-		}
-
-		session := sessions.Default(c)
-		cookieCredentialID, _ := cookieCredentialIDFromSession(session)
+		cookieOnly := requestsCookieOnlyAuthentication(c)
 		var bearerCredentials core.BearerSessionCredentials
-
-		// Issue a bearer token (cross-origin clients use this instead of the session cookie).
-		// If the password changed after VerifyPasswordWithAuthGeneration, the proven
-		// generation is stale; undo the cookie session and fail the login cleanly.
-		credentials, err := s.core.CreateBearerSessionWithSourceGeneration(ctx, user.Id, "password_login", authGeneration)
-		if err != nil {
-			if isStaleLoginCredentialError(err) {
+		var cookieCredentialID string
+		if cookieOnly {
+			if err := s.createCookieSessionForGeneration(c, user.Id, "password_login", authGeneration); err != nil {
+				if isStaleLoginCredentialError(err) {
+					if auditErr := s.core.RecordLoginFailed(ctx, login); auditErr != nil {
+						log.Warn("Failed to append stale-login audit event", "error", auditErr)
+					}
+					log.Warn("Login became stale before browser session creation", "userId", user.Id)
+					c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
+					return
+				}
+				log.Error("Failed to save browser session", "error", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create session"})
+				return
+			}
+			cookieCredentialID, _ = s.browserSessionID(c)
+			if s.passwordLoginSessionCreatedHook != nil {
+				s.passwordLoginSessionCreatedHook(c, user.Id, authGeneration)
+			}
+			// Bearer issuance normally provides the second generation check after
+			// password verification. Cookie-only login performs that check directly.
+			if _, err := s.core.ValidateCookieCredential(ctx, cookieCredentialID); err != nil {
 				_ = s.core.RevokeCookieSession(ctx, cookieCredentialID)
-				clearCookieSessionAuth(session)
-				_ = session.Save()
+				s.clearBrowserSessionCookie(c)
 				if auditErr := s.core.RecordLoginFailed(ctx, login); auditErr != nil {
 					log.Warn("Failed to append stale-login audit event", "error", auditErr)
 				}
-				log.Warn("Login became stale before bearer token creation", "userId", user.Id)
+				log.Warn("Cookie-only login became stale before completion")
 				c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
 				return
 			}
-			log.Error("Failed to create auth token on login", "userId", user.Id, "error", err)
-			_ = s.core.RevokeCookieSession(ctx, cookieCredentialID)
-			clearCookieSessionAuth(session)
-			_ = session.Save()
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create session"})
-			return
-		} else {
-			bearerCredentials = credentials
-		}
-
-		if err := s.ensureCSRFToken(c); err != nil {
-			log.Error("Failed to create CSRF token", "error", err)
-			_ = s.core.RevokeCookieSession(ctx, cookieCredentialID)
-			if bearerCredentials.RefreshToken != "" {
-				_ = s.core.RevokeRefreshTokenWithReason(ctx, bearerCredentials.RefreshToken, "login_csrf_failed")
+			if err := s.ensureCSRFToken(c); err != nil {
+				log.Error("Failed to create CSRF token", "error", err)
+				_ = s.core.RevokeCookieSession(ctx, cookieCredentialID)
+				s.clearBrowserSessionCookie(c)
+				clearCSRFCookie(c)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create session"})
+				return
 			}
-			session.Clear()
-			_ = session.Save()
-			clearCSRFCookie(c)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create session"})
-			return
+		} else {
+			// Programmatic direct-auth clients receive only bearer authority. This
+			// route never changes ambient browser authentication.
+			if s.passwordLoginSessionCreatedHook != nil {
+				s.passwordLoginSessionCreatedHook(c, user.Id, authGeneration)
+			}
+			credentials, err := s.core.CreateBearerSessionWithSourceGeneration(ctx, user.Id, "password_login", authGeneration)
+			if err != nil {
+				if isStaleLoginCredentialError(err) {
+					if auditErr := s.core.RecordLoginFailed(ctx, login); auditErr != nil {
+						log.Warn("Failed to append stale-login audit event", "error", auditErr)
+					}
+					log.Warn("Login became stale before bearer token creation")
+					c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
+					return
+				}
+				log.Error("Failed to create auth token on login", "error", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create session"})
+				return
+			}
+			bearerCredentials = credentials
 		}
 
 		if err := s.core.RecordLoginSucceeded(ctx, user.Id, login); err != nil {
 			log.Error("Failed to append login audit event", "userId", user.Id, "error", err)
-			_ = s.core.RevokeCookieSession(ctx, cookieCredentialID)
+			if cookieCredentialID != "" {
+				_ = s.core.RevokeCookieSession(ctx, cookieCredentialID)
+				s.clearBrowserSessionCookie(c)
+				clearCSRFCookie(c)
+			}
 			if bearerCredentials.RefreshToken != "" {
 				_ = s.core.RevokeRefreshTokenWithReason(ctx, bearerCredentials.RefreshToken, "login_audit_failed")
 			}
-			session.Clear()
-			_ = session.Save()
-			clearCSRFCookie(c)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create session"})
 			return
 		}
@@ -340,7 +612,9 @@ func (s *HTTPServer) setupAuthRoutes() {
 		}
 
 		c.JSON(http.StatusOK, response)
-	})
+	}
+	auth.POST("login", requireJSONAuthenticationRequest, login)
+	auth.POST("browser/login", s.requireBrowserAuthenticationRequest, login)
 
 	// Email-first registration endpoint (step 1)
 	// Accepts email only, creates a registration code, and sends it by email.
@@ -483,7 +757,9 @@ func (s *HTTPServer) setupAuthRoutes() {
 	// Registration completion endpoint (step 2)
 	// Validates the registration completion token, creates the user account,
 	// verifies the email, and creates a session.
-	auth.POST("register/complete", func(c *gin.Context) {
+	completeRegistration := func(c *gin.Context) {
+		c.Header("Cache-Control", "no-store")
+		c.Header("Pragma", "no-cache")
 		// Check if registration is enabled
 		if !s.config.Auth.DirectRegistrationOrDefault() {
 			c.JSON(http.StatusForbidden, gin.H{"error": "Registration is disabled"})
@@ -547,7 +823,7 @@ func (s *HTTPServer) setupAuthRoutes() {
 		}
 
 		// Create user with verified email atomically (use login as display name initially)
-		var user *corev1.User
+		var user *evtv1.User
 		if s.config.Auth.InvitationRequired() {
 			if tokenData.InvitationID == "" {
 				c.JSON(http.StatusBadRequest, gin.H{"error": "This invite link is invalid or no longer available"})
@@ -595,46 +871,41 @@ func (s *HTTPServer) setupAuthRoutes() {
 			// Don't fail — user was created successfully
 		}
 
-		// Create server-side cookie session
-		if err := s.createCookieSession(c, user.Id, "registration_complete"); err != nil {
-			log.Error("Failed to save session", "error", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create session"})
-			return
-		}
-		session := sessions.Default(c)
-		if err := s.ensureCSRFToken(c); err != nil {
-			log.Error("Failed to create CSRF token", "error", err)
-			cookieCredentialID, _ := cookieCredentialIDFromSession(session)
-			_ = s.core.RevokeCookieSession(ctx, cookieCredentialID)
-			session.Clear()
-			_ = session.Save()
-			clearCSRFCookie(c)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create session"})
-			return
-		}
-
-		log.Info("User registered and logged in", "userId", user.Id)
-
 		response := gin.H{
 			"success": true,
 			"user":    gin.H{"id": user.Id, "login": user.Login},
 		}
-
-		credentials, err := s.core.CreateBearerSessionWithSource(ctx, user.Id, "registration")
-		if err != nil {
-			log.Error("Failed to create auth token on register", "userId", user.Id, "error", err)
-			cookieCredentialID, _ := cookieCredentialIDFromSession(session)
-			_ = s.core.RevokeCookieSession(ctx, cookieCredentialID)
-			session.Clear()
-			_ = session.Save()
-			clearCSRFCookie(c)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create session"})
-			return
+		if requestsCookieOnlyAuthentication(c) {
+			if err := s.createCookieSession(c, user.Id, "registration_complete"); err != nil {
+				log.Error("Failed to save browser session", "error", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create session"})
+				return
+			}
+			cookieCredentialID, _ := s.browserSessionID(c)
+			if err := s.ensureCSRFToken(c); err != nil {
+				log.Error("Failed to create CSRF token", "error", err)
+				_ = s.core.RevokeCookieSession(ctx, cookieCredentialID)
+				s.clearBrowserSessionCookie(c)
+				clearCSRFCookie(c)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create session"})
+				return
+			}
+		} else {
+			credentials, err := s.core.CreateBearerSessionWithSource(ctx, user.Id, "registration")
+			if err != nil {
+				log.Error("Failed to create auth token on register", "error", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create session"})
+				return
+			}
+			addBearerSessionResponse(response, credentials)
 		}
-		addBearerSessionResponse(response, credentials)
+
+		log.Info("User registered and logged in", "userId", user.Id)
 
 		c.JSON(http.StatusOK, response)
-	})
+	}
+	auth.POST("register/complete", requireJSONAuthenticationRequest, completeRegistration)
+	auth.POST("browser/register/complete", s.requireBrowserAuthenticationRequest, completeRegistration)
 
 	// Authenticated email verification code request.
 	auth.POST("verify-email/request-code", func(c *gin.Context) {
@@ -892,6 +1163,11 @@ func isValidInternalRedirect(redirect string) bool {
 	// Reject backslash variants that some browsers normalize to forward slashes
 	if strings.Contains(redirect, "\\") {
 		return false
+	}
+	for _, char := range redirect {
+		if char <= 0x1f || char == 0x7f {
+			return false
+		}
 	}
 	return true
 }

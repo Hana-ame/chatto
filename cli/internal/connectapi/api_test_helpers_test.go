@@ -20,7 +20,7 @@ import (
 	"hmans.de/chatto/internal/core"
 	adminv1 "hmans.de/chatto/internal/pb/chatto/admin/v1"
 	apiv1 "hmans.de/chatto/internal/pb/chatto/api/v1"
-	corev1 "hmans.de/chatto/internal/pb/chatto/core/v1"
+	evtv1 "hmans.de/chatto/internal/pb/chatto/core/evt/v1"
 	"hmans.de/chatto/internal/testutil"
 )
 
@@ -31,11 +31,11 @@ func requireConnectCode(t testing.TB, err error, want connect.Code) {
 	}
 }
 
-func withCaller(ctx context.Context, user *corev1.User) context.Context {
+func withCaller(ctx context.Context, user *evtv1.User) context.Context {
 	return authn.SetInfo(ctx, Caller{UserID: user.Id})
 }
 
-func withBearerCredential(ctx context.Context, user *corev1.User, token string) context.Context {
+func withBearerCredential(ctx context.Context, user *evtv1.User, token string) context.Context {
 	ctx = withCaller(ctx, user)
 	return authctx.WithCredential(ctx, authctx.RuntimeCredential{
 		Kind:   authctx.RuntimeCredentialKindBearerToken,
@@ -98,35 +98,36 @@ func connectAPITestPNG() []byte {
 }
 
 type connectAPITestEnv struct {
-	ctx               context.Context
-	core              *core.ChattoCore
-	nc                *nats.Conn
-	api               *API
-	account           *accountService
-	adminDiagnostics  *adminDiagnosticsService
-	adminEventLog     *adminEventLogService
-	adminInviteLinks  *adminInviteLinkService
-	adminOAuthClients *adminOAuthClientService
-	adminLayout       *adminRoomLayoutService
-	adminUsers        *adminUserManagementService
-	assets            *assetService
-	assetUploads      *assetUploadService
-	directory         *roomDirectoryService
-	externalAuth      *externalIdentityAuthService
-	messages          *messageService
-	notifications     *notificationService
-	permissions       *permissionService
-	push              *pushNotificationService
-	pushCleanup       *pushSubscriptionCleanupService
-	publicRoles       *publicRoleService
-	roles             *roleService
-	rooms             *roomService
-	serverState       *serverService
-	threads           *threadService
-	users             *userService
-	viewerService     *viewerService
-	voice             *voiceCallService
-	viewer            *corev1.User
+	ctx                  context.Context
+	core                 *core.ChattoCore
+	nc                   *nats.Conn
+	api                  *API
+	account              *accountService
+	adminDiagnostics     *adminDiagnosticsService
+	adminEventLog        *adminEventLogService
+	adminInviteLinks     *adminInviteLinkService
+	adminOAuthClients    *adminOAuthClientService
+	adminLayout          *adminRoomLayoutService
+	adminUsers           *adminUserManagementService
+	assets               *assetService
+	assetUploads         *assetUploadService
+	directory            *roomDirectoryService
+	externalAuth         *externalIdentityAuthService
+	messages             *messageService
+	notifications        *notificationService
+	notificationPolicies *notificationPolicyService
+	permissions          *permissionService
+	push                 *pushNotificationService
+	pushCleanup          *pushSubscriptionCleanupService
+	publicRoles          *publicRoleService
+	roles                *roleService
+	rooms                *roomService
+	serverState          *serverService
+	threads              *threadService
+	users                *userService
+	viewerService        *viewerService
+	voice                *voiceCallService
+	viewer               *evtv1.User
 }
 
 func newConnectAPITestEnv(t *testing.T) *connectAPITestEnv {
@@ -153,35 +154,36 @@ func newConnectAPITestEnv(t *testing.T) *connectAPITestEnv {
 	}
 	api := New(c, config.ChattoConfig{}, "test")
 	return &connectAPITestEnv{
-		ctx:               ctx,
-		core:              c,
-		nc:                nc,
-		api:               api,
-		account:           &accountService{api: api},
-		adminDiagnostics:  &adminDiagnosticsService{api: api},
-		adminEventLog:     &adminEventLogService{api: api},
-		adminInviteLinks:  &adminInviteLinkService{api: api},
-		adminOAuthClients: &adminOAuthClientService{api: api},
-		adminLayout:       &adminRoomLayoutService{api: api},
-		adminUsers:        &adminUserManagementService{api: api},
-		assets:            &assetService{api: api},
-		assetUploads:      &assetUploadService{api: api},
-		directory:         &roomDirectoryService{api: api},
-		externalAuth:      &externalIdentityAuthService{api: api},
-		messages:          &messageService{api: api},
-		notifications:     &notificationService{api: api},
-		permissions:       &permissionService{api: api},
-		push:              &pushNotificationService{api: api},
-		pushCleanup:       &pushSubscriptionCleanupService{api: api},
-		publicRoles:       &publicRoleService{api: api},
-		roles:             &roleService{api: api},
-		rooms:             &roomService{api: api},
-		serverState:       &serverService{api: api},
-		threads:           &threadService{api: api},
-		users:             &userService{api: api},
-		viewerService:     &viewerService{api: api},
-		voice:             &voiceCallService{api: api},
-		viewer:            viewer,
+		ctx:                  ctx,
+		core:                 c,
+		nc:                   nc,
+		api:                  api,
+		account:              &accountService{api: api},
+		adminDiagnostics:     &adminDiagnosticsService{api: api},
+		adminEventLog:        &adminEventLogService{api: api},
+		adminInviteLinks:     &adminInviteLinkService{api: api},
+		adminOAuthClients:    &adminOAuthClientService{api: api},
+		adminLayout:          &adminRoomLayoutService{api: api},
+		adminUsers:           &adminUserManagementService{api: api},
+		assets:               &assetService{api: api},
+		assetUploads:         &assetUploadService{api: api},
+		directory:            &roomDirectoryService{api: api},
+		externalAuth:         &externalIdentityAuthService{api: api},
+		messages:             &messageService{api: api},
+		notifications:        &notificationService{api: api},
+		notificationPolicies: &notificationPolicyService{api: api},
+		permissions:          &permissionService{api: api},
+		push:                 &pushNotificationService{api: api},
+		pushCleanup:          &pushSubscriptionCleanupService{api: api},
+		publicRoles:          &publicRoleService{api: api},
+		roles:                &roleService{api: api},
+		rooms:                &roomService{api: api},
+		serverState:          &serverService{api: api},
+		threads:              &threadService{api: api},
+		users:                &userService{api: api},
+		viewerService:        &viewerService{api: api},
+		voice:                &voiceCallService{api: api},
+		viewer:               viewer,
 	}
 }
 
@@ -242,7 +244,7 @@ func apiPermissionGranted(grants []*apiv1.PermissionGrant, permission string) bo
 	return false
 }
 
-func (e *connectAPITestEnv) createJoinedRoom(name string) *corev1.Room {
+func (e *connectAPITestEnv) createJoinedRoom(name string) *evtv1.Room {
 	room, err := e.core.CreateRoom(e.ctx, e.viewer.Id, core.KindChannel, "", name, "")
 	if err != nil {
 		panic(err)
@@ -300,7 +302,7 @@ func (e *connectAPITestEnv) defaultRoomGroupID(t *testing.T) string {
 	return groups[0].Id
 }
 
-func (e *connectAPITestEnv) post(roomID, actorID, body, inReplyTo string) *corev1.Event {
+func (e *connectAPITestEnv) post(roomID, actorID, body, inReplyTo string) *evtv1.Event {
 	event, err := e.core.PostMessage(e.ctx, core.KindChannel, roomID, actorID, body, nil, inReplyTo, "", nil, false)
 	if err != nil {
 		panic(err)

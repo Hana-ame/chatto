@@ -1,14 +1,11 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
   import { resolve } from '$app/paths';
-  import { Code, ConnectError } from '@connectrpc/connect';
-  import { directBearerSession } from '$lib/auth/bearerSession';
   import { completeOriginAuthentication } from '$lib/auth/originAuthentication';
   import AuthLayout from '$lib/components/AuthLayout.svelte';
   import {
     createExternalIdentityFlowAPI,
-    ExternalIdentityFlowKind,
-    type PendingExternalIdentityInfo
+    ExternalIdentityFlowKind
   } from '$lib/api-client/externalIdentities';
   import { m } from '$lib/i18n/messages';
   import { validateDisplayName } from '$lib/validation/displayName';
@@ -19,14 +16,11 @@
   const { data } = $props();
   const flowAPI = createExternalIdentityFlowAPI();
 
-  let pending = $state<PendingExternalIdentityInfo | null>(null);
-  let loadError = $state('');
+  const pending = $derived(data.pending);
   let actionError = $state('');
-  let loading = $state(true);
   let submitting = $state(false);
-  let login = $state('');
-  let displayName = $state('');
-  let loadedToken = '';
+  let login = $derived(pending?.loginHint ?? '');
+  let displayName = $derived(pending?.displayNameHint || pending?.loginHint || '');
 
   const loginSchema = z
     .string()
@@ -46,40 +40,11 @@
   const isCreate = $derived(pending?.kind === ExternalIdentityFlowKind.CREATE_ACCOUNT);
   const isLink = $derived(pending?.kind === ExternalIdentityFlowKind.LINK_ACCOUNT);
   const canSubmit = $derived(
-    pending && !submitting && ((isCreate && login.trim() && displayName.trim() && !loginError && !displayNameError) || isLink)
+    pending &&
+      !submitting &&
+      ((isCreate && login.trim() && displayName.trim() && !loginError && !displayNameError) ||
+        isLink)
   );
-
-  $effect(() => {
-    const token = data.token;
-    if (!token || token === loadedToken) return;
-    loadedToken = token;
-    void loadPending(token);
-  });
-
-  async function loadPending(token: string) {
-    loading = true;
-    loadError = '';
-    actionError = '';
-    pending = null;
-    try {
-      const result = await flowAPI.getPending(token);
-      if (!result) {
-        loadError = m('auth.sso.invalid');
-        return;
-      }
-      pending = result;
-      login = result.loginHint;
-      displayName = result.displayNameHint || result.loginHint;
-    } catch (err) {
-      if (err instanceof ConnectError && err.code === Code.NotFound) {
-        loadError = m('auth.sso.invalid');
-      } else {
-        loadError = err instanceof Error ? err.message : m('auth.sso.load_failed');
-      }
-    } finally {
-      loading = false;
-    }
-  }
 
   async function handleCreate(e: Event) {
     e.preventDefault();
@@ -87,21 +52,14 @@
       actionError = loginError || displayNameError || m('common.validation.fix_errors');
       return;
     }
+    const redirectPath = pending.redirectPath || '/';
     submitting = true;
     actionError = '';
     try {
-      const result = await flowAPI.createAccount({ token: data.token, login, displayName });
-      const credentials = directBearerSession(result);
-      if (!credentials) throw new Error(m('auth.register.missing_token'));
-      const resumedReturnNavigation = await completeOriginAuthentication(
-        credentials,
-        {
-          id: result.userId,
-          login: result.login
-        }
-      );
+      await flowAPI.createAccount({ token: data.token, login, displayName });
+      const resumedReturnNavigation = await completeOriginAuthentication();
       if (!resumedReturnNavigation) {
-        goto(resolve((pending.redirectPath || '/') as '/'), { replaceState: true });
+        goto(resolve(redirectPath as '/'), { replaceState: true });
       }
     } catch (err) {
       actionError = err instanceof Error ? err.message : m('auth.sso.create_failed');
@@ -112,11 +70,12 @@
 
   async function handleLink() {
     if (!pending || !data.token) return;
+    const redirectPath = pending.redirectPath || '/';
     submitting = true;
     actionError = '';
     try {
       await flowAPI.confirmLink(data.token);
-      goto(resolve((pending.redirectPath || '/') as '/'), { replaceState: true });
+      goto(resolve(redirectPath as '/'), { replaceState: true });
     } catch (err) {
       actionError = err instanceof Error ? err.message : m('auth.sso.link_failed');
     } finally {
@@ -146,10 +105,10 @@
     <p class="mt-6 text-center">
       <a href={resolve('/login')} class="link">{m('common.sign_in')}</a>
     </p>
-  {:else if loading}
-    <div class="text-center text-sm text-muted">{m('auth.sso.loading')}</div>
-  {:else if loadError}
-    <Hint tone="danger">{loadError}</Hint>
+  {:else if data.loadError}
+    <Hint tone="danger">
+      {data.loadError === 'invalid' ? m('auth.sso.invalid') : m('auth.sso.load_failed')}
+    </Hint>
     <p class="mt-6 text-center">
       <a href={resolve('/login')} class="link">{m('common.sign_in')}</a>
     </p>

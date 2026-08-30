@@ -294,6 +294,7 @@ git 报零冲突 ≠ 这里没风险，每次合并都要逐条重审。
 | 区域 | 上游做法 | fork 做法 | 记录位置 |
 |---|---|---|---|
 | 消息正文内联图片 | 定为禁用语法：`![alt](url)` 不出 `<img>`，安全默认 | 出 `<img>`，src 重写为 `https://proxy.moonchan.xyz/...` 代理取图，隐藏观看者 IP/Referer | `apps/frontend/src/lib/markdown.ts` 的 `proxyImageSource`；`MessageContent.svelte.spec.ts` 的 `renders images through the fork image proxy`；`.github/workflows/build-linux.yml` 的 Verify 步骤断言产物含 `proxy.moonchan.xyz` |
+| 浏览器侧附件 URL | 携带 per-user 签名 ticket（`?access=`）：per-user、不可共享、不可 CDN 缓存；服务端校验签名用户仍是 asset 所在 room 成员，kick/leave 可撤销未来访问 | 走公开版 `/assets/files/{assetID}/{fn.ext}`（及 `/image/{w}x{h}/{fit}/{fn.ext}`）：无 ticket、无成员校验，assetID 即凭证，`public, max-age=31536000, immutable` | `cli/internal/core/attachments.go` 的【本地改动 2026-08-18】节（`GetPublicStable*`、`stableAttachmentPath`）；`cli/internal/http_server/assets.go` 的 `servePublicStableAttachment` / `servePublicStableTransformedAttachment`；`apps/frontend/e2e/authorized-asset-urls.test.ts`、`messages.test.ts` 的【本地改动 2026-08-30】 |
 
 - **2026-08-30 发现**：`build-release` 触发分支从 `ci/deploy` 改到 main 后，ci.yml 第一次
   在本仓库 main 上跑完整矩阵，`test-workspace` 的「does not render images as img tags」
@@ -304,6 +305,15 @@ git 报零冲突 ≠ 这里没风险，每次合并都要逐条重审。
 - fork 侧现有防护：markdown-it 的 `validateLink` 拦 `javascript:`/`data:`/`file:`，
   `proxyImageSource` 再锁死 http(s)（其余降级为 `#`），img 加 `loading=lazy` +
   `referrerpolicy=no-referrer` + `rel=noopener`。附件、头像、链接预览不走这条路。
+- **2026-08-30 同日发现（附件 URL）**：同一轮 ci 里 `test-e2e (1/4)` 与 `test-e2e (2/4)` 各
+  红 1 个用例，都是上游断言 URL 含 `access=` ticket、fork 实际返回无 query 的公开 URL：
+  `authorized-asset-urls.test.ts:44`（Expected substring "access="）与
+  `messages.test.ts:693`（Expected pattern `/\/image\/960x400\/contain\?/`）。另外 3 个 `✘`
+  （jump-to-message / notification-policy / pagination）是 retry 后通过的 flaky，非真失败。
+  上游自己 main 同时段持续绿，故确认是 fork 分歧而非上游回归。
+- 附件 URL 这条的分歧比图片那条更重：它涉及访问控制与撤销语义（kick/leave 不再撤销未来
+  访问），而不只是渲染。fork 在 `attachments.go` 里已明文接受该取舍，但每次合并都必须重审，
+  尤其关注上游是否收紧了 `/assets/*` 的鉴权。
 
 ## Testing Judgment
 

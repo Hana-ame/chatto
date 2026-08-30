@@ -38,6 +38,10 @@ concurrency:
 
 permissions:
   contents: read
+  # 【本地改动 2026-08-30】上游没有这条 workflow 级权限,它是 publish-main-image 那次改动顺带
+  # 加的。该 job 已自带 job 级 packages: write(见 publish-main-image 的【本地改动】块),
+  # 这条其实是冗余的;保留是为了少一个待办改动点。合回 upstream 时删掉。
+  packages: write
 
 jobs:
   build-main-image-contexts:
@@ -605,6 +609,9 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: read
+      # 【本地改动 2026-08-30】上游没有这条权限。见下方【本地改动】块:镜像推送目前被
+      # 知情关闭,fork 的 token 也无 chattocorp org 的 package 写权限。留着是为了拿到
+      # 权限后重开时不用改回这里。
       packages: write
     steps:
       - name: Download production image contexts
@@ -616,6 +623,22 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      # 【本地改动 2026-08-30】上游把 commit 镜像推送到 ghcr.io/chattocorp/chatto(上游 org
+      # 的 package)。2026-08-30 把 build-release 触发分支从 ci/deploy 改到 main 后,ci.yml
+      # 第一次在本仓库 main 上跑完整矩阵,publish-main-image 立刻红:
+      #   failed to push ghcr.io/chattocorp/chatto:<sha>-amd64: denied:
+      #   permission_denied: The requested installation does not exist
+      # 这是 fork 基建缺口,不是回归:fork 的 GITHUB_TOKEN 对上游 org 的 package 没有写权限,
+      # 该镜像历史上从未从本 fork 成功推送过;上游自己的 main 同时段持续绿。
+      # 【目的】把三个推送动作知情关闭,让 ci.yml 在本 fork 上能到全绿,而不是把这条红灯
+      # 当常态。关掉的是「推送」不是「构建」——amd64/arm64 两个 build 仍保留(push: false),
+      # 继续充当 Dockerfile 的冒烟测试,能提前发现上游改 Dockerfile 导致的构建破坏。
+      # 【边界】ghcr.io/chattocorp/chatto 从此不会从本 fork 更新,只影响直接拉该镜像的下游。
+      # 本仓库部署链路不依赖它:cloudcone 拉的是 releases 的 chatto_Linux_x86_64.tar.gz。
+      # 【重开方式】拿到 chattocorp org 的 package 写权限后:两个 build 的 push: false 改回
+      # true,删掉 Publish multi-platform commit image 那行的 if: false。
+      # 【合并提醒】合回 upstream 时整段删除:两个 build 恢复 push: true、Publish 步骤删掉
+      # if: false、job 级 permissions 删掉 packages: write。
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
         with:
@@ -628,12 +651,13 @@ jobs:
         shell: bash
         run: echo "tag=main-$(date -u +%Y%m%dT%H%M%SZ)-${GITHUB_SHA:0:12}" >> "$GITHUB_OUTPUT"
 
-      - name: Build and push amd64 image
+      - name: Build amd64 image
         uses: docker/build-push-action@v6
         with:
           context: docker-contexts/linux-amd64
           file: docker-contexts/linux-amd64/Dockerfile
-          push: true
+          # 【本地改动 2026-08-30】上游是 push: true;改为只构建不推送,理由见上方【本地改动】块。
+          push: false
           platforms: linux/amd64
           tags: ghcr.io/chattocorp/chatto:${{ github.sha }}-amd64
           cache-from: type=gha,scope=chatto-main-amd64
@@ -644,12 +668,13 @@ jobs:
             org.opencontainers.image.version=${{ needs.build-main-image-contexts.outputs.image-version }}
             org.opencontainers.image.licenses=AGPL-3.0-or-later
 
-      - name: Build and push arm64 image
+      - name: Build arm64 image
         uses: docker/build-push-action@v6
         with:
           context: docker-contexts/linux-arm64
           file: docker-contexts/linux-arm64/Dockerfile
-          push: true
+          # 【本地改动 2026-08-30】上游是 push: true;改为只构建不推送,理由见上方【本地改动】块。
+          push: false
           platforms: linux/arm64
           tags: ghcr.io/chattocorp/chatto:${{ github.sha }}-arm64
           cache-from: type=gha,scope=chatto-main-arm64
@@ -661,6 +686,10 @@ jobs:
             org.opencontainers.image.licenses=AGPL-3.0-or-later
 
       - name: Publish multi-platform commit image
+        # 【本地改动 2026-08-30】上游没有这行 if: false。硬关闭该步骤:它用 imagetools 把
+        # 上面两个平台镜像打成多平台 manifest 并推送,fork 没有推送权限。重开方式见上方
+        # 【本地改动】块;合回 upstream 时删掉这行(保留原步骤名与 run 内容)。
+        if: false  # Disabled: pushes to ghcr.io/chattocorp which requires org write permissions
         shell: bash
         run: |
           docker buildx imagetools create \

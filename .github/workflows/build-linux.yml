@@ -105,7 +105,37 @@ jobs:
         # 【取舍】测试红 = 不发产物,即质量闸与部署闸耦合。fork 上这是有意为之:AGENTS.md
         # 禁止本地 go build/mise test-cli 验证,CI 是唯一信号,不测就发等于裸奔。
         # 【代价】build-frontend 会因此多跑一次(test-cli 的依赖 + 下一步各一次)。
-        run: mise test-cli
+        # 【踩坑】这里包了 3 次重试,原因是 2026-08-30 触发分支改到 main 之后,ci.yml 的
+        # 完整矩阵与 build-release 并行跑(同一个 commit、同一个 runner),实测把 test-cli
+        # 挤到超时:4 个 upstream 测试在 30.03s / 10.06s 处 context deadline exceeded
+        # (TestAssetCleanupDurableConsumerProcessesAcrossReplicas、
+        # TestRealtimeWebSocketConvergesDirectoryRoomsAndAdministrativeMembership、
+        # TestRealtimeWebSocketRestoresRetainedTimelineAfterUnarchive、
+        # TestRealtimeWebSocketResumesAssetAndHiddenEchoGapThenContinuesLive)。同一 commit
+        # 在 ci 结束后重跑即全绿,证明是 runner 争抢而非代码回归——但闸门被误拦仍然挡住
+        # 了一次真实发布,所以加重试。重试不掩盖真回归:真回归 3 次都红,照样不发产物。
+        # 治本是让两个 workflow 不并发(共享 concurrency group 或串行化),那需要改上游的
+        # ci.yml,另行评估。
+        # 【踩坑】不能用「if mise test-cli; then ... fi; code=$?」的写法:无 else 分支时,
+        # 条件为假的整个 if 复合命令退出码是 0,bash 语义如此,于是 code 恒为 0,
+        # 真回归会被判成通过、闸门被整体绕过。必须先把退出码落到变量里再判断。
+        run: |
+          set -uo pipefail
+          code=1
+          for i in 1 2 3; do
+            echo "=== test-cli attempt ${i}/3 ==="
+            mise test-cli
+            rc=$?
+            if [ "${rc}" -eq 0 ]; then
+              echo "test-cli passed on attempt ${i}/3"
+              exit 0
+            fi
+            code=${rc}
+            echo "test-cli failed on attempt ${i}/3 (exit ${code})"
+            [ "${i}" -lt 3 ] && sleep 15
+          done
+          echo "test-cli failed all 3 attempts"
+          exit "${code}"
         env:
           CHATTO_BUILD_VERSION: ${{ steps.version.outputs.version }}
           CHATTO_FRONTEND_PRECOMPRESS: "1"
@@ -119,13 +149,20 @@ jobs:
       - name: Verify frontend contains image proxy
         run: |
           set -euo pipefail
+          # 【本地改动 2026-08-30】诊断输出改用 find 而不是 ls。ci.yml 的 workflow-lint
+          # 跑 actionlint + shellcheck,shellcheck SC2012 明确要求不要用 ls(ls 会按词
+          # 切分非字母数字文件名,输出不可靠)。本 fork-only 步骤此前从未被 lint 过——
+          # ci/deploy 不在 ci.yml 的 push 白名单里,lint 信号和测试信号一样是空的,
+          # 2026-08-30 触发分支改到 main 才暴露。这与同日修掉的 4 个 fork 红灯同源。
+          # 输出只保留 size+name 两列,足够定位「.client 是否陈旧」这个真正的问题。
+          lsd() { find "$1" -maxdepth 1 -printf '%8s  %f\n' 2>/dev/null | sort -k2 | head -40; }
           echo "=== check markdown.ts source ==="
           grep -q "proxy.moonchan.xyz" apps/frontend/src/lib/markdown.ts
           echo "=== check built frontend ==="
           grep -r "proxy.moonchan.xyz" apps/frontend/build || (echo "missing proxy in apps/frontend/build" && exit 1)
           echo "=== before prepare ==="
-          ls -lh apps/frontend/build/ 2>&1 | head -40
-          ls -lh cli/internal/http_server/.client/ 2>&1 | head -40 || echo "no .client"
+          lsd apps/frontend/build
+          lsd cli/internal/http_server/.client || echo "no .client"
           # 【本地改动】mise 的 build-frontend 任务可能因 outputs 缓存未重跑 prepare-embedded-frontend.sh，
           # 导致 apps/frontend/build 已更新但 cli/internal/http_server/.client 仍为旧版。
           # 此处显式重跑以保证嵌入的前端与构建产物一致。
@@ -133,19 +170,19 @@ jobs:
           rm -rf cli/internal/http_server/.client
           cp -R apps/frontend/build cli/internal/http_server/.client
           echo "=== after cp ==="
-          ls -lh cli/internal/http_server/.client/ 2>&1 | head -40
+          lsd cli/internal/http_server/.client
           grep -r "proxy.moonchan.xyz" cli/internal/http_server/.client || (echo "missing proxy in .client" && exit 1)
           echo "frontend proxy verified after cp"
           # 再按原脚本清理 raw 保留压缩版（与上游一致，减小二进制体积），关闭 pipefail 避免 cat 截断导致误判
           set +o pipefail
-          ls -lh apps/frontend/build/200.html* 2>&1 | head -20
+          find apps/frontend/build -maxdepth 1 -name '200.html*' -printf '%8s  %f\n' | head -20
           echo "=== running prepare-embedded-frontend.sh ==="
           bash -x tools/prepare-embedded-frontend.sh apps/frontend/build cli/internal/http_server/.client 2>&1 | cat
           echo "prepare exit: $?"
           set -o pipefail
           echo "=== after prepare (compressed) ==="
-          ls -lh cli/internal/http_server/.client/ 2>&1 | head -40
-          ls -lh cli/internal/http_server/.client/200.html* 2>&1 | head -20
+          lsd cli/internal/http_server/.client
+          find cli/internal/http_server/.client -maxdepth 1 -name '200.html*' -printf '%8s  %f\n' | head -20
           if ! find cli/internal/http_server/.client -name "*.gz" -exec gzip -dc {} \; 2>/dev/null | grep -q "proxy.moonchan.xyz"; then
             echo "missing proxy in .client (gz) after prepare"
             exit 1

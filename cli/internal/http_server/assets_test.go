@@ -1032,19 +1032,21 @@ func TestAsset_OriginalAttachment_HasCacheHeaders(t *testing.T) {
 	}
 }
 
-// TestAsset_StableURLAcceptsAccessTicketAndBearerAuth verifies the stable asset
-// URL's authorization model.
+// TestAsset_ForkPublicStableURLNeedsNoAuth verifies that the URL the fork hands the
+// browser needs no credentials of any kind.
 //
-// 【本地改动 2026-08-29】上游此测试断言「无凭据 401 / 无 access ticket 403 / 篡改 ticket 403」，
-// 即 URL 是需要凭据的能力。本 fork 自 2026-08-18 起把 ConnectRPC 下发的附件 URL 换成带
-// {fn.ext} 的公开 URL（assetID 即凭证，无 ticket、无会话、无成员校验、filename 段被服务端忽略），
-// 故三处断言反转为 200，本测试现在守护「fork 的浏览器 URL 确实无需任何凭据」这一回归面。
-// 保留上游函数名以减少后续合并冲突；上游语义在 fork 里对应无尾段的
-// /assets/files/{assetID}（serveStableAttachment），该路由未被本改动触碰。
+// 【本地改动 2026-08-30】改名为 TestAsset_ForkPublicStableURLNeedsNoAuth。
+// 上游原名：TestAsset_StableURLAcceptsAccessTicketAndBearerAuth（grep 上游原名仍可定位本测试；
+// 原名的断言方向与 fork 语义完全相反，不改名会让后来人误以为本文件仍在守护「URL 是凭据能力」）。
+// 上游此测试断言「无凭据 401 / 无 access ticket 403 / 篡改 ticket 403」，即 URL 是需要凭据的能力。
+// 本 fork 自 2026-08-18 起把 ConnectRPC 下发的附件 URL 换成带 {fn.ext} 的公开 URL
+// （assetID 即凭证，无 ticket、无会话、无成员校验、filename 段被服务端忽略），
+// 故三处断言反转为 200，本测试守护「fork 的浏览器 URL 确实无需任何凭据」这一回归面。
+// 上游语义在 fork 里对应无尾段的 /assets/files/{assetID}（serveStableAttachment），该路由未被触碰。
 // 发现背景：2026-08-29 合并 upstream 84 个提交后做语义冲突审计时发现（审计初报漏掉此测试的
 // 3 个断言，经全文件按 URL 来源分类扫描后补全）。
-// 回归提示：若本分支合回 upstream，401/403 三处断言必须全部改回。
-func TestAsset_StableURLAcceptsAccessTicketAndBearerAuth(t *testing.T) {
+// 回归提示：若本分支合回 upstream，401/403 三处断言必须全部改回，函数名恢复上游原名。
+func TestAsset_ForkPublicStableURLNeedsNoAuth(t *testing.T) {
 	env := setupAssetTestServer(t)
 
 	user, err := env.core.CreateUser(env.ctx, "system", "bearerassetuser", "Bearer Asset User", "password123")
@@ -1806,17 +1808,21 @@ func TestAsset_LegacyAttachmentRouteIsGone(t *testing.T) {
 	}
 }
 
-// TestAsset_StableURLIsCapability verifies that the stable asset URL itself is the
-// authorization capability.
+// TestAsset_ForkPublicStableURLIgnoresTampering verifies that the fork's browser-facing
+// asset URL is not signed: URL tampering changes nothing.
 //
-// 【本地改动 2026-08-29】上游此测试借「篡改 access ticket 必须 403」证明 URL 是签名能力。
+// 【本地改动 2026-08-30】改名为 TestAsset_ForkPublicStableURLIgnoresTampering。
+// 上游原名：TestAsset_StableURLIsCapability（grep 上游原名仍可定位本测试；原名叫「URL 是能力」，
+// 而本测试现在断言 URL 不是能力，留着原名会给出反向的假信号）。
+// 上游此测试借「篡改 access ticket 必须 403」证明 URL 是签名能力。
 // 本 fork 的 ConnectRPC 下发 URL 是带 {fn.ext} 的公开 URL（无 ticket、无签名、filename 段被忽略），
 // 故该断言反转为 200。测试里其余「无尾段 canonical URL 仍需凭据」的分支不受影响：fork 保留
 // /assets/files/{assetID} → serveStableAttachment（ticket 语义），只是 attachment.GetAssetUrl()
-// 这个字段本身换成了公开 URL。保留上游函数名以减少后续合并冲突。
+// 这个字段本身换成了公开 URL。
 // 发现背景：2026-08-29 合并 upstream 后语义冲突审计发现；审计初报只列出 4 处，按 URL 来源
-// 全文件分类扫描后补全为本处。回归提示：若本分支合回 upstream，篡改断言必须改回 403。
-func TestAsset_StableURLIsCapability(t *testing.T) {
+// 全文件分类扫描后补全为本处。
+// 回归提示：若本分支合回 upstream，篡改断言必须改回 403，函数名恢复上游原名。
+func TestAsset_ForkPublicStableURLIgnoresTampering(t *testing.T) {
 	env := setupAssetTestServer(t)
 
 	user, err := env.core.CreateUser(env.ctx, "system", "authuser", "Auth User", "password123")
@@ -2129,16 +2135,19 @@ func TestRenderHLSPlaylistsFromManifest(t *testing.T) {
 	}
 }
 
-// TestAsset_RevokedMembership_RevokesStableURL covers the "kick / leave"
-// path under the per-user access-ticket model.
+// TestAsset_ForkPublicStableURLSurvivesLeaveRoom covers the "kick / leave" path.
 //
-// 【本地改动 2026-08-29】上游此测试断言退群后 ticket URL 立即失效（403）；本 fork 的
-// 公开 URL 无 ticket、无成员校验，退群不吊销已发出的 URL，故 post-leave 期望值改成 200，
-// 本测试现在守护的是「fork 刻意不吊销」这一回归面（防止有人半吊子加回成员校验却漏了路由）。
-// 保留上游函数名以减少后续合并冲突；取舍详见 resolvePublicAttachment 与
-// TestAsset_OriginalAttachment_HasCacheHeaders 的【本地改动】注释。
-// 回归提示：若本分支合回 upstream，post-leave 两处断言必须改回 http.StatusForbidden。
-func TestAsset_RevokedMembership_RevokesStableURL(t *testing.T) {
+// 【本地改动 2026-08-30】改名为 TestAsset_ForkPublicStableURLSurvivesLeaveRoom。
+// 上游原名：TestAsset_RevokedMembership_RevokesStableURL（grep 上游原名仍可定位本测试；原名
+// 断言「退群即吊销」，与 fork 语义完全相反）。
+// 上游此测试断言退群后 ticket URL 立即失效（403）；本 fork 的公开 URL 无 ticket、无成员校验，
+// 退群不吊销已发出的 URL，故 post-leave 期望值改成 200，本测试守护「fork 刻意不吊销」这一
+// 回归面（防止有人半吊子加回成员校验却漏了路由）。
+// 取舍详见 resolvePublicAttachment 与 TestAsset_OriginalAttachment_HasCacheHeaders 的
+// 【本地改动】注释。
+// 回归提示：若本分支合回 upstream，post-leave 两处断言必须改回 http.StatusForbidden，
+// 函数名恢复上游原名。
+func TestAsset_ForkPublicStableURLSurvivesLeaveRoom(t *testing.T) {
 	env := setupAssetTestServerWithS3(t)
 
 	owner, err := env.core.CreateUser(env.ctx, "system", "asset-owner", "Owner", "password123")
@@ -2208,14 +2217,19 @@ func TestAsset_RevokedMembership_RevokesStableURL(t *testing.T) {
 	}
 }
 
-// 【本地改动 2026-08-29】上游此测试断言撤销 message.read 权限后 ticket URL 立即 403；
-// 本 fork 的公开 URL 无 ticket、无成员校验、无权限校验，撤权不吊销已发出的 URL，故
-// post-denial 期望值改成 200。上游原版无 doc comment，此处补记取舍背景：本 fork 自
-// 2026-08-18 起以 assetID 作为唯一凭证换取 CDN/浏览器长缓存（public, max-age=31536000,
-// immutable），代价是权限收回对已发出的 URL 无效——上游 cli/AGENTS.md 契约要求吊销。
-// 保留上游函数名以减少后续合并冲突。
-// 回归提示：若本分支合回 upstream，下方断言必须改回 http.StatusForbidden / want 403。
-func TestAsset_RevokedMessageReadRevokesStableURL(t *testing.T) {
+// TestAsset_ForkPublicStableURLSurvivesDenyRead covers permission denial on a room.
+//
+// 【本地改动 2026-08-30】改名为 TestAsset_ForkPublicStableURLSurvivesDenyRead。
+// 上游原名：TestAsset_RevokedMessageReadRevokesStableURL（grep 上游原名仍可定位本测试；
+// 上游原版无 doc comment，原名断言「撤权即吊销」，与 fork 语义完全相反）。
+// 上游此测试断言撤销 message.read 权限后 ticket URL 立即 403；本 fork 的公开 URL 无 ticket、
+// 无成员校验、无权限校验，撤权不吊销已发出的 URL，故 post-denial 期望值改成 200。
+// 取舍背景：本 fork 自 2026-08-18 起以 assetID 作为唯一凭证换取 CDN/浏览器长缓存
+// （public, max-age=31536000, immutable），代价是权限收回对已发出的 URL 无效——
+// 上游 cli/AGENTS.md 契约要求吊销。
+// 回归提示：若本分支合回 upstream，下方断言必须改回 http.StatusForbidden / want 403，
+// 函数名恢复上游原名。
+func TestAsset_ForkPublicStableURLSurvivesDenyRead(t *testing.T) {
 	env := setupAssetTestServerWithS3(t)
 
 	viewer, err := env.core.CreateUser(env.ctx, core.SystemActorID, "asset-read-viewer", "Asset Read Viewer", "password123")

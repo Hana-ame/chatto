@@ -632,13 +632,14 @@ jobs:
       # 该镜像历史上从未从本 fork 成功推送过;上游自己的 main 同时段持续绿。
       # 【目的】把三个推送动作知情关闭,让 ci.yml 在本 fork 上能到全绿,而不是把这条红灯
       # 当常态。关掉的是「推送」不是「构建」——amd64/arm64 两个 build 仍保留(push: false),
-      # 继续充当 Dockerfile 的冒烟测试,能提前发现上游改 Dockerfile 导致的构建破坏。
+      # 继续充当 Dockerfile 的冒烟测试,能提前发现上游改 Dockerfile 导致的构建破坏;
+      # 而 Publish 那一步因为没有构建价值,整步删除(见下方【本地改动】块)。
       # 【边界】ghcr.io/chattocorp/chatto 从此不会从本 fork 更新,只影响直接拉该镜像的下游。
       # 本仓库部署链路不依赖它:cloudcone 拉的是 releases 的 chatto_Linux_x86_64.tar.gz。
       # 【重开方式】拿到 chattocorp org 的 package 写权限后:两个 build 的 push: false 改回
-      # true,删掉 Publish multi-platform commit image 那行的 if: false。
-      # 【合并提醒】合回 upstream 时整段删除:两个 build 恢复 push: true、Publish 步骤删掉
-      # if: false、job 级 permissions 删掉 packages: write。
+      # true,并从 upstream 的 ci.yml 取回 Publish multi-platform commit image 那一步。
+      # 【合并提醒】合回 upstream 时整段删除:两个 build 恢复 push: true、Publish 步骤整步
+      # 恢复、job 级 permissions 删掉 packages: write。
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
         with:
@@ -685,24 +686,16 @@ jobs:
             org.opencontainers.image.version=${{ needs.build-main-image-contexts.outputs.image-version }}
             org.opencontainers.image.licenses=AGPL-3.0-or-later
 
-      - name: Publish multi-platform commit image
-        # 【本地改动 2026-08-30】上游没有这行 if: false。硬关闭该步骤:它用 imagetools 把
-        # 上面两个平台镜像打成多平台 manifest 并推送,fork 没有推送权限。重开方式见上方
-        # 【本地改动】块;合回 upstream 时删掉这行(保留原步骤名与 run 内容)。
-        if: false  # Disabled: pushes to ghcr.io/chattocorp which requires org write permissions
-        shell: bash
-        run: |
-          docker buildx imagetools create \
-            --tag "ghcr.io/chattocorp/chatto:${GITHUB_SHA}" \
-            --tag "ghcr.io/chattocorp/chatto:${{ steps.main-image.outputs.tag }}" \
-            "ghcr.io/chattocorp/chatto:${GITHUB_SHA}-amd64" \
-            "ghcr.io/chattocorp/chatto:${GITHUB_SHA}-arm64"
-
-          {
-            echo "### Main commit image"
-            echo
-            echo "\`ghcr.io/chattocorp/chatto:${GITHUB_SHA}\`"
-            echo "\`ghcr.io/chattocorp/chatto:${{ steps.main-image.outputs.tag }}\`"
-            echo
-            echo "Version: \`${{ needs.build-main-image-contexts.outputs.image-version }}\`"
-          } >> "$GITHUB_STEP_SUMMARY"
+      # 【本地改动 2026-08-30】上游有 Publish multi-platform commit image 这个步骤,用
+      # docker buildx imagetools create 把上面两个平台镜像打成多平台 manifest 推送到
+      # ghcr.io/chattocorp/chatto:${GITHUB_SHA}(及 main-<UTC>-<sha12>),然后往
+      # GITHUB_STEP_SUMMARY 写镜像标签。
+      # 【本地改动】本 fork 已删除该步骤。fork 的 GITHUB_TOKEN 没有上游 org 的 package 写权限,
+      # 它在本 fork 上必然失败。不要改成 if: false:actionlint 的 [if-cond] 规则禁止常量条件
+      # (2026-08-30 workflow-lint 报
+      #   .github/workflows/ci.yml:692:13: constant expression "false" in condition
+      #   [if-cond]),死步骤也是噪音。
+      # 【恢复方式】拿到 chattocorp org 的 package 写权限后,从 upstream 的 ci.yml 取回该步骤
+      # 原文(步骤名「Publish multi-platform commit image」),并把上面两个 build 的
+      # push: false 改回 push: true。
+      # 【合并提醒】合回 upstream 时整段删除。

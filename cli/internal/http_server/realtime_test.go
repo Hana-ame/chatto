@@ -48,6 +48,25 @@ func TestRealtimeAuthenticatedUserPreservesAuthenticationValidationError(t *test
 	}
 }
 
+func TestRealtimeProjectionRoomViewerOperationUsesFocusedActivityShape(t *testing.T) {
+	deadline := timestamppb.New(time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC))
+	viewerState := &apiv1.RoomViewerState{
+		IsMember:           true,
+		HasUnread:          true,
+		Permissions:        []*apiv1.PermissionGrant{{Permission: "message.post", Granted: true}},
+		SlowModeNextPostAt: deadline,
+	}
+
+	focused := realtimeProjectionRoomViewerOperation("R1", viewerState)
+	activity := focused.GetRoomViewerActivityReplace()
+	if activity.GetRoomId() != "R1" || !activity.GetHasUnread() || !proto.Equal(activity.GetSlowModeNextPostAt(), deadline) {
+		t.Fatalf("focused viewer-activity replacement = %+v", activity)
+	}
+	if focused.GetRoomViewerStateReplace() != nil {
+		t.Fatal("focused operation retransmitted full viewer state")
+	}
+}
+
 type websocketWireRecorder struct {
 	net.Conn
 	mu    sync.Mutex
@@ -675,6 +694,57 @@ func TestRealtimeWebSocketAuthenticatesWithBearerHello(t *testing.T) {
 
 	conn := env.connectRealtime(t)
 	subscribeRealtime(t, conn, token)
+}
+
+func TestRealtimeWebSocketUsesFocusedRoomViewerActivity(t *testing.T) {
+	env := setupWebSocketTestServer(t)
+	viewer, err := env.core.CreateUser(env.ctx, core.SystemActorID, "rt-viewer-activity", "RT Viewer Activity", "password123")
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	room, err := env.core.CreateRoom(env.ctx, core.SystemActorID, core.KindChannel, "", "rt-viewer-activity", "")
+	if err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+	if _, err := env.core.JoinRoom(env.ctx, viewer.Id, core.KindChannel, viewer.Id, room.Id); err != nil {
+		t.Fatalf("JoinRoom: %v", err)
+	}
+	if _, err := env.core.SetRoomSlowMode(env.ctx, core.SystemActorID, core.KindChannel, room.Id, 60); err != nil {
+		t.Fatalf("SetRoomSlowMode: %v", err)
+	}
+	token, err := env.core.CreateAuthToken(env.ctx, viewer.Id)
+	if err != nil {
+		t.Fatalf("CreateAuthToken: %v", err)
+	}
+
+	conn := env.connectRealtime(t)
+	subscribeRealtime(t, conn, token, room.Id)
+	if _, err := env.core.PostMessage(env.ctx, core.KindChannel, room.Id, viewer.Id, "start Slow Mode", nil, "", "", nil, false); err != nil {
+		t.Fatalf("PostMessage: %v", err)
+	}
+	for {
+		frame, ok := readRealtimeServerFrame(t, conn, 5*time.Second)
+		if !ok {
+			t.Fatal("timed out waiting for focused room viewer activity")
+		}
+		projection := frame.GetProjectionEvent()
+		if projection == nil {
+			continue
+		}
+		for _, operation := range projection.GetOperations() {
+			if operation.GetRoomViewerStateReplace() != nil {
+				t.Fatalf("client received full viewer state for activity: %+v", operation)
+			}
+			activity := operation.GetRoomViewerActivityReplace()
+			if activity == nil || activity.GetRoomId() != room.Id {
+				continue
+			}
+			if activity.GetHasUnread() || activity.GetSlowModeNextPostAt() == nil {
+				t.Fatalf("poster activity = %+v, want read room and Slow Mode deadline", activity)
+			}
+			return
+		}
+	}
 }
 
 func TestRealtimeWebSocketRequestsReconnectAtBearerAccessExpiry(t *testing.T) {
@@ -1387,13 +1457,13 @@ func TestRealtimeProjectionCompactedReconciliationRepairsOnlyRoomMarkersChangedD
 	if err != nil {
 		t.Fatalf("realtimeProjectionReconciliationFrame: %v", err)
 	}
-	var replacements []*realtimev1.RealtimeProjectionRoomViewerStateReplace
+	var replacements []*realtimev1.RealtimeProjectionRoomViewerActivityReplace
 	for _, operation := range frame.GetProjectionEvent().GetOperations() {
-		if replacement := operation.GetRoomViewerStateReplace(); replacement != nil {
+		if replacement := operation.GetRoomViewerActivityReplace(); replacement != nil {
 			replacements = append(replacements, replacement)
 		}
 	}
-	if len(replacements) != 1 || replacements[0].GetRoomId() != rooms[0].Id || replacements[0].GetViewerState().GetHasUnread() {
+	if len(replacements) != 1 || replacements[0].GetRoomId() != rooms[0].Id || replacements[0].GetHasUnread() {
 		t.Fatalf("changed room replacements = %+v, want only current state for %q", replacements, rooms[0].Id)
 	}
 }
@@ -1585,6 +1655,9 @@ func TestRealtimeWebSocketHydratesRoomLazilyAndFiltersOtherTimelines(t *testing.
 		for _, operation := range projection.GetOperations() {
 			upsert := operation.GetRoomTimelineEventUpsert()
 			found = found || (upsert.GetRoomId() == retainedRoom.Id && upsert.GetEvent().GetId() == afterHydration.Id)
+			if operation.GetRoomUpsert() != nil || operation.GetRoomViewerStateReplace() != nil || operation.GetRoomViewerActivityReplace() != nil {
+				t.Fatalf("message projection retransmitted room or viewer state: %+v", operation)
+			}
 		}
 		if found {
 			break
@@ -1594,32 +1667,33 @@ func TestRealtimeWebSocketHydratesRoomLazilyAndFiltersOtherTimelines(t *testing.
 	if _, err := env.core.PostMessage(env.ctx, core.KindChannel, otherRoom.Id, viewer.Id, "unretained update", nil, "", "", nil, false); err != nil {
 		t.Fatalf("PostMessage unretained: %v", err)
 	}
-	for {
+	var foundCursorAdvance, foundRoomActivity, foundViewerActivity bool
+	for !foundCursorAdvance || !foundRoomActivity || !foundViewerActivity {
 		frame, ok := readRealtimeServerFrame(t, conn, 5*time.Second)
 		if !ok {
-			t.Fatal("timed out waiting for unretained cursor advance")
+			t.Fatalf("timed out waiting for unretained updates: cursor=%v room_activity=%v viewer_activity=%v", foundCursorAdvance, foundRoomActivity, foundViewerActivity)
 		}
 		projection := frame.GetProjectionEvent()
-		if projection == nil || projection.GetResumeCursor() == "" {
+		if projection == nil {
 			continue
 		}
-		foundRoomSummary := false
-		foundRoomActivity := false
+		foundCursorAdvance = foundCursorAdvance || projection.GetResumeCursor() != ""
 		for _, operation := range projection.GetOperations() {
-			if operation.GetRoomTimelineEventUpsert() != nil || operation.GetRoomTimelineEventRemove() != nil || operation.GetRoomTimelineReplace() != nil {
-				t.Fatalf("unretained projection leaked timeline operation: %+v", operation)
+			if projection.GetResumeCursor() != "" {
+				if operation.GetRoomTimelineEventUpsert() != nil || operation.GetRoomTimelineEventRemove() != nil || operation.GetRoomTimelineReplace() != nil {
+					t.Fatalf("unretained projection leaked timeline operation: %+v", operation)
+				}
+				if operation.GetRoomUpsert() != nil {
+					t.Fatalf("unretained message retransmitted its room summary: %+v", operation)
+				}
+				if operation.GetRoomViewerStateReplace() != nil || operation.GetRoomViewerActivityReplace() != nil {
+					t.Fatalf("message projection retransmitted viewer state: %+v", operation)
+				}
 			}
-			room := operation.GetRoomUpsert().GetRoom().GetRoom()
-			foundRoomSummary = foundRoomSummary || room.GetId() == otherRoom.Id
 			foundRoomActivity = foundRoomActivity || operation.GetRoomActivity().GetRoomId() == otherRoom.Id
+			viewerActivity := operation.GetRoomViewerActivityReplace()
+			foundViewerActivity = foundViewerActivity || (viewerActivity.GetRoomId() == otherRoom.Id && !viewerActivity.GetHasUnread())
 		}
-		if !foundRoomSummary {
-			t.Fatal("unretained message did not refresh its lightweight room summary")
-		}
-		if !foundRoomActivity {
-			t.Fatal("unretained root message did not emit lightweight room activity")
-		}
-		break
 	}
 
 	sendRealtimeClientFrame(t, conn, &realtimev1.RealtimeClientFrame{Frame: &realtimev1.RealtimeClientFrame_HydrateRoom{
@@ -2366,8 +2440,8 @@ func TestRealtimeProjectionBadgeReplacesRoomThreadAndRetainedRoot(t *testing.T) 
 	}
 	var roomUnread, hasThreadReplacement, hasRootUpsert bool
 	for _, operation := range frame.GetProjectionEvent().GetOperations() {
-		if replacement := operation.GetRoomViewerStateReplace(); replacement != nil {
-			roomUnread = replacement.GetViewerState().GetHasUnread()
+		if replacement := operation.GetRoomViewerActivityReplace(); replacement != nil {
+			roomUnread = replacement.GetHasUnread()
 		}
 		if replacement := operation.GetThreadViewerStatesReplace(); replacement != nil {
 			hasThreadReplacement = true
@@ -2457,7 +2531,7 @@ func TestRealtimeProjectionRefreshesSearchForEveryEditedOrRetractedMessage(t *te
 	}
 }
 
-func TestRealtimeProjectionRoomReadReplacesOnlyThatRoomViewerState(t *testing.T) {
+func TestRealtimeProjectionRoomReadReplacesOnlyThatRoomViewerActivity(t *testing.T) {
 	env := setupWebSocketTestServer(t)
 	viewer, err := env.core.CreateUser(env.ctx, core.SystemActorID, "rt-read-viewer", "RT Read Viewer", "password123")
 	if err != nil {
@@ -2499,10 +2573,10 @@ func TestRealtimeProjectionRoomReadReplacesOnlyThatRoomViewerState(t *testing.T)
 	}
 	operations := frame.GetProjectionEvent().GetOperations()
 	if len(operations) != 2 {
-		t.Fatalf("room-read operations = %d, want viewer-state and notification replacements", len(operations))
+		t.Fatalf("room-read operations = %d, want viewer-activity and notification replacements", len(operations))
 	}
-	replacement := operations[0].GetRoomViewerStateReplace()
-	if replacement.GetRoomId() != room.Id || replacement.GetViewerState().GetHasUnread() {
+	replacement := operations[0].GetRoomViewerActivityReplace()
+	if replacement.GetRoomId() != room.Id || replacement.GetHasUnread() {
 		t.Fatalf("room-read replacement = %+v, want room %q with has_unread=false", replacement, room.Id)
 	}
 	if notifications := operations[1].GetNotificationOccurrencesReplace(); notifications == nil {
@@ -3745,7 +3819,7 @@ func TestRealtimeWebSocketResumesAssetAndHiddenEchoGapThenContinuesLive(t *testi
 			if operation.GetViewerUpsert() != nil {
 				viewerReconciliations++
 			}
-			if operation.GetRoomViewerStateReplace() != nil {
+			if operation.GetRoomViewerActivityReplace() != nil {
 				roomViewerReconciliations++
 			}
 			if operation.GetThreadViewerStatesReplace() != nil {

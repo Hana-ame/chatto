@@ -17,7 +17,23 @@ on:
 concurrency:
   # PRs share a group so superseded revisions are cancelled. Pushes use their
   # immutable commit SHA so every main commit can publish an image.
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  #
+  # 【本地改动 2026-08-30】push main 时组名改为 main-release,与
+  # .github/workflows/build-linux.yml(build-release)的 concurrency 组同名,让两个
+  # workflow 不会在同一个 commit 上并行跑。
+  # 【目的】build-release 的 Test CLI 步骤是发布闸门,ci.yml 的完整矩阵与它并行时会把
+  # 测试挤到超时(实测 4 个 upstream 测试在 30.03s / 10.06s 处 context deadline
+  # exceeded),闸门被误拦,挡住真实发布。
+  # 【思路】concurrency 组是仓库级的,同名即互斥;两边必须同时改才生效,所以本 fork 改动
+  # 才会出现在上游的 ci.yml 里。除本行外未动 ci.yml 任何其他内容。
+  # 【踩坑】不能只写 github.ref == 'refs/heads/main':PR 的 head 分支恰好叫 main 时
+  # github.ref 也是 refs/heads/main,会把 PR 拽进 main-release 组、和 build-release
+  # 互斥。故额外要求 github.event_name != 'pull_request'。
+  # 【边界】release-* push 与 PR 保持原有的 ci-<sha> / ci-<PR号> 语义不变;
+  # cancel-in-progress 仍只作用于 PR,串行化后两者都是 false,不会互相取消。
+  # 表达式必须写成单行:用 >- 折行时若第二行缩进多于块缩进,YAML 会把换行保留为字面
+  # 换行符,group 值里就带进了真实换行,依赖 GitHub 对多行表达式的容错,不划算。
+  group: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && 'main-release' || format('{0}-{1}', github.workflow, github.event.pull_request.number || github.sha) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:

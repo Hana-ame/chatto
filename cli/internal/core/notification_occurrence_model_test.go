@@ -104,40 +104,41 @@ func TestNotificationOccurrenceLifecycleUsesStreamFacts(t *testing.T) {
 	}
 }
 
-// 【本地改动 28ba8cddd】2026-08-30 发现背景：cloudcone 生产日志从 2026-08-27 起每分钟
-// 重复 "Notification signal physical deletion will retry … code=400
-// err_code=10043 sequence N not found"。信号消息已按 TTL 过期被 NATS 移除后，
-// cleanupDismissedSignals 的 SecureDeleteMsg 返回该错误，本应被
-// notificationSignalAlreadyAbsent 判定为"已不存在"而跳过，但 nats.go 的
-// deleteMsg 只把预制 ErrMsgDeleteUnsuccessful 用 %w 放上 error 链，APIError
-// （含 err_code）用 %s 拼成文本，errors.As 拿不到 APIError()，导致 10043
-// 分支永不命中，删除请求每分钟重试直到 tombstone 过期。修复：在 error 链之外
-// 再从 "nats: API error: code=… err_code=N" 稳定文本提取 err_code 判定。
-// 本测试用与 nats.go deleteMsg 完全一致的错误构造（%w + %s）复现该场景。
-func TestNotificationSignalDeleteAlreadyAbsentRecognizesWrappedCode(t *testing.T) {
-	// nats.go stream.deleteMsg 的失败构造：fmt.Errorf("%w: %s",
-	// ErrMsgDeleteUnsuccessful, apiErr.Error())。
-	wrapped := func(code jetstream.ErrorCode) error {
-		apiErr := &jetstream.APIError{Code: 400, ErrorCode: code, Description: "sequence 11 not found"}
-		return fmt.Errorf("%w: %s", jetstream.ErrMsgDeleteUnsuccessful, apiErr.Error())
+// 【本地改动 28ba8cddd，2026-08-31 合并 upstream #2258 后更新】发现背景：
+// cloudcone 生产日志从 2026-08-27 起每分钟重复 "Notification signal physical
+// deletion will retry … code=400 err_code=10043 sequence N not found"。信号
+// 消息已按 TTL 过期被 NATS 移除后，cleanupDismissedSignals 的 SecureDeleteMsg
+// 返回该错误，本应被 notificationSignalAlreadyAbsent 判定为"已不存在"而跳过，
+// 但 nats.go 的 deleteMsg 只把预制 ErrMsgDeleteUnsuccessful 用 %w 放上 error
+// 链，APIError（含 err_code）用 %s 拼成文本，errors.As 拿不到 APIError()，
+// 导致 10043 分支永不命中，删除请求每分钟重试直到 tombstone 过期。
+// 修复演进：28ba8cddd 最初在 error 链之外用正则从 "nats: API error:
+// code=… err_code=N" 稳定文本提取 err_code 判定；2026-08-31 合并 upstream
+// #2258 时用户决策改用上游方案——删除失败后 GetMsg 同一 seq 复查（见
+// notification_occurrence_model.go 的 secureDeleteNotificationSignal），
+// SecureDeleteMsg 的错误不再直接判定，正则兜底随合并删除。GetMsg 复查的
+// absent 是干净的 ErrMsgNotFound/APIError 链，errors.Is/errors.As 两路即足够。
+// 本测试现只覆盖该复查路径的判定：干净错误链命中、无关错误码与瞬时错误
+// 保持可重试（原来模拟 SecureDeleteMsg 文本拼接的 wrapped 用例已删除）。
+func TestNotificationSignalAlreadyAbsentRecognizesCleanErrorChain(t *testing.T) {
+	// 第一路：errors.Is 直接命中 ErrMsgNotFound（GetMsg 复查的典型 absent 形态）。
+	if !notificationSignalAlreadyAbsent(jetstream.ErrMsgNotFound) {
+		t.Fatalf("bare ErrMsgNotFound must count as already absent")
 	}
-	if !notificationSignalAlreadyAbsent(wrapped(10043)) {
-		t.Fatalf("SecureDeleteMsg-style wrapped err_code=10043 must count as already absent")
-	}
-	if !notificationSignalAlreadyAbsent(wrapped(10057)) {
-		t.Fatalf("SecureDeleteMsg-style wrapped err_code=10057 must count as already absent")
-	}
-	// APIError 真正在 error 链上时（非 SecureDeleteMsg 路径）也应命中。
+	// 第二路：errors.As 命中 JetStream APIError，10043/10057 均为 absent。
 	if !notificationSignalAlreadyAbsent(fmt.Errorf("outer: %w", &jetstream.APIError{Code: 400, ErrorCode: 10043, Description: "sequence 11 not found"})) {
-		t.Fatalf("directly wrapped err_code=10043 must count as already absent")
+		t.Fatalf("wrapped err_code=10043 APIError must count as already absent")
+	}
+	if !notificationSignalAlreadyAbsent(fmt.Errorf("outer: %w", &jetstream.APIError{Code: 400, ErrorCode: 10057, Description: "message 11 not found"})) {
+		t.Fatalf("wrapped err_code=10057 APIError must count as already absent")
 	}
 	// 无关的 broker 错误码必须保持"可重试"，不能误判为已消失。
-	if notificationSignalAlreadyAbsent(wrapped(10071)) {
+	if notificationSignalAlreadyAbsent(fmt.Errorf("outer: %w", &jetstream.APIError{Code: 400, ErrorCode: 10071, Description: "sequence 11 is gone from the wrong stream"})) {
 		t.Fatalf("unrelated broker error must stay retryable")
 	}
-	// 没有 API error 文本的瞬时错误（网络/超时）必须保持"可重试"。
+	// 没有 API error 的瞬时错误（网络/超时）必须保持"可重试"。
 	if notificationSignalAlreadyAbsent(fmt.Errorf("nats: message deletion unsuccessful: nats: connection refused")) {
-		t.Fatalf("transient failure without API error text must stay retryable")
+		t.Fatalf("transient failure must stay retryable")
 	}
 }
 

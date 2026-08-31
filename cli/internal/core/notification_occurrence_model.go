@@ -7,9 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"hmans.de/chatto/internal/pb/chatto/core/notification/v1"
-	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -272,7 +270,15 @@ const (
 // 稳定的 "nats: API error: code=… err_code=N" 文本里提取 err_code 兜底。
 // 影响范围：只影响已不存在消息的删除判定路径；真正的瞬时错误（网络、超时）
 // 不含该文本，仍按失败重试。
-var notificationSignalDeleteAbsentCode = regexp.MustCompile(`nats: API error: code=\d+ err_code=(\d+)`)
+// 【合并后状态 2026-08-31 取舍更新】28ba8cddd 的文本提取兜底当初服务于
+//「直接判定 SecureDeleteMsg 的错误」这条路径（当时 cleanupDismissedSignals
+// 内联 switch 把 SecureDeleteMsg 的 err 喂给本函数）。合并 upstream #2258
+// 后删除+确认改由 secureDeleteNotificationSignal 承担（删失败→GetMsg 同一
+// seq 复查），SecureDeleteMsg 的错误不再直接判定，本函数只剩 GetMsg 复查
+// 这一个调用点；GetMsg 的 absent 是干净的 ErrMsgNotFound/APIError 链，
+// errors.Is/errors.As 两路即足够（上游仓库无文本提取、其自带重启收敛用例
+// CI 全绿证实）。因此正则兜底已删除，完全对齐上游。上文注释保留为线上
+// 事故的历史记录。
 
 func notificationSignalAlreadyAbsent(err error) bool {
 	if errors.Is(err, jetstream.ErrMsgNotFound) {
@@ -285,18 +291,14 @@ func notificationSignalAlreadyAbsent(err error) bool {
 			return true
 		}
 	}
-	// SecureDeleteMsg 的失败信息把 APIError 拼成了文本（见本函数下方【本地改动 28ba8cddd 注释】），
-	// error 链里够不到 err_code，这里从稳定文本提取后与同一组错误码比较。
-	// 【本地改动 2026-08-31 合并 upstream #2258】本条只负责「识别错误码是否为
+	// 【本地改动 2026-08-31 合并 upstream #2258】本函数只负责「识别错误码是否为
 	// absent」；「是否真的不存在」的二次确认由 secureDeleteNotificationSignal
 	// 完成：删除失败后再 GetMsg 同一 seq，报 absent 才视为已不存在、可标
-	// cleaned（跟随上游方案；fork 先前的 StreamInfo 区间确认已随合并删除）。
-	if match := notificationSignalDeleteAbsentCode.FindStringSubmatch(err.Error()); match != nil {
-		code, convErr := strconv.Atoi(match[1])
-		if convErr == nil && (code == jetStreamMessageNotFoundErrorCode || code == jetStreamSequenceNotFoundErrorCode) {
-			return true
-		}
-	}
+	// cleaned（跟随上游方案）。28ba8cddd 的正则文本提取兜底原服务于「直接
+	// 判定 SecureDeleteMsg 错误」路径，合并后该路径已不存在（见上方
+	// 【合并后状态】注释），GetMsg 复查的 absent 是干净的
+	// ErrMsgNotFound/APIError 链，errors.Is/errors.As 两路即足够——
+	// 正则兜底已删除，本函数与上游 #2258 完全一致。
 	return false
 }
 

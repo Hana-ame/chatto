@@ -214,31 +214,19 @@ func (m *NotificationOccurrenceModel) cleanupDismissedSignals(ctx context.Contex
 		if cleaned {
 			continue
 		}
-		err := m.stream.SecureDeleteMsg(ctx, tombstone.signalSequence)
-		switch {
-		case err == nil:
-			// 删除成功：信号确实存在且已被移除，可以标 cleaned。
-		case notificationSignalAlreadyAbsent(err):
-			// 【本地改动 2026-08-31】错误码（10043/10057）说"消息已不存在"时，
-			// 不能只信错误码就直接标 cleaned——"暂时 not found ≠ 永久不存在"：
-			// 嵌入式 NATS 在恢复重放/压缩窗口内，对仍存在的消息也会临时报
-			// not found（索引尚未加载完）。若此时标 cleaned，该信号会被永久漏删
-			// （tombstone 不再重试），残留为幽灵记录。
-			// 加固：再查一次 StreamInfo 确认该 seq 确实已滚出存活区间
-			// （seq < FirstSeq）才视为不存在；若 seq 仍在 FirstSeq..LastSeq 内
-			// （= 消息其实还在 stream 里，只是临时查不到），就不能标 cleaned，
-			// 按失败退回重试——fail closed，宁可多等一轮也不漏删。
-			// 【影响范围】只影响"错误码报 absent"这条路径；正常删除成功/真·瞬时
-			// 错误（网络、超时）不受影响。额外成本：仅 not-found 类错误才触发
-			// 一次 StreamInfo 查询，稳态下几乎为 0（线上 28ba8cddd 后该错误已归零）。
-			if !m.signalSequenceGoneFromStream(ctx, tombstone.signalSequence) {
-				m.logger.Warn("Notification signal absent by error code but still within stream range; will retry",
-					"notification_id", notificationID,
-					"signal_sequence", tombstone.signalSequence,
-					"error", err)
-				continue
-			}
-		default:
+		// 【本地改动 2026-08-31 合并 upstream #2258】采用上游把删除+absent 确认
+		// 封装进 secureDeleteNotificationSignal 的写法（本 fork 原内联 switch 的
+		// 逻辑并入该方法），确认手段跟随上游：删除失败后 GetMsg 该 seq，
+		// 报 absent（10043/10057 等）即视为已不存在，可安全标 cleaned。
+		// 取舍记录：本 fork 此前曾实现「StreamInfo 存活区间（seq < FirstSeq）
+		// 二次确认 + fail-closed」的加固（commit 6484b49d2），2026-08-31 合并
+		// upstream 时用户决策改为跟随上游 #2258 的 GetMsg 确认方案——上游方案
+		// 语义：删除失败本身就是「消息不在活跃索引」的强信号，再用 GetMsg 独立
+		// 复查同一 seq 确认 absent，能同时覆盖多副本/重启后 cleaned 缓存丢失的
+		// 收敛（上游有对应重启用例）。原 StreamInfo 区间方法
+		// （signalSequenceGoneFromStream / notificationSignalGoneFromStreamRange）
+		// 及其单测已随本次合并删除。
+		if err := m.secureDeleteNotificationSignal(ctx, tombstone.signalSequence); err != nil {
 			m.logger.Warn("Notification signal physical deletion will retry", "notification_id", notificationID, "error", err)
 			continue
 		}
@@ -246,6 +234,23 @@ func (m *NotificationOccurrenceModel) cleanupDismissedSignals(ctx context.Contex
 		m.cleaned[tombstone.signalSequence] = tombstone.expiresAt.Add(notificationPhysicalCleanupGrace)
 		m.cleanedMu.Unlock()
 	}
+}
+
+// secureDeleteNotificationSignal makes physical cleanup idempotent across
+// replicas and process restarts. nats.go can hide the structured "not found"
+// API error behind ErrMsgDeleteUnsuccessful, so a failed delete must confirm
+// the exact stream sequence before it is safe to retry.
+func (m *NotificationOccurrenceModel) secureDeleteNotificationSignal(ctx context.Context, sequence uint64) error {
+	deleteErr := m.stream.SecureDeleteMsg(ctx, sequence)
+	if deleteErr == nil {
+		return nil
+	}
+	if _, lookupErr := m.stream.GetMsg(ctx, sequence); notificationSignalAlreadyAbsent(lookupErr) {
+		return nil
+	} else if lookupErr != nil {
+		return errors.Join(deleteErr, fmt.Errorf("confirm notification signal absence: %w", lookupErr))
+	}
+	return deleteErr
 }
 
 // NATS does not currently expose these server API error codes as Go constants.
@@ -282,12 +287,10 @@ func notificationSignalAlreadyAbsent(err error) bool {
 	}
 	// SecureDeleteMsg 的失败信息把 APIError 拼成了文本（见本函数下方【本地改动 28ba8cddd 注释】），
 	// error 链里够不到 err_code，这里从稳定文本提取后与同一组错误码比较。
-	// 【本地改动 2026-08-31】注意：仅凭错误码报 absent 还不够——「暂时 not found
-	// ≠ 永久不存在」。真正的二次确认由方法 signalSequenceGoneFromStream（定义在
-	// 本函数之后）用 StreamInfo 的 FirstSeq..LastSeq 存活区间完成：标 cleaned 前
-	// 先确认目标 seq 已滚出保留范围，防止嵌入式 NATS 恢复窗口内的暂时 not found
-	// 被误判为永久消失而漏删。fail-closed：StreamInfo 查询失败返回 false，
-	// 不标 cleaned、退回重试。见 cleanupDismissedSignals 的错误码 absent 分支。
+	// 【本地改动 2026-08-31 合并 upstream #2258】本条只负责「识别错误码是否为
+	// absent」；「是否真的不存在」的二次确认由 secureDeleteNotificationSignal
+	// 完成：删除失败后再 GetMsg 同一 seq，报 absent 才视为已不存在、可标
+	// cleaned（跟随上游方案；fork 先前的 StreamInfo 区间确认已随合并删除）。
 	if match := notificationSignalDeleteAbsentCode.FindStringSubmatch(err.Error()); match != nil {
 		code, convErr := strconv.Atoi(match[1])
 		if convErr == nil && (code == jetStreamMessageNotFoundErrorCode || code == jetStreamSequenceNotFoundErrorCode) {
@@ -295,40 +298,6 @@ func notificationSignalAlreadyAbsent(err error) bool {
 		}
 	}
 	return false
-}
-
-// 【本地改动 2026-08-31】signalSequenceGoneFromStream 用 StreamInfo 的
-// FirstSeq..LastSeq 存活区间来确认目标信号序列是否真的已滚出保留范围。
-// 这是「错误码报 absent」判定的二次确认（见上方 notificationSignalAlreadyAbsent
-// 的注释）：防止把嵌入式 NATS 恢复窗口内的「暂时 not found」误当「永久不存在」
-// 而漏删（tombstone 一旦标 cleaned 就不再重试，漏删即永久残留）。
-// 调用方：cleanupDismissedSignals 的错误码 absent 分支。
-// fail-closed：StreamInfo 查询本身失败（网络/超时）时返回 false —— 视为
-// 「无法确认已消失」，不标 cleaned，退回下一轮重试。宁可多等一轮也不漏删。
-// 影响范围：仅被 cleanupDismissedSignals 的错误码 absent 分支调用；正常删除
-// 成功路径与真·瞬时错误路径不经过这里。
-// 额外成本：仅 not-found 类错误才触发一次 StreamInfo 查询；线上 28ba8cddd 后
-// 该错误已归零，稳态下几乎无开销。
-func (m *NotificationOccurrenceModel) signalSequenceGoneFromStream(ctx context.Context, sequence uint64) bool {
-	info, err := m.stream.Info(ctx)
-	if err != nil {
-		/* 【本地改动 2026-08-31】查不到 stream 信息 = 无法证明该序列已滚出，
-		按不存在性未知处理（fail closed），宁可下一轮再查也不标 cleaned。 */
-		m.logger.Warn("Notification signal existence check failed; will retry",
-			"signal_sequence", sequence, "error", err)
-		return false
-	}
-	return notificationSignalGoneFromStreamRange(info, sequence)
-}
-
-// notificationSignalGoneFromStreamRange 是 signalSequenceGoneFromStream 的纯判定
-// 部分，与 stream 无关，便于单测直接构造 StreamInfo 覆盖区间语义。
-// 【本地改动 2026-08-31】存活区间为 [FirstSeq, LastSeq]；目标 seq 小于
-// FirstSeq 才意味着已被 retention 移除，才可视为永久不存在。
-// 注意：seq 在区间内（FirstSeq..LastSeq）时绝不能标 cleaned——那只是暂时
-// 查不到，不是消失。
-func notificationSignalGoneFromStreamRange(info *jetstream.StreamInfo, sequence uint64) bool {
-	return sequence < info.State.FirstSeq
 }
 
 func notificationOccurrenceID(recipientID, sourceEventID, signalKind string) string {

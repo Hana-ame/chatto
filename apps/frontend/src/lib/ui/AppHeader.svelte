@@ -6,7 +6,7 @@
   import { getActiveServer } from '$lib/state/activeServer.svelte';
   import { serverIdToSegment } from '$lib/navigation';
   import { version } from '$app/environment';
-  import { quickSwitcher } from '$lib/state/globals.svelte';
+  import { sidebarNav, quickSwitcher } from '$lib/state/globals.svelte';
   import { m } from '$lib/i18n/messages';
   import UnreadDot from '$lib/ui/UnreadDot.svelte';
   import MotdContent from '$lib/ui/MotdContent.svelte';
@@ -53,8 +53,19 @@
 <header class="app-header flex items-center justify-between gap-2 p-2 text-muted md:text-sm">
   <!-- Leading: global navigation, notifications, and client-wide actions -->
   <div class="flex items-center gap-3">
-    <!-- Server Gutter / 左侧服务器图标列已移除（【本地改动 2026-09-01】）；
-         hamburger 按钮随之删除。服务器切换改由 quick-switcher 或 URL 完成。 -->
+    <!-- Hamburger - 44px tap target for mobile accessibility. 打开的是
+         房间列表侧栏（ServerSidebar），与左侧服务器图标列无关；
+         后者由 MobileSidebarChrome 隐藏（【本地改动 2026-09-01】）。 -->
+    <button
+      type="button"
+      class="app-header-icon"
+      onclick={() => sidebarNav.toggle()}
+      aria-label={m('ui.toggle_sidebar')}
+      aria-expanded={sidebarNav.isOpen}
+      title={m('ui.toggle_sidebar')}
+    >
+      <span class="iconify icon-[uil--bars] text-xl"></span>
+    </button>
 
     {#if hasInstances}
       <!-- Notification bell - 44px tap target for mobile accessibility -->

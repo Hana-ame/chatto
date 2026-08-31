@@ -1,7 +1,7 @@
 # FDR-019: Room Lifecycle
 
 **Status:** Active
-**Last reviewed:** 2026-08-27
+**Last reviewed:** 2026-08-30
 
 ## Overview
 
@@ -9,9 +9,9 @@ A channel room goes through a lifecycle of create, edit, archive, unarchive, and
 
 ## Behavior
 
-- **Create** — server admins (or anyone with `room.create` in the target group) create a channel room by giving it a visible 1–30-code-point Unicode name, an optional description, a room group, and the desired Threading Mode, with Enabled as the default. They may also enable Universal. Names are unique across the server after Unicode compatibility normalization and full case folding.
+- **Create** — server admins (or anyone with `room.create` in the target group) can start room creation from that group in the sidebar. They give the channel a visible 1–30-code-point Unicode name, an optional description, a room group, and the desired Threading Mode, with Enabled as the default. They may also enable Universal. Names are unique across the server after Unicode compatibility normalization and full case folding.
 - **Edit** — `room.manage` holders can change the name, description, group, Universal setting, Threading Mode, and explicit member set of an existing channel room.
-- **Settings access** — a joined room's context menu links `room.manage` holders directly to that room's management page. Effective `room.manage` holders can change general settings; server-wide `role.manage` holders can configure the room's role permission matrix without receiving general room-management authority. The management read can load private-room metadata for either capability and is deliberately separate from the visibility-gated room directory.
+- **Settings access** — a visible room's sidebar action menu links `room.manage` holders directly to that room's management page and lets them start the archive flow. Effective `room.manage` holders can change general settings; server-wide `role.manage` holders can configure the room's role permission matrix without receiving general room-management authority. The management read can load private-room metadata for either capability and is deliberately separate from the visibility-gated room directory.
 - **Display** — when set, the optional description appears after the channel room name in the desktop room pane header.
 - **Join preview** — a non-member who is allowed to list and join a visible channel room sees its group, description, exact effective member count, and up to five member identities before joining. Messages, files, and activity remain hidden. A user who cannot join sees only the access-denied state.
 - **Universal** — a channel room with Universal enabled behaves as joined for every server member who is currently eligible to join it. The system does not fan out `UserJoinedRoomEvent` facts for implicit membership. Existing explicit memberships remain intact, so disabling Universal restores the prior explicit membership set.
@@ -25,7 +25,7 @@ A channel room goes through a lifecycle of create, edit, archive, unarchive, and
 - **Unarchive** — same permission, flips the flag back. The room reappears in the sidebar and discovery surfaces.
 - **Manage members** — `room.manage` holders can list, inspect, add, or remove members of channel rooms, including when they are not themselves members or eligible to join. Adding can bring a user into a private room even when that user could not self-join through `room.join`. Active room bans still block adding; the user must be unbanned first. DM membership remains visible only to its participants.
 - **Ban member** — `room.ban-member` holders can ban a user from a channel room with a required reason and optional expiry. The banned user loses room read/write/live access immediately and cannot rejoin until the ban is removed or expires.
-- **Delete** — `room.manage` appends `RoomDeletedEvent` to `EVT`, releases the room from its group layout, and causes projections to remove the room from the catalog and memberships.
+- **Delete** — `room.manage` commits `RoomDeletedEvent` and the room-group removal in one atomic EVT batch. Projections remove the room from the catalog and memberships.
 - Leaving, removal, a room ban, loss of Universal eligibility, a group move, or
   an RBAC change removes notification occurrences the user can no longer see.
   Room deletion removes all occurrences targeting that room. A durable
@@ -43,7 +43,7 @@ A channel room goes through a lifecycle of create, edit, archive, unarchive, and
 
 ### 2. Every channel room belongs to exactly one group
 
-**Decision:** `groupID` is non-nullable on channel rooms. The public create-room API requires an explicit `groupId`; lower-level bootstrap/import paths may still pass an empty group ID to fall back to the seed room group while constructing first-boot state.
+**Decision:** `groupID` is non-nullable on channel rooms. The public create-room API requires an explicit `groupId`; lower-level bootstrap/import paths may still pass an empty group ID to fall back to the seed room group while constructing first-boot state. Room creation commits the room fact and initial group-membership fact in one atomic EVT batch.
 **Why:** Optional grouping means an "unsorted" branch in the permission resolver and sidebar layout — extra cases that nobody actually wants. Requiring a group simplifies the resolver and gives operators a consistent unit of permission scope. See ADR-031 and FDR-017.
 **Tradeoff:** Bulk room creation tools need to know which group to drop rooms into. The API surfaces a clear error if `groupID` is missing.
 
@@ -57,7 +57,7 @@ members; active-room discovery filters on `archived: false`.
 
 ### 4. Delete is a durable tombstone
 
-**Decision:** Deleting a room appends a durable `RoomDeletedEvent` to `EVT`. Projections remove the room from user-visible catalogs and membership state; historical facts remain in the event log.
+**Decision:** Deleting a room appends a durable `RoomDeletedEvent` and, for a grouped channel room, `RoomRemovedFromGroupEvent` in one atomic EVT batch. Projections remove the room from user-visible catalogs, room-group layout, and membership state; historical facts remain in the event log.
 **Why:** `EVT` is both source of truth and audit log. Purging the room's event history would destroy the forensic trail and make replay semantics dependent on destructive stream operations.
 **Tradeoff:** Deleted-room history still consumes storage. User-visible reads must consistently respect the tombstone.
 
@@ -135,5 +135,5 @@ operations. This follows the authoritative realtime pattern in ADR-051.
 
 ## Related
 
-- **ADRs:** ADR-031 (room-group-centric ACL), ADR-033 (event-sourced state with projections), ADR-035 (per-aggregate phased migration), ADR-076 (notification occurrences), ADR-077 (persistent notification list)
+- **ADRs:** ADR-031 (room-group-centric ACL), ADR-033 (event-sourced state with projections), ADR-035 (per-aggregate phased migration), ADR-076 (notification occurrences), ADR-077 (persistent notification list), ADR-086 (atomic room-layout structural mutations)
 - **FDRs:** FDR-001 (Roles & Permissions), FDR-002 (Replies & Threads), FDR-007 (Direct Messages), FDR-012 (Notifications), FDR-017 (Room Groups & Sidebar Layout)

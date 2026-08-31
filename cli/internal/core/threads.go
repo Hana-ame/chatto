@@ -20,22 +20,25 @@ import (
 
 // ThreadMetadata contains existence and display metadata for a thread.
 type ThreadMetadata struct {
-	Exists         bool
-	ReplyCount     int
-	LastReplyAt    *time.Time
-	ParticipantIDs []string
+	Exists             bool
+	ReplyCount         int
+	LastReplyAt        *time.Time
+	LatestReplyEventID string
+	ParticipantIDs     []string
 }
 
 // FollowedThread represents a thread the user is following, enriched with metadata for display.
 type FollowedThread struct {
-	SpaceID           string
-	RoomID            string
-	ThreadRootEventID string
-	Exists            bool
-	ReplyCount        int
-	LastReplyAt       *time.Time
-	ParticipantIDs    []string
-	HasUnread         bool
+	SpaceID            string
+	RoomID             string
+	ThreadRootEventID  string
+	Exists             bool
+	ReplyCount         int
+	LastReplyAt        *time.Time
+	ActivityAt         *time.Time
+	ParticipantIDs     []string
+	LatestReplyEventID string
+	HasUnreadReplies   bool
 }
 
 // FollowedThreadsPage is a paginated set of followed threads with the total
@@ -646,15 +649,23 @@ func (c *ChattoCore) ListFollowedThreadsPage(ctx context.Context, userID string,
 		allThreads = append(allThreads, threads...)
 	}
 
-	// Sort by LastReplyAt descending (newest first), nil values last
+	// Sort by displayed activity descending. A root without replies is still
+	// activity and must not fall behind older conversations merely because its
+	// LastReplyAt is empty. The identity tie-break keeps offset pages stable.
 	sort.Slice(allThreads, func(i, j int) bool {
-		if allThreads[i].LastReplyAt == nil {
+		if allThreads[i].ActivityAt == nil && allThreads[j].ActivityAt == nil {
+			return followedThreadSortKey(allThreads[i]) < followedThreadSortKey(allThreads[j])
+		}
+		if allThreads[i].ActivityAt == nil {
 			return false
 		}
-		if allThreads[j].LastReplyAt == nil {
+		if allThreads[j].ActivityAt == nil {
 			return true
 		}
-		return allThreads[i].LastReplyAt.After(*allThreads[j].LastReplyAt)
+		if allThreads[i].ActivityAt.Equal(*allThreads[j].ActivityAt) {
+			return followedThreadSortKey(allThreads[i]) < followedThreadSortKey(allThreads[j])
+		}
+		return allThreads[i].ActivityAt.After(*allThreads[j].ActivityAt)
 	})
 
 	totalCount := len(allThreads)
@@ -678,8 +689,8 @@ func (c *ChattoCore) ListFollowedThreadsPage(ctx context.Context, userID string,
 		pageThreads = allThreads[offset:]
 	}
 
-	for _, thread := range pageThreads {
-		thread.HasUnread = c.followedThreadHasUnread(ctx, userID, thread)
+	if err := c.hydrateFollowedThreadViewerStates(ctx, userID, pageThreads); err != nil {
+		return nil, err
 	}
 
 	return &FollowedThreadsPage{
@@ -737,19 +748,40 @@ func (c *ChattoCore) listFollowedThreadsInSpace(ctx context.Context, userID stri
 			c.logger.Warn("Failed to get thread metadata for followed thread", "error", err, "room_id", roomID, "thread_root_event_id", threadRootEventID)
 			continue
 		}
+		activityAt := metadata.LastReplyAt
+		if activityAt == nil {
+			root, err := c.GetRoomEventByEventID(ctx, kind, roomID, threadRootEventID)
+			if err != nil {
+				c.logger.Warn("Failed to get root activity for followed thread", "error", err, "room_id", roomID, "thread_root_event_id", threadRootEventID)
+				continue
+			}
+			if root != nil && root.GetCreatedAt() != nil {
+				at := root.GetCreatedAt().AsTime()
+				activityAt = &at
+			}
+		}
 
 		result = append(result, &FollowedThread{
-			SpaceID:           LegacySpaceIDForRoomKind(kind),
-			RoomID:            roomID,
-			ThreadRootEventID: threadRootEventID,
-			Exists:            metadata.Exists,
-			ReplyCount:        metadata.ReplyCount,
-			LastReplyAt:       metadata.LastReplyAt,
-			ParticipantIDs:    metadata.ParticipantIDs,
+			SpaceID:            LegacySpaceIDForRoomKind(kind),
+			RoomID:             roomID,
+			ThreadRootEventID:  threadRootEventID,
+			Exists:             metadata.Exists,
+			ReplyCount:         metadata.ReplyCount,
+			LastReplyAt:        metadata.LastReplyAt,
+			ActivityAt:         activityAt,
+			LatestReplyEventID: metadata.LatestReplyEventID,
+			ParticipantIDs:     metadata.ParticipantIDs,
 		})
 	}
 
 	return result, nil
+}
+
+func followedThreadSortKey(thread *FollowedThread) string {
+	if thread == nil {
+		return ""
+	}
+	return thread.RoomID + "\x00" + thread.ThreadRootEventID
 }
 
 // listFollowedThreadViewerStates is the strict counterpart used by complete
@@ -799,40 +831,33 @@ func (c *ChattoCore) listFollowedThreadViewerStates(ctx context.Context, userID 
 		if err != nil {
 			return nil, fmt.Errorf("read followed thread marker %s: %w", ref.threadRootEventID, err)
 		}
-		hasUnread := metadata.LastReplyAt != nil && (lastOpened.IsZero() || metadata.LastReplyAt.After(lastOpened))
-		badgeUnread, err := c.notificationOccurrences.HasNotificationUnread(ctx, userID, ref.roomID, ref.threadRootEventID)
-		if err != nil {
-			return nil, fmt.Errorf("read followed thread Badge state %s: %w", ref.threadRootEventID, err)
-		}
+		hasUnreadReplies := metadata.LastReplyAt != nil && (lastOpened.IsZero() || metadata.LastReplyAt.After(lastOpened))
 		result = append(result, &FollowedThread{
 			SpaceID: LegacySpaceIDForRoomKind(kind), RoomID: ref.roomID,
-			ThreadRootEventID: ref.threadRootEventID, Exists: metadata.Exists, HasUnread: hasUnread || badgeUnread,
+			ThreadRootEventID: ref.threadRootEventID, Exists: metadata.Exists,
+			HasUnreadReplies: hasUnreadReplies,
 		})
 	}
 	return result, nil
 }
 
-func (c *ChattoCore) followedThreadHasUnread(ctx context.Context, userID string, thread *FollowedThread) bool {
-	if thread == nil {
-		return false
+func (c *ChattoCore) hydrateFollowedThreadViewerStates(ctx context.Context, userID string, threads []*FollowedThread) error {
+	for _, thread := range threads {
+		if thread == nil || thread.LastReplyAt == nil {
+			continue
+		}
+		kind := RoomKindFromLegacySpaceID(thread.SpaceID)
+		lastOpened, err := c.GetThreadLastOpened(ctx, kind, userID, thread.RoomID, thread.ThreadRootEventID)
+		if err != nil {
+			return fmt.Errorf("read followed thread cursor %s: %w", thread.ThreadRootEventID, err)
+		}
+		thread.HasUnreadReplies = lastOpened.IsZero() || thread.LastReplyAt.After(lastOpened)
 	}
-	badgeUnread, err := c.notificationOccurrences.HasNotificationUnread(ctx, userID, thread.RoomID, thread.ThreadRootEventID)
-	if err != nil || badgeUnread {
-		return true
-	}
-	if thread.LastReplyAt == nil {
-		return false
-	}
-	kind := RoomKindFromLegacySpaceID(thread.SpaceID)
-	lastOpened, err := c.GetThreadLastOpened(ctx, kind, userID, thread.RoomID, thread.ThreadRootEventID)
-	if err != nil {
-		return true
-	}
-	return lastOpened.IsZero() || thread.LastReplyAt.After(lastOpened)
+	return nil
 }
 
 // HasUnreadFollowedThreads reports whether any followed thread has unread
-// replies without materializing the full followed-thread result.
+// replies without materializing the public result.
 func (c *ChattoCore) HasUnreadFollowedThreads(ctx context.Context, userID string, spaceIDs []string) (bool, error) {
 	for _, spaceID := range spaceIDs {
 		threads, err := c.listFollowedThreadsInSpace(ctx, userID, RoomKindFromLegacySpaceID(spaceID))
@@ -840,8 +865,11 @@ func (c *ChattoCore) HasUnreadFollowedThreads(ctx context.Context, userID string
 			c.logger.Warn("Failed to list followed threads for space", "space_id", spaceID, "error", err)
 			continue
 		}
+		if err := c.hydrateFollowedThreadViewerStates(ctx, userID, threads); err != nil {
+			return false, err
+		}
 		for _, thread := range threads {
-			if c.followedThreadHasUnread(ctx, userID, thread) {
+			if thread.HasUnreadReplies {
 				return true, nil
 			}
 		}

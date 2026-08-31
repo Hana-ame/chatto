@@ -271,9 +271,9 @@ cursors are trusted integration coordinates and are not public API cursors.
 | `evt.config.{subject}.server_logo_cleared`                   | `ServerLogoClearedEvent`                            |
 | `evt.config.{subject}.server_banner_set`                     | `ServerBannerSetEvent`                              |
 | `evt.config.{subject}.server_banner_cleared`                 | `ServerBannerClearedEvent`                          |
-| `evt.config.server.server_neighbor_created`                  | `ServerNeighborCreatedEvent`; creates one advertised Neighbor with an optional testimonial |
+| `evt.config.server.server_neighbor_created`                  | `ServerNeighborCreatedEvent`; creates one advertised Neighbor; the legacy testimonial field is ignored |
 | `evt.config.server.server_neighbor_origin_changed`           | `ServerNeighborOriginChangedEvent`; changes one advertised origin |
-| `evt.config.server.server_neighbor_testimonial_changed`      | `ServerNeighborTestimonialChangedEvent`; changes or clears one public testimonial |
+| `evt.config.server.server_neighbor_testimonial_changed`      | `ServerNeighborTestimonialChangedEvent`; legacy replay contract only; the text is ignored, but the event advances the Neighbor revision |
 | `evt.config.server.server_neighbor_deleted`                  | `ServerNeighborDeletedEvent`; removes one advertised Neighbor |
 | `evt.config.{subject}.user_timezone_changed`                 | `UserTimezoneChangedEvent`                          |
 | `evt.config.{subject}.user_timezone_cleared`                 | `UserTimezoneClearedEvent`                          |
@@ -298,8 +298,10 @@ cursors are trusted integration coordinates and are not public API cursors.
 | `evt.group.{groupId}.sidebar_entries_reordered`             | `SidebarGroupEntriesReorderedEvent`                 |
 | `evt.layout.default.groups_reordered`                        | `RoomGroupsReorderedEvent`                          |
 | `evt.user.{userId}.account_created`                         | `UserAccountCreatedEvent`                           |
-| `evt.user.{userId}.bot_api_key_created`                    | `BotApiKeyCreatedEvent`; HMAC verifier and issue timestamp, never the raw key |
-| `evt.user.{userId}.bot_api_key_rotated`                    | `BotApiKeyRotatedEvent`; replacement HMAC verifier and rotation timestamp |
+| `evt.user.{userId}.bot_api_key_created`                    | `BotApiKeyCreatedEvent`; initial stable key ID, manager-defined name, HMAC verifier, and issue timestamp, never the raw key. Historical events without ID or name project as the `legacy` default key |
+| `evt.user.{userId}.bot_api_key_added`                      | `BotApiKeyAddedEvent`; stable key ID, manager-defined name, HMAC verifier, and issue timestamp for one additional key |
+| `evt.user.{userId}.bot_api_key_revoked`                    | `BotApiKeyRevokedEvent`; key ID that invalidates only the selected verifier |
+| `evt.user.{userId}.bot_api_key_rotated`                    | Compatibility `BotApiKeyRotatedEvent`; historical replace-all verifier, or a targeted revocation fence with a revoked-key ID and an unissued verifier so an old binary cannot restore the revoked raw key. Current commands do not write replace-all rotations |
 | `evt.user.{userId}.bot_owner_reassigned`                   | `BotOwnerReassignedEvent`; previous and new human owner IDs, with no credential change |
 | `evt.user.{userId}.bot_incoming_webhook_enabled`           | `BotIncomingWebhookCreatedEvent`; stable webhook ID, manager-defined name, HMAC verifier, and creation timestamp, never the raw credential. The legacy `enabled` subject token remains stable |
 | `evt.user.{userId}.bot_incoming_webhook_rotated`           | Compatibility-only `BotIncomingWebhookRotatedEvent`; replacement HMAC verifier from the unreleased implementation. Current servers read but do not write this event |
@@ -336,6 +338,8 @@ cursors are trusted integration coordinates and are not public API cursors.
 | `evt.user.{userId}.bearer_token_revoked`                    | `BearerTokenRevokedEvent`                           |
 | `evt.user.{userId}.oauth_consent_granted`                   | `OAuthConsentGrantedEvent`                          |
 | `evt.user.{userId}.oauth_consent_denied`                    | `OAuthConsentDeniedEvent`                           |
+| `evt.user.{userId}.oauth_scoped_consent_granted`            | `OAuthScopedConsentGrantedEvent`; exact resource and scope grant that older projectors ignore |
+| `evt.user.{userId}.oauth_scoped_consent_denied`             | `OAuthScopedConsentDeniedEvent`                     |
 | `evt.rbac.{server\|scopeId}.role_created`                   | `RbacRoleCreatedEvent`                             |
 | `evt.rbac.{server\|scopeId}.role_display_name_changed`      | `RbacRoleDisplayNameChangedEvent`                  |
 | `evt.rbac.{server\|scopeId}.role_description_changed`       | `RbacRoleDescriptionChangedEvent`                  |
@@ -355,6 +359,15 @@ cursors are trusted integration coordinates and are not public API cursors.
 | `evt.invitation.{invitationId}.revoked`                    | `InvitationRevokedEvent`                            |
 
 Notes: Subject suffixes are stable NATS event tokens defined in [`cli/internal/evtstream/subjects.go`](../../cli/internal/evtstream/subjects.go). Protobuf message types are the concrete `evtv1.Event` oneof payloads defined in [`proto/chatto/core/evt/v1/event.proto`](../../proto/chatto/core/evt/v1/event.proto) and sibling `*_events.proto` files. The current asset write path uses `evt.asset.{assetId}.*`; `AssetProjection` also consumes beta-era `evt.room.{roomId}.asset_*` histories for replay compatibility.
+
+Room-layout structural commands use atomic EVT batches. Channel-room creation
+commits `RoomCreatedEvent` with `RoomAddedToGroupEvent`. Channel-room deletion
+commits `RoomDeletedEvent` with `RoomRemovedFromGroupEvent`. Room-group creation
+and deletion commit the group lifecycle fact with the resulting
+`RoomGroupsReorderedEvent`. Each batch guards every room, group, layout, and
+authorization boundary that its decision uses. Room moves also guard the
+room-deletion subject, so a concurrent delete cannot leave a stale group
+membership. See ADR-086.
 
 For every attachment message, its `AssetAttachedEvent` is committed in the same
 atomic OCC batch as the owning message body and posted fact. Video messages add
@@ -389,7 +402,7 @@ Patterns: `live.sync.>` for transient `LiveEvent` pubsub and `live.evt.>` for ra
 | `live.sync.config.server_updated`                        | Public server profile/config changed (name/MOTD/welcome/logo/banner/description) |
 | `live.sync.config.room_groups_updated`                   | Admin reordered the room sidebar / room-group layout |
 | `live.sync.user.{userId}.notification_v2`                | Notification occurrence created, triaged, removed, or delivery eligibility changed; triggers an authoritative occurrence/count replacement and can carry a best-effort local-sound candidate |
-| `live.sync.user.{userId}.notification_unread`            | Badge attention changed; triggers authoritative room viewer-state replacement and, for a thread marker, complete followed-thread viewer-state replacement |
+| `live.sync.user.{userId}.notification_unread`            | Badge attention changed; triggers authoritative room viewer-state replacement. A thread marker contributes to its parent room state |
 | `live.sync.user.{userId}.thread_follow_changed`          | Viewer's thread follow/unfollow toggled |
 | `live.sync.user.{userId}.settings_updated`               | Private user preferences, including the stored time zone and its sharing setting, changed |
 | `live.sync.user.{userId}.room_read`                      | Room marked as read          |

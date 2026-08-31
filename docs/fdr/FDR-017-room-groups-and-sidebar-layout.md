@@ -1,7 +1,7 @@
 # FDR-017: Room Groups & Sidebar Layout
 
 **Status:** Active
-**Last reviewed:** 2026-08-22
+**Last reviewed:** 2026-08-30
 
 ## Overview
 
@@ -9,15 +9,17 @@ Channel rooms are organized into **room groups** — named, ordered containers t
 
 ## Behavior
 
-- The sidebar shows `room.list`-visible channel rooms and sidebar links grouped under their group's name in operator-defined order. Groups can be collapsed/expanded. A viewer with effective group `room.manage` also sees a settings action on that group header, including when no rooms in the group are otherwise visible.
+- The sidebar shows `room.list`-visible channel rooms and sidebar links grouped under their group's name in operator-defined order. Groups can be collapsed or expanded. A viewer with effective group `room.manage` also sees group actions, including when no rooms in the group are otherwise visible.
+- Authorized viewers manage the layout where they use it. Group headers provide actions to create rooms and links, open group settings, or delete an empty group. Room and link rows provide their applicable settings, edit, archive, and delete actions. Server-wide room managers can create a group from a compact control after the last room group.
+- Explicit drag handles let authorized viewers reorder groups and move room or link entries within or between groups. Pointer-based layouts fade each drag handle in over the leading row icon. Touch layouts keep the controls visible.
 - Configured room groups, the alphabetical fallback used before a layout exists, and the Direct Messages section share the same sidebar heading, spacing, and collapse/expand interaction. This presentation does not make Direct Messages an operator-managed room group.
 - ConnectRPC `RoomDirectoryService.ListRoomGroups` exposes the same ordered sidebar structure for protobuf-first clients, filtering room entries to non-archived channel rooms visible to the viewer, preserving sidebar links, and reporting effective `room.create` and `room.manage` group capabilities in viewer state.
 - Joined channel rooms behave as normal navigation entries. Listable channel rooms the viewer has not joined yet are shown slightly faded; selecting a joinable room asks for confirmation before joining, while selecting a non-joinable room explains that access is not currently available.
 - Every visible sidebar room row exposes a context menu with a final “Copy Room ID” action that writes the room's stable ID to the clipboard. Successful copies are confirmed; clipboard failures report an error. Joined rooms offer unread and leave actions where applicable; non-member rooms offer Join, disabled when the viewer lacks `room.join`. Effective room `room.manage` holders also receive a settings action for channel rooms.
-- Server-wide room managers can create and reorder groups from the room-layout overview. Its edit action opens the room group's resource page in the shared management area. Effective group `room.manage` holders can edit or delete that group, while either they or server-wide `role.manage` holders can configure its role permission matrix.
+- The room-layout overview remains available as a management fallback while the sidebar gains feature parity. Resource settings pages remain the place for group metadata and permission matrices.
 - Group names are limited to 80 bytes; group descriptions are limited to 500 bytes.
 - Every channel room belongs to exactly one group. There's no "uncategorized" branch — room creation requires a group.
-- Sidebar links belong to exactly one group, carry a label and either an absolute `http`/`https` URL or a server-local path starting with `/`, and are visible to authenticated users who can see the server sidebar.
+- Sidebar links belong to exactly one group, carry a label and either an absolute `http`/`https` URL or a server-local path starting with `/`, and are visible to authenticated users who can see the server sidebar. The create and edit forms add `https://` when an operator enters a host name without a scheme.
 - A freshly bootstrapped server has one group named "Lobby" containing the auto-created `announcements` and `general` rooms. Operators can rename it, reorder it, or replace it like any other group.
 - Deleting a group is rejected while rooms or sidebar links still live in it. Operators move or delete its contents first.
 - Moving a room between groups requires `room.manage` in both the source and the target group (the room's effective ACL changes overnight).
@@ -81,6 +83,25 @@ Channel rooms are organized into **room groups** — named, ordered containers t
 **Why:** Clients need room/sidebar data around lifecycle commands. Keeping the directory read model in ConnectRPC lets clients render navigation and action affordances through one protobuf API surface.
 **Tradeoff:** The service owns the room/sidebar visibility contract directly, so changes to room visibility must update the ConnectRPC mapping and tests.
 
+### 10. Lightweight layout management stays in the sidebar
+
+**Decision:** Creation, removal, and ordering actions live next to the affected room group, room, or sidebar link. Detailed metadata and permission settings remain on resource pages in the management area. The room-layout overview remains available during the transition.
+**Why:** Operators can adjust the navigation structure without leaving the navigation context. The split also keeps complex forms out of the narrow sidebar.
+**Tradeoff:** Hover controls are less visible than permanent toolbar controls. Context menus and touch-visible controls provide another path. Relative move commands preserve entries that the caller cannot see, so a filtered sidebar cannot remove hidden rooms from the authoritative layout.
+
+### 11. Structural changes commit all authoritative facts together
+
+**Decision:** Room creation commits the room and its initial group membership in
+one atomic EVT batch. Room deletion commits the room tombstone and group removal
+in one batch. Group creation and deletion commit the lifecycle fact and the
+resulting global group order in one batch. Each retry rebuilds the batch from
+current projections and guards every state boundary that it used.
+**Why:** A process failure between separate writes can leave a room without a
+group or leave a deleted group in the authoritative order. Reconciliation can
+hide an incomplete state, but it cannot add the missing durable fact to EVT.
+**Tradeoff:** These commands can retry when a concurrent room, group, layout, or
+authorization change advances one of their OCC boundaries. See ADR-086.
+
 ## Permissions
 
 - `room.create` — configured per group (or at server scope as a default).
@@ -93,5 +114,5 @@ Channel rooms are organized into **room groups** — named, ordered containers t
 
 ## Related
 
-- **ADRs:** ADR-031 (room-group-centric ACL), ADR-037 (DM access via membership), ADR-040 (permission-only RBAC with owner override), ADR-052 (subject-specific RBAC with an everyone baseline)
+- **ADRs:** ADR-031 (room-group-centric ACL), ADR-037 (DM access via membership), ADR-040 (permission-only RBAC with owner override), ADR-052 (subject-specific RBAC with an everyone baseline), ADR-086 (atomic room-layout structural mutations)
 - **FDRs:** FDR-001 (Roles & Permissions), FDR-007 (Direct Messages), FDR-019 (Room Lifecycle)

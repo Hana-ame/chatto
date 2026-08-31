@@ -8,6 +8,9 @@
   import { m } from '$lib/i18n/messages';
 
   import { createThreadAPI, type FollowedThread } from '$lib/api-client/threads';
+  import { createReadStateAPI } from '$lib/api-client/readState';
+  import DaySeparator from '$lib/components/DaySeparator.svelte';
+  import UserAvatarStack from '$lib/components/UserAvatarStack.svelte';
   import { queryClient } from '$lib/query/client';
   import {
     flattenFollowedThreads,
@@ -16,41 +19,37 @@
     updateFollowedThreadSummary,
     type FollowedThreadsData
   } from '$lib/query/threads';
-  import { EmptyState, Hint, PaneHeader, SegmentedControl } from '$lib/ui';
+  import {
+    ActivityListRow,
+    EmptyState,
+    Hint,
+    PaneHeader,
+    SegmentedControl,
+    UnreadDot
+  } from '$lib/ui';
+  import { toast } from '$lib/ui/toast';
   import PageTitle from '$lib/ui/PageTitle.svelte';
-  import RoomEvent from '../[roomId]/RoomEvent.svelte';
-  import { formatDate, timeFormatSettingsFor } from '$lib/utils/formatTime';
+  import {
+    formatRelativeTime,
+    groupByActivityDate,
+    timeFormatSettingsFor
+  } from '$lib/utils/formatTime';
   import { getLocale } from '$lib/i18n/runtime';
   import { useLoadMoreWhenVisible } from '$lib/hooks/useLoadMoreWhenVisible.svelte';
-  import {
-    createRoomPermissions,
-    DEFAULT_ROOM_PERMISSIONS,
-    createRoomMembers,
-    createComposerContext,
-    createMentionRoles
-  } from '$lib/state/room';
+  import { getLiveDisplayName } from '$lib/state/userProfiles.svelte';
+  import { NotificationAttentionLevel } from '$lib/api-client/notifications';
+  import { notificationAttentionForThread } from '$lib/state/server/notifications.svelte';
 
   const serverScope = useServerScope();
   const serverStore = $derived(serverScope.store);
-
-  // Provide room contexts so MessageEvent can render in read-only mode.
-  // All permissions are false (no editing, deleting, reacting from this view),
-  // and the members list is empty; role highlighting uses server reference data.
-  createRoomPermissions(() => DEFAULT_ROOM_PERMISSIONS);
-  createRoomMembers();
-  createComposerContext();
-  createMentionRoles(() => serverStore.mentionRoles.roles);
 
   const userSettings = $derived(timeFormatSettingsFor(serverStore.currentUser.user?.settings));
   const activeLocale = $derived(getLocale());
   const PAGE_SIZE = 20;
 
-  $effect(() => {
-    void serverStore.mentionRoles.refresh();
-  });
-
   let reconciledQueryScope: string | null = null;
   let reconciledMountedSnapshot = false;
+  let actionThreadId = $state<string | null>(null);
 
   const threadsQuery = createInfiniteQuery(
     () => {
@@ -101,7 +100,16 @@
   }
 
   const filteredThreads = $derived(
-    filter === 'unread' ? threads.filter((t) => t.hasUnread) : threads
+    filter === 'unread' ? threads.filter((t) => t.hasUnreadReplies) : threads
+  );
+  const dateSections = $derived.by(() =>
+    groupByActivityDate(
+      filteredThreads,
+      threadActivityAt,
+      () => userSettings,
+      new Date(),
+      activeLocale
+    )
   );
 
   function reconcilePageWithCurrentProjection(
@@ -135,12 +143,12 @@
       threadRootEventId: thread.threadRootEventId,
       replyCount: summary.replyCount,
       lastReplyAt: summary.lastReplyAt?.toDate().toISOString() ?? null,
-      hasUnread: summary.viewerState?.hasUnread
+      hasUnreadReplies: summary.viewerState?.hasUnreadReplies
     });
   }
 
   function reconcileCachedProjection(
-    states: ReadonlyMap<string, { hasUnread?: boolean }>,
+    states: ReadonlyMap<string, { hasUnreadReplies?: boolean }>,
     refetchUnknown: boolean
   ) {
     const queryKey = threadQueryKeys.followed(serverScope.serverId, serverScope.connection);
@@ -196,21 +204,98 @@
     );
   }
 
-  function formatRelativeTime(timestamp: string | null): string {
-    if (!timestamp) return '';
-    const date = new Date(timestamp);
-    const now = new Date();
-    const diffMs = now.getTime() - date.getTime();
-    const diffMins = Math.floor(diffMs / (1000 * 60));
-    const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
-    const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+  async function markThreadRead(thread: FollowedThread) {
+    const upToEventId = thread.latestReply?.id;
+    if (!upToEventId || actionThreadId) return;
+    actionThreadId = thread.threadRootEventId;
+    try {
+      await serverScope.connection.getAPI(createReadStateAPI).markThreadAsRead({
+        roomId: thread.roomId,
+        threadRootEventId: thread.threadRootEventId,
+        upToEventId
+      });
+      const queryKey = threadQueryKeys.followed(serverScope.serverId, serverScope.connection);
+      queryClient.setQueryData<FollowedThreadsData>(queryKey, (current) =>
+        updateFollowedThreadSummary(current, {
+          roomId: thread.roomId,
+          threadRootEventId: thread.threadRootEventId,
+          replyCount: thread.replyCount,
+          lastReplyAt: thread.lastReplyAt,
+          hasUnreadReplies: false
+        })
+      );
+    } catch {
+      toast.error(m('common.error.generic'));
+    } finally {
+      actionThreadId = null;
+    }
+  }
 
-    if (diffMins < 1) return m('chat.notifications.time_now');
-    if (diffMins < 60) return m('chat.notifications.time_minutes', { count: diffMins });
-    if (diffHours < 24) return m('chat.notifications.time_hours', { count: diffHours });
-    if (diffDays < 7) return m('chat.notifications.time_days', { count: diffDays });
+  async function unfollowThread(thread: FollowedThread) {
+    if (actionThreadId) return;
+    actionThreadId = thread.threadRootEventId;
+    try {
+      await serverScope.connection.getAPI(createThreadAPI).unfollowThread({
+        roomId: thread.roomId,
+        threadRootEventId: thread.threadRootEventId
+      });
+      await queryClient.invalidateQueries({
+        queryKey: threadQueryKeys.followed(serverScope.serverId, serverScope.connection),
+        exact: true
+      });
+    } catch {
+      toast.error(m('common.error.generic'));
+    } finally {
+      actionThreadId = null;
+    }
+  }
 
-    return formatDate(date, userSettings, activeLocale);
+  function messageExcerpt(event: FollowedThread['rootMessage']): string {
+    if (!event || event.event.kind !== 'messagePosted') return m('chat.threads.message_missing');
+    if (event.event.deletedAt) return m('room.message.deleted');
+    const body = event.event.body?.trim();
+    if (body) return body;
+    if (event.event.attachments.length > 1) {
+      return m('message_preview.attachments_count', { count: event.event.attachments.length });
+    }
+    const attachment = event.event.attachments[0];
+    if (attachment) {
+      if (attachment.filename) return attachment.filename;
+      if (attachment.contentType.startsWith('image/')) return m('message_preview.attachment_image');
+      if (attachment.contentType.startsWith('video/')) return m('message_preview.attachment_video');
+      if (attachment.contentType.startsWith('audio/')) return m('message_preview.attachment_audio');
+      return m('message_preview.attachment_file');
+    }
+    const preview = event.event.linkPreview;
+    return preview?.title || preview?.siteName || preview?.url || m('chat.threads.message_missing');
+  }
+
+  function actorName(event: FollowedThread['rootMessage']): string {
+    const actor = event?.actor;
+    return actor ? getLiveDisplayName(actor.id, actor.displayName || actor.login) : '';
+  }
+
+  function rowActors(thread: FollowedThread): FollowedThread['participants'] {
+    const participants = thread.participants.slice(0, 2);
+    if (participants.length > 0) return participants;
+    const actor = thread.latestReply?.actor ?? thread.rootMessage?.actor;
+    return actor ? [actor] : [];
+  }
+
+  function primaryEvent(thread: FollowedThread): FollowedThread['rootMessage'] {
+    return thread.latestReply ?? thread.rootMessage;
+  }
+
+  function threadActivityAt(thread: FollowedThread): string | null {
+    return (
+      thread.lastReplyAt ?? thread.latestReply?.createdAt ?? thread.rootMessage?.createdAt ?? null
+    );
+  }
+
+  function replyCountLabel(count: number): string {
+    return count === 1
+      ? m('room.message.meta.reply_count_one')
+      : m('room.message.meta.reply_count_many', { count });
   }
 </script>
 
@@ -258,43 +343,117 @@
         {/if}
       </EmptyState>
     {:else}
-      <div class="flex flex-col divide-y divide-border">
-        {#each filteredThreads as thread (thread.threadRootEventId)}
-          <div class="group relative" data-testid="my-thread-item">
-            <!-- Channel label above the message -->
-            <div class="flex gap-4 px-2 pt-4 pb-2 md:mx-2">
-              <div class="w-11 shrink-0"></div>
-              <div class="text-muted">
-                <span
-                  >{#if thread.lastReplyAt}{formatRelativeTime(thread.lastReplyAt)}, {m(
-                      'chat.threads.in_room'
-                    )}{:else}{m('chat.threads.in_room_capitalized')}{/if}
-                  #{thread.roomName}:</span
-                >
-              </div>
-            </div>
+      <div class="selectable-list pb-3" aria-busy={loadingMore}>
+        {#each dateSections as section (section.key)}
+          <section aria-labelledby={`thread-date-${section.key}`}>
+            <DaySeparator id={`thread-date-${section.key}`} label={section.label} />
+            {#each section.items as thread (thread.threadRootEventId)}
+              {@const actors = rowActors(thread)}
+              {@const primary = primaryEvent(thread)}
+              {@const attention = notificationAttentionForThread(
+                serverStore.notifications.unreadOccurrences,
+                thread.roomId,
+                thread.threadRootEventId
+              )}
+              <ActivityListRow
+                pending={actionThreadId === thread.threadRootEventId}
+                disabled={actionThreadId === thread.threadRootEventId}
+                dimmed={!thread.hasUnreadReplies &&
+                  attention === NotificationAttentionLevel.UNSPECIFIED}
+                important={attention === NotificationAttentionLevel.IMPORTANT}
+                onclick={() => navigateToThread(thread)}
+                rowAttributes={{
+                  'data-testid': 'my-thread-item',
+                  'data-thread-state': thread.hasUnreadReplies ? 'unread' : 'read',
+                  'data-thread-attention':
+                    attention === NotificationAttentionLevel.IMPORTANT
+                      ? 'important'
+                      : attention === NotificationAttentionLevel.AMBIENT
+                        ? 'ambient'
+                        : 'none'
+                }}
+              >
+                {#snippet leading()}
+                  <span class="relative flex shrink-0" aria-hidden="true">
+                    <UserAvatarStack users={actors} />
+                    {#if attention !== NotificationAttentionLevel.UNSPECIFIED}
+                      <UnreadDot
+                        color={attention === NotificationAttentionLevel.IMPORTANT
+                          ? 'warning'
+                          : 'ambient'}
+                        overlay
+                        class="absolute -end-1 -top-1"
+                        testid="thread-attention-dot"
+                      />
+                    {/if}
+                  </span>
+                {/snippet}
 
-            <!-- Clickable wrapper for navigation -->
-            <div
-              class="cursor-pointer pb-4"
-              onclick={() => navigateToThread(thread)}
-              onkeydown={(e) => e.key === 'Enter' && navigateToThread(thread)}
-              role="button"
-              tabindex="0"
-            >
-              {#if thread.rootMessage}
-                <RoomEvent
-                  event={thread.rootMessage}
-                  roomId={thread.roomId}
-                  onOpenThread={() => navigateToThread(thread)}
-                />
-              {:else}
-                <div class="px-2 md:mx-2">
-                  <p class="text-sm text-muted">{m('chat.threads.message_missing')}</p>
-                </div>
-              {/if}
-            </div>
-          </div>
+                {#if thread.hasUnreadReplies}<span class="sr-only"
+                    >{m('chat.threads.filter_unread')}</span
+                  >{/if}
+                {#if attention !== NotificationAttentionLevel.UNSPECIFIED}<span class="sr-only"
+                    >{m('room_list.notifications', { count: 1 })}</span
+                  >{/if}
+                <span class="min-w-0 flex-1" data-testid="thread-content">
+                  <span class="flex min-w-0 items-baseline gap-2">
+                    <bdi class="min-w-0 flex-1 truncate" dir="auto">
+                      {#if actorName(primary)}
+                        <span class="font-medium"
+                          >{actorName(primary)}:
+                          <span class="font-normal">{messageExcerpt(primary)}</span></span
+                        >
+                      {:else}
+                        <span>{messageExcerpt(primary)}</span>
+                      {/if}
+                    </bdi>
+                    <span class="shrink-0 text-sm text-muted">
+                      {formatRelativeTime(threadActivityAt(thread), userSettings, activeLocale)}
+                    </span>
+                  </span>
+                  <span class="flex min-w-0 items-baseline gap-2 text-sm text-muted">
+                    <bdi class="min-w-0 flex-1 truncate" dir="auto">
+                      <span class="font-medium"
+                        >#{thread.roomName}
+                        {#if thread.latestReply}<span class="font-normal"
+                            >· {actorName(thread.rootMessage)}: {messageExcerpt(
+                              thread.rootMessage
+                            )}</span
+                          >{/if}</span
+                      >
+                    </bdi>
+                    <span class="shrink-0">{replyCountLabel(thread.replyCount)}</span>
+                  </span>
+                </span>
+
+                {#snippet actions()}
+                  {#if thread.hasUnreadReplies && thread.latestReply}
+                    <button
+                      type="button"
+                      class="icon-action"
+                      disabled={actionThreadId === thread.threadRootEventId}
+                      onclick={() => void markThreadRead(thread)}
+                      title={m('room_list.mark_as_read')}
+                      aria-label={m('room_list.mark_as_read')}
+                    >
+                      <span class="iconify icon-[uil--check] text-base" aria-hidden="true"></span>
+                    </button>
+                  {/if}
+                  <button
+                    type="button"
+                    class="icon-action"
+                    disabled={actionThreadId === thread.threadRootEventId}
+                    onclick={() => void unfollowThread(thread)}
+                    title={m('room.message.meta.unfollow_thread')}
+                    aria-label={m('room.message.meta.unfollow_thread')}
+                  >
+                    <span class="iconify icon-[uil--bell-slash] text-base" aria-hidden="true"
+                    ></span>
+                  </button>
+                {/snippet}
+              </ActivityListRow>
+            {/each}
+          </section>
         {/each}
         {#if hasMore}
           <div class="flex min-h-14 justify-center p-4 text-muted" {@attach loadMoreWhenVisible}>

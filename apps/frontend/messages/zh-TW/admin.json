@@ -31,10 +31,7 @@
       "delete_description": "Stop advertising {origin}?",
       "created": "Neighbor added",
       "updated": "Neighbor updated",
-      "deleted": "Neighbor deleted",
-      "testimonial": "推薦語（選填）",
-      "testimonial_help": "說明您推薦此伺服器的原因。這段文字會公開顯示，最多可輸入 500 個字元。",
-      "testimonial_label": "公開推薦語"
+      "deleted": "Neighbor deleted"
     },
     "common": {
       "page_title": "{title} | 管理後台",
@@ -204,6 +201,7 @@
       "drag_hint": "拖曳聊天室可將其移至不同群組。拖曳群組標題可調整群組順序。已封存的聊天室仍會留在原群組中，但成員看不到。",
       "drag_group": "拖曳以調整群組順序",
       "drag_room": "拖曳以調整聊天室順序",
+      "drag_link": "拖曳以調整連結順序",
       "new_room": "新增聊天室",
       "new_link": "新增連結",
       "new_group": "新增群組",

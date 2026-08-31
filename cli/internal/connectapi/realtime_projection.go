@@ -137,7 +137,7 @@ func (a *API) BuildRealtimeProjectionRoomViewerStates(ctx context.Context, userI
 }
 
 // BuildRealtimeProjectionThreadViewerStates returns the complete followed
-// thread set, including RUNTIME_STATE-backed unread markers.
+// thread set, including RUNTIME_STATE-backed reply read cursors.
 func (a *API) BuildRealtimeProjectionThreadViewerStates(ctx context.Context, userID string) ([]*RealtimeProjectionThreadViewerState, error) {
 	threads, err := a.core.ThreadFollows().ListFollowedThreadViewerStates(ctx, userID)
 	if err != nil {
@@ -149,14 +149,10 @@ func (a *API) BuildRealtimeProjectionThreadViewerStates(ctx context.Context, use
 			continue
 		}
 		following := true
-		hasUnread := thread.HasUnread
 		states = append(states, &RealtimeProjectionThreadViewerState{
 			RoomID:            thread.RoomID,
 			ThreadRootEventID: thread.ThreadRootEventID,
-			ViewerState: &apiv1.ThreadViewerState{
-				IsFollowing: &following,
-				HasUnread:   &hasUnread,
-			},
+			ViewerState:       apiThreadViewerState(following, thread.HasUnreadReplies),
 		})
 	}
 	return states, nil

@@ -31,10 +31,7 @@
       "delete_description": "Stop advertising {origin}?",
       "created": "Neighbor added",
       "updated": "Neighbor updated",
-      "deleted": "Neighbor deleted",
-      "testimonial": "Atesto (nedeviga)",
-      "testimonial_help": "Klarigu kial vi rekomendas ĉi tiun servilon. Ĉi tiu teksto estas publika kaj povas enhavi ĝis 500 signojn.",
-      "testimonial_label": "Publika atesto"
+      "deleted": "Neighbor deleted"
     },
     "common": {
       "page_title": "{title} | Admin",
@@ -204,6 +201,7 @@
       "drag_hint": "Trenu ĉambrojn inter grupoj por organizi ilin. Trenu grupkapojn por reordigi grupojn. Arkivitaj ĉambroj restas en sia aro sed estas kaŝitaj de membroj.",
       "drag_group": "Trenu por reordigi grupon",
       "drag_room": "Trenu por reordigi ĉambron",
+      "drag_link": "Trenu por reordigi ligilon",
       "new_room": "Nova Ĉambro",
       "new_link": "Nova Ligo",
       "new_group": "Nova Grupo",

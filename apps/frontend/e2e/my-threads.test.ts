@@ -38,11 +38,40 @@ test.describe('My Threads', () => {
     await myThreads.goto();
 
     // Thread should appear with room name, root message preview, and reply count
+    await expect(page.getByRole('heading', { name: 'Today' })).toBeVisible();
     const threadItem = myThreads.threadItems;
     await expect(threadItem).toBeVisible();
-    await expect(threadItem.getByText(/in #general:/)).toBeVisible();
+    await expect(threadItem.getByText('#general')).toBeVisible();
     await expect(threadItem.getByText(rootText)).toBeVisible();
     await expect(threadItem.getByText('1 reply')).toBeVisible();
+  });
+
+  test('followed thread without a visible latest reply uses the root as its activity', async ({
+    page,
+    chatPage,
+    roomPage
+  }) => {
+    await createAndLoginTestUser(page);
+    await chatPage.goto();
+    await chatPage.enterRoom('general');
+
+    const rootText = `Followed root ${Date.now()}`;
+    const rootMsg = await roomPage.sendMessage(rootText);
+    await rootMsg.openThread();
+    await roomPage.expectThreadPaneVisible();
+    const replyText = `Temporary reply ${Date.now()}`;
+    await roomPage.postThreadReply(replyText);
+    await roomPage.getThreadMessage(replyText).delete();
+    await roomPage.closeThread();
+
+    const myThreads = new MyThreadsPage(page);
+    await myThreads.goto();
+
+    const threadItem = myThreads.threadItems;
+    await expect(threadItem).toBeVisible();
+    await expect(threadItem.getByText(rootText)).toBeVisible();
+    await expect(threadItem.getByText('1 reply')).toBeVisible();
+    await expect(threadItem.getByText('Message no longer available')).not.toBeVisible();
   });
 
   test('clicking a thread navigates to the room with thread pane open', async ({
@@ -125,6 +154,12 @@ test.describe('My Threads', () => {
     // Verify 1 reply shown
     await expect(page.getByText('1 reply')).toBeVisible();
 
+    // Reload on My Threads so the source room timeline is not retained. Reply
+    // activity must still refresh the query-backed conversation summary.
+    await page.reload();
+    await expect(page.getByRole('heading', { name: 'My Threads' })).toBeVisible();
+    await expect(page.getByText('1 reply')).toBeVisible();
+
     // User B opens the thread and posts a reply
     await postThreadReplyFromServerUser(
       browser!,
@@ -162,12 +197,12 @@ test.describe('My Threads', () => {
 
     await myThreads.goto();
 
-    // Initially no unread dot (we just replied so it's "read")
+    // Initially there is no mark-read action (we just replied, so it is read).
     // Use toPass() to allow subscriptions to settle before asserting absence
     const threadItem = myThreads.threadItems;
-    const unreadDot = threadItem.getByTestId('thread-notification-dot');
+    const markReadButton = threadItem.getByRole('button', { name: 'Mark as read' });
     await expect(async () => {
-      await expect(unreadDot).not.toBeVisible();
+      await expect(markReadButton).not.toBeVisible();
     }).toPass({ timeout: TIMEOUTS.UI_STANDARD, intervals: [500, 1000, 2000] });
 
     // User B replies to the thread
@@ -178,10 +213,11 @@ test.describe('My Threads', () => {
       `Reply from B ${Date.now()}`
     );
 
-    // User A should see the unread indicator (orange dot inside the reply button)
-    await expect(unreadDot).toBeVisible({
+    // User A should see the action that is available for unread replies.
+    await expect(markReadButton).toBeVisible({
       timeout: TIMEOUTS.REALTIME_EVENT
     });
+    await expect(threadItem).toHaveAttribute('data-thread-attention', 'important');
   });
 
   test('sidebar unread dot appears when another user replies', async ({

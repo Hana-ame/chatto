@@ -31,10 +31,7 @@
       "delete_description": "Stop advertising {origin}?",
       "created": "Neighbor added",
       "updated": "Neighbor updated",
-      "deleted": "Neighbor deleted",
-      "testimonial": "Aanbeveling (optioneel)",
-      "testimonial_help": "Leg uit waarom je deze server aanbeveelt. Deze tekst is openbaar en mag maximaal 500 tekens bevatten.",
-      "testimonial_label": "Openbare aanbeveling"
+      "deleted": "Neighbor deleted"
     },
     "common": {
       "page_title": "{title} | Beheerder",
@@ -204,6 +201,7 @@
       "drag_hint": "Sleep kamers tussen groepen om ze te ordenen. Versleep groepskoppen om de volgorde van groepen te wijzigen. Gearchiveerde kamers blijven in hun set, maar zijn verborgen voor leden.",
       "drag_group": "Sleep om de groep opnieuw te ordenen",
       "drag_room": "Sleep om de ruimte opnieuw te ordenen",
+      "drag_link": "Sleep om de link opnieuw te ordenen",
       "new_room": "Nieuwe kamer",
       "new_link": "Nieuwe link",
       "new_group": "Nieuwe groep",

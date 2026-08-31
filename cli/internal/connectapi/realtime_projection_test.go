@@ -175,13 +175,12 @@ func TestRealtimeProjectionLatestValueViewerStatesConverge(t *testing.T) {
 	foundUnreadThread := false
 	for _, state := range threadStates {
 		if state.ThreadRootEventID == root.Id {
-			foundUnreadThread = state.ViewerState.GetIsFollowing() && state.ViewerState.GetHasUnread()
+			foundUnreadThread = state.ViewerState.GetIsFollowing() && state.ViewerState.GetHasUnreadReplies()
 		}
 	}
 	if !foundUnreadThread {
 		t.Fatalf("followed thread %s missing unread viewer state: %+v", root.Id, threadStates)
 	}
-
 	roomStates, err := env.api.BuildRealtimeProjectionRoomViewerStates(env.ctx, env.viewer.Id)
 	if err != nil {
 		t.Fatalf("BuildRealtimeProjectionRoomViewerStates unread: %v", err)
@@ -208,8 +207,11 @@ func TestRealtimeProjectionLatestValueViewerStatesConverge(t *testing.T) {
 		t.Fatalf("BuildRealtimeProjectionThreadViewerStates read: %v", err)
 	}
 	for _, state := range threadStates {
-		if state.ThreadRootEventID == root.Id && state.ViewerState.GetHasUnread() {
-			t.Fatalf("thread %s remained unread after marker advance", root.Id)
+		if state.ThreadRootEventID != root.Id {
+			continue
+		}
+		if state.ViewerState.GetHasUnreadReplies() {
+			t.Fatalf("thread %s retained unread replies after cursor advance", root.Id)
 		}
 	}
 }

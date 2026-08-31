@@ -58,17 +58,19 @@ User-facing concepts. If a user might say the word, it goes here.
 
 **Server** — Top-level Chatto deployment: one process, one NATS account, one membership boundary. Formerly called *Instance* in the codebase. See [ADR-029](adr/ADR-029-instance-to-server-rename.md).
 
-**Neighbor** — Chatto server that another server advertises in its public directory. A Neighbor has a canonical origin and can have a public testimonial. It is a recommendation, not a trust or reciprocal relationship. See [FDR-042](fdr/FDR-042-chatto-neighbors.md).
+**Neighbor** — Chatto server that another server advertises in its public directory. A Neighbor has a canonical origin. It is a recommendation, not a trust or reciprocal relationship. See [FDR-042](fdr/FDR-042-chatto-neighbors.md).
 
-**Server Directory** — Client page that shows direct Neighbor recommendations from registered servers and follows bounded mutual recommendations recursively. It adds a direct server after its public profile loads, expands a remote server only after mutuality is observed, keeps registered results visible as joined, shows source testimonials in a tapestry layout, and also accepts a direct server address. It does not rank its results. See [FDR-042](fdr/FDR-042-chatto-neighbors.md).
-
-**Testimonial** — Optional public text in a Neighbor that explains why one server recommends another server. A testimonial belongs to the directed recommendation that supplied it. See [FDR-042](fdr/FDR-042-chatto-neighbors.md).
+**Server Directory** — Client page that shows direct Neighbor recommendations from registered servers and follows bounded mutual recommendations recursively. It adds a direct server after its public profile loads, expands a remote server only after mutuality is observed, keeps registered results visible as joined, shows recommendation-source attribution in a tapestry layout, and also accepts a direct server address. It does not rank its results. See [FDR-042](fdr/FDR-042-chatto-neighbors.md).
 
 **Client application** — Browser, desktop, mobile app, or integration that a user authorizes to access a Chatto server; its stable identity comes from CIMD or a built-in registration. A client appears in server administration after completing at least one user-approved authorization. Administrators may label it trusted or block it, but trust never replaces user consent. See [ADR-071](adr/ADR-071-cimd-identified-open-oauth-clients.md) and [FDR-023](fdr/FDR-023-authentication-and-sessions.md).
 
+**MCP server** — Optional Chatto public HTTP integration that lets an agent host discover and call bounded user-scoped tools through the Model Context Protocol. It has no Operator API authority. See [FDR-043](fdr/FDR-043-model-context-protocol-integration.md) and [ADR-085](adr/ADR-085-agent-integration-through-mcp.md).
+
+**MCP scope** — OAuth grant ceiling for one class of MCP tools, such as `chatto:rooms:read` or `chatto:messages:write`. It limits delegated agent authority in addition to normal Chatto permissions and resource visibility. It is not an RBAC permission.
+
 **Bot account** — Passwordless user identity for an integration, explicitly owned by a human and marked as a bot. It receives only directly configured permissions, capped by the owner's current authority. See [FDR-038](fdr/FDR-038-bot-accounts.md).
 
-**Bot API key** — A bot account's sole non-expiring bearer credential, shown only at creation or rotation. Chatto stores its verifier as a durable EVT fact, never the raw key. See [FDR-038](fdr/FDR-038-bot-accounts.md).
+**Bot API key** — One of a bot account's named, non-expiring bearer credentials. Chatto shows the raw key only when it creates the key and stores only its durable verifier. Each key can be revoked independently. See [FDR-038](fdr/FDR-038-bot-accounts.md).
 
 **Bot incoming webhook** — Named HTTP credential that allows an external system to post a message as a bot. A bot can have multiple incoming webhooks. Chatto shows each action-limited URL only when it creates that webhook. A manager replaces a webhook when the manager creates a new one, moves the caller, and revokes the old one. Each webhook has independent revocation and last-use metadata. It cannot authenticate the normal API or realtime connection. See [FDR-038](fdr/FDR-038-bot-accounts.md) and [ADR-083](adr/ADR-083-action-limited-bot-incoming-webhooks.md).
 

@@ -26,23 +26,44 @@ const (
 )
 
 // OAuthClient is the validated identity and redirect contract for one public
-// OAuth client. Metadata is informational; ClientID and RedirectURIs are the
-// security-sensitive fields.
+// OAuth client. Metadata is informational; ClientID, RedirectURIs, and Native
+// are the security-sensitive fields.
 type OAuthClient struct {
 	ClientID     string
 	ClientName   string
 	ClientURI    string
 	RedirectURIs []string
-	BuiltIn      bool
+	// Native permits the RFC 8252 variable-port exception for literal
+	// loopback IP callbacks. Web clients always require an exact callback.
+	Native  bool
+	BuiltIn bool
 }
 
 func (c OAuthClient) allowsRedirectURI(candidate string) bool {
 	for _, redirectURI := range c.RedirectURIs {
-		if redirectURI == candidate {
+		if redirectURI == candidate || (c.Native && matchesLoopbackIPRedirectURI(redirectURI, candidate)) {
 			return true
 		}
 	}
 	return false
+}
+
+// matchesLoopbackIPRedirectURI applies the RFC 8252 port exception for native
+// loopback callbacks. All callback components other than the port must remain
+// an exact match. Named localhost callbacks do not get this exception.
+func matchesLoopbackIPRedirectURI(registered, candidate string) bool {
+	registeredURL, err := url.Parse(registered)
+	if err != nil || registeredURL.Scheme != "http" || !isLiteralLoopbackOAuthRedirectHost(registeredURL.Hostname()) {
+		return false
+	}
+	candidateURL, err := url.Parse(candidate)
+	if err != nil || candidateURL.Scheme != "http" || candidateURL.User != nil || candidateURL.Fragment != "" || candidateURL.Opaque != "" {
+		return false
+	}
+	return strings.EqualFold(registeredURL.Hostname(), candidateURL.Hostname()) &&
+		registeredURL.EscapedPath() == candidateURL.EscapedPath() &&
+		registeredURL.RawQuery == candidateURL.RawQuery &&
+		registeredURL.ForceQuery == candidateURL.ForceQuery
 }
 
 type cachedOAuthClient struct {
@@ -272,18 +293,22 @@ func validateOAuthClientMetadata(clientID string, identifier *url.URL, document 
 	if len(name) > 100 {
 		return OAuthClient{}, fmt.Errorf("CIMD client_name exceeds 100 characters")
 	}
-	return OAuthClient{ClientID: clientID, ClientName: name, ClientURI: clientURIValue, RedirectURIs: append([]string(nil), document.RedirectURIs...)}, nil
+	return OAuthClient{
+		ClientID: clientID, ClientName: name, ClientURI: clientURIValue,
+		RedirectURIs: append([]string(nil), document.RedirectURIs...),
+		Native:       document.ApplicationType == "native",
+	}, nil
 }
 
 func validOAuthClientRedirectURI(redirect *url.URL, applicationType string, allowLoopback bool) bool {
-	if redirect == nil || redirect.Scheme == "" || redirect.User != nil || redirect.Fragment != "" {
+	if redirect == nil || redirect.Scheme == "" || redirect.User != nil || redirect.Fragment != "" || strings.Contains(redirect.Hostname(), "*") {
 		return false
 	}
 	if redirect.Scheme == "https" {
 		return redirect.Host != ""
 	}
 	if redirect.Scheme == "http" {
-		return allowLoopback && redirect.Host != "" && isLoopbackOAuthRedirectHost(redirect.Hostname())
+		return redirect.Host != "" && isLoopbackOAuthRedirectHost(redirect.Hostname()) && (applicationType == "native" || allowLoopback)
 	}
 	if applicationType != "native" || redirect.Opaque != "" {
 		return false
@@ -342,11 +367,21 @@ func resolveOAuthClientAddresses(ctx context.Context, host string, allowLoopback
 		return nil, fmt.Errorf("resolve CIMD destination")
 	}
 	for _, address := range addresses {
-		if blockedOAuthClientAddress(address) && !(allowLoopback && address.IsLoopback()) {
+		if !allowedOAuthClientAddress(host, address, allowLoopback) {
 			return nil, fmt.Errorf("CIMD destination resolves to a special-use address")
 		}
 	}
 	return addresses, nil
+}
+
+func allowedOAuthClientAddress(host string, address netip.Addr, allowLoopback bool) bool {
+	if isLoopbackOAuthRedirectHost(host) {
+		return allowLoopback && address.Unmap().IsLoopback()
+	}
+	if !blockedOAuthClientAddress(address) {
+		return true
+	}
+	return false
 }
 
 func blockedOAuthClientAddress(address netip.Addr) bool {

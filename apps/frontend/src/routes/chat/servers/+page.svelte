@@ -1,6 +1,7 @@
 <script lang="ts">
   import { ConnectError } from '@connectrpc/connect';
   import { onMount } from 'svelte';
+  import type { Attachment } from 'svelte/attachments';
   import { goto } from '$app/navigation';
   import { resolve } from '$app/paths';
   import {
@@ -10,7 +11,6 @@
   } from '$lib/api-client/server';
   import { startRemoteReauthentication, startServerOAuthFlow } from '$lib/auth/reauth';
   import ServerProfileCard from '$lib/components/ServerProfileCard.svelte';
-  import ServerTestimonialCard from '$lib/components/ServerTestimonialCard.svelte';
   import { m } from '$lib/i18n/messages';
   import { getReactiveLocale } from '$lib/i18n/state.svelte';
   import { serverIdToSegment } from '$lib/navigation';
@@ -34,8 +34,11 @@
   let pendingOrigin = $state<string | null>(null);
   let actionError = $state('');
   let directoryState = $state<ServerDirectorySnapshot | null>(null);
+  let scrollContainer = $state<HTMLDivElement>();
   let directorySession: ServerDirectoryDiscovery | null = null;
   let unsubscribeDirectory: (() => void) | null = null;
+  let automaticLoadApproached = false;
+  let automaticBatchSpent = false;
 
   const registeredOrigins = $derived.by(() => [
     ...new Set(
@@ -64,12 +67,16 @@
   function startDirectoryDiscovery() {
     stopDirectoryDiscovery();
     directoryState = null;
+    automaticLoadApproached = false;
+    automaticBatchSpent = false;
     const session = createServerDirectoryDiscovery(registeredOrigins, {
       initiallyVisible: document.visibilityState === 'visible'
     });
     directorySession = session;
     unsubscribeDirectory = session.subscribe((snapshot) => {
-      if (directorySession === session) directoryState = snapshot;
+      if (directorySession !== session) return;
+      directoryState = snapshot;
+      tryAutomaticLoad();
     });
     session.start();
   }
@@ -83,7 +90,54 @@
 
   function handleVisibilityChange() {
     directorySession?.setVisible(document.visibilityState === 'visible');
+    tryAutomaticLoad();
   }
+
+  function tryAutomaticLoad() {
+    const session = directorySession;
+    if (
+      !session ||
+      automaticBatchSpent ||
+      !automaticLoadApproached ||
+      document.visibilityState !== 'visible' ||
+      !directoryState?.canLoadMore
+    ) {
+      return;
+    }
+    automaticBatchSpent = true;
+    session.loadMore();
+  }
+
+  function loadMoreManually() {
+    automaticBatchSpent = true;
+    directorySession?.loadMore();
+  }
+
+  const observeAutomaticLoadSentinel: Attachment<HTMLElement> = (sentinel) => {
+    const root = scrollContainer;
+    if (!root || typeof IntersectionObserver === 'undefined') return;
+    let isNearEnd = false;
+
+    const recordApproach = () => {
+      if (!isNearEnd || root.scrollTop <= 0) return;
+      automaticLoadApproached = true;
+      tryAutomaticLoad();
+    };
+    const observer = new IntersectionObserver(
+      (observations) => {
+        isNearEnd = observations.some((observation) => observation.isIntersecting);
+        recordApproach();
+      },
+      { root, rootMargin: '0px 0px 160px 0px' }
+    );
+    root.addEventListener('scroll', recordApproach, { passive: true });
+    observer.observe(sentinel);
+
+    return () => {
+      root.removeEventListener('scroll', recordApproach);
+      observer.disconnect();
+    };
+  };
 
   function normalizeCustomInput(value: string): string {
     const trimmed = value.trim();
@@ -225,25 +279,6 @@
       full: m('add_server.directory.recommended_by', { servers: formatter.format(names) })
     };
   }
-
-  function testimonialRecommendations(entry: ServerDirectoryEntry) {
-    return entry.recommendations.flatMap((recommendation) =>
-      recommendation.testimonial
-        ? [
-            {
-              sourceOrigin: recommendation.sourceOrigin,
-              sourceName: sourceName(recommendation.sourceOrigin),
-              sourceIconUrl:
-                registeredServer(recommendation.sourceOrigin)?.iconUrl ??
-                entries.find((candidate) => candidate.origin === recommendation.sourceOrigin)?.profile
-                  ?.iconUrl ??
-                null,
-              testimonial: recommendation.testimonial
-            }
-          ]
-        : []
-    );
-  }
 </script>
 
 <svelte:document onvisibilitychange={handleVisibilityChange} />
@@ -257,7 +292,7 @@
     showMobileNav
   />
 
-  <PaneContent>
+  <PaneContent bind:scrollContainer>
     <div class="flex flex-col gap-6">
       <Panel title={m('add_server.directory.custom_title')}>
         <Form onsubmit={probeCustomServer} error={customError} maxWidth="max-w-2xl">
@@ -291,17 +326,9 @@
           <div class="mt-5 max-w-md">
             {#snippet customActions()}
               {#if external}
-                <Button
-                  href={customOrigin}
-                  opensInNewTab
-                  variant="secondary"
-                  fullWidth
-                >
+                <Button href={customOrigin} opensInNewTab variant="secondary" fullWidth>
                   <span>{actionLabel(customOrigin, customProfile)}</span>
-                  <span
-                    class="iconify icon-[uil--external-link-alt]"
-                    aria-hidden="true"
-                  ></span>
+                  <span class="iconify icon-[uil--external-link-alt]" aria-hidden="true"></span>
                 </Button>
               {:else}
                 <Button
@@ -373,7 +400,6 @@
               {@const joined = registeredServer(entry.origin)}
               {@const external = opensInServerClient(entry.origin, entry.profile)}
               {@const attribution = sourceAttribution(entry)}
-              {@const testimonials = testimonialRecommendations(entry)}
               {#snippet cardActions()}
                 <div class="flex flex-col gap-3">
                   <p
@@ -385,17 +411,9 @@
                     <bdi>{attribution.visible}</bdi>
                   </p>
                   {#if external}
-                    <Button
-                      href={entry.origin}
-                      opensInNewTab
-                      variant="secondary"
-                      fullWidth
-                    >
+                    <Button href={entry.origin} opensInNewTab variant="secondary" fullWidth>
                       <span>{actionLabel(entry.origin, entry.profile)}</span>
-                      <span
-                        class="iconify icon-[uil--external-link-alt]"
-                        aria-hidden="true"
-                      ></span>
+                      <span class="iconify icon-[uil--external-link-alt]" aria-hidden="true"></span>
                     </Button>
                   {:else}
                     <Button
@@ -425,28 +443,19 @@
                   actions={cardActions}
                   testId="server-directory-entry"
                 />
-                {#if testimonials.length > 0}
-                  <section
-                    class="mt-2 flex flex-col gap-2"
-                    aria-label={m('add_server.directory.testimonials_for', {
-                      server: entry.profile?.name ?? entry.origin
-                    })}
-                    data-testid="server-testimonials"
-                  >
-                    {#each testimonials as testimonial (testimonial.sourceOrigin)}
-                      <ServerTestimonialCard
-                        testimonial={testimonial.testimonial}
-                        sourceName={testimonial.sourceName}
-                        sourceIconUrl={testimonial.sourceIconUrl}
-                      />
-                    {/each}
-                  </section>
-                {/if}
               </div>
             {/each}
           </div>
         {/if}
         {#if directoryState && !allSourcesFailed}
+          {#if entries.length > 0 && !directoryState.sessionLimitReached}
+            <div
+              class="h-px"
+              aria-hidden="true"
+              data-testid="server-directory-auto-load-sentinel"
+              {@attach observeAutomaticLoadSentinel}
+            ></div>
+          {/if}
           {#if directoryState.isLoading && !directoryState.isInitialLoading}
             <p class="mt-4 text-center text-muted" aria-live="polite">
               {m('add_server.directory.discovering')}
@@ -458,7 +467,7 @@
             </div>
           {:else if directoryState.canLoadMore}
             <div class="mt-4 flex justify-center">
-              <Button variant="secondary" onclick={() => directorySession?.loadMore()}>
+              <Button variant="secondary" onclick={loadMoreManually}>
                 {m('add_server.directory.load_more')}
               </Button>
             </div>

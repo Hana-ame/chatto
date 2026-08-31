@@ -4,6 +4,7 @@
   import { csrfFetch } from '$lib/auth/csrf';
   import AuthLayout from '$lib/components/AuthLayout.svelte';
   import { m } from '$lib/i18n/messages';
+  import Hint from '$lib/ui/Hint.svelte';
   import PageTitle from '$lib/ui/PageTitle.svelte';
   import { Button, FormError } from '$lib/ui/form';
   import { onMount } from 'svelte';
@@ -11,9 +12,12 @@
   type ConsentRequest = {
     redirectUri: string;
     redirectOrigin: string;
+    localRedirect: boolean;
     clientId: string;
     clientName: string;
     clientUri: string;
+    resource: string;
+    scopes: string[];
   };
 
   let request = $state<ConsentRequest | null>(null);
@@ -44,9 +48,12 @@
       const pendingRequest = {
         redirectUri: result.redirectUri,
         redirectOrigin: result.redirectOrigin,
+        localRedirect: isLocalCallback(result.redirectUri),
         clientId: result.clientId,
         clientName: result.clientName,
-        clientUri: result.clientUri
+        clientUri: result.clientUri,
+        resource: result.resource || '',
+        scopes: Array.isArray(result.scopes) ? result.scopes : []
       };
       const verifiedHost = verifiedClientHost(pendingRequest);
       if (!verifiedHost) {
@@ -89,6 +96,21 @@
       return new URL(pendingRequest.clientId).host;
     } catch {
       return '';
+    }
+  }
+
+  function isLocalCallback(raw: string) {
+    try {
+      const hostname = new URL(raw).hostname.toLowerCase();
+      return (
+        hostname === 'localhost' ||
+        hostname === '127.0.0.1' ||
+        hostname === '::1' ||
+        hostname === '[::1]' ||
+        (hostname.endsWith('.localhost') && hostname.length > '.localhost'.length)
+      );
+    } catch {
+      return false;
     }
   }
 
@@ -147,21 +169,50 @@
           {/if}
         </div>
 
+        {#if request.localRedirect}
+          <Hint tone="warning">
+            {m('auth.oauth.local_callback_warning', { address: request.redirectOrigin })}
+          </Hint>
+        {/if}
+
         <div class="surface-box p-4">
           <div class="mb-3 text-sm font-medium">{m('auth.oauth.allow_intro')}</div>
           <ul class="flex flex-col gap-2 text-sm text-muted">
-            <li class="flex gap-2">
-              <span class="iconify mt-0.5 icon-[mdi--check] shrink-0 text-action"></span>
-              <span>{m('auth.oauth.allow_profile')}</span>
-            </li>
-            <li class="flex gap-2">
-              <span class="iconify mt-0.5 icon-[mdi--check] shrink-0 text-action"></span>
-              <span>{m('auth.oauth.allow_messages')}</span>
-            </li>
-            <li class="flex gap-2">
-              <span class="iconify mt-0.5 icon-[mdi--check] shrink-0 text-action"></span>
-              <span>{m('auth.oauth.allow_remember')}</span>
-            </li>
+            {#if request.scopes.length === 0}
+              <li class="flex gap-2">
+                <span class="iconify mt-0.5 icon-[mdi--check] shrink-0 text-action"></span>
+                <span>{m('auth.oauth.allow_profile')}</span>
+              </li>
+              <li class="flex gap-2">
+                <span class="iconify mt-0.5 icon-[mdi--check] shrink-0 text-action"></span>
+                <span>{m('auth.oauth.allow_messages')}</span>
+              </li>
+            {:else}
+              {#if request.scopes.includes('chatto:rooms:read')}
+                <li class="flex gap-2">
+                  <span class="iconify mt-0.5 icon-[mdi--check] shrink-0 text-action"></span>
+                  <span>{m('auth.oauth.allow_rooms_read')}</span>
+                </li>
+              {/if}
+              {#if request.scopes.includes('chatto:rooms:write')}
+                <li class="flex gap-2">
+                  <span class="iconify mt-0.5 icon-[mdi--check] shrink-0 text-action"></span>
+                  <span>{m('auth.oauth.allow_rooms_write')}</span>
+                </li>
+              {/if}
+              {#if request.scopes.includes('chatto:messages:read') || request.scopes.includes('chatto:messages:write')}
+                <li class="flex gap-2">
+                  <span class="iconify mt-0.5 icon-[mdi--check] shrink-0 text-action"></span>
+                  <span>{m('auth.oauth.allow_messages')}</span>
+                </li>
+              {/if}
+            {/if}
+            {#if !request.localRedirect}
+              <li class="flex gap-2">
+                <span class="iconify mt-0.5 icon-[mdi--check] shrink-0 text-action"></span>
+                <span>{m('auth.oauth.allow_remember')}</span>
+              </li>
+            {/if}
           </ul>
         </div>
 

@@ -31,10 +31,7 @@
       "delete_description": "Smettere di pubblicare {origin}?",
       "created": "Vicino aggiunto",
       "updated": "Vicino aggiornato",
-      "deleted": "Vicino eliminato",
-      "testimonial": "Testimonianza (facoltativa)",
-      "testimonial_help": "Spiega perché consigli questo server. Questo testo è pubblico e può contenere fino a 500 caratteri.",
-      "testimonial_label": "Testimonianza pubblica"
+      "deleted": "Vicino eliminato"
     },
     "common": {
       "page_title": "{title} | Ammin",
@@ -204,6 +201,7 @@
       "drag_hint": "Trascina le stanze tra i gruppi per organizzarle. Trascina le intestazioni dei gruppi per riordinare i gruppi. Le stanze archiviate rimangono nel loro set ma sono nascoste ai membri.",
       "drag_group": "Trascina per riordinare il gruppo",
       "drag_room": "Trascina per riordinare la stanza",
+      "drag_link": "Trascina per riordinare il link",
       "new_room": "Nuova stanza",
       "new_link": "Nuovo collegamento",
       "new_group": "Nuovo gruppo",

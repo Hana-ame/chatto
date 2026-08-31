@@ -31,10 +31,7 @@
       "delete_description": "Stop advertising {origin}?",
       "created": "Neighbor added",
       "updated": "Neighbor updated",
-      "deleted": "Neighbor deleted",
-      "testimonial": "推薦文（任意）",
-      "testimonial_help": "このサーバーをおすすめする理由を説明してください。この文章は公開され、500文字まで入力できます。",
-      "testimonial_label": "公開推薦文"
+      "deleted": "Neighbor deleted"
     },
     "common": {
       "page_title": "{title} |管理者",
@@ -204,6 +201,7 @@
       "drag_hint": "グループ間でルームをドラッグして整理します。グループヘッダーをドラッグしてグループを並べ替えます。アーカイブされたルームはセット内に残りますが、メンバーには表示されません。",
       "drag_group": "ドラッグしてグループを並べ替えます",
       "drag_room": "ドラッグしてルームを並べ替えます",
+      "drag_link": "ドラッグしてリンクを並べ替えます",
       "new_room": "新しい部屋",
       "new_link": "新しいリンク",
       "new_group": "新しいグループ",

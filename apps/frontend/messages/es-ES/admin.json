@@ -31,10 +31,7 @@
       "delete_description": "¿Dejar de publicar {origin}?",
       "created": "Vecino añadido",
       "updated": "Vecino actualizado",
-      "deleted": "Vecino eliminado",
-      "testimonial": "Testimonio (opcional)",
-      "testimonial_help": "Explica por qué recomiendas este servidor. Este texto es público y puede contener hasta 500 caracteres.",
-      "testimonial_label": "Testimonio público"
+      "deleted": "Vecino eliminado"
     },
     "common": {
       "page_title": "{title} | administrador",
@@ -204,6 +201,7 @@
       "drag_hint": "Arrastra salas entre grupos para organizarlas. Arrastre los encabezados de los grupos para reordenarlos. Las salas archivadas permanecen en su conjunto pero están ocultas para los miembros.",
       "drag_group": "Arrastrar para reordenar grupo",
       "drag_room": "Arrastrar para reordenar sala",
+      "drag_link": "Arrastrar para reordenar enlace",
       "new_room": "Nueva Sala",
       "new_link": "Nuevo enlace",
       "new_group": "Nuevo grupo",

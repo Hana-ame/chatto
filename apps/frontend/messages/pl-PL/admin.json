@@ -31,10 +31,7 @@
       "delete_description": "Stop advertising {origin}?",
       "created": "Neighbor added",
       "updated": "Neighbor updated",
-      "deleted": "Neighbor deleted",
-      "testimonial": "Opinia (opcjonalnie)",
-      "testimonial_help": "Wyjaśnij, dlaczego polecasz ten serwer. Ten tekst jest publiczny i może zawierać do 500 znaków.",
-      "testimonial_label": "Publiczna opinia"
+      "deleted": "Neighbor deleted"
     },
     "common": {
       "page_title": "{title} | Administrator",
@@ -204,6 +201,7 @@
       "drag_hint": "Przeciągnij pokoje pomiędzy grupami, aby je uporządkować. Przeciągnij nagłówki grup, aby zmienić kolejność grup. Zarchiwizowane pokoje pozostają w swoim zestawie, ale są ukryte przed członkami.",
       "drag_group": "Przeciągnij, aby zmienić kolejność grupy",
       "drag_room": "Przeciągnij, aby zmienić kolejność pokoju",
+      "drag_link": "Przeciągnij, aby zmienić kolejność linku",
       "new_room": "Nowy pokój",
       "new_link": "Nowy link",
       "new_group": "Nowa grupa",

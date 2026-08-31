@@ -31,10 +31,7 @@
       "delete_description": "Stop advertising {origin}?",
       "created": "Neighbor added",
       "updated": "Neighbor updated",
-      "deleted": "Neighbor deleted",
-      "testimonial": "شهادة (اختياري)",
-      "testimonial_help": "اشرح سبب توصيتك بهذا الخادم. هذا النص علني ويمكن أن يحتوي على ما يصل إلى 500 حرف.",
-      "testimonial_label": "شهادة علنية"
+      "deleted": "Neighbor deleted"
     },
     "common": {
       "page_title": "{title} | مسؤل",
@@ -204,6 +201,7 @@
       "drag_hint": "اسحب الغرف بين المجموعات لتنظيمها. اسحب رؤوس المجموعة لإعادة ترتيب المجموعات. تظل الغرف المؤرشفة في مجموعتها ولكنها مخفية عن الأعضاء.",
       "drag_group": "اسحب لإعادة ترتيب المجموعة",
       "drag_room": "اسحب لإعادة ترتيب الغرفة",
+      "drag_link": "اسحب لإعادة ترتيب الرابط",
       "new_room": "غرفة جديدة",
       "new_link": "رابط جديد",
       "new_group": "مجموعة جديدة",

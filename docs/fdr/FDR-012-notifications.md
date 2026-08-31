@@ -1,7 +1,7 @@
 # FDR-012: Notifications
 
 **Status:** Experimental
-**Last reviewed:** 2026-08-29
+**Last reviewed:** 2026-08-30
 
 ## Overview
 
@@ -20,14 +20,15 @@ targets, unread counts, read state, or deletion semantics.
 
 ## Behavior
 
-- The notification page is one chronological list containing both Unread and
-  Read activity. Unread reactions are Ambient and use a neutral treatment;
-  every other current cause is Important and uses Chatto's notification
-  orange. Read rows are visually muted while remaining fully interactive. The
-  list does not use a separate unread dot on each row.
+- The notification page is one newest-activity-first chronological list that
+  contains both Unread and Read activity. Unread reactions are Ambient and use
+  a neutral treatment. Every other current cause is Important and uses Chatto's
+  notification orange. Read rows are visually muted while remaining fully
+  interactive. The list does not use a separate unread dot on each row.
 - Badge activity does not add a row to the notification page. It adds a neutral
-  unread dot to the applicable room or thread. An orange notification indicator
-  takes priority when both types of attention apply.
+  unread dot to the applicable room. A thread-scoped Badge contributes to its
+  parent room. An orange notification indicator takes priority when both types
+  of attention apply.
 - The list is divided into Today, Yesterday, This Week, and month sections
   using the preferred time zone of the account on each server.
 - Rows use concise, full localized sentences without message previews.
@@ -152,7 +153,7 @@ make the state clear without color alone.
 
 Badge decisions use the existing room and thread read boundaries. A thread
 Badge rolls up to its parent room. Reading the thread clears its contribution
-to both indicators. The Message Read Cursor remains separate and places the
+to the room indicator. The Message Read Cursor remains separate and places the
 New messages separator. Cursor lag alone does not create a room dot. Thus,
 setting Room messages to Off prevents neutral dots for ordinary root messages
 without disabling last-read tracking. Badge does not update an operating-system
@@ -169,9 +170,8 @@ rooms. Its room-group and channel-room cells are not applicable and cannot be
 changed. Room-message policy applies at server, room-group, and channel-room
 scope. Its direct-message-room cells are not applicable and cannot be changed.
 
-A room uses the group that contains it at the exact source-event sequence. A
-room move changes future effective policy. It does not change historical
-notification decisions. Deleting a group leaves its saved user preferences
+A room uses the group that contains it when the durable notification
+materializer processes the source activity. Deleting a group leaves its saved user preferences
 inert. Group IDs are not reused, and deletion does not fan out cleanup writes
 to user configuration aggregates.
 
@@ -181,29 +181,33 @@ authorization fence. A concurrent membership loss, room deletion, or group
 deletion can leave a newly committed preference inert, but it cannot change
 another user's state or grant access to the deleted scope.
 
-### 4. Source-time decisions are durable and replayable
+### 4. Materialization uses current policy and visibility
 
-**Decision:** Notification recipients and effective source-time policy are
-derived asynchronously from committed domain facts. Later membership,
-preference, or thread-follow changes do not rewrite that historical decision.
+**Decision:** Notification recipients and effective policy are derived
+asynchronously from committed domain facts and the current projected state when
+the durable materializer processes them. Membership, preference, room-group,
+authorization, and thread-follow changes that are already visible can affect
+the decision.
 A user's own activity does not notify them. One source activity produces at
 most one delivery decision per recipient and cause. For example, a root
 message that contains `@all` and a direct mention can produce room-message,
 `@all`, and direct-mention decisions for one recipient. If these decisions use
 a notification mode, they create separate occurrences. Badge decisions
 coalesce into one latest-value marker for the applicable room or thread.
-Channel-room recipients must have `message.read` at that same source sequence.
+Channel-room recipients must currently have `message.read`.
 A direct mention also permits its recipient when `message.read-interactions`
 applies, because the same message fact creates the interaction relationship.
 
-**Why:** Notifications describe what happened under the policy and visibility
-that applied at that moment. Deriving from committed facts makes retries
-idempotent without adding notification-only trigger events to permanent domain
-history.
+**Why:** Notifications are eventual attention, not permanent domain facts.
+Current state avoids sending work that is already stale and avoids retaining
+historical authorization and policy views. The durable source consumer does not
+acknowledge until its bounded notification output is stored, so recovery does
+not require notification-only events in permanent domain history.
 
 **Tradeoff:** Delivery is eventually consistent with the source activity, and
-the implementation must preserve a recoverable handoff between the domain log
-and the bounded notification lifecycle. ADR-076 defines that architecture.
+changes before materialization can change or suppress its attention. The
+implementation must preserve a recoverable handoff between the domain log and
+the bounded notification lifecycle. ADR-076 defines that architecture.
 
 ### 5. Current visibility remains a privacy boundary
 
@@ -232,12 +236,15 @@ success.
 
 **Decision:** Realtime notification updates tell clients to replace their
 finite notification view from authoritative server state. Badge updates tell
-clients to replace the affected room state and, when applicable, the complete
-followed-thread viewer state. Followed-thread Badge attention also contributes
-to the My Threads navigation indicator. Unread totals remain exact even when
-rows are grouped. The client also performs quiet periodic
-reconciliation so a lost transient update cannot leave counts stale
-indefinitely.
+clients to replace only unread and Slow Mode activity for the affected room.
+This update does not repeat room membership or permission decisions. An active
+Badge marker can advance to a newer source in the same scope without another
+realtime update because its public unread value stays true. My Threads can
+decorate a followed thread from matching unread occurrences in the finite
+notification view. The thread read cursor remains the only source of
+reply-unread state. Unread totals remain exact even when rows are grouped. The
+client also performs quiet periodic reconciliation so a lost transient update
+cannot leave counts stale indefinitely.
 
 **Why:** A transient notification invalidation is not durable notification
 state. Rebuilding the finite projection avoids exposing internal storage
@@ -357,4 +364,4 @@ separate permission to manage another user's notification list.
 - **ADRs:** ADR-012, ADR-028, ADR-036, ADR-038, ADR-051, ADR-069, ADR-076,
   ADR-077, ADR-080, ADR-082
 - **FDRs:** FDR-001, FDR-002, FDR-004, FDR-005, FDR-006, FDR-007, FDR-011,
-  FDR-013, FDR-018, FDR-019, FDR-027, FDR-038, FDR-039
+  FDR-013, FDR-018, FDR-019, FDR-027, FDR-038, FDR-039, FDR-044

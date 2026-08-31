@@ -254,7 +254,8 @@ reconstruction. Legacy cohort paths remain outside application S3 expiry.
 
 | Projection | Contract | Payload store | Pointer store | Publication |
 | ---------- | -------- | ------------- | ------------- | ----------- |
-| Room Directory, Notification Decisions, Server Config, Room Group Layout, Call State, Reactions, Content Keys, RBAC | `v1` per projection | `PROJECTION_SNAPSHOTS` or configured S3 | Encrypted per-projection `RUNTIME_STATE` pointer with KV revision OCC | Elected publisher checks hourly; cold/delta replay publishes immediately and unchanged state refreshes at 23 hours. Notification Decisions caps restore and publication at the notification worker's full acknowledged EVT floor |
+| Room Directory, Room Group Layout, Call State, Reactions, Content Keys, RBAC | `v1` per projection | `PROJECTION_SNAPSHOTS` or configured S3 | Encrypted per-projection `RUNTIME_STATE` pointer with KV revision OCC | Elected publisher checks hourly; cold/delta replay publishes immediately and unchanged state refreshes at 23 hours |
+| Notification Decisions, Server Config | `v2` per projection | `PROJECTION_SNAPSHOTS` or configured S3 | Encrypted per-projection `RUNTIME_STATE` pointer with KV revision OCC | Elected publisher checks hourly; cold/delta replay publishes immediately and unchanged state refreshes at 23 hours |
 | Notifications | `v2` | `PROJECTION_SNAPSHOTS` or configured S3 | Encrypted per-projection `RUNTIME_STATE` pointer with KV revision OCC | Binds snapshots to the independent `NOTIFICATIONS` stream identity and sequence |
 | Threads, Mentionables | `v2` per projection | `PROJECTION_SNAPSHOTS` or configured S3 | Encrypted per-projection `RUNTIME_STATE` pointer with KV revision OCC | Threads restores channel-room identity, canonical message-to-thread mappings, and post-time interaction causes. The key-shredding request boundary invalidates pre-request snapshot contracts |
 | Room Timeline | `v7` | `PROJECTION_SNAPSHOTS` or configured S3 | Encrypted per-projection `RUNTIME_STATE` pointer with KV revision OCC | Restores call lifecycle and Threading Mode change rows plus active pin associations, and rebuilds Slow Mode's latest-original-post index; earlier contracts remain isolated |
@@ -266,7 +267,7 @@ reconstruction. Legacy cohort paths remain outside application S3 expiry.
 | Runtime area       | Registered projector | Consumes                                                   | Read models / primary readers                                                             |
 | ------------------ | -------------------- | ---------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
 | Room directory     | Room Directory       | `evt.room.>`                                               | `RoomCatalogProjection`, `RoomMembershipProjection`, `RoomBanProjection`; room metadata including Slow Mode and Threading Mode, room/member queries, room authorization, and Universal-room effective membership |
-| Notification derivation and privacy | Notification Decisions | Focused message/reaction sources plus account, room membership/kind, room-group placement, RBAC, server/room-group/room notification-policy, and thread-follow facts | Current decision state plus a second in-memory evaluator at the worker position; compact intervening event deltas preserve exact source and administrative boundaries without per-message full-state copies. It resolves a room's group at the exact source sequence. Snapshot restore/publication and delta release follow the shared consumer's confirmed acknowledgement floor |
+| Notification derivation and privacy | Notification Decisions | Focused message/reaction sources plus account, room membership/kind, room-group placement, RBAC, server/room-group/room notification-policy, and thread-follow facts | Compact current decision state. The materializer waits until this projection includes its source fact, then uses all state that is current on that replica. Snapshots follow the standard projection lifecycle without a durable-worker cutoff |
 | Notification list | Notifications | `notifications.signalled`, `notifications.read`, `notifications.removed`, `notifications.alert_resolved` | Current exact occurrence state, minimal anti-recreation tombstones, source-signal stream sequences for secure deletion, semantic expiry, list/count reads, realtime replacement, and push-delivery idempotency |
 | Room organization  | Room Group Layout    | `evt.group.>`, `evt.layout.>`                              | `RoomGroupProjection`, `RoomLayoutProjection`; sidebar groups, sidebar links, and mixed sidebar item ordering |
 | Room timeline      | Room Timeline        | `evt.room.>`, `evt.user.*.user_key_shredding_requested`, `evt.user.*.user_key_shredded` | Visible room timeline including call start/end and Threading Mode change facts, latest message bodies, tombstone timestamps, hidden echoes, current attachment-bearing message index, direct message-post lookup, active canonical pinned-message associations, the latest pin-fact marker per room, and latest original post by room and author |
@@ -274,7 +275,7 @@ reconstruction. Legacy cohort paths remain outside application S3 expiry.
 | Threads            | Threads              | `evt.room.*.room_created`, `evt.room.*.room_deleted`, `evt.room.*.thread_created`, `evt.room.*.thread_followed`, `evt.room.*.thread_unfollowed`, `evt.room.*.message_posted`, `evt.room.*.message_edited`, `evt.room.*.message_retracted`, `evt.user.*.user_key_shredding_requested`, `evt.user.*.user_key_shredded` | Per-thread existence, reply logs, summaries, participants, reply counts, follow state, canonical message-to-thread mappings, and account-to-thread interaction relationships with typed post-time causes |
 | Reactions          | Reactions            | `evt.room.>`                                               | Current canonical per-message reaction sets, echo-to-original reaction aliases, and room-scoped snapshot OCC positions; intentionally broad so reaction writes can OCC against the room tail |
 | Voice calls        | Call State           | `evt.room.>`                                               | Current LiveKit call session, participants, active room IDs, and room-scoped snapshot OCC positions |
-| Server/user config | Server Config        | `evt.config.>`, selected user cleanup/preference facts     | `ConfigModel`; server config, branding refs, Neighbor origins, testimonials, and revisions, user preferences, explicit per-signal-class server/room-group/room notification delivery modes, blocked usernames; group deletion leaves group override maps inert; historical coarse notification-level facts decode but have no projected effect |
+| Server/user config | Server Config        | `evt.config.>`, selected user cleanup/preference facts     | `ConfigModel`; server config, branding refs, Neighbor origins and revisions, user preferences, explicit per-signal-class server/room-group/room notification delivery modes, blocked usernames; historical Neighbor testimonial facts advance revisions but their text has no projected effect; group deletion leaves group override maps inert; historical coarse notification-level facts decode but have no projected effect |
 | Users              | Users                | `evt.user.>`                                               | `UserModel`; account/profile/custom-status state, verified emails, lookup digests, and encrypted user PII |
 | User authentication | User Auth            | Focused account, password, external-identity, consent, deletion, and key-shredding user facts | `UserModel`; password verifiers, auth generations, external identity links, and OAuth consent keyed by stable client ID (legacy facts by redirect origin); always cold-replayed |
 | OAuth clients        | OAuth Clients        | `evt.oauth_client.>`                                       | `OAuthClientModel`; validated metadata and callback origins for successfully authorized clients, distinct authorized-user counts, and administrative default/trusted/blocked policy; always cold-replayed |
@@ -330,10 +331,16 @@ serialization cannot reach authentication state.
 Bot account kind and owner ID are durable user-aggregate fields projected by
 `UserProjection`; it also maintains the current owner-to-bot index used for
 management, reassignment, and cascade deletion. `UserAuthProjection` replays
-the latest bot API-key verifier and creation/rotation timestamps from EVT. When
-it observes a durable API-key rotation, it closes process-local realtime
-watchers that use the superseded verifier generation. It also replays the
-active incoming webhook IDs, names, verifiers, and creation times. A
+the active bot API-key IDs, names, verifiers, and creation times from EVT.
+Historical create and rotation events without key metadata project as the
+synthetic `legacy` default key. A historical rotation replaces every active
+verifier during replay. Current commands do not write replace-all rotations.
+A revocation removes only the selected verifier. When either fact takes effect,
+the projection closes process-local realtime watchers that used a removed
+verifier. A rollback-visible key uses a rotation-shaped revocation fence so an
+older binary cannot restore the raw revoked key after rollback. The projection
+also replays the active incoming webhook IDs, names, verifiers, and creation
+times. A
 historical verifier-replacement fact from the unreleased
 implementation replaces only the selected verifier during replay. Current
 commands do not write this fact. Revocation removes only the selected webhook.

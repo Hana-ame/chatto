@@ -48,7 +48,7 @@ func (c *TLSConfig) HTTPPortOrDefault() int {
 
 type WebserverConfig struct {
 	URL            string   `toml:"url" env:"CHATTO_WEBSERVER_URL" comment:"Public URL where the webserver is accessible. Used for generating absolute URLs."`
-	AllowedOrigins []string `toml:"allowed_origins,commented" env:"CHATTO_WEBSERVER_ALLOWED_ORIGINS" comment:"Additional exact browser origins that can use cookie authentication and publish the bundled frontend OAuth identity through a reverse proxy. Do not include paths or configure both HTTP and HTTPS for the same request host. Wildcards apply only to CORS and authorize neither behavior."`
+	AllowedOrigins []string `toml:"allowed_origins,commented" env:"CHATTO_WEBSERVER_ALLOWED_ORIGINS" comment:"Additional exact public origins that can use cookie authentication, publish the bundled frontend OAuth identity, and serve MCP through a reverse proxy. Do not include paths or configure both HTTP and HTTPS for the same request host. Wildcards apply only to CORS and authorize none of these behaviors."`
 	Port           int      `toml:"port" env:"CHATTO_WEBSERVER_PORT" comment:"Port for the webserver to listen on."`
 	// 【本地改动 92d33bff】webserver 监听地址。上游只有 :port(绑定所有接口)，
 	// 本地加此字段是为了 cloudcone 部署：nginx 反代 + chatto 只监听 127.0.0.1，
@@ -57,6 +57,8 @@ type WebserverConfig struct {
 	// AllowedOrigins/OAuthRedirectOrigins"，那次判断已被推翻——upstream 仍在使用
 	// AllowedOrigins（config.go 校验、http_server/cimd.go、request_auth.go 三处），
 	// OAuthRedirectOrigins 已被上游删除，AllowedOrigins 保留不动。
+	// 2026-08-30 合并 upstream：字段与上游注释再次冲突，本次跟随上游注释措辞（新增
+	// "serve MCP"），BindAddress 字段继续保留（cloudcone 只监听 127.0.0.1）。
 	BindAddress            string        `toml:"bind_address,commented" env:"CHATTO_WEBSERVER_BIND_ADDRESS" comment:"Address to bind the webserver. Default: all interfaces (0.0.0.0). Set to 127.0.0.1 to restrict access to localhost only."`
 	TrustedProxies         []string      `toml:"trusted_proxies,commented" env:"CHATTO_WEBSERVER_TRUSTED_PROXIES" comment:"IP addresses or CIDR ranges of reverse proxies allowed to supply forwarded host and client-IP headers. Default: none."`
 	APICompression         *bool         `toml:"api_compression" env:"CHATTO_WEBSERVER_API_COMPRESSION" comment:"Compress eligible ConnectRPC API responses with gzip. Disable to reduce compressor memory and CPU at the cost of higher network usage. Default: true."`
@@ -113,6 +115,68 @@ type ExporterConfig struct {
 	Path              string   `toml:"path,commented" env:"CHATTO_EXPORTER_PATH" comment:"HTTP path for Prometheus scrapes. Default: /metrics."`
 	S3RefreshInterval Duration `toml:"s3_refresh_interval,commented" env:"CHATTO_EXPORTER_S3_REFRESH_INTERVAL" comment:"How often to refresh cached S3 bucket size metrics. Default: 15m."`
 	S3Timeout         Duration `toml:"s3_timeout,commented" env:"CHATTO_EXPORTER_S3_TIMEOUT" comment:"Timeout for one S3 bucket-size refresh. Default: 30s."`
+}
+
+// MCPConfig controls the experimental MCP routes on the public HTTP server.
+type MCPConfig struct {
+	Enabled bool `toml:"enabled" env:"CHATTO_MCP_ENABLED" comment:"Expose the experimental MCP routes on the public HTTP server. Default: false."`
+}
+
+const (
+	// MCPMessagesReadScope grants bounded message reads through MCP.
+	MCPMessagesReadScope = "chatto:messages:read"
+	// MCPMessagesWriteScope grants message creation through MCP.
+	MCPMessagesWriteScope = "chatto:messages:write"
+	// MCPRoomsReadScope grants bounded room-directory reads through MCP.
+	MCPRoomsReadScope = "chatto:rooms:read"
+	// MCPRoomsWriteScope grants room membership changes through MCP.
+	MCPRoomsWriteScope = "chatto:rooms:write"
+)
+
+// MCPOAuthScopes returns the complete sorted scope set for the experimental
+// MCP tool catalog. Callers can safely modify the returned slice.
+func MCPOAuthScopes() []string {
+	return []string{
+		MCPMessagesReadScope,
+		MCPMessagesWriteScope,
+		MCPRoomsReadScope,
+		MCPRoomsWriteScope,
+	}
+}
+
+// MCPResourceURL returns the canonical MCP endpoint and OAuth resource. MCP is
+// mounted on the public HTTP server, so it shares the canonical webserver.url
+// origin.
+func (c ChattoConfig) MCPResourceURL() string {
+	publicURL, err := url.Parse(strings.TrimSpace(c.Webserver.URL))
+	if err != nil || publicURL.Scheme == "" || publicURL.Host == "" {
+		return ""
+	}
+	return (&url.URL{Scheme: publicURL.Scheme, Host: publicURL.Host, Path: "/mcp"}).String()
+}
+
+// MCPResourceURLs returns each MCP endpoint and OAuth resource served by this
+// configuration. The first resource uses webserver.url. Later resources use
+// exact non-wildcard webserver.allowed_origins entries.
+func (c ChattoConfig) MCPResourceURLs() []string {
+	canonical := c.MCPResourceURL()
+	if canonical == "" {
+		return nil
+	}
+	origins := c.Webserver.ServerOrigins()
+	resources := make([]string, 0, len(origins))
+	resources = append(resources, canonical)
+	for index, origin := range origins {
+		if index == 0 {
+			continue
+		}
+		publicURL, err := url.Parse(origin)
+		if err != nil || publicURL.Scheme == "" || publicURL.Host == "" {
+			continue
+		}
+		resources = append(resources, (&url.URL{Scheme: publicURL.Scheme, Host: publicURL.Host, Path: "/mcp"}).String())
+	}
+	return resources
 }
 
 // SearchConfig controls Chatto's consumer-facing search API and UI.

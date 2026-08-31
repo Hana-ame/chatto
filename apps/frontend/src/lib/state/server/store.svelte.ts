@@ -63,6 +63,7 @@ import {
   scrubRegisteredFollowedThreadMessage,
   scrubRegisteredFollowedThreadRoom,
   scrubRegisteredFollowedThreadUser,
+  refreshRegisteredFollowedThreadQueries,
   scrubRegisteredRoomMemberUser,
   updateRegisteredFollowedThreadSummary
 } from '$lib/query/cacheRegistry';
@@ -394,6 +395,9 @@ export class ServerStateStore {
 
   private ingestProjectionEvent(event: RealtimeProjectionEvent): void {
     const previousViewer = this.projection.viewer;
+    const resetsProjection = event.operations.some(
+      (operation) => operation.operation.case === 'reset'
+    );
     const existingTimelineRows = new SvelteSet<string>();
     for (const operation of event.operations) {
       if (operation.operation.case !== 'roomTimelineEventUpsert') continue;
@@ -523,6 +527,9 @@ export class ServerStateStore {
             this.#roomPins[update.roomId]?.applyMessageUpdate(update.event.id, projectedMessage);
           }
           const threadSummary = projectedMessage?.thread;
+          if (projectedMessage?.threadRootEventId) {
+            refreshRegisteredFollowedThreadQueries(this.serverId);
+          }
           if (
             update.event &&
             projectedMessage &&
@@ -534,7 +541,7 @@ export class ServerStateStore {
               threadRootEventId: update.event.id,
               replyCount: threadSummary.replyCount,
               lastReplyAt: threadSummary.lastReplyAt?.toDate().toISOString() ?? null,
-              hasUnread: threadSummary.viewerState?.hasUnread
+              hasUnreadReplies: threadSummary.viewerState?.hasUnreadReplies
             });
           }
           if (update.event && !update.reactionChange) {
@@ -604,6 +611,11 @@ export class ServerStateStore {
           }
           break;
         }
+        case 'roomViewerActivityReplace': {
+          const replacement = operation.operation.value;
+          this.roomUnread.acknowledgeRoomProjection(replacement.roomId, replacement.hasUnread);
+          break;
+        }
         case 'activeCallsReplace': {
           const calls = operation.operation.value.calls;
           this.reconcileActiveCallTransition(event, calls);
@@ -618,6 +630,10 @@ export class ServerStateStore {
             this.serverId,
             this.projection.threadViewerStates
           );
+          // A reply updates this projection even when the room timeline is not
+          // retained. Refresh the feed so its preview, count, and activity order
+          // do not depend on an open room or thread pane.
+          if (!resetsProjection) refreshRegisteredFollowedThreadQueries(this.serverId);
           for (const [roomId, page] of this.projection.timelines) {
             for (const projectedEvent of page.events) {
               if (

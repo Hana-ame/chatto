@@ -42,6 +42,9 @@ unsupported and asks the operator to upgrade them. A 0.5 server accepts only
 realtime protocol 2; older clients must migrate to the server-scoped projection
 stream.
 
+Protocol 2 uses `room_viewer_activity_replace` for room unread and Slow Mode
+changes. This operation does not repeat room membership and permission state.
+
 The 0.5 authentication boundary also replaces sliding human bearer tokens with
 short-lived access tokens and rotating refresh credentials. A 0.5 server
 rejects bearer records issued before that change, so affected users sign in
@@ -67,6 +70,15 @@ The new fields on
 `chatto.auth.v1.CreateExternalIdentityAccountResponse` are additive at the
 protobuf wire level. Programmatic clients can use the complete renewable pair.
 The bundled same-origin client completes this flow with its HttpOnly cookie.
+
+Chatto 0.5 renames `ThreadViewerState.has_unread` to
+`has_unread_replies`. Regenerate clients and update
+ProtoJSON consumers. Protobuf tag `2` keeps its Boolean wire type, but its
+source and JSON names change. Its meaning is now limited to replies after the
+thread read cursor. Notification state is not part of the thread viewer-state
+contract. `FollowedThread.latest_reply` is additive.
+Deploy 0.5 clients and servers together. Existing stored follow facts, read
+cursors, and notification state remain valid.
 
 Chatto 0.5 removes `current_password` from
 `chatto.admin.v1.DeleteUserRequest`. Regenerate custom clients and stop sending

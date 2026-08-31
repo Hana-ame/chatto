@@ -31,10 +31,7 @@
       "delete_description": "Stop advertising {origin}?",
       "created": "Neighbor added",
       "updated": "Neighbor updated",
-      "deleted": "Neighbor deleted",
-      "testimonial": "Reference (volitelné)",
-      "testimonial_help": "Vysvětlete, proč tento server doporučujete. Tento text je veřejný a může obsahovat až 500 znaků.",
-      "testimonial_label": "Veřejná reference"
+      "deleted": "Neighbor deleted"
     },
     "common": {
       "page_title": "{title} | Administrace",
@@ -204,6 +201,7 @@
       "drag_hint": "Místnosti mezi skupinami uspořádáte přetažením. Přetažením záhlaví skupin změníte pořadí skupin. Archivované místnosti zůstávají ve své sadě, ale jsou před členy skryté.",
       "drag_group": "Přetažením změníte pořadí skupiny",
       "drag_room": "Přetažením změníte pořadí místnosti",
+      "drag_link": "Přetažením změníte pořadí odkazu",
       "new_room": "Nový pokoj",
       "new_link": "Nový odkaz",
       "new_group": "Nová skupina",

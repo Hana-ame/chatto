@@ -31,10 +31,7 @@
       "delete_description": "Stop advertising {origin}?",
       "created": "Neighbor added",
       "updated": "Neighbor updated",
-      "deleted": "Neighbor deleted",
-      "testimonial": "Omtale (valgfritt)",
-      "testimonial_help": "Forklar hvorfor du anbefaler denne serveren. Teksten er offentlig og kan inneholde opptil 500 tegn.",
-      "testimonial_label": "Offentlig omtale"
+      "deleted": "Neighbor deleted"
     },
     "common": {
       "page_title": "{title} | Admin",
@@ -204,6 +201,7 @@
       "drag_hint": "Dra rom mellom grupper for å organisere dem. Dra gruppeoverskrifter for å omorganisere grupper. Arkiverte rom forblir i settet, men er skjult for medlemmene.",
       "drag_group": "Dra for å omorganisere gruppen",
       "drag_room": "Dra for å omorganisere rommet",
+      "drag_link": "Dra for å omorganisere lenken",
       "new_room": "Nytt rom",
       "new_link": "Ny lenke",
       "new_group": "Ny gruppe",

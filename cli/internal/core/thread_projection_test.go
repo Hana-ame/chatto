@@ -277,8 +277,43 @@ func TestThreadProjection_RepliesAppended(t *testing.T) {
 	if got, want := *metadata.LastReplyAt, fixedTime(3); !got.Equal(want) {
 		t.Errorf("ThreadMetadata LastReplyAt = %v, want %v", got, want)
 	}
+	if got, want := metadata.LatestReplyEventID, "ENV-R2"; got != want {
+		t.Errorf("ThreadMetadata LatestReplyEventID = %q, want %q", got, want)
+	}
 	if !slices.Equal(metadata.ParticipantIDs, []string{"U2", "U3"}) {
 		t.Errorf("ThreadMetadata ParticipantIDs = %v, want [U2 U3]", metadata.ParticipantIDs)
+	}
+}
+
+func TestThreadProjection_LatestReplyUsesStreamOrderDespiteClockSkew(t *testing.T) {
+	p := NewThreadProjection()
+	applyAll(t, p, []*evtv1.Event{
+		postedEvent(postedOpts{envelopeID: "ENV-R1", eventID: "REPLY1", roomID: "R1", actorID: "U1", inThread: "ROOT", at: 3}),
+		postedEvent(postedOpts{envelopeID: "ENV-R2", eventID: "REPLY2", roomID: "R1", actorID: "U2", inThread: "ROOT", at: 2}),
+	})
+
+	metadata := p.ThreadMetadata("ROOT")
+	if got, want := metadata.LatestReplyEventID, "ENV-R2"; got != want {
+		t.Fatalf("LatestReplyEventID = %q, want stream-latest %q", got, want)
+	}
+	if metadata.LastReplyAt == nil || !metadata.LastReplyAt.Equal(fixedTime(2)) {
+		t.Fatalf("LastReplyAt = %v, want stream-latest time %v", metadata.LastReplyAt, fixedTime(2))
+	}
+}
+
+func TestThreadProjection_LatestReplyRetainsZeroTimestampEvent(t *testing.T) {
+	p := NewThreadProjection()
+	first := postedEvent(postedOpts{envelopeID: "ENV-R1", eventID: "REPLY1", roomID: "R1", actorID: "U1", inThread: "ROOT", at: 1})
+	latest := postedEvent(postedOpts{envelopeID: "ENV-R2", eventID: "REPLY2", roomID: "R1", actorID: "U2", inThread: "ROOT", at: 2})
+	latest.CreatedAt = nil
+	applyAll(t, p, []*evtv1.Event{first, latest})
+
+	metadata := p.ThreadMetadata("ROOT")
+	if got, want := metadata.LatestReplyEventID, "ENV-R2"; got != want {
+		t.Fatalf("LatestReplyEventID = %q, want stream-latest %q", got, want)
+	}
+	if metadata.LastReplyAt != nil {
+		t.Fatalf("LastReplyAt = %v, want nil for zero-timestamp latest reply", metadata.LastReplyAt)
 	}
 }
 
@@ -429,6 +464,9 @@ func TestThreadProjection_MetadataRecomputesWhenLatestReplyRetracted(t *testing.
 	}
 	if got, want := *metadata.LastReplyAt, fixedTime(2); !got.Equal(want) {
 		t.Errorf("LastReplyAt = %v, want %v", got, want)
+	}
+	if got, want := metadata.LatestReplyEventID, "ENV-R1"; got != want {
+		t.Errorf("LatestReplyEventID = %q, want %q", got, want)
 	}
 	if !slices.Equal(metadata.ParticipantIDs, []string{"U1"}) {
 		t.Errorf("ParticipantIDs = %v, want [U1]", metadata.ParticipantIDs)

@@ -31,10 +31,7 @@
       "delete_description": "Stop advertising {origin}?",
       "created": "Neighbor added",
       "updated": "Neighbor updated",
-      "deleted": "Neighbor deleted",
-      "testimonial": "המלצה (רשות)",
-      "testimonial_help": "הסבירו מדוע אתם ממליצים על שרת זה. הטקסט פומבי ויכול להכיל עד 500 תווים.",
-      "testimonial_label": "המלצה פומבית"
+      "deleted": "Neighbor deleted"
     },
     "common": {
       "page_title": "{title} | מנהל מערכת",
@@ -204,6 +201,7 @@
       "drag_hint": "גרור חדרים בין קבוצות כדי לארגן אותם. גרור את כותרות הקבוצות כדי לסדר מחדש את הקבוצות. חדרים בארכיון נשארים בסט שלהם אבל מוסתרים מהחברים.",
       "drag_group": "גרור כדי לסדר מחדש את הקבוצה",
       "drag_room": "גרור כדי לסדר מחדש את החדר",
+      "drag_link": "גרור כדי לסדר מחדש את הקישור",
       "new_room": "חדר חדש",
       "new_link": "קישור חדש",
       "new_group": "קבוצה חדשה",

@@ -8,13 +8,15 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('$lib/auth/csrf', () => ({ csrfFetch: mocks.csrfFetch }));
 
-function consentResponse(overrides: Record<string, string> = {}) {
+function consentResponse(overrides: Record<string, unknown> = {}) {
 	return {
 		redirectUri: 'https://callback.example/oauth/callback',
 		redirectOrigin: 'https://callback.example',
 		clientId: 'https://client.example/oauth/metadata.json',
 		clientName: 'Example Client',
 		clientUri: 'https://client.example',
+		resource: '',
+		scopes: [],
 		...overrides
 	};
 }
@@ -22,6 +24,57 @@ function consentResponse(overrides: Record<string, string> = {}) {
 describe('OAuth consent client identity', () => {
 	beforeEach(() => {
 		mocks.csrfFetch.mockReset();
+	});
+
+	it('shows the exact MCP room scope instead of broad message access', async () => {
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async () =>
+				new Response(
+					JSON.stringify(
+						consentResponse({
+							resource: 'https://chat.example/mcp',
+							scopes: ['chatto:rooms:read']
+						})
+					),
+					{ status: 200 }
+				)
+			)
+		);
+
+		const { getByText } = render(ConsentPage);
+
+		await expect.element(getByText('It can list the rooms that are available to you.')).toBeVisible();
+		await expect.element(getByText('It can join and leave rooms as you.')).not.toBeInTheDocument();
+		await expect.element(getByText('It can read and send messages as you.')).not.toBeInTheDocument();
+	});
+
+	it('shows every capability in the complete MCP grant', async () => {
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async () =>
+				new Response(
+					JSON.stringify(
+						consentResponse({
+							resource: 'https://chat.example/mcp',
+							scopes: [
+								'chatto:messages:read',
+								'chatto:messages:write',
+								'chatto:rooms:read',
+								'chatto:rooms:write'
+							]
+						})
+					),
+					{ status: 200 }
+				)
+			)
+		);
+
+		const { getByText } = render(ConsentPage);
+
+		await expect.element(getByText('It can list the rooms that are available to you.')).toBeVisible();
+		await expect.element(getByText('It can join and leave rooms as you.')).toBeVisible();
+		await expect.element(getByText('It can read and send messages as you.')).toBeVisible();
 	});
 
 	afterEach(() => {
@@ -72,5 +125,35 @@ describe('OAuth consent client identity', () => {
 			'/oauth/consent/deny',
 			expect.objectContaining({ method: 'POST' })
 		);
+	});
+
+	it('warns about a local callback and does not promise remembered consent', async () => {
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async () =>
+				new Response(
+					JSON.stringify(
+						consentResponse({
+							redirectUri: 'http://tool.feature.localhost:6276/oauth/callback',
+							redirectOrigin: 'http://tool.feature.localhost:6276',
+						})
+					),
+					{ status: 200 }
+				)
+			)
+		);
+
+		const { getByText } = render(ConsentPage);
+
+		await expect
+			.element(
+				getByText(
+					'This app will receive access through a local address on this device. Continue only if you started this request. Callback: http://tool.feature.localhost:6276'
+				)
+			)
+			.toBeVisible();
+		await expect
+			.element(getByText('Chatto will remember this approval for this address.'))
+			.not.toBeInTheDocument();
 	});
 });

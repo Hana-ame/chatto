@@ -172,19 +172,30 @@ Never leave a dev stack running in a detached or yielded terminal session.
 - 部署 chatto 的唯一正确来源：**GitHub Actions `build-release` workflow
   (push 到 `main` 分支触发) 的 rolling release**，产物内嵌前端。`build-release`
   自身含 `Test CLI` 步骤（`mise test-cli`），测试红则不发产物。
-- 部署流程：
+- 部署流程（2026-08-31 更新）：产物**只在 cloudcone 上**下载与替换，
+  不再本机下载再上传。
   1. `git push origin main`（可含提交改动）触发 `build-release`（同时并行触发
      `ci.yml` 的完整测试矩阵）。
   2. `gh run watch <run-id> -R Hana-ame/chatto --exit-status` 等构建成功。
-  3. **用 `curl -L` 下载 release 资产**（rolling release tag 固定为 `ci/dev`，
-     每次构建删除重建，永远指向最新）：
+  3. **ssh 到 cloudcone，在 cloudcone 上直接下载并替换**（rolling release tag
+     固定为 `ci/dev`，每次构建删除重建，永远指向最新）：
      ```sh
+     ssh cloudcone
+     cd /opt/chatto
      curl -fL -o /tmp/chatto_Linux_x86_64.tar.gz https://github.com/Hana-ame/chatto/releases/download/ci/dev/chatto_Linux_x86_64.tar.gz
-     tar -xzf /tmp/chatto_Linux_x86_64.tar.gz -C /tmp/opencode chatto
+     tar -xzf /tmp/chatto_Linux_x86_64.tar.gz -C /tmp chatto
+     cp chatto chatto.pre$(date -u +%Y%m%dT%H%M%SZ)   # 先备份现役二进制
+     systemctl stop chatto
+     mv /tmp/chatto chatto.new && mv chatto.new chatto && chmod +x chatto
+     systemctl start chatto
      ```
-  4. 经 `~/script/ssh/cloudcone.sh` 上传：先写 `/opt/chatto/chatto.new`，
-     再 `systemctl stop chatto && mv .new chatto && systemctl start chatto`。
-  5. 验证：`curl 127.0.0.1:4000` 与 `curl -k https://chatto.moonchan.xyz/`
+     为什么在服务器上而不是本机下载再上传（2026-08-31 部署实测踩坑）：本机访问
+     GitHub 必须走 SOCKS 代理（`172.29.80.1:10808`），且本机到 cloudcone 的
+     scp/SFTP 通道不稳定（两次挂起在 SFTP subsystem，直连 ssh 偶发 banner
+     超时）；cloudcone 是公网 VPS，直连 GitHub 稳定。本机断连时可用
+     `~/script/ssh/cloudcone.sh`（经代理）连服务器。产物核对：替换后
+     `sha256sum /opt/chatto/chatto` 应与 build-release 产物一致。
+  4. 验证：`curl 127.0.0.1:4000` 与 `curl -k https://chatto.moonchan.xyz/`
      均应 200，`journalctl -u chatto | grep -c 200.html` 为 0。
 - cloudcone 上 chatto：`/opt/chatto/chatto`，配置 `/opt/chatto/chatto.toml`
   (`bind_address = '127.0.0.1'`)。入口：DNS `chatto.moonchan.xyz` → Cloudflare

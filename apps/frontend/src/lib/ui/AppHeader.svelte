@@ -53,9 +53,7 @@
 <header class="app-header flex items-center justify-between gap-2 p-2 text-muted md:text-sm">
   <!-- Leading: global navigation, notifications, and client-wide actions -->
   <div class="flex items-center gap-3">
-    <!-- Hamburger - 44px tap target for mobile accessibility. 打开的是
-         房间列表侧栏（ServerSidebar），与左侧服务器图标列无关；
-         后者由 MobileSidebarChrome 隐藏（【本地改动 2026-09-01】）。 -->
+    <!-- Hamburger - 44px tap target for mobile accessibility. 打开房间列表侧栏。 -->
     <button
       type="button"
       class="app-header-icon"

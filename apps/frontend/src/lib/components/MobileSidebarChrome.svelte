@@ -103,10 +103,4 @@
     }
   }
 
-  /* 【本地改动 2026-09-01】隐藏左侧服务器图标列面板与遮罩——保留 DOM 结构
-     以便与上游合并时零冲突，仅视觉隐藏；children 不受影响。 */
-  :global([data-testid="mobile-sidebar-panel"]),
-  :global([data-testid="mobile-sidebar-backdrop"]) {
-    display: none !important;
-  }
 </style>

@@ -176,11 +176,10 @@ function pointer(type: string, x: number, y = 120) {
 
 describe('root layout mobile sidebar animation', () => {
   // 【本地改动 2026-09-01】发现背景：上游原 layout 在移动端渲染左侧服务器图标
-  // 列（Server Gutter）面板 + 遮罩 + 左右滑动开关。单服务器站点无切换需求、
-  // 纯占宽度，用户要求去掉（方案：隐藏而非删除）。MobileSidebarChrome 现以
-  // CSS display:none 把面板/遮罩藏起来、保留上游完整 DOM 结构以利合并零冲突；
-  // 本 spec 沿用原始断言（panel/backdrop 元素在、transform/class 随 toggle
-  // 变化），与"视觉上不可见"并存。
+  // 列（Server Gutter）面板 + 遮罩 + 左右滑动开关。曾试过以 CSS
+  // display:none 隐藏侧栏，发现主内容未自动对齐屏幕后回退。现恢复上游原
+  // 始侧栏行为不变；本 spec 沿用原始断言（panel/backdrop 元素在、transform/
+  // class 随 toggle 变化）。
   beforeEach(() => {
     vi.clearAllMocks();
     document.documentElement.dir = 'ltr';

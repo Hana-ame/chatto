@@ -22,8 +22,9 @@ function renderChrome() {
 describe('MobileSidebarChrome', () => {
   // 【本地改动 2026-09-01】发现背景：上游原 MobileSidebarChrome 是左侧服务器
   // 图标列（Server Gutter）+ 移动遮罩/滑动面板容器。单服务器站点无切换需求、
-  // 纯占宽度，用户要求去掉（方案：隐藏而非删除）。MobileSidebarChrome 现以
-  // CSS display:none 把面板/遮罩藏起来、保留上游完整 DOM/脚本结构以利合并
+  // 纯占宽度，用户曾要求去掉（试过以 CSS display:none 隐藏；发现主内容
+  // 未自动对齐屏幕后回退）。现保留上游原始侧栏行为不变，spec 断言亦保持
+  // 上游原版（panel/backdrop 元素在、transform/class 随 toggle 变化）。
   // 零冲突；本 spec 沿用原始断言（panel/backdrop 元素在、transform/class 随
   // toggle 变化），与"视觉上不可见"并存——这是被测试的行为。
   beforeEach(() => {

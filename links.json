@@ -8,5 +8,10 @@
     "name": "推图",
     "icon": "https://x.810114.xyz/favicon.ico",
     "url": "https://x.810114.xyz"
+  },
+  {
+    "name": "nyaa表站",
+    "icon": "https://nyaa.moonchan.xyz/static/favicon.png",
+    "url": "https://nyaa.moonchan.xyz"
   }
 ]

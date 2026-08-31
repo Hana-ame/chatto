@@ -310,6 +310,7 @@ git 报零冲突 ≠ 这里没风险，每次合并都要逐条重审。
 |---|---|---|---|
 | 消息正文内联图片 | 定为禁用语法：`![alt](url)` 不出 `<img>`，安全默认 | 出 `<img>`，src 重写为 `https://proxy.moonchan.xyz/...` 代理取图，隐藏观看者 IP/Referer | `apps/frontend/src/lib/markdown.ts` 的 `proxyImageSource`；`MessageContent.svelte.spec.ts` 的 `renders images through the fork image proxy`；`.github/workflows/build-linux.yml` 的 Verify 步骤断言产物含 `proxy.moonchan.xyz` |
 | 浏览器侧附件 URL | 携带 per-user 签名 ticket（`?access=`）：per-user、不可共享、不可 CDN 缓存；服务端校验签名用户仍是 asset 所在 room 成员，kick/leave 可撤销未来访问 | 走公开版 `/assets/files/{assetID}/{fn.ext}`（及 `/image/{w}x{h}/{fit}/{fn.ext}`）：无 ticket、无成员校验，assetID 即凭证，`public, max-age=31536000, immutable` | `cli/internal/core/attachments.go` 的【本地改动 2026-08-18】节（`GetPublicStable*`、`stableAttachmentPath`）；`cli/internal/http_server/assets.go` 的 `servePublicStableAttachment` / `servePublicStableTransformedAttachment`；`apps/frontend/e2e/authorized-asset-urls.test.ts`、`messages.test.ts` 的【本地改动 2026-08-30】 |
+| 消息正文 LaTeX 公式 | 定为禁用语法：`$...$` / `$$...$$` 不出公式，安全默认（聊天产品不支持数学排版） | 出 KaTeX 渲染的公式（`<span class="katex">`）：`$...$` 行内 / `$$...$$` 独立行；懒加载 katex（JS + CSS），首屏 bundle 零开销；未启用 mhchem / html 插件，`throwOnError=false` 防恶意/畸形输入导致崩溃（恶意输入渲染为 TeX 错误框）；行内 `$...$` 要求内容含字母或 LaTeX 运算符才触发，避免聊天中 `$10` 等金额被误识别 | `apps/frontend/src/lib/markdown.ts` 的 `mathInline` / `replaceMathPlaceholders` 及【本地改动 2026-09-01】注释块；`MessageContent.svelte.spec.ts` 的 `math / LaTeX formula rendering` 测试块 |
 
 - **2026-08-30 发现**：`build-release` 触发分支从 `ci/deploy` 改到 main 后，ci.yml 第一次
   在本仓库 main 上跑完整矩阵，`test-workspace` 的「does not render images as img tags」

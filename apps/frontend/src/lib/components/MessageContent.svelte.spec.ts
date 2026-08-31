@@ -342,6 +342,46 @@ describe('renderMarkdown', () => {
     });
   });
 
+  // 【本地改动 2026-09-01】LaTeX 公式渲染（KaTeX）——fork 独有，upstream 聊天不支持。
+  // 上游把"公式语法禁用"视为安全不变量；fork 主动放宽（见下方安全边界说明）。
+  // merge 上游时若上游把公式升级为安全修复，必须在此重审 fork 的取舍。
+  describe('math / LaTeX formula rendering', () => {
+    it('renders inline math via KaTeX ($...$)', async () => {
+      const html = await renderMarkdown('the sum is $x^2 + y^2 = z^2$ exactly');
+      expect(html).toContain('class="katex"');
+      expect(html).toContain('katex-html');
+    });
+
+    it('renders display math via KaTeX ($$...$$)', async () => {
+      const html = await renderMarkdown('then $$x + y = z$$ follows');
+      expect(html).toContain('class="katex-display"');
+      expect(html).toContain('katex-mathml');
+    });
+
+    it('does not treat a bare money amount as math ($10)', async () => {
+      const html = await renderMarkdown('price is $10 today');
+      expect(html).not.toContain('class="katex"');
+      expect(html).not.toContain('class="math"');
+      expect(html).toContain('price is $10 today');
+    });
+
+    it('renders $10 $a^2$ as literal $10 followed by math a^2', async () => {
+      // 首个 $10 不含字母 → 视为普通文本；紧随的 $a^2$ 含字母 → 公式。
+      const html = await renderMarkdown('cost $10 $a^2$ each');
+      expect(html).toContain('cost $10 ');
+      expect(html).toContain('class="katex"');
+      expect(html).not.toContain('class="math"');
+    });
+
+    it('renders malformed math safely without throwing (throwOnError=false)', async () => {
+      // 恶意/畸形输入不抛错；katex throwOnError=false 时渲染为 TeX 错误框而非崩溃。
+      // \frac 缺参数（如 \frac{1}{2}）是真会触 katex-error 的输入。
+      const html = await renderMarkdown('$\\frac$');
+      expect(html).toContain('katex-error');
+      expect(html).not.toContain('katex-error-mathml');
+    });
+  });
+
   describe('security - link validation', () => {
     it('adds target="_blank" to links', async () => {
       const html = await renderMarkdown('[link](https://example.com)');

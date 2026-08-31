@@ -101,6 +101,7 @@
     "gemoji": "^8.1.0",
     "heic2any": "^0.0.4",
     "hls.js": "^1.7.1",
+    "katex": "^0.16.21",
     "js-sha256": "^0.11.1",
     "linkify-it": "^5.0.2",
     "livekit-client": "^2.22.0",

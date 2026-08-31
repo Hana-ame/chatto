@@ -204,6 +204,152 @@ function wordBoundaryEmphasis(state: StateInline, silent: boolean): boolean {
 let md: MarkdownIt | null = null;
 let codeHighlighting: CodeHighlightingModule | null = null;
 
+// ===== LaTeX 公式渲染 via KaTeX — 【本地改动 2026-09-01】 =====
+// 目的：聊天消息支持 LaTeX 数学公式，$...$ 行内、$$...$$ 独立行。
+// 思路：markdown-it 自定义 inline 规则（math_inline）捕获 $...$ / $$...$$，
+// 仅把安全占位符 <span class="math" data-latex="..."> 作为 html_inline token
+// 塞进 token 流；renderMarkdown 做后处理：首次遇到公式时懒加载 katex（JS + CSS），把占位符
+// 替换为 KaTeX 生成的 HTML（已自带 <span class="katex"> 外壳）。
+// 安全：只用 katex 默认渲染（未启用 mhchem / html 插件，输出不含 <script> /
+// javascript: URL），throwOnError=false 防恶意/畸形输入导致崩溃（恶意输入渲染
+// 为 TeX 错误框而非报错），输出仍经 MarkdownHtml.svelte 的 Trusted Types 通道。
+// 懒加载：首屏 bundle 零开销；首次公式渲染时才拉 katex JS 与 CSS，后续缓存。
+// UX 取舍：$...$（行内）要求内容至少含一个字母或 LaTeX 运算符（\\^_{}&%），
+// 否则视为普通文本——避免聊天中 $10 / $$5 等金额被误识别为公式；$$...$$
+// （独立行）总是公式，因 $$ 在聊天中罕作金额。
+// 边界：未启用 mhchem（下标/上标、分式、希腊字母等基础 LaTeX 全部可用）；
+// \begin{equation}...\end{equation} 等块级环境未实现；$$ 只支持单行。
+// 踩坑：markdown-it 的 escape 规则已禁用（见 DISABLED_RULES），反斜杠不作为
+// 转义，$ 的配对需手动处理（不能依赖 state.escape）；silent 模式下不得修改
+// state.pending，仅推进 state.pos 并返回 true。
+const MATH_PLACEHOLDER_RE = /<span class="math" data-latex="([^"]*)" data-math-type="(\w+)"><\/span>/g;
+
+let katexRenderer: ((latex: string, opts: { throwOnError: boolean; displayMode: boolean }) => string) | null = null;
+let katexLoading = false;
+
+function hasMathyContent(latex: string): boolean {
+  // Inline $...$ 需含字母或 LaTeX 运算符才触发公式模式；纯数字/空白/标点视为
+  // 普通文本（$10、$5.00 等金额），避免聊天中金额被误识别。$$...$$ 不受此限。
+  return /[a-zA-Z\\^_{}&%]/.test(latex);
+}
+
+function decodeHtmlEntities(value: string): string {
+  // 仅解码 escapeHtml() 生成的标准实体；我们控制编码端，无需通用解析器。
+  return value
+    .replaceAll('&amp;', '&')
+    .replaceAll('&lt;', '<')
+    .replaceAll('&gt;', '>')
+    .replaceAll('&quot;', '"')
+    .replaceAll('&#39;', "'");
+}
+
+function mathInline(state: StateInline, silent: boolean): boolean {
+  const start = state.pos;
+  if (start >= state.posMax) return false;
+  const first = state.src.charCodeAt(start);
+  if (first !== 0x24) return false; // not $
+
+  // Escaped `\$`（escape 规则虽禁用，防御性处理）。
+  if (start > 0 && state.src.charCodeAt(start - 1) === 0x5c) return false;
+
+  // 判断是 $$...$$（独立行）还是 $...$（行内），并扫描闭合符。
+  if (start + 1 < state.posMax && state.src.charCodeAt(start + 1) === 0x24) {
+    // $$...$$ 独立行公式：消费开头的 $$，向后找下一个未转义的 $$ 作为闭合。
+    let close = start + 2;
+    while (close < state.posMax) {
+      const c = state.src.charCodeAt(close);
+      if (c === 0x24 && close + 1 < state.posMax && state.src.charCodeAt(close + 1) === 0x24) {
+        break;
+      }
+      if (c === 0x5c) close++; // 跳过反斜杠转义
+      close++;
+    }
+    if (close >= state.posMax) return false; // 无闭合 $$
+    const latex = state.src.slice(start + 2, close);
+    if (silent) {
+      state.pos = close + 2;
+      return true;
+    }
+    if (!hasMathyContent(latex)) {
+      // 纯数字/符号：视为普通文本，原样输出整段（含 $$ 边界）。
+      state.pending += state.src.slice(start, close + 2);
+      state.pos = close + 2;
+      return true;
+    }
+    // 【本地改动 2026-09-01 修复】用 state.push 推 html_inline token：state.pending 里的
+    // 原始 HTML 会被 markdown-it 转义成 &lt;span&gt;（测试实测），占位符正则匹配不上、
+    // 残留到最终 HTML；html_inline token 内容作为原始 HTML 落地，占位符可被
+    // replaceMathPlaceholders 正确替换。
+    const placeholder = state.push('html_inline', '', 0);
+    placeholder.content = `<span class="math" data-latex="${escapeHtml(latex)}" data-math-type="display"></span>`;
+    state.pos = close + 2;
+    return true;
+  }
+
+  // $...$ 行内公式：下一个 $ 且其后非 $ 的即为闭合。
+  let close = start + 1;
+  while (close < state.posMax) {
+    const c = state.src.charCodeAt(close);
+    if (c === 0x24) break;
+    if (c === 0x5c) close++; // 跳过反斜杠转义
+    close++;
+  }
+  if (close >= state.posMax) return false; // 无闭合 $
+  const latex = state.src.slice(start + 1, close);
+  if (silent) {
+    state.pos = close + 1;
+    return true;
+  }
+  if (!hasMathyContent(latex)) {
+    // 内容不含字母/运算符：视为普通文本，仅输出开头 $（让剩余内容被重新解析，
+    // 从而允许 $10 $a^2$ 这类序列中后面的公式仍被正确捕获）。
+    state.pending += state.src.slice(start, start + 1);
+    state.pos = start + 1;
+    return true;
+  }
+  const inlinePlaceholder = state.push('html_inline', '', 0);
+  inlinePlaceholder.content = `<span class="math" data-latex="${escapeHtml(latex)}" data-math-type="inline"></span>`;
+  state.pos = close + 1;
+  return true;
+}
+
+async function ensureKatexReady(): Promise<void> {
+  if (katexRenderer) return;
+  if (katexLoading) {
+    // 等待进行中的加载完成。
+    while (katexLoading && !katexRenderer) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    return;
+  }
+  katexLoading = true;
+  try {
+    // CSS 懒加载：浏览器环境 Vite 会注入 <link>；Node 测试环境（server 项目）
+    // 不支持动态 import CSS，静默跳过——公式仍能渲染，仅缺样式（测试不关心样式）。
+    try {
+      await import('katex/dist/katex.min.css');
+    } catch {
+      /* CSS unavailable in this environment; katex HTML output still valid. */
+    }
+    const katexModule = await import('katex');
+    katexRenderer = katexModule.renderToString;
+  } finally {
+    katexLoading = false;
+  }
+}
+
+async function replaceMathPlaceholders(html: string): Promise<string> {
+  if (!html.includes('class="math"')) return html;
+  await ensureKatexReady();
+  if (!katexRenderer) return html;
+  return html.replace(MATH_PLACEHOLDER_RE, (_match, escapedLatex, blockType) => {
+    const latex = decodeHtmlEntities(escapedLatex);
+    const displayMode = blockType === 'display';
+    const render = katexRenderer!;
+    return render(latex, { throwOnError: false, displayMode });
+  });
+}
+
 type LowlightText = {
   type: 'text';
   value: string;
@@ -362,6 +508,7 @@ function isLineBreakToken(token: Token): boolean {
 
 function isWhitespaceOnlyInlineSegment(tokens: Token[]): boolean {
   return tokens.every((token) => {
+    if (typeof token.type !== 'string') return false;
     if (token.type === 'text' || token.type === 'text_special') {
       return token.content.trim().length === 0;
     }
@@ -438,6 +585,20 @@ function proxyImageSource(src: string): string {
     return '#';
   }
 
+  // 【本地改动 2026-08-31】src 本就指向图片代理自身时不再套一层代理，原样直通。
+  // 踩坑：此前无条件改写会把 proxy_host 写成 proxy.moonchan.xyz（自引用）——
+  // 浏览器请求代理、代理再请求自己，形成环/404/超时，用户看到裂图；典型场景是
+  // 把已渲染过的代理 URL（或手工粘贴的代理地址）贴回消息，以及复制再贴。
+  // 思路：只按 hostname 判定（不校验 scheme/path）——代理自己域名上的任意
+  // http(s) 路径都归代理处理，无需二次代理；保留用户原始 query 与 fragment，
+  // 若原本就带 proxy_host 等参数也原样保留（不被覆盖）。
+  // 边界：不影响非代理输入的既有改写路径；也不改变代理域名的 SSRF 语义
+  // （proxy_host 指向任意 host 的能力在普通改写路径里本来就存在，与本分支无关）。
+  const proxyHostname = new URL(IMAGE_PROXY_BASE).hostname;
+  if (original.hostname === proxyHostname) {
+    return src;
+  }
+
   const proxy = new URL(IMAGE_PROXY_BASE);
   proxy.pathname = original.pathname;
   proxy.search = original.search;
@@ -479,6 +640,10 @@ function initialize(): void {
 
   // Disable unwanted syntax - only keep what we explicitly want
   md.disable([...DISABLED_RULES]);
+
+  // 【本地改动 2026-09-01】数学公式：注册 math_inline 规则，在 emphasis 之前捕获
+  // $...$ / $$...$$ 为安全占位符。见上方 math_inline 注释块了解安全/UX 取舍。
+  md.inline.ruler.before('emphasis', 'math_inline', mathInline);
 
   // Restrict `*` and `_` emphasis to word boundaries. Prevents intraword
   // emphasis (e.g. `snake_case`, `foo*bar*baz`) and emphasis between
@@ -573,7 +738,9 @@ export async function renderMarkdown(body: string): Promise<string> {
     await ensureFenceLanguagesLoaded(extractFenceLanguages(body));
     initialize();
 
-    return md!.render(body);
+    let html = md!.render(body);
+    html = await replaceMathPlaceholders(html);
+    return html;
   } catch (err) {
     console.error('[Markdown] renderMarkdown failed:', err, { bodyLength: body.length });
     throw err;

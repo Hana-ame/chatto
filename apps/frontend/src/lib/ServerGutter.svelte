@@ -9,7 +9,7 @@ to the bottom. See the "UI" section of `docs/GLOSSARY.md`.
 <script lang="ts">
   /* eslint-disable svelte/no-navigation-without-resolve -- external game/website URLs must bypass SvelteKit resolve */
   import { onMount } from 'svelte';
-  import { SvelteURL } from 'svelte/url';
+  import { SvelteURL } from 'svelte/reactivity';
   import { resolve } from '$app/paths';
   import { page } from '$app/state';
   import { serverRegistry } from '$lib/state/server/registry.svelte';

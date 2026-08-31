@@ -42,19 +42,20 @@ permissions:
 
 jobs:
   build-docs-image:
-    # 【本地改动 2026-08-31】fork 跳过 docs 镜像构建：该 job 会把镜像推到
-    # ghcr.io/chattocorp/chatto-docs（上游 org 的 GHCR）。fork 的 GITHUB_TOKEN
-    # 对上游 org 的 package 没有写权限，2026-08-31 实测必红：
+    # 【本地改动 2026-08-31】fork 只跳过「推送到 chattocorp GHCR」的动作，
+    # 保留 docs 镜像的本地构建作为 Dockerfile 冒烟测试（与 ci.yml 里
+    # publish-main-image 的既有处理方式一致）。
+    # 【改动点】下方 Build docs image 步骤的 push 已置为 false，并把 tags 改为
+    # 仅本地镜像引用；需要 chattocorp org 写权限的推送动作不再执行：
     #   failed to push ghcr.io/chattocorp/chatto-docs: denied: permission_denied
-    # （同一 commit 触发的 ci / build-release 都绿，只有这一个 workflow 红，
-    #   确认是 fork 基建缺口而非回归。）
+    # （08-31 实测必红，同一 commit 的 ci / build-release 均绿，确认是
+    #   fork 基建缺口而非回归。）
     # 【避免 if: false】actionlint 的 [if-cond] 规则禁止常量条件
-    # （08-30 ci.yml 踩过同款坑），所以用仓库名做非常量条件跳过：
-    # 只在 chattocorp/chatto（上游目标 repo，注意本文件是 upstream 的
-    # chattocorp、非本 fork）上跑；本 fork 仓库名不匹配 → 跳过。
+    # （08-30 ci.yml 踩过同款坑），所以不在 job 级加跳转，改为最细的
+    # push 参数控制——需要权限的只有「推送」本身，构建不需要权限。
     # 【恢复方式】fork 若日后要自建 docs 镜像：把 ghcr.io/chattocorp/chatto-docs
-    # 替换成 fork 自己的 GHCR 名，并删除本 if 条件。
-    if: ${{ github.repository == 'chattocorp/chatto' }}
+    # 换成 fork 自己的 GHCR 名并将 push 改回 true；若要跟上游完全一致，删掉
+    # 下方 Build 步骤里的 push/tags 本地注释即可。
     # runs-on: ubicloud-standard-4
     runs-on: ubuntu-latest
     steps:
@@ -126,7 +127,13 @@ jobs:
         with:
           context: .
           file: ./apps/docs-website/Dockerfile
-          push: ${{ github.event_name != 'pull_request' }}
+          # 【本地改动 2026-08-31】push 置 false：推 ghcr.io/chattocorp/chatto-docs
+          # 需要上游 org 的 GHCR 写权限，fork 的 GITHUB_TOKEN 没有（08-31 实测必红
+          #   failed to push ...: denied: permission_denied）。只构建不推送，保留
+          # Dockerfile 冒烟测试，与 ci.yml 里 publish-main-image 的既有处理一致。
+          # 【恢复方式】fork 自建 docs 镜像时：把下方 tags 换成 fork 的 GHCR 名，
+          # 并把本行改回 ${{ github.event_name != 'pull_request' }}。
+          push: false
           platforms: linux/amd64
           tags: ghcr.io/chattocorp/chatto-docs:${{ steps.image.outputs.docs_tag }}
           build-args: |

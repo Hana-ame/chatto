@@ -31,7 +31,18 @@ permissions:
 
 jobs:
   release-please:
-    if: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.event == 'push' && github.event.workflow_run.conclusion == 'success' }}
+    # 【本地改动 2026-08-31】fork 跳过 release-please：这个 job 用
+    # secrets.RELEASE_PLEASE_PAT 去上游 org 建 PR/发版。fork 没配这个 secret，
+    # 2026-08-30 起 ci 绿了之后 workflow_run 真触发到这一步，立刻红：
+    #   release-please failed: Input required and not supplied: token
+    # （此前一直 skipped 是因为 ci 结论非 success 时 if 不过；ci 修绿后
+    #   才暴露这个缺口。08-30 12:37 / 08-31 06:01 / 08-31 06:48 连续失败均为此因。）
+    # fork 的部署链路只有 build-release（rolling release ci/dev），不需要
+    # release-please 发正式版；若 fork 将来要发版，需配置 RELEASE_PLEASE_PAT。
+    # 【避免 if: false】actionlint 的 [if-cond] 规则禁止常量条件
+    # （08-30 ci.yml 踩过同款坑），所以用仓库名做非常量条件：
+    # 只在 chattocorp/chatto 上跑，本 fork 跳过。
+    if: ${{ github.repository == 'chattocorp/chatto' && github.event_name == 'workflow_run' && github.event.workflow_run.event == 'push' && github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write

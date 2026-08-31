@@ -249,6 +249,16 @@
           <div class="skeleton h-5 flex-1 rounded"></div>
         </div>
       {/each}
+      <!--
+        【本地改动 2026-09-01】Room List 必须始终可见：原代码把 RoomList 绑定在
+        serverData 门控之后，当 store 被替换或冷 projection 迟迟收不到
+        viewerUpsert 时 serverData 为 null，整块 RoomList 消失（只显示骨架）。
+        骨架只占位 header + nav，RoomList 自己处理空/加载，放到此处与 {:else}
+        分支重复渲染——当 serverData 到达时分支切换即可，RoomList 展开状态经
+        storage 持久化不受重挂载影响。默认不传 canReorderGroups（=false），loading
+        期本就无需拖拽重排。
+      -->
+      <RoomList />
     </ScrollFader>
   {:else}
     <!-- Server header - fixed at top -->

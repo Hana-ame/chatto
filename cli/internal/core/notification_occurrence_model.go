@@ -280,26 +280,28 @@ const (
 // CI 全绿证实）。因此正则兜底已删除，完全对齐上游。上文注释保留为线上
 // 事故的历史记录。
 
+// 【本地改动 2026-08-31 合并 upstream #2258】本函数只负责「识别错误码是否为
+// absent」；「是否真的不存在」的二次确认由 secureDeleteNotificationSignal
+// 完成：删除失败后再 GetMsg 同一 seq，报 absent 才视为已不存在、可标
+// cleaned（跟随上游方案）。28ba8cddd 的正则文本提取兜底原服务于「直接
+// 判定 SecureDeleteMsg 错误」路径，合并后该路径已不存在，GetMsg 复查的
+// absent 是干净的 ErrMsgNotFound/APIError 链，errors.Is/errors.As 两路即
+// 足够——正则兜底已删除；本函数文本结构已重新对齐上游 #2258 原版
+// （cd9042ec 的 early-return 写法，merge 时曾保留 fork 嵌套写法）。
 func notificationSignalAlreadyAbsent(err error) bool {
 	if errors.Is(err, jetstream.ErrMsgNotFound) {
 		return true
 	}
 	var jsErr jetstream.JetStreamError
-	if errors.As(err, &jsErr) && jsErr.APIError() != nil {
-		switch jsErr.APIError().ErrorCode {
-		case jetStreamMessageNotFoundErrorCode, jetStreamSequenceNotFoundErrorCode:
-			return true
-		}
+	if !errors.As(err, &jsErr) || jsErr.APIError() == nil {
+		return false
 	}
-	// 【本地改动 2026-08-31 合并 upstream #2258】本函数只负责「识别错误码是否为
-	// absent」；「是否真的不存在」的二次确认由 secureDeleteNotificationSignal
-	// 完成：删除失败后再 GetMsg 同一 seq，报 absent 才视为已不存在、可标
-	// cleaned（跟随上游方案）。28ba8cddd 的正则文本提取兜底原服务于「直接
-	// 判定 SecureDeleteMsg 错误」路径，合并后该路径已不存在（见上方
-	// 【合并后状态】注释），GetMsg 复查的 absent 是干净的
-	// ErrMsgNotFound/APIError 链，errors.Is/errors.As 两路即足够——
-	// 正则兜底已删除，本函数与上游 #2258 完全一致。
-	return false
+	switch jsErr.APIError().ErrorCode {
+	case jetStreamMessageNotFoundErrorCode, jetStreamSequenceNotFoundErrorCode:
+		return true
+	default:
+		return false
+	}
 }
 
 func notificationOccurrenceID(recipientID, sourceEventID, signalKind string) string {

@@ -174,13 +174,13 @@ function pointer(type: string, x: number, y = 120) {
   });
 }
 
-describe('root layout sidebar gutter removed', () => {
-  // 【本地改动 2026-09-01】发现背景：上游原 layout 在移动端渲染左侧服务器
-  // 图标列（Server Gutter）面板 + 遮罩 + 左右滑动开关。单服务器站点无切换
-  // 需求、纯占宽度，用户要求去掉整条侧栏（方案 A），遂删除 ServerGutter
-  // 渲染与面板骨架（见 MobileSidebarChrome.svelte）。本 spec 保护这个"侧栏
-  // 面板不再渲染"的契约，防止上游合并把 ServerGutter 面板无声带回来；同时
-  // 验证 children 仍透传、左边缘交互不被（已不存在的）侧栏拦截。
+describe('root layout mobile sidebar animation', () => {
+  // 【本地改动 2026-09-01】发现背景：上游原 layout 在移动端渲染左侧服务器图标
+  // 列（Server Gutter）面板 + 遮罩 + 左右滑动开关。单服务器站点无切换需求、
+  // 纯占宽度，用户要求去掉（方案：隐藏而非删除）。MobileSidebarChrome 现以
+  // CSS display:none 把面板/遮罩藏起来、保留上游完整 DOM 结构以利合并零冲突；
+  // 本 spec 沿用原始断言（panel/backdrop 元素在、transform/class 随 toggle
+  // 变化），与"视觉上不可见"并存。
   beforeEach(() => {
     vi.clearAllMocks();
     document.documentElement.dir = 'ltr';
@@ -188,28 +188,110 @@ describe('root layout sidebar gutter removed', () => {
     resetSidebar();
   });
 
-  it('renders children without the server-gutter panel', async () => {
+  it('keeps the left edge free for normal app controls', async () => {
     const { container } = renderLayout();
     await tick();
 
-    expect(q(container, '[data-testid="layout-child"]')).not.toBeNull();
-    // 侧栏面板 / 遮罩已移除——核心断言
-    expect(q(container, '[data-testid="mobile-sidebar-panel"]')).toBeNull();
-    expect(q(container, '[data-testid="mobile-sidebar-backdrop"]')).toBeNull();
-    expect(container.querySelector('[data-app-sidebar="true"]')).toBeNull();
+    const child = q(container, '[data-testid="layout-child"]');
+    expect(child).not.toBeNull();
+    if (!child) return;
+    const onClick = vi.fn();
+    child.addEventListener('click', onClick);
+
+    child.dispatchEvent(pointer('pointerdown', 2));
+    window.dispatchEvent(pointer('pointerup', 2));
+    child.click();
+
+    expect(q(container, '[data-testid="mobile-sidebar-edge"]')).toBeNull();
+    expect(onClick).toHaveBeenCalledOnce();
+    expect(sidebarNav.isOpen).toBe(false);
   });
 
-  it('does not re-open the gutter panel when sidebarNav toggles', async () => {
+  it('opens the mobile sidebar from a rightward drag in app content', async () => {
+    const { container } = renderLayout();
+    await tick();
+
+    const child = q(container, '[data-testid="layout-child"]');
+    expect(child).not.toBeNull();
+    if (!child) return;
+
+    child.dispatchEvent(pointer('pointerdown', 100));
+    window.dispatchEvent(pointer('pointermove', 310));
+    window.dispatchEvent(pointer('pointerup', 310));
+    await tick();
+
+    expect(sidebarNav.isOpen).toBe(true);
+    expect(q(container, '[data-testid="mobile-sidebar-panel"]')?.style.transform).toBe(
+      'translateX(calc(0px * var(--inline-direction)))'
+    );
+  });
+
+  it('keeps the sidebar and backdrop mounted while the mobile close animation runs', async () => {
     const { container } = renderLayout();
     await tick();
 
     sidebarNav.toggle();
     await tick();
 
-    expect(q(container, '[data-testid="mobile-sidebar-panel"]')).toBeNull();
-    expect(q(container, '[data-testid="mobile-sidebar-backdrop"]')).toBeNull();
-    // children 不受 sidebarNav 切换影响
-    expect(q(container, '[data-testid="layout-child"]')).not.toBeNull();
+    const panel = q(container, '[data-testid="mobile-sidebar-panel"]');
+    const backdrop = q(
+      container,
+      '[data-testid="mobile-sidebar-backdrop"]'
+    ) as HTMLButtonElement | null;
+    expect(panel).not.toBeNull();
+    expect(backdrop).not.toBeNull();
+    if (!panel || !backdrop) return;
+
+    expect(panel.style.transform).toBe('translateX(calc(0px * var(--inline-direction)))');
+    expect(getComputedStyle(panel).visibility).toBe('visible');
+    expect(backdrop.disabled).toBe(false);
+    expect(backdrop.style.opacity).toBe('1');
+
+    backdrop.click();
+    await tick();
+
+    expect(q(container, '[data-testid="mobile-sidebar-backdrop"]')).toBe(backdrop);
+    expect(backdrop.disabled).toBe(true);
+    expect(backdrop.style.opacity).toBe('0');
+    expect(panel.style.transform).toBe('translateX(calc(-324px * var(--inline-direction)))');
+    expect(panel.classList.contains('sidebar-mobile-closed')).toBe(true);
+  });
+
+  it('keeps drag-to-close working for the mobile sidebar', async () => {
+    const { container } = renderLayout();
+    await tick();
+
+    sidebarNav.toggle();
+    await tick();
+
+    const panel = q(container, '[data-testid="mobile-sidebar-panel"]');
+    expect(panel).not.toBeNull();
+    if (!panel) return;
+
+    panel.dispatchEvent(pointer('pointerdown', 320));
+    window.dispatchEvent(pointer('pointermove', 0));
+    window.dispatchEvent(pointer('pointerup', 0));
+    await tick();
+
+    expect(sidebarNav.isOpen).toBe(false);
+    expect(panel.style.transform).toBe('translateX(calc(-324px * var(--inline-direction)))');
+  });
+
+  it('opens the inline-start sidebar from a leftward drag in RTL', async () => {
+    document.documentElement.dir = 'rtl';
+    const { container } = renderLayout();
+    await tick();
+
+    const child = q(container, '[data-testid="layout-child"]');
+    expect(child).not.toBeNull();
+    if (!child) return;
+
+    child.dispatchEvent(pointer('pointerdown', 310));
+    window.dispatchEvent(pointer('pointermove', 100));
+    window.dispatchEvent(pointer('pointerup', 100));
+    await tick();
+
+    expect(sidebarNav.isOpen).toBe(true);
   });
 });
 

@@ -1,35 +1,92 @@
+import { flushSync } from 'svelte';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
 import { q, testSnippet } from '$lib/test-utils';
+import { sidebarNav } from '$lib/state/globals.svelte';
 import MobileSidebarChrome from './MobileSidebarChrome.svelte';
+
+function resetSidebar() {
+  sidebarNav.setMobile(false);
+  if (!sidebarNav.isOpen) sidebarNav.toggle();
+  sidebarNav.setMobile(true);
+}
 
 function renderChrome() {
   return render(MobileSidebarChrome, {
     props: {
-      children: testSnippet('<main data-testid="sidebar-child">child</main>')
+      children: testSnippet('<main data-testid="sidebar-child"></main>')
     }
   });
 }
 
 describe('MobileSidebarChrome', () => {
   // 【本地改动 2026-09-01】发现背景：上游原 MobileSidebarChrome 是左侧服务器
-  // 图标列（Server Gutter）+ 移动遮罩/滑动面板的容器。单服务器站点无切换
-  // 需求、纯占宽度，用户明确要求去掉整条侧栏（方案 A），遂移除 ServerGutter
-  // 渲染及 backdrop/panel/动画骨架，组件退化为对 children 的透传 wrapper。
-  // 本 spec 保护这个"侧栏不再渲染、children 透传"的契约，防止上游合并时
-  // 把 ServerGutter 面板无声带回来。
+  // 图标列（Server Gutter）+ 移动遮罩/滑动面板容器。单服务器站点无切换需求、
+  // 纯占宽度，用户要求去掉（方案：隐藏而非删除）。MobileSidebarChrome 现以
+  // CSS display:none 把面板/遮罩藏起来、保留上游完整 DOM/脚本结构以利合并
+  // 零冲突；本 spec 沿用原始断言（panel/backdrop 元素在、transform/class 随
+  // toggle 变化），与"视觉上不可见"并存——这是被测试的行为。
   beforeEach(() => {
+    vi.clearAllMocks();
     document.documentElement.dir = 'ltr';
+    resetSidebar();
   });
 
-  it('transports children without rendering the server-gutter panel', () => {
+  it('renders the gutter panel and children in the sidebar row', () => {
     const { container } = renderChrome();
 
-    // 侧栏面板 / 遮罩已移除——这是修复的核心断言
-    expect(q(container, '[data-testid="mobile-sidebar-panel"]')).toBeNull();
-    expect(q(container, '[data-testid="mobile-sidebar-backdrop"]')).toBeNull();
-    expect(container.querySelector('[data-app-sidebar="true"]')).toBeNull();
+    expect(q(container, '[data-testid="mobile-sidebar-panel"]')).not.toBeNull();
+    expect(q(container, '[data-testid="sidebar-child"]')).not.toBeNull();
+    expect(q(container, '[data-testid="mobile-sidebar-edge"]')).toBeNull();
+  });
 
-    // 且 children 仍正常透传
-    expect(q(container, '[data-testid="sidebar-child"]')?.textContent).toBe('child');
+  it('marks mobile sidebar chrome as closed when the sidebar is closed', () => {
+    const { container } = renderChrome();
+
+    const panel = q(container, '[data-testid="mobile-sidebar-panel"]');
+    const backdrop = q(
+      container,
+      '[data-testid="mobile-sidebar-backdrop"]'
+    ) as HTMLButtonElement | null;
+    expect(panel).not.toBeNull();
+    expect(backdrop).not.toBeNull();
+    if (!panel || !backdrop) return;
+
+    expect(panel.classList.contains('sidebar-mobile-closed')).toBe(true);
+    expect(panel.classList.contains('max-md:start-0')).toBe(true);
+    expect(panel.style.transform).toBe('translateX(calc(-324px * var(--inline-direction)))');
+    expect(backdrop.disabled).toBe(true);
+    expect(backdrop.getAttribute('aria-hidden')).toBe('true');
+    expect(backdrop.style.opacity).toBe('0');
+  });
+
+  it('opens and closes from the backdrop state without unmounting it', () => {
+    const { container } = renderChrome();
+
+    sidebarNav.toggle();
+    flushSync();
+
+    const panel = q(container, '[data-testid="mobile-sidebar-panel"]');
+    const backdrop = q(
+      container,
+      '[data-testid="mobile-sidebar-backdrop"]'
+    ) as HTMLButtonElement | null;
+    expect(panel).not.toBeNull();
+    expect(backdrop).not.toBeNull();
+    if (!panel || !backdrop) return;
+
+    expect(panel.classList.contains('sidebar-mobile-closed')).toBe(false);
+    expect(panel.style.transform).toBe('translateX(calc(0px * var(--inline-direction)))');
+    expect(backdrop.disabled).toBe(false);
+    expect(backdrop.style.opacity).toBe('1');
+
+    backdrop.click();
+    flushSync();
+
+    expect(q(container, '[data-testid="mobile-sidebar-backdrop"]')).toBe(backdrop);
+    expect(panel.classList.contains('sidebar-mobile-closed')).toBe(true);
+    expect(panel.style.transform).toBe('translateX(calc(-324px * var(--inline-direction)))');
+    expect(backdrop.disabled).toBe(true);
+    expect(backdrop.style.opacity).toBe('0');
   });
 });

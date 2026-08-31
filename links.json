@@ -13,5 +13,10 @@
     "name": "nyaa表站",
     "icon": "https://nyaa.moonchan.xyz/static/favicon.png",
     "url": "https://nyaa.moonchan.xyz"
+  },
+  {
+    "name": "Chatto",
+    "icon": "https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png",
+    "url": "https://github.com/Hana-ame/chatto"
   }
 ]

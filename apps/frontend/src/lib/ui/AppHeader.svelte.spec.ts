@@ -65,7 +65,9 @@ vi.mock('$lib/state/server/serverConnection.svelte', () => ({
 vi.mock('$lib/state/globals.svelte', () => ({
   sidebarNav: {
     isOpen: false,
-    isMobile: mocks.isMobile,
+    get isMobile() {
+      return mocks.isMobile;
+    },
     toggle: mocks.toggleSidebar
   },
   quickSwitcher: {
@@ -81,6 +83,7 @@ describe('AppHeader', () => {
     mocks.getStore.mockReset();
     mocks.pushState.mockReset();
     mocks.goto.mockReset();
+    mocks.toggleSidebar.mockReset();
     mocks.routeId = '/chat/notifications';
     mocks.isMobile = false;
   });
@@ -149,7 +152,7 @@ describe('AppHeader', () => {
     (container.querySelector('button[title="Toggle sidebar"]') as HTMLButtonElement).click();
 
     expect(mocks.toggleSidebar).not.toHaveBeenCalled();
-    expect(mocks.goto).toHaveBeenCalledWith('/chat/remote.example.com/');
+    expect(mocks.goto).toHaveBeenCalledWith('/chat/remote.example.com');
   });
 
   it('toggles the sidebar from a [serverId] route on mobile', () => {

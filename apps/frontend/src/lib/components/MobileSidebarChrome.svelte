@@ -15,12 +15,13 @@
 
 <!--
   【本地改动 2026-09-01】单服务器站点无服务器切换需求，左侧服务器图标列
-  （Server Gutter）+ 移动端遮罩/滑动面板纯占宽度，用户要求去掉。
-  采用「隐藏而非删除」：保留上游完整 DOM/脚本结构（利于未来合并上游主
-  干时零冲突），仅以 CSS display:none 把面板与遮罩藏起来。children
-  仍正常透传，主内容区占满。服务器切换改走顶部 quick-switcher（[apps]）
-  或 URL。
-  边界：房间列表侧栏（Chrome 的 ServerSidebar）是另一组件，不受影响。
+  （Server Gutter）+ 移动端遮罩/滑动面板纯占宽度，用户曾要求去掉。
+  尝试过「隐藏」方案（CSS display:none 把面板/遮罩藏起来、保留上游 DOM），
+  但发现主内容区未自动对齐屏幕（message timeline / room list 未按预期撑
+  满腾出的宽度）后回退（见 revert 提交 0f6e3fea4）。现恢复上游原始可见
+  侧栏行为，DOM/脚本结构完整保留（利于未来合并上游零冲突）。
+  边界：房间列表侧栏（Chrome 的 ServerSidebar）是另一组件，不受影响；
+  服务器切换走顶部 quick-switcher（[apps]）或 URL。
 -->
 
 {#if sidebarNav.isMobile}

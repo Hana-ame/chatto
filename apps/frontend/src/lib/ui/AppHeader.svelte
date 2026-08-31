@@ -56,15 +56,18 @@
   // 不在 [serverId] 下，toggle 后 DOM 里根本没有房间列表面板可滑出，用户只见
   // 服务器图标列，误以为坏了。
   // 思路：移动端 + 当前路由不含 [serverId]（即无可 toggle 的房间列表侧栏）时，
-  // hamburger 改为导航到默认已认证服务器的房间列表页，而不是空 toggle；有
-  // [serverId] 的页面（房间、admin、设置）保持原 toggle 行为。
+  // hamburger 先打开侧栏（sidebarNav.isOpen=true），再导航到默认已认证服务器的
+  // 房间列表页；进入 [serverId] 页后 ServerSidebar 挂载且 isOpen 为真，房间列表
+  // 直接滑出可见。有 [serverId] 的页面（房间、admin、设置）保持原 toggle 行为。
   // 边界：仅影响移动端（sidebarNav.isMobile）；桌面端 hamburger 行为不变；
   // 目标服务器复用 preferencesServerId（active 或 firstAuthenticated），与
-  // 设置页入口一致。
+  // 设置页入口一致。踩坑：仅 goto 不打开侧栏的话，[serverId] 页移动端默认
+  // isOpen=false，导航后房间列表仍不可见，等于没修（2026-09-01 自查发现）。
   function handleHamburger() {
     if (sidebarNav.isMobile && !page.route.id?.includes('[serverId]')) {
       const serverId = preferencesServerId;
       if (serverId) {
+        if (!sidebarNav.isOpen) sidebarNav.toggle();
         void goto(resolve('/chat/[serverId]', { serverId: serverIdToSegment(serverId) }));
       }
       return;

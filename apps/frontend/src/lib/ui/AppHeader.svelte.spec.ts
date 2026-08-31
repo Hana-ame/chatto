@@ -151,7 +151,9 @@ describe('AppHeader', () => {
     const { container } = render(AppHeader);
     (container.querySelector('button[title="Toggle sidebar"]') as HTMLButtonElement).click();
 
-    expect(mocks.toggleSidebar).not.toHaveBeenCalled();
+    // Opens the sidebar first so the room list is visible on arrival, then
+    // navigates to the room-list page.
+    expect(mocks.toggleSidebar).toHaveBeenCalledOnce();
     expect(mocks.goto).toHaveBeenCalledWith('/chat/remote.example.com');
   });
 

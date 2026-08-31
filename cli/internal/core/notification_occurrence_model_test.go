@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"hmans.de/chatto/internal/pb/chatto/core/notification/v1"
+	"os"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/log"
 	"github.com/nats-io/nats.go/jetstream"
 	"google.golang.org/protobuf/proto"
 
@@ -125,6 +127,71 @@ func TestNotificationSignalDeleteAlreadyAbsentRecognizesWrappedCode(t *testing.T
 	// 没有 API error 文本的瞬时错误（网络/超时）必须保持"可重试"。
 	if notificationSignalAlreadyAbsent(fmt.Errorf("nats: message deletion unsuccessful: nats: connection refused")) {
 		t.Fatalf("transient failure without API error text must stay retryable")
+	}
+}
+
+// 【本地改动 2026-08-31】TestNotificationSignalSequenceGoneFromStreamConfirmsLiveRange
+// 保护 signalSequenceGoneFromStream 的 fail-closed 语义。
+// 【发现背景】28ba8cddd 修复了「SecureDeleteMsg 报 10043/10057 应视为已不存在」后，
+// 线上 warning 归零，但仅凭错误码判定仍有漏洞：嵌入式 NATS 在恢复重放/压缩窗口内，
+// 对仍存在的消息也会临时报 not found（索引未加载完）。若此时标 cleaned，该通知信号
+// 会被永久漏删（tombstone 不再重试）——「暂时 not found ≠ 永久不存在」。
+// 【修复】标 cleaned 前先用 StreamInfo 的 FirstSeq..LastSeq 存活区间做二次确认：
+// seq < FirstSeq 才视为已滚出保留范围（永久不存在）；seq 仍在区间内则不能标 cleaned，
+// 退回重试。Info 查询失败（网络/超时）时返回 false（fail closed，宁可多等一轮也不漏删）。
+// 【测试方法】用真实 embedded NATS：创建一条 occurrence（拿到其在区间内的 seq），
+// 断言区间内→false；用 FirstSeq-1 构造必然在区间外的 seq→true；用已取消的 ctx
+// 让 Info 失败→false。不依赖删除头消息的 FirstSeq 前移行为，避免 flaky。
+func TestNotificationSignalSequenceGoneFromStreamConfirmsLiveRange(t *testing.T) {
+	chattoCore, _ := newTestCore(t)
+	startCoreServices(t, chattoCore)
+	ctx := testContext(t)
+	model := chattoCore.NotificationOccurrences()
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	input := CreateNotificationOccurrenceInput{
+		RecipientID:   "U-gone-seq",
+		SourceEventID: "E-gone-seq",
+		SourceCreated: now,
+		ActorID:       "U-actor",
+		Signal: testNotificationSignal(
+			notificationTestSignalDirectMention,
+			"R-gone-seq",
+			"E-gone-seq",
+		),
+		Mode:           evtv1.NotificationDeliveryMode_NOTIFICATION_DELIVERY_MODE_PUSH_NOTIFICATION,
+		AttentionLevel: notificationv1.NotificationAttentionLevel_NOTIFICATION_ATTENTION_LEVEL_IMPORTANT,
+		SkipReadLookup: true,
+	}
+	created, _, err := model.Create(ctx, input)
+	if err != nil || created == nil {
+		t.Fatalf("Create = (%v, %v), want occurrence", created, err)
+	}
+	inRangeSeq := created.GetNotificationStreamSequence()
+
+	// 区间内（真实刚写入的 seq）→ 不得视为已消失。
+	if model.signalSequenceGoneFromStream(ctx, inRangeSeq) {
+		t.Fatalf("live range seq %d must not count as gone", inRangeSeq)
+	}
+
+	// 构造必然在区间外的 seq（FirstSeq-1）→ 视为已滚出、已消失。
+	info, infoErr := model.stream.Info(ctx)
+	if infoErr != nil {
+		t.Fatalf("StreamInfo: %v", infoErr)
+	}
+	if info.State.FirstSeq == 0 {
+		t.Fatalf("unexpected FirstSeq 0")
+	}
+	outsideSeq := info.State.FirstSeq - 1
+	if !model.signalSequenceGoneFromStream(ctx, outsideSeq) {
+		t.Fatalf("seq %d (< FirstSeq %d) must count as gone", outsideSeq, info.State.FirstSeq)
+	}
+
+	// fail-closed：Info 查询失败（已取消 ctx）→ 必须返回 false（不标 cleaned）。
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if model.signalSequenceGoneFromStream(cancelled, outsideSeq) {
+		t.Fatalf("StreamInfo failure must fail closed (return false)")
 	}
 }
 
@@ -428,5 +495,79 @@ func TestUnsupportedNotificationSignalDetection(t *testing.T) {
 	}
 	if NotificationOccurrenceHasUnsupportedSignal(&notificationv1.NotificationOccurrence{Signal: &notificationv1.NotificationSignal{}}) {
 		t.Fatal("empty signal was treated as an unknown future signal")
+	}
+}
+
+// 【本地改动 2026-08-31】fakeNotificationStream 只覆盖被测试路径调用的 Info
+// 方法，其余方法由内嵌的 jetstream.Stream 接口承接（未在测试路径上触达，
+// 触达即 panic，测试不需要它们）。
+// 注意：签名必须与接口方法完全一致（Info(ctx, opts ...StreamInfoOpt)），
+// 否则接口分派会落到内嵌的 nil 接口字段上 panic。
+// 用途：T3 模拟 StreamInfo 查询失败，验证 signalSequenceGoneFromStream 的
+// fail-closed 行为（查询失败 → 不标 cleaned → 退回重试）。
+type fakeNotificationStream struct {
+	jetstream.Stream
+	info *jetstream.StreamInfo
+	err  error
+}
+
+func (f *fakeNotificationStream) Info(ctx context.Context, _ ...jetstream.StreamInfoOpt) (*jetstream.StreamInfo, error) {
+	return f.info, f.err
+}
+
+// T1/T2：纯函数 notificationSignalGoneFromStreamRange 的存活区间语义。
+// 发现背景：2026-08-29 notification boundary 竞态事故（seq 19391 被 idle-tail
+// 误删导致 CPU 100%）后，加固方向是「标 cleaned 前先确认该 seq 确实不在
+// stream 存活范围（FirstSeq..LastSeq）之外再视为不存在」（fail closed，宁可
+// 多等一轮也不漏删——防嵌入式 NATS 恢复窗口/压缩窗口内的暂时 not found 被
+// 误判永久消失而永久漏删）。2026-08-31 把该判定抽成纯函数以便直接单测区间
+// 语义（原实现在 notificationSignalGoneFromStream 方法内，与 stream 耦合）。
+func TestNotificationSignalGoneFromStreamRange(t *testing.T) {
+	tests := []struct {
+		name     string
+		firstSeq uint64
+		lastSeq  uint64
+		sequence uint64
+		want     bool
+	}{
+		// T1：目标 seq 已滚出存活区间（< FirstSeq），retention 已移除 → 可视为不存在。
+		{name: "T1 rolled out before FirstSeq", firstSeq: 100, lastSeq: 500, sequence: 99, want: true},
+		// T2：seq 仍落在存活区间 [FirstSeq, LastSeq] 内 → 只能算暂时查不到，绝不能标 cleaned。
+		{name: "T2 exactly at FirstSeq", firstSeq: 100, lastSeq: 500, sequence: 100, want: false},
+		{name: "T2 mid range", firstSeq: 100, lastSeq: 500, sequence: 250, want: false},
+		{name: "T2 exactly at LastSeq", firstSeq: 100, lastSeq: 500, sequence: 500, want: false},
+		// 边界补充：seq 超出 LastSeq（本 incarnation 从未出现该序列）→ 无法确认，
+		// fail-closed 返回 false，避免把别的 incarnation 的 tombstone 误判为已消失。
+		{name: "T2 beyond LastSeq is unconfirmed", firstSeq: 100, lastSeq: 500, sequence: 600, want: false},
+		// 边界补充：空流（新建/全删，FirstSeq=1 LastSeq=0，无存活消息）时对 seq=1
+		// 不确认已消失——保守起见仍退回重试，等 stream 给出可验证的区间。
+		{name: "T2 empty stream is unconfirmed", firstSeq: 1, lastSeq: 0, sequence: 1, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			info := &jetstream.StreamInfo{State: jetstream.StreamState{FirstSeq: tt.firstSeq, LastSeq: tt.lastSeq}}
+			if got := notificationSignalGoneFromStreamRange(info, tt.sequence); got != tt.want {
+				t.Fatalf("notificationSignalGoneFromStreamRange(FirstSeq=%d, LastSeq=%d, seq=%d) = %v, want %v",
+					tt.firstSeq, tt.lastSeq, tt.sequence, got, tt.want)
+			}
+		})
+	}
+}
+
+// T3：fail-closed —— StreamInfo 查询失败（网络/超时/服务端不可达）时，
+// 方法必须返回 false，即「无法证明已消失」，由调用方 cleanupDismissedSignals
+// 不标 cleaned、退回下一轮重试。
+// 发现背景：同 T1/T2（2026-08-29 boundary 竞态事故后的加固）。若此处返回 true，
+// 等于把「查不到」直接当成「已不存在」：通知信号 tombstone 一旦标 cleaned 就
+// 不再重试，漏删即永久残留。
+func TestNotificationSignalGoneFromStreamFailClosed(t *testing.T) {
+	fake := &fakeNotificationStream{err: errors.New("injected stream info failure")}
+	model := &NotificationOccurrenceModel{
+		stream:  fake,
+		logger:  log.NewWithOptions(os.Stderr, log.Options{}),
+		cleaned: make(map[uint64]time.Time),
+	}
+	if got := model.signalSequenceGoneFromStream(context.Background(), 42); got {
+		t.Fatal("signalSequenceGoneFromStream returned true on StreamInfo failure; must fail closed")
 	}
 }

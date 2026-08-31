@@ -318,10 +318,16 @@ func (m *NotificationOccurrenceModel) signalSequenceGoneFromStream(ctx context.C
 			"signal_sequence", sequence, "error", err)
 		return false
 	}
-	/* 【本地改动 2026-08-31】存活区间为 [FirstSeq, LastSeq]；目标 seq 小于
-	FirstSeq 才意味着已被 retention 移除，才可视为永久不存在。
-	注意：seq 在区间内（FirstSeq..LastSeq）时绝不能标 cleaned——那只是暂时
-	查不到，不是消失。 */
+	return notificationSignalGoneFromStreamRange(info, sequence)
+}
+
+// notificationSignalGoneFromStreamRange 是 signalSequenceGoneFromStream 的纯判定
+// 部分，与 stream 无关，便于单测直接构造 StreamInfo 覆盖区间语义。
+// 【本地改动 2026-08-31】存活区间为 [FirstSeq, LastSeq]；目标 seq 小于
+// FirstSeq 才意味着已被 retention 移除，才可视为永久不存在。
+// 注意：seq 在区间内（FirstSeq..LastSeq）时绝不能标 cleaned——那只是暂时
+// 查不到，不是消失。
+func notificationSignalGoneFromStreamRange(info *jetstream.StreamInfo, sequence uint64) bool {
 	return sequence < info.State.FirstSeq
 }
 

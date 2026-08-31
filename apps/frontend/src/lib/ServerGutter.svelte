@@ -7,7 +7,9 @@ user-defined game/website pages in a new tab, plus the add-server button pinned
 to the bottom. See the "UI" section of `docs/GLOSSARY.md`.
 -->
 <script lang="ts">
+  /* eslint-disable svelte/no-navigation-without-resolve -- external game/website URLs must bypass SvelteKit resolve */
   import { onMount } from 'svelte';
+  import { SvelteURL } from 'svelte/url';
   import { resolve } from '$app/paths';
   import { page } from '$app/state';
   import { serverRegistry } from '$lib/state/server/registry.svelte';
@@ -58,7 +60,7 @@ to the bottom. See the "UI" section of `docs/GLOSSARY.md`.
     }
     if (original.protocol !== 'http:' && original.protocol !== 'https:') return '#';
     if (original.hostname === new URL(IMAGE_PROXY_BASE).hostname) return src;
-    const proxy = new URL(IMAGE_PROXY_BASE);
+    const proxy = new SvelteURL(IMAGE_PROXY_BASE);
     proxy.pathname = original.pathname;
     proxy.search = original.search;
     proxy.searchParams.set('proxy_host', original.host);

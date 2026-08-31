@@ -321,6 +321,16 @@ git 报零冲突 ≠ 这里没风险，每次合并都要逐条重审。
 - fork 侧现有防护：markdown-it 的 `validateLink` 拦 `javascript:`/`data:`/`file:`，
   `proxyImageSource` 再锁死 http(s)（其余降级为 `#`），img 加 `loading=lazy` +
   `referrerpolicy=no-referrer` + `rel=noopener`。附件、头像、链接预览不走这条路。
+- **2026-09-01 安全审查：图片代理 302 透传风险已评估、决定接受**。攻击者可在消息里
+  贴一个返回 `302` 的图片 URL：若 proxy 把 302（含 `Location`）原样透传给浏览器，浏览器
+  会带着观看者真实 IP 直接请求重定向目标，绕过「隐藏观看者 IP」的核心承诺（前端
+  `referrerpolicy=no-referrer` 只挡 Referer、挡不住 IP）；若 proxy 服务端跟随 302，
+  可绕过对 `proxy_host` 的内网 IP 过滤（云元数据 `169.254.169.254` 等）。前端
+  `apps/frontend` 无法从机制上防御（302 发生在代理与浏览器网络层），根治需在
+  proxy 端（`proxy.moonchan.xyz`，不在本仓库）禁止 3xx 透传/对重定向目标二次校验。
+  取舍：fork 已有「proxy_host 指向任意 host」的既有 SSRF 面（见 `markdown.ts`
+  `proxyImageSource` 注释），302 只是加一层绕过；本次决定**接受该风险**，不引入
+  前端加固，待 proxy 部署方处理。若上游收紧图片安全，必须在此重新评估。
 - **2026-08-30 同日发现（附件 URL）**：同一轮 ci 里 `test-e2e (1/4)` 与 `test-e2e (2/4)` 各
   红 1 个用例，都是上游断言 URL 含 `access=` ticket、fork 实际返回无 query 的公开 URL：
   `authorized-asset-urls.test.ts:44`（Expected substring "access="）与

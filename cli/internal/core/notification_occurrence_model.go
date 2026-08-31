@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"hmans.de/chatto/internal/pb/chatto/core/notification/v1"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -228,20 +230,41 @@ const (
 	jetStreamSequenceNotFoundErrorCode = 10043
 )
 
+// 【本地改动 4767df6f2】2026-08-30 修复：nats.go 的 SecureDeleteMsg 失败时只把
+// 预制的 ErrMsgDeleteUnsuccessful 用 %w 放进 error 链，JetStream APIError
+// 本身用 %s 拼成文本（"message deletion unsuccessful: nats: API error:
+// code=400 err_code=… description=…"），所以 errors.As 只能拿到
+// APIError()==nil 的封装错误，下面基于 jsErr.APIError() 的 10043/10057
+// 判定永远不命中。线上表现：cloudcone 2026-08-27 起每分钟刷
+// "Notification signal physical deletion will retry … code=400 err_code=10043
+// sequence N not found" —— 信号消息已按 TTL 过期被 NATS 移除后，物理删除
+// 本应视为"消息已不存在"直接跳过，却因检测失效被当失败无限重试，直到
+// tombstone 过期（最长约 90 天）。修复：在 error 链判定之外，再从 nats.go
+// 稳定的 "nats: API error: code=… err_code=N" 文本里提取 err_code 兜底。
+// 影响范围：只影响已不存在消息的删除判定路径；真正的瞬时错误（网络、超时）
+// 不含该文本，仍按失败重试。
+var notificationSignalDeleteAbsentCode = regexp.MustCompile(`nats: API error: code=\d+ err_code=(\d+)`)
+
 func notificationSignalAlreadyAbsent(err error) bool {
 	if errors.Is(err, jetstream.ErrMsgNotFound) {
 		return true
 	}
 	var jsErr jetstream.JetStreamError
-	if !errors.As(err, &jsErr) || jsErr.APIError() == nil {
-		return false
+	if errors.As(err, &jsErr) && jsErr.APIError() != nil {
+		switch jsErr.APIError().ErrorCode {
+		case jetStreamMessageNotFoundErrorCode, jetStreamSequenceNotFoundErrorCode:
+			return true
+		}
 	}
-	switch jsErr.APIError().ErrorCode {
-	case jetStreamMessageNotFoundErrorCode, jetStreamSequenceNotFoundErrorCode:
-		return true
-	default:
-		return false
+	// SecureDeleteMsg 的失败信息把 APIError 拼成了文本（见本函数上方【本地改动 4767df6f2】），
+	// error 链里够不到 err_code，这里从稳定文本提取后与同一组错误码比较。
+	if match := notificationSignalDeleteAbsentCode.FindStringSubmatch(err.Error()); match != nil {
+		code, convErr := strconv.Atoi(match[1])
+		if convErr == nil && (code == jetStreamMessageNotFoundErrorCode || code == jetStreamSequenceNotFoundErrorCode) {
+			return true
+		}
 	}
+	return false
 }
 
 func notificationOccurrenceID(recipientID, sourceEventID, signalKind string) string {

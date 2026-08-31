@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/nats.go/jetstream"
 	"google.golang.org/protobuf/proto"
 
 	evtv1 "hmans.de/chatto/internal/pb/chatto/core/evt/v1"
@@ -87,6 +88,43 @@ func TestNotificationOccurrenceLifecycleUsesStreamFacts(t *testing.T) {
 	model.cleanedMu.Unlock()
 	if cleanedCount != 0 {
 		t.Fatalf("expired secure-delete results = %d, want none", cleanedCount)
+	}
+}
+
+// 【本地改动 4767df6f2】2026-08-30 发现背景：cloudcone 生产日志从 2026-08-27 起每分钟
+// 重复 "Notification signal physical deletion will retry … code=400
+// err_code=10043 sequence N not found"。信号消息已按 TTL 过期被 NATS 移除后，
+// cleanupDismissedSignals 的 SecureDeleteMsg 返回该错误，本应被
+// notificationSignalAlreadyAbsent 判定为"已不存在"而跳过，但 nats.go 的
+// deleteMsg 只把预制 ErrMsgDeleteUnsuccessful 用 %w 放上 error 链，APIError
+// （含 err_code）用 %s 拼成文本，errors.As 拿不到 APIError()，导致 10043
+// 分支永不命中，删除请求每分钟重试直到 tombstone 过期。修复：在 error 链之外
+// 再从 "nats: API error: code=… err_code=N" 稳定文本提取 err_code 判定。
+// 本测试用与 nats.go deleteMsg 完全一致的错误构造（%w + %s）复现该场景。
+func TestNotificationSignalDeleteAlreadyAbsentRecognizesWrappedCode(t *testing.T) {
+	// nats.go stream.deleteMsg 的失败构造：fmt.Errorf("%w: %s",
+	// ErrMsgDeleteUnsuccessful, apiErr.Error())。
+	wrapped := func(code jetstream.ErrorCode) error {
+		apiErr := &jetstream.APIError{Code: 400, ErrorCode: code, Description: "sequence 11 not found"}
+		return fmt.Errorf("%w: %s", jetstream.ErrMsgDeleteUnsuccessful, apiErr.Error())
+	}
+	if !notificationSignalAlreadyAbsent(wrapped(10043)) {
+		t.Fatalf("SecureDeleteMsg-style wrapped err_code=10043 must count as already absent")
+	}
+	if !notificationSignalAlreadyAbsent(wrapped(10057)) {
+		t.Fatalf("SecureDeleteMsg-style wrapped err_code=10057 must count as already absent")
+	}
+	// APIError 真正在 error 链上时（非 SecureDeleteMsg 路径）也应命中。
+	if !notificationSignalAlreadyAbsent(fmt.Errorf("outer: %w", &jetstream.APIError{Code: 400, ErrorCode: 10043, Description: "sequence 11 not found"})) {
+		t.Fatalf("directly wrapped err_code=10043 must count as already absent")
+	}
+	// 无关的 broker 错误码必须保持"可重试"，不能误判为已消失。
+	if notificationSignalAlreadyAbsent(wrapped(10071)) {
+		t.Fatalf("unrelated broker error must stay retryable")
+	}
+	// 没有 API error 文本的瞬时错误（网络/超时）必须保持"可重试"。
+	if notificationSignalAlreadyAbsent(fmt.Errorf("nats: message deletion unsuccessful: nats: connection refused")) {
+		t.Fatalf("transient failure without API error text must stay retryable")
 	}
 }
 

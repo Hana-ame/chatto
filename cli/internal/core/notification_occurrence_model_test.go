@@ -91,7 +91,7 @@ func TestNotificationOccurrenceLifecycleUsesStreamFacts(t *testing.T) {
 	}
 }
 
-// 【本地改动 4767df6f2】2026-08-30 发现背景：cloudcone 生产日志从 2026-08-27 起每分钟
+// 【本地改动 28ba8cddd】2026-08-30 发现背景：cloudcone 生产日志从 2026-08-27 起每分钟
 // 重复 "Notification signal physical deletion will retry … code=400
 // err_code=10043 sequence N not found"。信号消息已按 TTL 过期被 NATS 移除后，
 // cleanupDismissedSignals 的 SecureDeleteMsg 返回该错误，本应被

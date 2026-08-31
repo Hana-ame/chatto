@@ -230,7 +230,7 @@ const (
 	jetStreamSequenceNotFoundErrorCode = 10043
 )
 
-// 【本地改动 4767df6f2】2026-08-30 修复：nats.go 的 SecureDeleteMsg 失败时只把
+// 【本地改动 28ba8cddd】2026-08-30 修复：nats.go 的 SecureDeleteMsg 失败时只把
 // 预制的 ErrMsgDeleteUnsuccessful 用 %w 放进 error 链，JetStream APIError
 // 本身用 %s 拼成文本（"message deletion unsuccessful: nats: API error:
 // code=400 err_code=… description=…"），所以 errors.As 只能拿到
@@ -256,7 +256,7 @@ func notificationSignalAlreadyAbsent(err error) bool {
 			return true
 		}
 	}
-	// SecureDeleteMsg 的失败信息把 APIError 拼成了文本（见本函数上方【本地改动 4767df6f2】），
+	// SecureDeleteMsg 的失败信息把 APIError 拼成了文本（见本函数上方【本地改动 28ba8cddd】），
 	// error 链里够不到 err_code，这里从稳定文本提取后与同一组错误码比较。
 	if match := notificationSignalDeleteAbsentCode.FindStringSubmatch(err.Error()); match != nil {
 		code, convErr := strconv.Atoi(match[1])

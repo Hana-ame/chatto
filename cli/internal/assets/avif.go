@@ -278,6 +278,16 @@ func TransformImageWithFFmpeg(data []byte, width, height int, fit FitMode, optio
 // encodeWebPWithFFmpeg 用 ffmpeg 解码+缩放输入图片并编码为有损 WebP。
 // 输出有损 WebP(带透明时保留 alpha),质量档位由 options.JPEGQuality
 // 映射到 libwebp 的 -q:v。只处理静态图;动画 GIF 由调用方拦截。
+//
+// 【本地改动 2026-09-01】输入必须走临时文件而非 pipe:0。AVIF(以及所有
+// ISO-BMFF 格式:HEIF/HEIC)的文件结构需要 ffmpeg 反复 seek 才能解析
+// (ftyp→meta→mdat 各 box 分散在文件中);pipe:0 不可 seek,ffmpeg 读到
+// mdat box 头部就报 "partial file / EOF" 直接失败。
+//
+// 复现:cloudcone 线上 avif 附件(image/avif)衍生图转换全部 500,错误
+// "stream 0, offset 0x121: partial file"。根因就是 ffmpeg 用 pipe:0
+// 读 ISO-BMFF。文件输入则正常。JPEG/PNG/GIF 是流式格式,pipe:0 也能工作,
+// 但统一走临时文件更简单且差异极小(转换本身是重操作)。
 func encodeWebPWithFFmpeg(data []byte, width, height int, fit FitMode, options TransformOptions, ffmpegPath string) (*TransformResult, error) {
 	var scale string
 	switch fit {
@@ -291,17 +301,31 @@ func encodeWebPWithFFmpeg(data []byte, width, height int, fit FitMode, options T
 		return nil, fmt.Errorf("invalid fit mode: %s", fit)
 	}
 
+	// 【本地改动 2026-09-01】写临时文件:ffmpeg 解析 ISO-BMFF(AVIF/HEIF)
+	// 需要 seek,pipe:0 不可 seek 会直接失败。
+	inFile, err := os.CreateTemp("", "chatto-transform-*.bin")
+	if err != nil {
+		return nil, fmt.Errorf("create transform temp file: %w", err)
+	}
+	defer os.Remove(inFile.Name())
+	if _, err := inFile.Write(data); err != nil {
+		_ = inFile.Close()
+		return nil, fmt.Errorf("write transform temp file: %w", err)
+	}
+	if err := inFile.Close(); err != nil {
+		return nil, fmt.Errorf("close transform temp file: %w", err)
+	}
+
 	transformCtx, cancel := context.WithTimeout(context.Background(), avifEncodeTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(transformCtx, ffmpegPath,
-		"-v", "error", "-y", "-i", "pipe:0",
+		"-v", "error", "-y", "-i", inFile.Name(),
 		"-vf", scale,
 		"-c:v", "libwebp",
 		"-q:v", strconv.Itoa(options.JPEGQuality),
 		"-f", "webp",
 		"pipe:1",
 	)
-	cmd.Stdin = bytes.NewReader(data)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

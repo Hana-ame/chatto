@@ -125,9 +125,10 @@ func TestIncomingWebhookRecordsUseAfterAuthenticationBeforePayloadValidation(t *
 	// this barrier the credential lookup may miss the newly created webhook, causing
 	// recordIfActive's isActive guard to reject the observation and leaving
 	// LastUsedAt zero in the subsequent HydrateBotCredentialUsage call.
-	agg := evtstream.UserAggregate(bot.User.GetId())
-	if err := s.core.WaitForProjectionCurrent(ctx, "incoming webhook use test", agg.AllEventsFilter()); err != nil {
-		t.Fatalf("WaitForProjectionCurrent: %v", err)
+	// WaitForProjectionCurrent 已在上游重构为无 filter 版本，
+	// 此处直接等全部投影 current 即可覆盖"webhook 创建事件已被 user-auth 投影处理"的语义。
+	if err := s.core.WaitForProjectionsCurrent(ctx); err != nil {
+		t.Fatalf("WaitForProjectionsCurrent: %v", err)
 	}
 
 	recorder := httptest.NewRecorder()

@@ -706,6 +706,11 @@ function initialize(): void {
   // loading=lazy / referrerpolicy=no-referrer / rel=noopener noreferrer。踩坑：markdown-it 会把属性里的
   // `&` 转义成 `&amp;`，所以单测断言要避开跨参数的 `&`、只校验各片段。输出仍只经 MarkdownHtml 的
   // Trusted Types 注入点，安全边界不变。
+  // 【本地改动 2026-01】图片尺寸约束：默认宽度 50%，最大高度 100vh，点击可新标签打开原图。
+  // 思路：用 <a> 包裹 <img>，href 指向原始图片 URL（非代理），target="_blank" rel="noopener"；
+  // img 加 style="width: 50%; max-height: 100vh; object-fit: contain; cursor: pointer;"，
+  // 既限制尺寸又提供视觉反馈。踩坑：代理 URL 含 query params（proxy_host/proxy_scheme），
+  // 直接用作 href 会让用户看到带参 URL；改为从原始 src 提取干净 URL。
   // Customize image rendering: route every inline image through the Chatto image
   // proxy (hides the viewer from the source host) and harden the emitted tag.
   const defaultImageRender =
@@ -717,8 +722,10 @@ function initialize(): void {
   md.renderer.rules.image = function (tokens, idx, options, env, self) {
     const token = tokens[idx];
     const srcIndex = token.attrIndex('src');
+    let originalSrc = '';
     if (srcIndex >= 0) {
-      token.attrs![srcIndex][1] = proxyImageSource(token.attrs![srcIndex][1]);
+      originalSrc = token.attrs![srcIndex][1];
+      token.attrs![srcIndex][1] = proxyImageSource(originalSrc);
     }
     // Drop the optional title to avoid tooltip injection/abuse.
     const titleIndex = token.attrIndex('title');
@@ -726,7 +733,24 @@ function initialize(): void {
     token.attrSet('loading', 'lazy');
     token.attrSet('referrerpolicy', 'no-referrer');
     token.attrSet('rel', 'noopener noreferrer');
-    return defaultImageRender(tokens, idx, options, env, self);
+    // 【本地改动 2026-01】约束图片默认宽度 50%，最大高度 100vh，点击可新标签打开。
+    token.attrSet('style', 'width: 50%; max-height: 100vh; object-fit: contain; cursor: pointer;');
+
+    // 用 <a> 包裹图片，点击在新标签页打开原始图片（非代理 URL）。
+    const imgHtml = defaultImageRender(tokens, idx, options, env, self);
+    if (originalSrc && originalSrc !== '#') {
+      // 清理原始 URL：移除可能的 fragment，保留干净的 http(s) URL。
+      let cleanUrl = originalSrc;
+      try {
+        const urlObj = new URL(originalSrc);
+        cleanUrl = urlObj.origin + urlObj.pathname + urlObj.search;
+      } catch {
+        // 无效 URL 则不包裹链接。
+        return imgHtml;
+      }
+      return `<a href="${escapeAttribute(cleanUrl)}" target="_blank" rel="noopener noreferrer">${imgHtml}</a>`;
+    }
+    return imgHtml;
   };
 }
 

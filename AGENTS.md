@@ -341,6 +341,22 @@ git 报零冲突 ≠ 这里没风险，每次合并都要逐条重审。
   访问），而不只是渲染。fork 在 `attachments.go` 里已明文接受该取舍，但每次合并都必须重审，
   尤其关注上游是否收紧了 `/assets/*` 的鉴权。
 
+## Fork 与 Upstream 分歧概览（2026-01 快照）
+
+本仓库是 `Hana-ame/chatto` fork，当前与 upstream (`chattocorp/chatto`) 的分歧状态：
+
+- **上游领先**: 2 个提交
+- **本地领先**: 85 个提交（从合并 ci/deploy 到 main 开始累积）
+- **含本地改动标记的文件**: 60 个（Go 后端 28、前端源码 15、测试 10、工作流 4、文档配置 3）
+
+完整分歧报告见 [`FORK-DIVERGENCE.md`](FORK-DIVERGENCE.md)，包含：
+- 三大核心行为分歧详解（图片渲染、附件 URL、LaTeX 公式）
+- 其他本地改动分类（AVIF、bind_address、品牌链接、UI 布局、通知系统、CI/CD）
+- 合并风险点评估（高/中/低风险区域）
+- 维护建议
+
+**硬性要求**：每次合并 upstream 后必须执行语义冲突审计，逐条重审三大核心分歧。详见上文「合并 upstream 后的语义冲突审计」节。
+
 ## Testing Judgment
 
 - Pick the lowest test layer that exercises the change, but do not stop below

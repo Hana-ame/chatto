@@ -30,7 +30,16 @@ vi.mock('$app/paths', () => ({
     Object.entries(params ?? {}).reduce(
       (resolved, [key, value]) => resolved.replace(`[${key}]`, value),
       path
-    )
+    ),
+  // 【本地改动 2026-09-01】SvelteKit 2.70.3 的 $app/paths 仍导出已废弃的
+  // `assets` 与 `base` 符号（public.d.ts: export let assets; export let base）。
+  // 本测试的传递依赖链（SearchPageTestHarness → SearchPage → MessageView → …）
+  // 中有模块从 `$app/paths` 命名导入 `assets`；若 mock 不提供该导出，浏览器
+  // ESM 加载时会报 "does not provide an export named 'assets'"（CI test-workspace
+  // 2026-09-01 run 33464910762 的失败原因）。补上占位值使 mock 覆盖
+  // `$app/paths` 的全部已声明导出（与 MyThreadsNavItem.svelte.spec.ts 一致）。
+  assets: '',
+  base: ''
 }));
 vi.mock('$lib/navigation', () => ({
   serverIdToSegment: (serverId: string) => serverId,

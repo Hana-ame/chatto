@@ -120,6 +120,16 @@ func TestIncomingWebhookRecordsUseAfterAuthenticationBeforePayloadValidation(t *
 		t.Fatalf("CreateBotIncomingWebhook: %v", err)
 	}
 
+	// 【本地改动 2026-09-01】Wait for the user auth projector to replay the webhook
+	// creation event so ValidateBotIncomingWebhookCredential can find it. Without
+	// this barrier the credential lookup may miss the newly created webhook, causing
+	// recordIfActive's isActive guard to reject the observation and leaving
+	// LastUsedAt zero in the subsequent HydrateBotCredentialUsage call.
+	agg := evtstream.UserAggregate(bot.User.GetId())
+	if err := s.core.WaitForProjectionCurrent(ctx, "incoming webhook use test", agg.AllEventsFilter()); err != nil {
+		t.Fatalf("WaitForProjectionCurrent: %v", err)
+	}
+
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/webhooks/incoming/"+webhook.Credential, strings.NewReader(`not-json`))
 	s.router.ServeHTTP(recorder, request)

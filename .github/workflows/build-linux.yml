@@ -78,6 +78,15 @@ jobs:
 
       - name: Setup environment
         uses: ./.github/actions/setup
+        with:
+          # 【本地改动 2026-09-02】transform 路径需要 ffmpeg:新存储格式
+          # WebP 的衍生图转换(以及历史 AVIF 附件的衍生图转换)都走
+          # TransformImageWithFFmpeg,Go 标准库无 WebP/AVIF 解码器,
+          # ffmpeg 缺失时转换必 500。此前 build-release 未装 ffmpeg,
+          # 依赖 ubuntu-latest 自带,2026-09-02 发现该假设不稳
+          # (TestAsset_ServerAsset_FilenameTailURLs 头像 transform 500)。
+          # 与 ci.yml 的 test-cli 对齐显式安装。
+          install-ffmpeg: "true"
 
       - name: Resolve version
         id: version

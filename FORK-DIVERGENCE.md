@@ -29,10 +29,11 @@
 ### 1. 消息正文内联图片渲染
 
 - **上游做法**: 禁用 `![alt](url)` 语法，不出 `<img>` 标签（安全默认）
-- **Fork 做法**: 允许渲染，src 重写为 `https://proxy.moonchan.xyz/...` 代理取图，隐藏观看者 IP/Referer
+- **Fork 做法**: 允许渲染，src 重写为 `https://proxy.moonchan.xyz/...` 代理取图，隐藏观看者 IP/Referer；尺寸约束为 `max-width: 50%`、`max-height: 100vh` 并保持宽高自适应（避免超长图留黑边）；外层包裹指向原图的 `<a>` 标签支持新标签页打开
 - **关键文件**: 
-  - `apps/frontend/src/lib/markdown.ts` (`proxyImageSource`)
+  - `apps/frontend/src/lib/markdown.ts` (`proxyImageSource`, image 渲染器)
   - `apps/frontend/src/lib/components/MessageContent.svelte.spec.ts`
+  - `apps/frontend/src/lib/markdown.test.ts`
 - **安全风险**: 已评估接受 302 重定向透传风险（见 markdown.ts 注释），待 proxy 部署方处理
 - **防护**: validateLink 拦截 javascript:/data:/file:，锁死 http(s)，加 loading=lazy + referrerpolicy=no-referrer
 

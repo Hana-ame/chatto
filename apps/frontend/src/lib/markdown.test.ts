@@ -405,5 +405,20 @@ describe('renderMarkdown', () => {
       const html = await renderMarkdown('![x](javascript:alert(1))');
       expect(html).not.toContain('<img');
     });
+
+    // 【本地改动 2026-09-02】测试图片尺寸约束样式与原图链接包裹。
+    // 发现背景：此前直接设置 width: 50%，导致超长高度图片在 max-height: 100vh 截断时，盒子宽度仍是固定的 50%，
+    // object-fit: contain 使图片实际显示缩窄居中，外包裹框未能贴合图片并在左右留出大片黑边。
+    // 修复方式：使用 max-width: 50%; max-height: 100vh; width: auto; height: auto;，
+    // 使图片按固有比例等比缩放盒尺寸，包裹框紧贴图片边缘；外层包裹指向原图的 <a> 标签。
+    it('constrains image size with max-width and wraps in clean original url link', async () => {
+      const html = await renderMarkdown('![cat](https://images.example.com/cat.png#preview)');
+      expect(html).toContain(
+        'style="max-width: 50%; max-height: 100vh; width: auto; height: auto; object-fit: contain; cursor: pointer;"'
+      );
+      expect(html).toContain(
+        '<a href="https://images.example.com/cat.png" target="_blank" rel="noopener noreferrer">'
+      );
+    });
   });
 });

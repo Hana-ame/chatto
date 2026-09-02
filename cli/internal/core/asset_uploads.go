@@ -529,15 +529,16 @@ func (m *AssetUploadModel) storeCompletedUpload(ctx context.Context, session *As
 		// 【本地改动 32e1f566】动画 GIF 保留原字节:视频管线会把它们转成
 		// MP4/HLS,若在此重编码成静态 AVIF 会丢掉动画。
 		if !animatedGIF {
-			// 【本地改动 32e1f566】best-effort 重编码为 AVIF:成功就换
-			// content,失败时 ErrAVIFUnavailable(没 ffmpeg/没编码器/
-			// avif_enabled=false)静默存原图;其他瞬时错误记日志但也不
-			// 阻塞上传。
-			if encoded, encErr := assets.EncodeAVIF(ctx, content, assetsCfg); encErr == nil {
+			// 【本地改动 32e1f566 + 2026-09-02】2026-09-02 前重编码为
+			// AVIF;存储格式改为 WebP 后调用 EncodeWebP,输出 image/webp。
+			// best-effort:成功就换 content,失败时 ErrWebPUnavailable
+			// (没 ffmpeg/没编码器/webp_enabled=false)静默存原图;其他
+			// 瞬时错误记日志但也不阻塞上传。
+			if encoded, encErr := assets.EncodeWebP(ctx, content, assetsCfg); encErr == nil {
 				content = encoded
-				contentType = "image/avif"
-			} else if !errors.Is(encErr, assets.ErrAVIFUnavailable) {
-				m.core.logger.Warn("Failed to re-encode attachment image to AVIF; storing original", "error", encErr, "attachment_id", attachmentID)
+				contentType = "image/webp"
+			} else if !errors.Is(encErr, assets.ErrWebPUnavailable) {
+				m.core.logger.Warn("Failed to re-encode attachment image to WebP; storing original", "error", encErr, "attachment_id", attachmentID)
 			}
 		}
 		size = int64(len(content))

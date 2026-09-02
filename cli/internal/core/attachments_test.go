@@ -38,17 +38,13 @@ func createTestPNG(width, height int) []byte {
 // Attachment Upload Tests
 // ============================================================================
 
-// ffmpegAvailable 报告上传路径当前是否会真的产出 AVIF。
-// 【本地改动 32e1f566 + 2026-08-30】测试断言跟随上传路径的真实行为:AVIF
-// 可用时上传 PNG 会得到 image/avif,否则 image/png。
-// 口径必须和生产一致——能否编 AVIF 由 core.AVIFEnabled、ffmpeg 存在性、AV1
-// 编码器三者共同决定,所以直接复用 assets.AVIFAvailable 和上传路径的同一份
-// Config(core.AssetsConfig()),不再自己判 exec.LookPath("ffmpeg")。
-// 【踩坑】2026-08-30 ci.yml test-cli 装了 ffmpeg 但测试 core 的 AVIFEnabled
-// 曾是零值 false(NewChattoCore 不设该字段,生产由 cmd/run.go 写入),旧口径
-// 在这里必然误判:断言期待 image/avif 而实际得到 image/png。
+// ffmpegAvailable 报告上传路径当前是否会真的产出 WebP。
+// 【本地改动 32e1f566 + 2026-08-30 + 2026-09-02】2026-09-02 前存储
+// 格式为 AVIF(AVIFAvailable/image/avif);改为 WebP 后口径同步:能否编
+// WebP 由 core.WebPEnabled、ffmpeg 存在性、libwebp 编码器三者共同决定,
+// 复用 assets.WebPAvailable 和上传路径的同一份 Config(core.AssetsConfig())。
 func ffmpegAvailable(ctx context.Context, core *ChattoCore) bool {
-	return assets.AVIFAvailable(ctx, core.AssetsConfig())
+	return assets.WebPAvailable(ctx, core.AssetsConfig())
 }
 
 func TestChattoCore_UploadAttachment(t *testing.T) {
@@ -91,10 +87,10 @@ func TestChattoCore_UploadAttachment(t *testing.T) {
 		}
 
 		wantContentType := "image/png"
-		// 【本地改动 32e1f566】同 ffmpegAvailable:上传路径在 AVIF 可用时
-		// 转 AVIF,断言必须与环境一致,不能写死 image/png。
+		// 【本地改动 32e1f566 + 2026-09-02】同 ffmpegAvailable:上传路径
+		// 在 WebP 可用时转 WebP,断言必须与环境一致,不能写死 image/png。
 		if ffmpegAvailable(ctx, core) {
-			wantContentType = "image/avif"
+			wantContentType = "image/webp"
 		}
 		if attachment.ContentType != wantContentType {
 			t.Errorf("Expected content type %q, got %q", wantContentType, attachment.ContentType)

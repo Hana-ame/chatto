@@ -199,15 +199,18 @@ func runServer(configPath string) {
 		chattoCore.VideoUploadsEnabled = true
 	}
 
-	// ffmpeg 重编码上传的附件图片为 AVIF。优先用配置的路径;为空则从
+	// ffmpeg 重编码上传的附件图片为 WebP。优先用配置的路径;为空则从
 	// PATH 查找;ffmpeg 缺失时保持原图字节。
 	// 【背景 2026-08-14】合并 upstream main 后,上游把 ffmpeg 配置从
 	// VideoConfig 移到了 AssetProcessingConfig(上游把视频处理改成
 	// durable worker 架构),这里跟着改读取位置,否则编译不过。
+	// 【本地改动 2026-09-02】存储格式从 AVIF 改为 WebP,配置读取
+	// 位置保持 AssetProcessing,字段从 AVIFEnabledOrDefault 改为
+	// WebPEnabledOrDefault。
 	chattoCore.FFmpegPath = cfg.AssetProcessing.FFmpegPath
-	// avif_enabled = false 时保持原图,且完全不探测/不调用 ffmpeg。
+	// webp_enabled = false 时保持原图,且完全不探测/不调用 ffmpeg。
 	// 只影响 room 附件(头像/branding/链接预览始终 WebP)。
-	chattoCore.AVIFEnabled = cfg.AssetProcessing.AVIFEnabledOrDefault()
+	chattoCore.WebPEnabled = cfg.AssetProcessing.WebPEnabledOrDefault()
 
 	if err := chattoCore.EnableLiveKitCallReconciliation(cfg.LiveKit); err != nil {
 		log.Error("Failed to configure LiveKit call-state reconciliation", "error", err)

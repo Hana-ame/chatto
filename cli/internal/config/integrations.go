@@ -107,30 +107,31 @@ type VideoConfig struct {
 // 决定 chatto run 是否内嵌 worker;独立命令 chatto asset-processing 显式
 // 运行但共用其余设置。
 //
-// 【本地改动 218426d6】新增 AVIFEnabled:room 附件图片上传时是否重编码
-// 为 AVIF。用 *bool 是为了区分"没配置"(默认 true,保持原行为)和
+// 【本地改动 218426d6 + 2026-09-02】2026-09-02 前字段为 AVIFEnabled(room
+// 附件图片上传时重编码为 AVIF);存储格式改为 WebP 后重命名为
+// WebPEnabled。用 *bool 是为了区分"没配置"(默认 true,保持原行为)和
 // "显式配置 false"(关掉)。项目里 APICompression 用的是同款模式。
-// 之所以要显式开关:此前只要服务器装了带 AV1 编码器的 ffmpeg,AVIF
-// 就自动生效,想关都关不掉。
+// 之所以要显式开关:此前只要服务器装了带 libwebp 编码器的 ffmpeg,WebP
+// 重编码就自动生效,想关都关不掉。
 type AssetProcessingConfig struct {
 	Enabled           bool   `toml:"enabled" env:"CHATTO_ASSET_PROCESSING_ENABLED" comment:"Start the built-in asset-processing worker inside chatto run."`
-	AVIFEnabled       *bool  `toml:"avif_enabled,commented" env:"CHATTO_ASSET_PROCESSING_AVIF_ENABLED" comment:"Re-encode eligible room attachment images to AVIF on upload. Requires an ffmpeg binary with an AV1 encoder (auto-detected from PATH when ffmpeg_path is empty). When disabled, original image bytes are stored unchanged. Affects room attachments only; avatars, server branding, and link previews stay WebP regardless. Default: true."`
+	WebPEnabled       *bool  `toml:"webp_enabled,commented" env:"CHATTO_ASSET_PROCESSING_WEBP_ENABLED" comment:"Re-encode eligible room attachment images to WebP on upload. Requires an ffmpeg binary with a libwebp encoder (auto-detected from PATH when ffmpeg_path is empty). When disabled, original image bytes are stored unchanged. Affects room attachments only; avatars, server branding, and link previews stay WebP regardless. Default: true."`
 	FFmpegPath        string `toml:"ffmpeg_path,commented" env:"CHATTO_ASSET_PROCESSING_FFMPEG_PATH" comment:"Path to ffmpeg binary. Auto-detected from PATH if empty."`
 	FFprobePath       string `toml:"ffprobe_path,commented" env:"CHATTO_ASSET_PROCESSING_FFPROBE_PATH" comment:"Path to ffprobe binary. Auto-detected from PATH if empty."`
 	MaxConcurrentJobs int    `toml:"max_concurrent_jobs,commented" env:"CHATTO_ASSET_PROCESSING_MAX_CONCURRENT_JOBS" comment:"Maximum number of asset-processing jobs to run simultaneously in this process. Default: 2."`
 	TempDir           string `toml:"temp_dir,commented" env:"CHATTO_ASSET_PROCESSING_TEMP_DIR" comment:"Temporary directory for asset processing. Default: system temp directory."`
 }
 
-// AVIFEnabledOrDefault 报告 room 附件 AVIF 重编码是否开启,默认 true
-// (best-effort AVIF 是历史行为;没装 ffmpeg 的服务器本来就静默存原图)。
-// 【踩坑】故意不参考 worker 的 Enabled:AVIF 重编码在上传路径上用普通
-// ffmpeg 完成,与 durable worker 无关。最初实现把两者绑在一起,会错误地
-// 在 worker 关闭时把 AVIF 也关掉,已修正。
-func (c *AssetProcessingConfig) AVIFEnabledOrDefault() bool {
-	if c.AVIFEnabled == nil {
+// WebPEnabledOrDefault 报告 room 附件 WebP 重编码是否开启,默认 true
+// (best-effort WebP 是 2026-09-02 之后的行为;2026-09-02 前是 AVIF;
+// 没装 ffmpeg 的服务器本来就静默存原图)。
+// 【踩坑】故意不参考 worker 的 Enabled:WebP 重编码在上传路径上用普通
+// ffmpeg 完成,与 durable worker 无关。
+func (c *AssetProcessingConfig) WebPEnabledOrDefault() bool {
+	if c.WebPEnabled == nil {
 		return true
 	}
-	return *c.AVIFEnabled
+	return *c.WebPEnabled
 }
 
 // DefaultVideoMaxUploadSize is the default maximum size for video uploads (100 MB).

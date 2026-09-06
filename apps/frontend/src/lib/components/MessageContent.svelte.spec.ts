@@ -907,24 +907,24 @@ describe('MessageContent component', () => {
   });
 
   it('restricts the image link hit-area to the picture itself', async () => {
-    // 【本地改动 2026-09-02 回归测试】发现背景：<a> 保持 inline 时，其 getBoundingClientRect
-    // 实测为整行宽（prose=400px 时 anchor=400px，而 img=200px）——用户点击图片旁边的空白也会
-    // 打开新标签，与预期不符。修复：<a> 加 display: inline-block 让盒 shrink-to-fit 到图片宽度。
-    // 断言：anchor 宽度 == 图片宽度（点击范围恰好是图片本身），且 < prose 内容宽度。
-    // 注：proxy 在测试环境不可达、img 为 broken 时 width 可能为 0；测试给 img 显式 width 使其
-    // 有确定尺寸，从而验证 shrink-to-fit 的点击热区跟随图片。
+    // 【本地改动 2026-09-02 回归测试】发现背景：<a> 保持 inline 时行盒横跨整行，点击热区=整行宽；
+    // <a> 改 inline-block 但 img 自身带 max-width:50%（相对 <a>，循环解析）时热区=图片两倍
+    // （用户实测）。修复：50% 上限放 <a>（display:inline-block; max-width:50% 相对 <p> 确定），
+    // img 用 width:100% 撑满 → 点击热区（<a> 盒）恒等于图片宽。
+    // 断言：anchor 宽度 == 图片宽度（真实 intrinsic 图），且 < prose 内容宽度。
     const { container } = renderMessage('![cat](https://images.example.com/cat.png)');
     await expect.poll(() => q(container, 'img')).toBeTruthy();
     const prose = q(container, '.prose')!;
     prose.setAttribute('style', 'width: 400px');
     const img = q(container, 'img')!;
     const anchor = q(container, 'a')!;
-    img.style.width = '200px';
-    img.style.maxWidth = 'none';
-    await expect.poll(() => img.getBoundingClientRect().width).toBeCloseTo(200, 0);
-    expect(anchor.getBoundingClientRect().width).toBeCloseTo(200, 0);
-    expect(anchor.getBoundingClientRect().width).toBeLessThan(
-      prose.getBoundingClientRect().width
-    );
+    // 真实 800x450 PNG（data URL），让 img 有真实 intrinsic 尺寸
+    const png800x450 = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAyAAAAHCCAIAAACYATqfAAAJU0lEQVR4nO3OAQkAMAwDsEq/9JsYFEqiIHkAAJxKOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsOYD687blCgXtNoAAAAASUVORK5CYII=';
+    img.src = png800x450;
+    await expect.poll(() => img.getBoundingClientRect().width).toBeGreaterThan(0);
+    const imgW = img.getBoundingClientRect().width;
+    const aW = anchor.getBoundingClientRect().width;
+    expect(aW).toBeCloseTo(imgW, 0);
+    expect(aW).toBeLessThan(prose.getBoundingClientRect().width);
   });
 });

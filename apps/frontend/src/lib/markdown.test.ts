@@ -409,17 +409,17 @@ describe('renderMarkdown', () => {
     // 【本地改动 2026-09-02】测试图片尺寸约束样式与原图链接包裹。
     // 发现背景：此前直接设置 width: 50%，导致超长高度图片在 max-height: 100vh 截断时，盒子宽度仍是固定的 50%，
     // object-fit: contain 使图片实际显示缩窄居中，外包裹框未能贴合图片并在左右留出大片黑边。
-    // 修复方式：使用 max-width: 50%; max-height: 100vh; width: auto; height: auto;，
-    // 使图片按固有比例等比缩放盒尺寸，包裹框紧贴图片边缘；外层包裹指向原图的 <a> 标签。
+    // 修复方式：50% 宽度上限放在外包络框 <a>（max-width: 50%）、img 以 width:100% 撑满，
+    // 图片按固有比例等比缩放盒尺寸，包裹框紧贴图片边缘；外层包裹指向原图的 <a> 标签。
     it('constrains image size with max-width and wraps in clean original url link', async () => {
       const html = await renderMarkdown('![cat](https://images.example.com/cat.png#preview)');
       expect(html).toContain(
-        'style="max-width: 50%; max-height: 100vh; width: auto; height: auto; object-fit: contain; cursor: pointer;"'
+        'style="display: block; width: 100%; height: auto; max-height: 100vh; object-fit: contain; cursor: pointer;"'
       );
-      // 【本地改动 2026-09-02】<a> 加 display: inline-block：限制点击热区为图片本身（inline 时
-      // 行盒横跨整行，实测 anchor=整行宽）。断言改匹配新 style 属性。
+      // 【本地改动 2026-09-02】<a> 加 display: inline-block + max-width: 50%：点击热区=图片宽
+      // （inline 时热区=整行；img 自身 max-width:50% 时热区=两倍图宽，见 markdown.ts 注释）。
       expect(html).toContain(
-        '<a href="https://images.example.com/cat.png" target="_blank" rel="noopener noreferrer" style="display: inline-block;">'
+        '<a href="https://images.example.com/cat.png" target="_blank" rel="noopener noreferrer" style="display: inline-block; max-width: 50%;">'
       );
     });
   });

@@ -416,8 +416,10 @@ describe('renderMarkdown', () => {
       expect(html).toContain(
         'style="max-width: 50%; max-height: 100vh; width: auto; height: auto; object-fit: contain; cursor: pointer;"'
       );
+      // 【本地改动 2026-09-02】<a> 加 display: inline-block：限制点击热区为图片本身（inline 时
+      // 行盒横跨整行，实测 anchor=整行宽）。断言改匹配新 style 属性。
       expect(html).toContain(
-        '<a href="https://images.example.com/cat.png" target="_blank" rel="noopener noreferrer">'
+        '<a href="https://images.example.com/cat.png" target="_blank" rel="noopener noreferrer" style="display: inline-block;">'
       );
     });
   });

@@ -709,12 +709,15 @@ function initialize(): void {
   // 【本地改动 2026-09-02】修复图片尺寸约束：改用 max-width: 50% 代替固定的 width: 50%。
   // 目的：解决超长高度图片在 max-height 限制下，外包裹框仍固定占据 50% 宽度导致左右留出大片黑边的问题。
   // 思路：用 <a> 包裹 <img>，href 指向原始图片 URL（非代理），target="_blank" rel="noopener"；
-  // img 加 style="max-width: 50%; max-height: 100vh; width: auto; height: auto; object-fit: contain; cursor: pointer;"，
+  // <a> 加 style="display: inline-block;"，img 加 style="max-width: 50%; max-height: 100vh;
+  // width: auto; height: auto; object-fit: contain; cursor: pointer;"，
   // 既限制尺寸又提供视觉反馈，同时保证在宽度和高度任一方向触顶时按固有宽高比自适应缩放，使包裹框紧贴图片边缘。
   // 踩坑：若直接写 width: 50%，CSS 规定显式 width 优于固有纵横比计算。当超长高度图片触碰 max-height: 100vh 时，
   // 盒子宽度仍是 50%，而 object-fit: contain 使图片实际显示宽度缩水居中，导致 img 元素的 outline 边框和背景
   // 未能贴合图片留下黑边。代理 URL 含 query params（proxy_host/proxy_scheme），直接用作 href 会让用户看到带参 URL，
   // 故从原始 src 提取干净 URL。
+  // 【本地改动 2026-09-02 追加】<a> 保持 inline 时点击热区=整行宽（见下方 image 渲染器注释的实测），
+  // 必须 display: inline-block 才能让点击范围=图片本身；同时不影响"图片完整显示 + 50% 上限"。
   // Customize image rendering: route every inline image through the Chatto image
   // proxy (hides the viewer from the source host) and harden the emitted tag.
   const defaultImageRender =
@@ -744,6 +747,10 @@ function initialize(): void {
     );
 
     // 用 <a> 包裹图片，点击在新标签页打开原始图片（非代理 URL）。
+    // 【本地改动 2026-09-02 修复】<a> 必须 display: inline-block：inline 时行盒横跨整行，
+    // 点击热区 getBoundingClientRect 实测为整行宽（prose 400px 时 anchor 也是 400px），
+    // 用户点击图片旁边的空白也会打开新标签。inline-block 让盒 shrink-to-fit 到图片宽度，
+    // 点击范围恰好等于图片本身。img 用 max-width:50% 保持"最大50%宽、超高自适配、完整显示"。
     const imgHtml = defaultImageRender(tokens, idx, options, env, self);
     if (originalSrc && originalSrc !== '#') {
       // 清理原始 URL：移除可能的 fragment，保留干净的 http(s) URL。
@@ -755,7 +762,7 @@ function initialize(): void {
         // 无效 URL 则不包裹链接。
         return imgHtml;
       }
-      return `<a href="${escapeAttribute(cleanUrl)}" target="_blank" rel="noopener noreferrer">${imgHtml}</a>`;
+      return `<a href="${escapeAttribute(cleanUrl)}" target="_blank" rel="noopener noreferrer" style="display: inline-block;">${imgHtml}</a>`;
     }
     return imgHtml;
   };

@@ -359,7 +359,7 @@ func (env *assetTestEnv) deleteAssetMessage(t *testing.T, roomID, eventID string
 // Asset Caching Tests
 // ============================================================================
 
-func TestAsset_TransformedImage_CacheHitMiss(t *testing.T) {
+func TestAsset_TransformedAttachmentURLReturnsOriginalWithoutCache(t *testing.T) {
 	env := setupAssetTestServer(t)
 
 	// Create user and space with room
@@ -388,43 +388,83 @@ func TestAsset_TransformedImage_CacheHitMiss(t *testing.T) {
 	// Upload an attachment via postMessage mutation
 	imageData := createAssetTestPNG(t, 800, 600)
 	_, attachment := env.postAssetMessageWithAttachment(t, room.Id, "Test message with image", imageData, "test-image.png")
+	originalURL := attachment.GetAssetUrl().GetUrl()
 	thumbnailURL := attachment.GetThumbnailAssetUrl().GetUrl()
-	if thumbnailURL == "" {
-		t.Fatal("Expected thumbnail asset URL")
+	if originalURL == "" || thumbnailURL == "" {
+		t.Fatal("Expected original and thumbnail asset URLs")
 	}
 
-	// First request to transformed URL should be a cache MISS
+	// 【本地改动 2026-09-12】附件的 /image/{w}x{h}/{fit} 请求已整体
+	// bypass:不缩放、不重编码、不读写 resize 缓存,直接回存储的那一份字节。
+	// 因此这个用例不再测缓存命中,改测「transform URL 与原文件 URL 逐字节
+	// 一致」——这才是 fork 想保护的不变量。
+	originalResp, err := env.client.Get(env.server.URL + originalURL)
+	if err != nil {
+		t.Fatalf("Failed to get original attachment: %v", err)
+	}
+	if originalResp.StatusCode != http.StatusOK {
+		originalResp.Body.Close()
+		t.Fatalf("Expected 200 OK for the original attachment, got %d", originalResp.StatusCode)
+	}
+	original, err := io.ReadAll(originalResp.Body)
+	originalResp.Body.Close()
+	if err != nil {
+		t.Fatalf("Failed to read original attachment: %v", err)
+	}
+	originalType := originalResp.Header.Get("Content-Type")
+
+	// 第一次请求 transform URL:必须返回原文件字节,且标记 BYPASS。
 	transformResp, err := env.client.Get(env.server.URL + thumbnailURL)
 	if err != nil {
 		t.Fatalf("Failed to get transformed image: %v", err)
 	}
-	transformResp.Body.Close()
-
 	if transformResp.StatusCode != http.StatusOK {
-		t.Errorf("Expected 200 OK, got %d", transformResp.StatusCode)
+		transformResp.Body.Close()
+		t.Fatalf("Expected 200 OK, got %d", transformResp.StatusCode)
+	}
+	got, err := io.ReadAll(transformResp.Body)
+	transformResp.Body.Close()
+	if err != nil {
+		t.Fatalf("Failed to read transformed image: %v", err)
+	}
+	if !bytes.Equal(got, original) {
+		t.Fatal("transformed attachment must be byte-identical to the stored original")
+	}
+	if got := transformResp.Header.Get("X-Cache"); got != "BYPASS" {
+		t.Fatalf("Expected X-Cache: BYPASS, got: %s", got)
+	}
+	if got := transformResp.Header.Get("Content-Type"); got != originalType {
+		t.Fatalf("Content-Type = %q, want the stored original's %q", got, originalType)
 	}
 
-	// Wait a bit for the async cache store to complete
-	time.Sleep(100 * time.Millisecond)
-
-	// Second request should be a cache HIT
+	// 第二次请求结果必须一致,且 resize 缓存仍然为空(bypass 不写缓存)。
 	transformResp2, err := env.client.Get(env.server.URL + thumbnailURL)
 	if err != nil {
-		t.Fatalf("Failed to get transformed image: %v", err)
+		t.Fatalf("Failed to get transformed image again: %v", err)
 	}
+	got2, err := io.ReadAll(transformResp2.Body)
 	transformResp2.Body.Close()
-
-	if transformResp2.StatusCode != http.StatusOK {
-		t.Errorf("Expected 200 OK, got %d", transformResp2.StatusCode)
+	if err != nil {
+		t.Fatalf("Failed to read transformed image: %v", err)
+	}
+	if !bytes.Equal(got2, original) {
+		t.Fatal("second request must return the same original bytes")
+	}
+	if got := transformResp2.Header.Get("X-Cache"); got != "BYPASS" {
+		t.Fatalf("Expected X-Cache: BYPASS on repeat, got: %s", got)
 	}
 
-	xCache := transformResp2.Header.Get("X-Cache")
-	if xCache != "HIT" {
-		t.Errorf("Expected X-Cache: HIT, got: %s", xCache)
+	cacheKey := core.ImageCacheKey(AttachmentStableCachePrefix, attachment.GetId(), 960, 400, "contain")
+	cached, err := env.core.GetCachedResize(env.ctx, cacheKey)
+	if err != nil {
+		t.Fatalf("GetCachedResize: %v", err)
+	}
+	if len(cached) > 0 {
+		t.Fatalf("attachment transform must not populate the resize cache: %d bytes under %q", len(cached), cacheKey)
 	}
 }
 
-func TestAsset_TransformedAttachmentUsesCompressedProfileAndVersionedCache(t *testing.T) {
+func TestAsset_TransformedAttachmentIgnoresStaleCacheAndServesOriginal(t *testing.T) {
 	env := setupAssetTestServer(t)
 
 	user, err := env.core.CreateUser(env.ctx, "system", "compressedimageuser", "Compressed Image User", "password123")
@@ -451,6 +491,26 @@ func TestAsset_TransformedAttachmentUsesCompressedProfileAndVersionedCache(t *te
 		t.Fatalf("Failed to seed old attachment cache namespace: %v", err)
 	}
 
+	// 【本地改动 2026-09-12】这个用例原本断言「附件衍生图走压缩 profile,
+	// 并写入版本化缓存命名空间」。fork 取消衍生图后前提不成立:请求期不再
+	// 编码,resize 缓存既不被读也不被写,上面种下的旧缓存条目必须被无视
+	// (否则历史衍生图字节会泄漏给客户端)。现在断言 transform URL 回的是
+	// 存储原文件的字节。
+	originalResp, err := env.client.Get(env.server.URL + attachment.GetAssetUrl().GetUrl())
+	if err != nil {
+		t.Fatalf("Failed to get original attachment: %v", err)
+	}
+	if originalResp.StatusCode != http.StatusOK {
+		originalResp.Body.Close()
+		t.Fatalf("Expected 200 OK for the original attachment, got %d", originalResp.StatusCode)
+	}
+	original, err := io.ReadAll(originalResp.Body)
+	originalResp.Body.Close()
+	if err != nil {
+		t.Fatalf("Failed to read original attachment: %v", err)
+	}
+	originalType := originalResp.Header.Get("Content-Type")
+
 	resp, err := env.client.Get(env.server.URL + thumbnailURL)
 	if err != nil {
 		t.Fatalf("Failed to get transformed attachment: %v", err)
@@ -459,34 +519,18 @@ func TestAsset_TransformedAttachmentUsesCompressedProfileAndVersionedCache(t *te
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("Expected 200 OK, got %d", resp.StatusCode)
 	}
-	if got := resp.Header.Get("X-Cache"); got != "MISS" {
-		t.Fatalf("X-Cache = %q, want MISS for old cache namespace", got)
+	if got := resp.Header.Get("X-Cache"); got != "BYPASS" {
+		t.Fatalf("X-Cache = %q, want BYPASS: attachment transforms are not encoded", got)
 	}
 	got, err := io.ReadAll(resp.Body)
 	if err != nil {
 		t.Fatalf("Failed to read transformed attachment: %v", err)
 	}
-
-	// 【本地改动 2026-08-16】期望值必须与服务器走同一条衍生图路径
-	// (TransformImageWithFFmpeg,带 ffmpeg 时输出有损 WebP),否则本地有
-	// ffmpeg 时字节对不上(服务器 WebP vs 旧期望 JPEG)。
-	wantResult, err := assets.TransformImageWithFFmpeg(imageData, 960, 400, assets.FitContain, assets.TransformOptions{
-		JPEGQuality: AttachmentDerivativeJPEGQuality,
-	}, env.core.AssetsConfig().FFmpegPath)
-	if err != nil {
-		t.Fatalf("Failed to build expected transform: %v", err)
+	if !bytes.Equal(got, original) {
+		t.Fatal("transformed attachment must be the stored original bytes, not a re-encoded derivative")
 	}
-	want, err := io.ReadAll(wantResult.Reader)
-	if err != nil {
-		t.Fatalf("Failed to read expected transform: %v", err)
-	}
-	if !bytes.Equal(got, want) {
-		t.Fatal("attachment derivative did not use the compressed attachment profile")
-	}
-
-	cacheKey := core.ImageCacheKey(AttachmentStableCachePrefix, attachment.GetId(), 960, 400, "contain")
-	if !strings.HasPrefix(cacheKey, "attachment-stable-v2.") {
-		t.Fatalf("cache key = %q, want versioned attachment-stable-v2 prefix", cacheKey)
+	if got := resp.Header.Get("Content-Type"); got != originalType {
+		t.Fatalf("Content-Type = %q, want the stored original's %q", got, originalType)
 	}
 }
 
@@ -525,7 +569,10 @@ func TestAsset_DeleteAttachment_CleansUpCache(t *testing.T) {
 		t.Fatal("Expected original and thumbnail asset URLs")
 	}
 
-	// Request transformed image to populate cache
+	// 【本地改动 2026-09-12】附件 transform 请求已整体 bypass,不再写
+	// resize 缓存,所以这里不再验证「删除前缓存 HIT」;删除后的 404 断言
+	// 不变——原文件与 transform URL 都必须 404,且不能从残留缓存里拿到已
+	// 删除附件的字节。
 	transformResp, err := env.client.Get(env.server.URL + thumbnailURL)
 	if err != nil {
 		t.Fatalf("Failed to get transformed image: %v", err)
@@ -534,18 +581,8 @@ func TestAsset_DeleteAttachment_CleansUpCache(t *testing.T) {
 	if transformResp.StatusCode != http.StatusOK {
 		t.Fatalf("Expected 200 OK, got %d", transformResp.StatusCode)
 	}
-
-	// Wait for async cache store
-	time.Sleep(100 * time.Millisecond)
-
-	// Verify cache hit
-	transformResp2, err := env.client.Get(env.server.URL + thumbnailURL)
-	if err != nil {
-		t.Fatalf("Failed to get transformed image: %v", err)
-	}
-	transformResp2.Body.Close()
-	if transformResp2.Header.Get("X-Cache") != "HIT" {
-		t.Fatalf("Expected cache HIT before deletion")
+	if got := transformResp.Header.Get("X-Cache"); got != "BYPASS" {
+		t.Fatalf("Expected X-Cache: BYPASS before deletion, got %q", got)
 	}
 
 	// Delete the message (which should delete the attachment and its cache)
@@ -621,13 +658,15 @@ func TestAsset_OriginalAttachment_ServesCorrectly(t *testing.T) {
 	}
 
 	// Should have correct content type. room 附件图片在 AVIF 可用时会被
-	// 重编码为 WebP(否则原样存储),断言跟随环境,不能写死 image/png。
-	// 【本地改动 2026-08-30 + 2026-09-02】2026-09-02 前存储格式为
-	// AVIF;改为 WebP 后探测口径同步。
+	// 重编码为**原尺寸 AVIF**(否则原样存储),断言跟随环境,不能写死
+	// image/png。
+	// 【本地改动 2026-08-30 + 2026-09-02 + 2026-09-12】2026-09-02 ~
+	// 2026-09-12 存储格式为 WebP(WebPAvailable/image/webp);2026-09-12 起
+	// 回到 AVIF 并取消衍生图,探测口径同步为 AVIFAvailable/image/avif。
 	contentType := originalResp.Header.Get("Content-Type")
 	wantContentType := "image/png"
-	if assets.WebPAvailable(env.ctx, env.core.AssetsConfig()) {
-		wantContentType = "image/webp"
+	if assets.AVIFAvailable(env.ctx, env.core.AssetsConfig()) {
+		wantContentType = "image/avif"
 	}
 	if contentType != wantContentType {
 		t.Errorf("Expected Content-Type: %s, got: %s", wantContentType, contentType)

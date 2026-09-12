@@ -1,4 +1,5 @@
 import { toast } from '$lib/ui/toast';
+import { resolveFileMimeType } from '$lib/attachments/mimeTypes';
 import { prepareFiles } from '$lib/attachments/prepareFiles';
 
 export type FileWithUrl = { file: File; url: string };
@@ -33,7 +34,13 @@ export class AttachmentsState {
     const limits = this.getLimits();
     const accepted: File[] = [];
     for (const file of files) {
-      const isVideo = file.type.startsWith('video/');
+      // 【本地改动 2026-09-12】这里必须用 resolveFileMimeType 而不是
+      // file.type:上传方声明的 MIME 不可信(来自操作系统扩展名注册表),
+      // 直接按声明判视频会在 prepareFiles 纠正类型之前就把图片以
+      // "视频已禁用"拒掉,或让它占用视频体积上限。
+      // 顺序上 validateFiles 必须先于 prepareFiles——现有测试断言被拒文件
+      // 不触发 prepareFilesMock。
+      const isVideo = resolveFileMimeType(file).startsWith('video/');
       if (isVideo && !limits.videoProcessingEnabled) {
         toast.error('Video uploads are disabled on this server.');
         continue;

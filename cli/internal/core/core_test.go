@@ -60,14 +60,15 @@ func newTestCore(t *testing.T) (*ChattoCore, *nats.Conn) {
 	if err != nil {
 		t.Fatalf("Failed to create ChattoCore: %v", err)
 	}
-	// 【本地改动 2026-08-30 + 2026-09-02】跟生产默认值对齐:cmd/run.go
-	// 用 AssetProcessing.WebPEnabledOrDefault() 写入 core.WebPEnabled,
-	// 默认 true。2026-09-02 前字段为 AVIFEnabled。NewChattoCore 不设该
-	// 字段,零值 false 会让上传路径永远存原图,集成路径从未被覆盖;ci.yml
-	// test-cli 装了 ffmpeg 后,只看 exec.LookPath 的断言期待 image/webp
-	// 而实际得到 image/png 必红。需要关掉某个测试的 WebP 就显式写
-	// core.WebPEnabled = false。
-	core.WebPEnabled = true
+	// 【本地改动 2026-08-30 + 2026-09-02 + 2026-09-12】跟生产默认值对齐:
+	// cmd/run.go 用 AssetProcessing.AVIFEnabledOrDefault() 写入
+	// core.AVIFEnabled,默认 true。历史:2026-09-02 前字段名是 AVIFEnabled,
+	// 2026-09-02 ~ 2026-09-12 改成 WebPEnabled,2026-09-12 又改回 AVIF。
+	// NewChattoCore 不设该字段,零值 false 会让上传路径永远存原图,集成路径
+	// 从未被覆盖;CI 装了 ffmpeg 后,只看 exec.LookPath 的断言期待
+	// image/avif 而实际得到 image/png 必红。需要关掉某个测试的 AVIF 就显式
+	// 写 core.AVIFEnabled = false。
+	core.AVIFEnabled = true
 
 	return core, nc
 }

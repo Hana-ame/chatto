@@ -3,30 +3,55 @@
 **Status:** Active
 **Last reviewed:** 2026-08-25
 
-> **【本地改动 32e1f566】（2026-08-14 引入，AVIF 附件重编码）** 本文件属 upstream 所有；
-> 下列两处是 fork 独有的文字改动，合并 upstream 时会被上游版本覆盖，需要人工恢复
->（正文各处以 `【本地改动 32e1f566】` HTML 注释就地标记）。
+> **【本地改动 32e1f566 + 2026-09-02 + 2026-09-12】（room 附件图片存储与衍生图）**
+> 本文件属 upstream 所有；下列是 fork 独有的文字改动，合并 upstream 时会被上游
+> 版本覆盖，需要人工恢复（正文各处以 `【本地改动 ...】` HTML 注释就地标记）。
 >
-> 1. **`## Behavior` 段「room timeline loads attachment images」一行** —— 上游原文
->    "The untouched upload remains available"，fork 改为 "The uploaded image (re-encoded
->    to AVIF when ffmpeg is available) remains available"。
->    **原因**：fork 里「原图」不是原始上传字节，而是 ffmpeg 可用时的 AVIF 重编码结果；
->    沿用上游措辞会误导读者以为原字节始终被保留。
-> 2. **`### 10. Displayed images use bounded derivatives` 的 Decision / Why / Tradeoff 三行**
->    —— 补记 fork 在上传时用 ffmpeg 重编码为 AVIF（CRF 30，优先 `libsvtav1`，回退
->    `libaom-av1`），ffmpeg 或 AV1 编码器不可用时存原字节；动画 GIF 永不重编码以便
->    视频管线转 MP4。
+> **2026-09-12 起 fork 的附件策略（现行）**
 >
-> **边界**：只影响 room 附件图片。头像与链接预览始终走 WebP 衍生图，不参与 AVIF 重编码。
+> - **上传时编码一次，请求期零编码**：room 附件图片在上传时用 ffmpeg 重编码为
+>   **原尺寸 AVIF**（CRF 30，优先 `libsvtav1`，回退 `libaom-av1`；静态输入出静态
+>   AVIF，动画 GIF/WebP 出动画 AVIF）。ffmpeg 或 AV1 编码器不可用、或编码失败时
+>   存原字节（best-effort，不阻塞上传）。
+> - **取消衍生图**：`/assets/files/{id}/image/{w}x{h}/{fit}` 仍接收旧客户端发的
+>   参数，但直接返回存储的那一份字节（响应头 `X-Cache: BYPASS`），不缩放、不重
+>   编码、不读写 ASSET_CACHE。
+> - **停用视频转码**：`cmd/run.go` 从不置 `VideoUploadsEnabled`，PostMessage 不追加
+>   `AssetProcessingStartedEvent`，durable worker 空转。视频原样存、原样发；动画
+>   GIF 也不再生成 MP4，走图片管线出动画 AVIF。
+> - **前端不再编码**：`prepareFiles` 原样透传文件字节（`heic2any` 已移除）。
 >
-> **已知文档缺口（未擅自改）**：上游的 "Opaque static attachment derivatives use
-> JPEG quality 75" 在本 fork 已不准确 —— fork 自 2026-08-16 起在无 ffmpeg 回退路径之外
-> 一律输出有损 WebP。该措辞出现在上游所有的两处（`## Behavior` 段与 `### 10` 的 Decision
-> 开头），属 upstream 正文，改它会新增合并冲突面，留给人决定。
+> **改到的 upstream 正文**
+>
+> 1. `## Overview`：加了 fork 现状注释。
+> 2. `## Behavior`：视频处理、图片渲染尺寸、衍生图这几条 bullet。
+> 3. `### 10. Displayed images use bounded derivatives` 的 Decision / Why / Tradeoff
+>    三行。
+>
+> **已知上游正文与 fork 不一致（未改，留给人决定）**
+>
+> - `### 6` 里 "Message posting atomically appends ... an `AssetProcessingStartedEvent`
+>   for newly uploaded video/animated-GIF assets"：fork 从不追加。
+> - `### 10` Decision 开头的 "Opaque static derivatives use JPEG quality 75"：fork 已无
+>   衍生图。
+>
+> **边界**：只影响 room 附件。头像、branding、链接预览仍是 Go 直出的 WebP，且仍在
+> 请求期缩放并写缓存。
+>
+> **已知代价（已接受）**：动画 AVIF 可能比源 GIF 大（实测 GIF 278 KB → AVIF 333 KB）；
+> HEIC 输入无法转 AVIF（服务器 ffmpeg 无 `heif` 解码器），原样存为 `image/heic`，只有
+> 支持 HEIC 的浏览器能显示；前端原有的 HEIC→JPEG 兑底已随「终止前端编码」一起移除。
+>
+> **历史**：2026-08-14 首次引入 AVIF 存储（`32e1f566`）；2026-09-02 改为 WebP 存储 +
+> 请求期衍生图（`218426d6`）；2026-09-12 回到 AVIF 并彻底取消衍生图。
 
 ## Overview
 
 Users can attach files to messages — images, videos, documents — via drag-and-drop, paste, or file picker. Images are dimensioned and resizable on the fly via signed URLs. When video processing is enabled, new videos are transcoded into adaptive HLS streams; animated GIFs and historical processed videos retain the MP4 path.
+
+<!-- 【本地改动 2026-09-12】fork 现状:附件图片上传时重编码为原尺寸 AVIF,请求期不再
+     缩放(transform 路由直接回存储字节);视频与动画 GIF 都不进转码管线,原样存、
+     原样发。完整说明见本文件顶部的 fork 注记。 -->
 
 ## Behavior
 
@@ -35,20 +60,21 @@ Users can attach files to messages — images, videos, documents — via drag-an
 - Message attachments are uploaded through `chatto.api.v1.AssetUploadService` before message creation. The browser sends bounded unary chunks with SHA-256 checksums, then calls `MessageService.CreateMessage` with completed attachment asset IDs.
 - A completed asset can be attached only by its uploader and to one exact message. Reusing another member's asset ID, or reusing one's own already-attached asset ID, is rejected.
 - While a message's attachments are being prepared and uploaded, the bundled composer keeps their previews visible, reports committed upload progress for each file, and disables editing and composer actions until the send finishes. A failed send keeps the submitted text and attachments available for correction or retry.
-- Default upload size limits: 25 MB for general files, 100 MB for videos when video processing is enabled.
-- Video uploads require server-side video processing to be enabled. When it is disabled, the composer rejects `video/*` files immediately and the message-post API rejects them before storage.
-- Images are inspected for dimensions at upload time and can be resized at render time via URL parameters (width, height, fit mode). Public attachment and avatar APIs expose transform parameters; public server branding images expose canonical URLs only.
-- The room timeline loads attachment images within 960×400 bounds, while the lightbox loads a separate derivative within 2048×2048 bounds. The uploaded image (re-encoded to AVIF when ffmpeg is available) remains available through Open original and file-download actions.
+- Default upload size limits: 25 MB for general files, 100 MB for videos when video processing is enabled. **Fork:** `video.enabled` only controls whether videos can be uploaded and their size limit; the derivative pipeline is never enabled.
+- Video uploads require server-side video processing to be enabled. When it is disabled, the composer rejects `video/*` files immediately and the message-post API rejects them before storage. **Fork:** not applicable — videos are stored exactly as uploaded and never transcoded.
+- Images are inspected for dimensions at upload time and can be resized at render time via URL parameters (width, height, fit mode). Public attachment and avatar APIs expose transform parameters; public server branding images expose canonical URLs only. **Fork:** attachment transform URLs are accepted for client compatibility but return the stored bytes untransformed (`X-Cache: BYPASS`); avatars and branding images are still resized at render time.
+- The room timeline loads attachment images within 960×400 bounds, while the lightbox loads a separate derivative within 2048×2048 bounds. The uploaded image (re-encoded to AVIF when ffmpeg is available) remains available through Open original and file-download actions. **Fork:** the bounds are not applied at render time — timeline and lightbox load the same stored bytes, the original-size AVIF produced at upload. The stored image is the only copy, so Open original and the download action return those same bytes.
 
-<!-- 【本地改动 32e1f566】fork 把上游的 "The untouched upload remains available" 改成
-     "The uploaded image (re-encoded to AVIF when ffmpeg is available) remains available"：
-     fork 的「原图」在 ffmpeg 可用时是 AVIF 重编码产物，原始上传字节不会保留。 -->
-- When enabled, videos and animated GIFs are processed by durable `asset-processing` runtime-unit workers. The processing marker commits atomically with the owning message, so a rejected message cannot create work and an accepted message remains queued while workers are offline. Workers may run inside `chatto run` or as separate `chatto asset-processing` processes.
+<!-- 【本地改动 32e1f566 + 2026-09-12】fork 把上游的 "The untouched upload remains
+     available" 改成 "The uploaded image (re-encoded to AVIF when ffmpeg is available)
+     remains available"：fork 的「原图」在 ffmpeg 可用时是 AVIF 重编码产物，原始上传
+     字节不会保留。2026-09-12 起又补上「原尺寸、无衍生图」这半句：请求期不再缩放。 -->
+- When enabled, videos and animated GIFs are processed by durable `asset-processing` runtime-unit workers. The processing marker commits atomically with the owning message, so a rejected message cannot create work and an accepted message remains queued while workers are offline. Workers may run inside `chatto run` or as separate `chatto asset-processing` processes. **Fork:** disabled — no processing marker is appended and the worker stays idle (see `cmd/run.go`).
 - Processing status: durable STARTED / COMPLETED / FAILED outcomes are stored as asset aggregate events (`evt.asset.{assetId}.*`) and delivered through the normal live EVT subscription path after room-membership authorization and the applicable channel-room message-read check for the owning thread. DM membership authorizes DM delivery. There is no separate `video_processed` live event or new runtime KV state for video progress; failed videos keep the original message visible and show a processing-failed state, while the retained original remains available through the attachment's original/download action.
 - Processed video dimensions are display dimensions used for layout, not necessarily raw encoded storage pixels. Non-square-pixel and rotated sources should render in their intended orientation and aspect ratio. The room timeline displays every posted video uncropped at its measured aspect ratio, including unusual near-square dimensions and converted animated GIF loops. The player canvas is bounded to the available timeline width and a maximum height; for ratios beyond 9:16 or 16:9, it uses letterboxing so playback controls remain usable without cropping the video.
 - A thumbnail is generated from an early video frame using the same display dimensions, so non-square-pixel sources do not persist squished or pillarboxed poster images.
 - For newly processed ordinary videos, the public attachment view exposes a signed HLS master-playlist URL. The durable processing manifest stores HLS rendition metadata and no MP4 variant. Existing processed videos are not backfilled; when HLS metadata is absent, the new client continues through their historical MP4 path.
-- Opaque static attachment derivatives use JPEG quality 75. Derivatives that require transparency or animation use lossless WebP, and resized results can be held in the auto-expiring server cache.
+- Opaque static attachment derivatives use JPEG quality 75. Derivatives that require transparency or animation use lossless WebP, and resized results can be held in the auto-expiring server cache. **Fork:** attachment derivatives do not exist; the auto-expiring resize cache is used for server assets only.
 - Browser media uses direct signed asset URLs. Relative attachment URLs are resolved against the server that owns the message or room-file item, so remote-server images, audio, and video can load without cross-site cookies or bearer headers. Chatto-streamed NATS objects are full, non-seekable responses; S3-backed passive media redirects to object storage for byte-range delivery.
 - Clients refresh expiring attachment URL fields through room-scoped `AssetService.GetAsset` / `BatchGetAssets`, or by refetching the relevant timeline or room attachment-list page. The timeline, previews, lightbox, downloads, and room-files surfaces refresh before expiry and retry after media load errors.
 - Active document attachment types such as HTML, XHTML, SVG, and XML can still be uploaded and viewed inline, but original-file responses are delivered in a browser sandbox so uploaded scripts do not run as trusted Chatto application code.
@@ -114,17 +140,17 @@ Users can attach files to messages — images, videos, documents — via drag-an
 
 ### 10. Displayed images use bounded derivatives
 
-<!-- 【本地改动 32e1f566】fork 重写了下方 Decision / Why / Tradeoff 三行：上游原文只讲
-     JPEG 75 + 无损 WebP，fork 补记上传时用 ffmpeg 重编码为 AVIF（CRF 30，优先 libsvtav1、
-     回退 libaom-av1），ffmpeg 或 AV1 编码器不可用时存原字节，动画 GIF 永不重编码以便
-     视频管线转 MP4。合并 upstream 时这三行会被上游版本覆盖，需人工恢复。
+<!-- 【本地改动 32e1f566 + 2026-09-12】fork 重写了下方 Decision / Why / Tradeoff
+     三行。2026-08-14 首次补记上传时重编码为 AVIF；2026-09-02 ~ 2026-09-12 期间
+     正常路径输出有损 WebP 衍生图；2026-09-12 起改为「上传即原尺寸 AVIF、请求期
+     无衍生图」。合并 upstream 时这三行会被上游版本覆盖，需人工恢复。
 
-     已知不一致（未改）：Decision 开头的 "Opaque static derivatives use JPEG quality 75"
-     在 fork 里只在无 ffmpeg 回退路径成立，2026-08-16 起正常路径输出有损 WebP。 -->
+     已知不一致（未改）：Decision 开头的 "Opaque static derivatives use JPEG quality
+     75" 在 fork 里完全不成立，属 upstream 正文，留给人决定。 -->
 
-**Decision:** Timeline images fit within 960×400 bounds and lightbox images fit within 2048×2048 bounds. Opaque static derivatives use JPEG quality 75, while transparency and animation continue to use lossless WebP. Newly uploaded image attachments are re-encoded to AVIF through ffmpeg (the binary the video pipeline already requires) at CRF 30 using the fastest available encoder (`libsvtav1`, falling back to `libaom-av1`); when ffmpeg or an AV1 encoder is unavailable, uploads are stored unchanged. Animated GIFs are never re-encoded so the video pipeline can convert them to MP4.
-**Why:** Timeline frames are much smaller than typical camera and screenshot uploads, and even full-screen viewing rarely benefits from transferring the source resolution. Separate display sizes reduce bandwidth without sacrificing the original file-sharing behavior. AVIF compresses camera and screenshot uploads better than the original JPEG/PNG bytes while remaining universally supported in modern browsers.
-**Tradeoff:** Opaque displayed images are lossy and capped in resolution. Transparent and animated images may see smaller savings because preserving their behavior requires lossless encoding. Upload-time re-encoding adds latency proportional to image size and depends on ffmpeg availability; deployments without ffmpeg fall back to storing original bytes, and mixed-version deployments may serve both formats. Stored content type follows the encoded format (`image/avif` or the original type).
+**Decision:** Timeline images fit within 960×400 bounds and lightbox images fit within 2048×2048 bounds. Opaque static derivatives use JPEG quality 75, while transparency and animation continue to use lossless WebP. Newly uploaded image attachments are re-encoded to original-size AVIF through ffmpeg (the binary the video pipeline already requires) at CRF 30 using the fastest available encoder (`libsvtav1`, falling back to `libaom-av1`); static inputs produce static AVIF and animated inputs produce animated AVIF, both at source dimensions. When ffmpeg or an AV1 encoder is unavailable, or when encoding fails, uploads are stored unchanged. **Fork:** the render-time bounds above are not applied to attachments — the `/image/{width}x{height}/{fit}` routes accept the parameters but return the stored bytes verbatim (`X-Cache: BYPASS`) without reading or writing the resize cache, so each attachment image is stored and served exactly once.
+**Why:** Timeline frames are much smaller than typical camera and screenshot uploads, and even full-screen viewing rarely benefits from transferring the source resolution. Separate display sizes reduce bandwidth without sacrificing the original file-sharing behavior. AVIF compresses camera and screenshot uploads better than the original JPEG/PNG bytes while remaining universally supported in modern browsers. **Fork rationale:** encoding once at upload time makes the stored file the only copy, which removes a whole failure class from the request path — resizing an immutable container from a non-seekable stream fails (`partial file` while probing ISO-BMFF) and the bad result is then frozen in cache, which was the dominant cause of attachment 500s in this deployment. Original-size storage is the price.
+**Tradeoff:** Opaque displayed images are lossy and capped in resolution. Transparent and animated images may see smaller savings because preserving their behavior requires lossless encoding. Upload-time re-encoding adds latency proportional to image size and depends on ffmpeg availability; deployments without ffmpeg fall back to storing original bytes, and mixed-version deployments may serve both formats. Stored content type follows the encoded format (`image/avif` or the original type). **Fork tradeoffs:** attachments stream full-resolution bytes in the timeline, so bandwidth grows as users upload large images; animated AVIF can be larger than the source GIF (measured 278 KB GIF → 333 KB AVIF); HEIC inputs cannot be encoded because the server ffmpeg has no `heif` decoder, so they are stored as `image/heic` and display only in HEIC-capable browsers, with the previous client-side HEIC→JPEG fallback removed along with client-side encoding in general.
 
 ### 11. Message-owned asset deletion is replayable
 

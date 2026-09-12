@@ -210,9 +210,11 @@ func TransformImageWithFFmpeg(data []byte, width, height int, fit FitMode, optio
 		}
 	}
 	if ffmpegPath == "" {
-		// Go 标准库无法解码 WebP/AVIF,这两种格式在 ffmpeg 不可用时
-		// 是硬错误;JPEG/PNG/GIF 可走 Go 回退。
-		if isWebPBytes(data) || isAVIFBytes(data) {
+		// 【本地改动 2026-09-12】Go 侧能解的只有 jpeg/png/gif + 本包经
+		// nativewebp 注册的 webp;ISO-BMFF 家族(AVIF/动画 AVIF/HEIC)在
+		// ffmpeg 不可用时无 Go 回退,是硬错误。用 isHEIFFamilyBytes 而不是
+		// isAVIFBytes,因为动画 AVIF 的 brand 是 avis,严格品牌判断会漏。
+		if isWebPBytes(data) || isHEIFFamilyBytes(data) {
 			return nil, ErrWebPUnavailable
 		}
 		return TransformImageWithOptions(data, width, height, fit, options)
@@ -221,9 +223,9 @@ func TransformImageWithFFmpeg(data []byte, width, height int, fit FitMode, optio
 	if err == nil {
 		return result, nil
 	}
-	// WebP(新存储)和 AVIF(历史存储)输入 ffmpeg 编码失败时无 Go 回退,
+	// WebP 与 ISO-BMFF(AVIF/HEIC)输入 ffmpeg 编码失败时无 Go 回退,
 	// 返回原始错误;JPEG/PNG/GIF 输入可静默回退 Go 路径。
-	if isWebPBytes(data) || isAVIFBytes(data) {
+	if isWebPBytes(data) || isHEIFFamilyBytes(data) {
 		return nil, err
 	}
 	// 【本地改动 2026-08-16】非 WebP/AVIF 输入 ffmpeg 编码失败时静默回退

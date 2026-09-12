@@ -60,6 +60,22 @@ redelivery counts remain informational rather than a current failure flag.
 | Notification attention materialization and push delivery | Message OCC retries persist resolved mention semantics on the existing message fact. The Notification Decisions projection supplies current account, room, RBAC, policy, and thread state when the materializer processes each source fact. No notification-only event or marker is added to `EVT`. The materializer writes Badge output to a bounded `RUNTIME_STATE` marker or appends self-contained lifecycle facts to the bounded `NOTIFICATIONS` stream | Message post requests do not wait for recipient fanout. The shared `chatto-notification-materializer-v1` EVT consumer waits until current projections include the source, then derives and stores notification output. It confirms the source acknowledgement only after all idempotent writes succeed. Retraction, reaction removal, visibility loss, and account deletion remain existing domain facts. The separate `chatto-notification-alert-delivery-v1` consumer reads `notifications.signalled`, waits for its projection, and checks current state, target visibility, subscription ownership, and DND before Web Push. It appends one terminal `alert_resolved` fact before it acknowledges | Deterministic recipient/source/signal-class identity, monotonic source-sequence Badge markers, removal tombstones, watched read and visibility boundaries, and projection fences make retries and cross-replica ordering explicit. Cleanup-only tombstone coordinates survive through the 24-hour physical grace after semantic state expires at 90 days. A failed secure delete reads the exact signal sequence and treats confirmed absence as success, so duplicate cleanup after restart or on another replica converges. `RUNTIME_STATE`, `NOTIFICATIONS`, and durable consumer state are backed up. An immutable two-minute push deadline bounds delayed delivery. Terminal projected state makes redelivery an ack-only no-op, but a crash after provider acceptance and before terminal persistence can duplicate a push. Local sound and transient invalidations are not recovered after failed publication or restart | Badge and occurrence creation/removal and push retry are recoverable and at least once. Local sound and live convergence hints are best-effort. Materializer and push-consumer state are included in owner-only durable-worker diagnostics |
 | Server branding replacement cleanup | Server logo/banner set or cleared events make the old asset unreachable from projected configuration | The request deletes the prior NATS/S3 object and cached transforms after the config event commits | No durable cleanup worker scans superseded branding assets | Durable pointer update with best-effort orphan cleanup |
 
+<!-- 【本地改动 2026-09-12】fork 把上面两张资产相关的行都改成空转了。
+
+     1. 「Video derivative processing」:**整体停用**。cli/cmd/run.go 从不置
+        ChattoCore.VideoUploadsEnabled,PostMessage 因此不会追加
+        AssetProcessingStartedEvent,asset-processing durable consumer 全程没有
+        投递。视频按上传字节原样存储、原样发送;动画 GIF 也不再生成 MP4,而是
+        作为动画 AVIF 进入图片管线。video.enabled 仍决定视频能不能上传以及
+        体积上限(VideoMaxUploadSize)。
+     2. 「Asset binary and transform-cache deletion」:附件侧的 transform 缓存
+        已不存在(见 runtime-state.md 的 ASSET_CACHE 注释),清理代码仍在但没
+        东西可清;服务端资产(头像/logo/banner/链接预览)的缓存清理不受影响。
+
+     目的:上传即见。衍生资产让“发附件”变成“等 worker”,worker 没跑起来时用户
+     只能看到永远转圈的附件;fork 是自用单实例,原尺寸 AVIF + 原样视频已够用。
+     合并 upstream 时本注释会被删掉,需人工恢复。 -->
+
 The notification consumer also processes configured-owner verified-email facts.
 It retries materializing the durable RBAC owner role, while live authorization
 recognizes only that role. The consumer waits until the local Notification

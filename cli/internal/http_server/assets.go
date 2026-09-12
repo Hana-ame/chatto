@@ -106,6 +106,18 @@ type transformRequest struct {
 	// Authorize checks if access is allowed. Return true if authorized.
 	// If nil, asset is considered public and no authorization is needed.
 	Authorize func(c *gin.Context) bool
+
+	// 【本地改动 2026-09-12】BypassTransform 为 true 时不做任何缩放/重编码:
+	// 直接返回存储的那一份原文件字节(原尺寸、原 Content-Type、原字节数),
+	// 不读也不写 resize 缓存。此模式下 CachePrefix 与 JPEGQuality 被忽略。
+	//
+	// 目的:fork 上传时已经把图片编码成**原尺寸** AVIF(动画输入产出动画
+	// AVIF),存一份、发一份,请求期再缩放只会引入衍生图。旧链路是线上 500
+	// 的主要来源:ffmpeg 缩放拿到不可 seek 的 pipe 输入会报 partial file
+	// (ISO-BMFF 容器探测失败),缓存又把它固化下来。
+	// 边界:只给附件的 /image/{w}x{h}/{fit} 两个调用点设置(服务端资产
+	// 的 /t/{sig} 路径不设,否则会把头像、logo、banner 全变原尺寸)。
+	BypassTransform bool
 }
 
 type assetDeliveryMode int
@@ -389,7 +401,8 @@ func (s *HTTPServer) serveStableTransformedAttachment(c *gin.Context) {
 			}
 			return reader, info.ContentType, nil
 		},
-		Authorize: func(c *gin.Context) bool { return true },
+		Authorize:       func(c *gin.Context) bool { return true },
+		BypassTransform: true, // 【本地改动 2026-09-12】附件不再产衍生图。
 	}, params)
 }
 
@@ -423,7 +436,8 @@ func (s *HTTPServer) servePublicStableTransformedAttachment(c *gin.Context) {
 			}
 			return reader, info.ContentType, nil
 		},
-		Authorize: nil, // Attachment derivatives are publicly readable by assetID.
+		Authorize:       nil,  // Attachment derivatives are publicly readable by assetID.
+		BypassTransform: true, // 【本地改动 2026-09-12】附件不再产衍生图。
 	}, params)
 }
 
@@ -784,6 +798,14 @@ func (s *HTTPServer) serveTransformedAsset(c *gin.Context, req transformRequest)
 func (s *HTTPServer) serveTransformedAssetWithParams(c *gin.Context, req transformRequest, params *signedurl.TransformParams) {
 	ctx := c.Request.Context()
 
+	// 【本地改动 2026-09-12】附件的 transform 请求整体 bypass:上传时已经是
+	// 原尺寸 AVIF,这里直接回原文件字节。放在函数入口,让缓存查找、缩放、
+	// 缓存写入全都不发生——旧缓存里的衍生图字节也不会被再读出来。
+	if req.BypassTransform {
+		s.serveBypassedOriginalAsset(c, req, ctx)
+		return
+	}
+
 	// Build cache key with prefix to distinguish between asset types
 	cacheKey := core.ImageCacheKey(req.CachePrefix, req.AssetID, params.Width, params.Height, params.Fit)
 
@@ -883,6 +905,54 @@ func (s *HTTPServer) serveTransformedAssetWithParams(c *gin.Context, req transfo
 	c.Data(http.StatusOK, result.ContentType, transformedData)
 }
 
+// serveBypassedOriginalAsset 把一次「transform」请求当作原文件请求处理:
+// 不缩放、不重编码,直接返回存储的那一份字节。
+//
+// 【本地改动 2026-09-12】目的与踩坑见 transformRequest.BypassTransform。
+// 与正常 transform 路径相比少三件事:不查衍生图缓存、不调 ffmpeg、不写缓存。
+// 响应头仍按 assetID 维度给 immutable 长缓存,因为内容确实永不变化;ETag 只
+// 由 assetID + 内容类型决定(URL 里残留的宽高已无意义)。
+//
+// 顺序刻意与 transform 路径一致:先 FetchAsset 再 Authorize——Authorize 可能
+// 依赖 FetchAsset 缓存的元数据。附件的 Authorize 为 nil 或恒 true,语义不变。
+//
+// 已知代价:原文件一次性读进内存再回写,和 transform 路径一样;附件体积上限由
+// MaxUploadSize 约束(默认 25 MB),可接受。
+func (s *HTTPServer) serveBypassedOriginalAsset(c *gin.Context, req transformRequest, ctx context.Context) {
+	reader, contentType, err := req.FetchAsset(ctx)
+	if err != nil {
+		s.logger.Error("Failed to get asset", "error", err, "asset_id", req.AssetID)
+		c.JSON(http.StatusNotFound, gin.H{"error": "Asset not found"})
+		return
+	}
+	if closer, ok := reader.(io.Closer); ok {
+		defer closer.Close()
+	}
+
+	if req.Authorize != nil && !req.Authorize(c) {
+		return
+	}
+
+	if contentType == "" || !isImageContentType(contentType) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Asset is not an image"})
+		return
+	}
+
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		s.logger.Error("Failed to read asset", "error", err, "asset_id", req.AssetID)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read asset"})
+		return
+	}
+
+	c.Header("Cache-Control", transformedAssetCacheControl(req.Authorize == nil))
+	c.Header("ETag", fmt.Sprintf("\"orig-%s-%s\"", req.AssetID, contentType))
+	c.Header("Vary", transformedAssetVary(req.Authorize == nil))
+	// 与 HIT/MISS 并列的新取值:这个 /image/ 请求没有走任何编码。
+	c.Header("X-Cache", "BYPASS")
+	c.Data(http.StatusOK, contentType, data)
+}
+
 func transformedAssetCacheControl(public bool) string {
 	if public {
 		return "public, max-age=31536000, immutable"
@@ -943,7 +1013,11 @@ func isImageContentType(contentType string) bool {
 		contentType == "image/png" ||
 		contentType == "image/gif" ||
 		contentType == "image/webp" ||
-		contentType == "image/avif"
+		contentType == "image/avif" ||
+		// 【本地改动 2026-09-12】HEIC:服务端 ffmpeg 没有 heif 解码器,这类
+		// 图片无法编码成 AVIF,只能原样存储;这里认它是图片,让附件 bypass
+		// 路径把原字节原样回给浏览器,而不是 400 "Asset is not an image"。
+		contentType == "image/heic"
 }
 
 // getContentType returns the MIME type based on file extension.

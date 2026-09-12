@@ -8,6 +8,7 @@ import (
 	"image"
 	"image/color"
 	"image/gif"
+	"strings"
 	"testing"
 	"time"
 
@@ -199,6 +200,75 @@ func TestAssetUploadAnimatedGIFDoesNotRequestVideoProcessingWhenDisabled(t *test
 	}
 	if manifest, ok := core.assetModel.VideoAttachmentManifest(attachment.GetId()); ok && manifest != nil && manifest.Started != nil {
 		t.Fatalf("video processing manifest was started while disabled: %+v", manifest)
+	}
+}
+
+// 【本地改动 2026-09-12】端到端回归:PNG 字节被客户端声明成 video/mp4 时
+// 必须进图片管线,且不得启动视频处理(上传方声明的 Content-Type 不可信,
+// 字节才是权威)。
+func TestAssetUploadCorrectsImageDeclaredAsVideo(t *testing.T) {
+	core, _ := setupTestCore(t)
+	ctx := testContext(t)
+
+	user, err := core.CreateUser(ctx, SystemActorID, "misdeclared-image", "Misdeclared Image", "password")
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	room, err := core.CreateRoom(ctx, user.Id, KindChannel, "", "misdeclared-image", "")
+	if err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+	if _, err := core.JoinRoom(ctx, user.Id, KindChannel, user.Id, room.Id); err != nil {
+		t.Fatalf("JoinRoom: %v", err)
+	}
+
+	// A client can declare an image with a video content type. The bytes decide
+	// which pipeline the upload enters.
+	content := createTestPNG(4, 4)
+	sum := sha256.Sum256(content)
+	upload, err := core.AssetUploads().CreateUpload(ctx, AssetUploadCreateInput{
+		ActorID:     user.Id,
+		RoomID:      room.Id,
+		Filename:    "photo.png",
+		ContentType: "video/mp4",
+		Size:        int64(len(content)),
+		SHA256:      hex.EncodeToString(sum[:]),
+	})
+	if err != nil {
+		t.Fatalf("CreateUpload: %v", err)
+	}
+	if _, err := core.AssetUploads().UploadChunk(ctx, AssetUploadChunkInput{
+		ActorID:     user.Id,
+		UploadID:    upload.UploadID,
+		Offset:      0,
+		Content:     content,
+		ChunkSHA256: hex.EncodeToString(sum[:]),
+	}); err != nil {
+		t.Fatalf("UploadChunk: %v", err)
+	}
+	_, attachment, err := core.AssetUploads().CompleteUpload(ctx, AssetUploadCompleteInput{
+		ActorID:  user.Id,
+		UploadID: upload.UploadID,
+	})
+	if err != nil {
+		t.Fatalf("CompleteUpload: %v", err)
+	}
+	if attachment == nil {
+		t.Fatal("CompleteUpload did not return an attachment")
+	}
+	if !strings.HasPrefix(attachment.GetContentType(), "image/") {
+		t.Fatalf("attachment content type = %q, want the sniffed image type", attachment.GetContentType())
+	}
+
+	declared, ok := core.assetModel.AssetCreation(attachment.GetId())
+	if !ok {
+		t.Fatalf("AssetCreation(%q) missing", attachment.GetId())
+	}
+	if declared.GetNeedsVideoProcessing() {
+		t.Fatal("image declared as video persisted needs_video_processing")
+	}
+	if manifest, ok := core.assetModel.VideoAttachmentManifest(attachment.GetId()); ok && manifest != nil && manifest.Started != nil {
+		t.Fatalf("video processing manifest was started: %+v", manifest)
 	}
 }
 

@@ -73,6 +73,19 @@ describe('AttachmentsState', () => {
     expect(prepareFilesMock).not.toHaveBeenCalled();
   });
 
+  // 【本地改动 2026-09-12】上传方声明的 MIME 不可信:声明成 video/mp4 的
+  // 图片在视频功能关闭时也必须通过校验,不能被"视频已禁用"拒掉。
+  it('accepts an image the browser reports as video when video processing is disabled', async () => {
+    const avif = new File([new Uint8Array(3)], 'photo.avif', { type: 'video/mp4' });
+
+    await state.stageFiles([avif]);
+
+    expect(getToasts().map((t) => t.message)).not.toContain(
+      'Video uploads are disabled on this server.'
+    );
+    expect(state.filesWithUrls.map(({ file }) => file.name)).toEqual(['photo.avif']);
+  });
+
   it('accepts video files when video processing is enabled', async () => {
     limits.videoProcessingEnabled = true;
     const file = videoFile();

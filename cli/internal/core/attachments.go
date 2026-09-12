@@ -126,6 +126,19 @@ func (c *MediaModel) uploadAttachmentBinary(
 ) (*evtv1.Attachment, error) {
 	attachmentID := NewAssetID()
 
+	// 【本地改动 2026-09-12】先读文件头纠正声明类型再分派管线;嗅探后的
+	// reader 仍产出完整内容流。
+	declaredContentType := contentType
+	header, stream := readUploadHeader(reader)
+	reader = stream
+	contentType = correctUploadContentType(declaredContentType, header)
+	if contentType != declaredContentType {
+		c.logger.Info("Corrected upload content type from file header",
+			"attachment_id", attachmentID,
+			"declared", declaredContentType,
+			"detected", contentType)
+	}
+
 	isImage := strings.HasPrefix(contentType, "image/")
 
 	var content []byte
@@ -135,28 +148,27 @@ func (c *MediaModel) uploadAttachmentBinary(
 	assetsCfg := c.AssetsConfig()
 
 	if isImage {
-		result, err := assets.ProcessAttachmentImageWithConfig(reader, assetsCfg)
+		// 【本地改动 2026-09-12】图片管线收敛成单一入口 prepareUploadImage:
+		// 静态与动画输入统一重编码为**原尺寸** AVIF(动画输入产出动画 AVIF),
+		// 存一份、请求期不再缩放,因此不再有衍生图。
+		//
+		// 取代两段旧逻辑:① ProcessAttachmentImageWithConfig(只支持 Go 能解的
+		// jpeg/png/gif,WebP 输入——也就是我们自己存的格式——直接
+		// image: unknown format 上传失败);② 动画 GIF 特判 + EncodeWebP
+		// (32e1f566 / 2026-09-02 引入),其输出格式与本次策略冲突。
+		// ffmpeg/AV1 不可用或瞬时失败时 best-effort 存原图,只有读不出字节
+		// 或超过 MaxUploadSize 才是硬错误。
+		prepared, err := prepareUploadImage(ctx, reader, declaredContentType, assetsCfg, attachmentID,
+			func(msg string, args ...any) {
+				c.logger.Warn(msg, args...)
+			})
 		if err != nil {
 			return nil, fmt.Errorf("failed to process image: %w", err)
 		}
-		content = result.Original
-		width = int32(result.Width)
-		height = int32(result.Height)
-		// 【本地改动 32e1f566】动画 GIF 保留原字节:视频管线会把它们转成
-		// MP4/HLS,若在此重编码成静态 AVIF 会丢掉动画。
-		if !assets.IsAnimatedGIF(content) {
-			// 【本地改动 32e1f566 + 2026-09-02】2026-09-02 前重编码为
-			// AVIF;存储格式改为 WebP 后调用 EncodeWebP,输出 image/webp。
-			// best-effort:成功就换 content,失败时 ErrWebPUnavailable
-			// (没 ffmpeg/没编码器/webp_enabled=false)静默存原图;其他
-			// 瞬时错误记日志但也不阻塞上传。
-			if encoded, encErr := assets.EncodeWebP(ctx, content, assetsCfg); encErr == nil {
-				content = encoded
-				contentType = "image/webp"
-			} else if !errors.Is(encErr, assets.ErrWebPUnavailable) {
-				c.logger.Warn("Failed to re-encode attachment image to WebP; storing original", "error", encErr, "attachment_id", attachmentID)
-			}
-		}
+		content = prepared.content
+		contentType = prepared.contentType
+		width = int32(prepared.width)
+		height = int32(prepared.height)
 		size = int64(len(content))
 	} else {
 		maxSize := assetsCfg.MaxUploadSize
@@ -1181,9 +1193,115 @@ func (c *MediaModel) DeleteCachedResizesForKey(ctx context.Context, prefix, asse
 	return deleted, deleteErr
 }
 
+// 【本地改动 2026-09-12】上传内容类型纠正,单请求路径
+// (uploadAttachmentBinary)与分片路径(storeCompletedUpload)共用。
+//
+// 背景:上传方声明的 Content-Type 不可信——浏览器按操作系统的扩展名注册表
+// 填 File.type,扩展名与真实编码不一致时声明就是错的(部分系统还会直接报
+// application/octet-stream);服务端此前完全信任声明,而声明决定走图片管线
+// 还是视频管线。发现于 2026-09-12 .avif 附件被认成 mp4 的 bug。
+//
+// 只在声明不是 image/ 时覆盖:声明 image/* 的上传已经进了图片管线,保持
+// 不动;文件头证明是已知图片签名才纠正。文件头无法识别("")时保留声明,
+// 所以没有任何"图片签名"会把真视频重分类为图片。
+
+// uploadContentTypeHeaderBytes is how many leading bytes of an upload are read
+// before its declared content type is trusted. The ISO-BMFF "ftyp" box with its
+// major brand and the RIFF/WebP signature both fit in 12 bytes.
+const uploadContentTypeHeaderBytes = 12
+
+// correctUploadContentType returns the content type to trust for an upload.
+//
+// Browsers fill File.type from the operating system's extension registry, so an
+// AVIF image can arrive declared as video/mp4. The declared type chooses between
+// the image pipeline and the video pipeline, so a confident image signature is
+// enough to override it. Declared image types are always kept, and a header that
+// proves nothing leaves the declaration untouched.
+func correctUploadContentType(declared string, header []byte) string {
+	if strings.HasPrefix(declared, "image/") {
+		return declared
+	}
+	if detected := assets.DetectContentType(header); detected != "" {
+		return detected
+	}
+	return declared
+}
+
+// readUploadHeader reads the leading bytes of an upload for
+// correctUploadContentType and returns them together with a reader that still
+// yields the complete stream.
+func readUploadHeader(reader io.Reader) ([]byte, io.Reader) {
+	header := make([]byte, uploadContentTypeHeaderBytes)
+	n, _ := io.ReadFull(reader, header) // a short read just means no signature
+	return header[:n], io.MultiReader(bytes.NewReader(header[:n]), reader)
+}
+
+// preparedUploadImage 是一次图片上传的处理结果,见 prepareUploadImage。
+type preparedUploadImage struct {
+	content     []byte
+	contentType string
+	width       int
+	height      int
+}
+
+// prepareUploadImage 把上传的图片处理成"要存储的那一份"字节。
+//
+// 【本地改动 2026-09-12】fork 的图片策略:上传时统一重编码为**原尺寸**
+// AVIF(动画输入产出动画 AVIF),存一份、发一份,不再生成衍生图。
+//
+// 目的:取代 2026-09-02 的 WebP 存储 + 请求期 ffmpeg 缩放衍生图链路。那条
+// 链路是线上 500 的主要来源(pipe 不可 seek 导致 avif 衍生图全灭),而且
+// Go 侧只注册了 jpeg/png/gif 解码器,把聊天里存下来的 WebP 再传回去会直接
+// 报 image: unknown format,连上传都过不去。
+//
+// 思路:编码/尺寸都交给 ffmpeg 与 AVIF 头部解析,Go 解码器只当兜底。
+// best-effort:ffmpeg 或 AV1 编码器不可用时存原图字节;瞬时编码失败记日志
+// 后同样存原图,绝不因为"服务器压不动"而让上传失败。
+//
+// 边界:只处理 room 附件。头像、branding、链接预览仍是 Go 直出的 WebP
+// (见 assets.ProcessAvatarImageWithConfig 等)。日志回调由调用方给,因为
+// 单请求路径挂在 MediaModel 上、分片路径挂在 AssetUploadModel 上,两者各自
+// 持有 ChattoCore 的 logger,这里不想为一个函数再造一层依赖。
+func prepareUploadImage(
+	ctx context.Context,
+	reader io.Reader,
+	declaredContentType string,
+	assetsCfg assets.Config,
+	attachmentID string,
+	warn func(msg string, args ...any),
+) (*preparedUploadImage, error) {
+	result, err := assets.PrepareAttachmentImage(ctx, reader, assetsCfg)
+	if err != nil {
+		if result == nil {
+			return nil, err
+		}
+		// 编码失败但原图可读:存原图。ErrAVIFUnavailable 是"环境不支持",
+		// 属于预期配置状态,不记日志;其余是真正的瞬时失败。
+		if !errors.Is(err, assets.ErrAVIFUnavailable) && warn != nil {
+			warn("Failed to re-encode attachment image to AVIF; storing original", "error", err, "attachment_id", attachmentID)
+		}
+	}
+	contentType := result.ContentType
+	if contentType == "" {
+		contentType = declaredContentType
+	}
+	return &preparedUploadImage{
+		content:     result.Content,
+		contentType: contentType,
+		width:       result.Width,
+		height:      result.Height,
+	}, nil
+}
+
 // AttachmentNeedsVideoProcessing returns whether an attachment should enter the
 // video processing pipeline. Static GIFs stay image-only; callers that inspect
 // the upload bytes can set animatedGIF for GIF-to-MP4 conversion.
+//
+// 【本地改动 2026-09-12】fork 停用视频管线:cmd/run.go 不再置
+// VideoUploadsEnabled,所以本函数的 true 分支(video/*、动画 GIF)不再会触发
+// 转码任务,视频与动画图都按上传原样存储、原样发送。函数与 animatedGIF 参数
+// 保留,是为了 merge upstream 时这条判断仍然在同一处,而不是被上游的调用点
+// 悄悄改回"视频必须转码"。
 func AttachmentNeedsVideoProcessing(attachment *evtv1.Attachment, animatedGIF bool) bool {
 	if attachment == nil {
 		return false

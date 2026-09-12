@@ -88,13 +88,20 @@ vapid_subject = 'mailto:dev@chatto.run'
 
 [video]
 enabled = true
+# 【本地改动 2026-09-12】fork 不做视频转码:视频原样存、原样发,不生成
+# mp4 变体 / HLS / 缩略图(cmd/run.go 从不置 VideoUploadsEnabled)。
+# 这里只决定视频能不能上传以及体积上限。
 
 [asset_processing]
 enabled = true
-# 【本地改动 218426d6】avif_enabled:room 附件图片上传时重编码为 AVIF
-# (默认 true,需 ffmpeg + AV1 编码器,从 PATH 自动探测)。设 false 则
-# 原样存储。只影响 room 附件;头像/branding/链接预览始终 WebP。
-# avif_enabled = true   # re-encode room attachment images to AVIF (default: true; set false to store original bytes)
+# 【本地改动 218426d6 + 2026-09-12】avif_enabled:room 附件图片上传时重编码
+# 为**原尺寸 AVIF**(默认 true,需 ffmpeg + AV1 编码器,ffmpeg_path 为空时从
+# PATH 自动探测)。静态图 → 静态 AVIF,动画 GIF/WebP → 动画 AVIF;不存在衍生
+# 图,请求期 /assets/files/{id}/image/{w}x{h}/{fit} 直接回这份字节(响应头
+# X-Cache: BYPASS)。设 false 则原样存储。只影响 room 附件;头像/branding/
+# 链接预览始终是 Go 直出的 WebP。【踩坑】ffmpeg 缺失时上传不报错,只是存
+# 原字节(best-effort),日志里有告警。
+# avif_enabled = true   # re-encode room attachment images to original-size AVIF (default: true; set false to store original bytes)
 
 # LiveKit voice calls. For local development, run `mise dev-livekit`.
 [livekit]

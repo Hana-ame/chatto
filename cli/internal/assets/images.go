@@ -49,12 +49,18 @@ type Config struct {
 	// FFmpegPath 是用于把上传的附件图片重编码为 AVIF 的 ffmpeg 二进制。
 	// 【本地改动 32e1f566】为空时从 PATH 解析。
 	FFmpegPath string
-	// WebPEnabled 控制 room 附件图片上传时是否重编码为 WebP。
+	// WebPEnabled 控制 EncodeWebP(2026-09-02 ~ 2026-09-12 期间的 room 附件
+	// 存储格式)是否可用。
 	// 【本地改动 32e1f566 + 218426d6 + 2026-09-02】2026-09-02 之前是
 	// AVIFEnabled(AVIF 存储);存储格式改为 WebP 后字段重命名。关闭时保持
 	// 原字节且完全不探测/不调用 ffmpeg。头像、branding、链接预览是
 	// WebP-only,不受此开关影响。
+	// 【2026-09-12】存储格式改回 AVIF 后,上传路径不再读这个字段(见
+	// AVIFEnabled);保留只为兼容既有 webp_enabled 配置。
 	WebPEnabled bool
+	// AVIFEnabled 控制 room 附件图片上传时是否重编码为原尺寸 AVIF。
+	// 【本地改动 2026-09-12】取代 WebP 存储;关闭时原样存上传字节。
+	AVIFEnabled bool
 }
 
 // DefaultConfig returns a Config with default values.
@@ -65,6 +71,9 @@ func DefaultConfig() Config {
 		// (2026-09-02 前是 AVIF);显式配置可关闭(见
 		// AssetProcessingConfig.WebPEnabled)。
 		WebPEnabled: true,
+		// 【本地改动 2026-09-12】room 附件图片存储格式回到 AVIF,默认
+		// best-effort 开启(没有带 AV1 编码器的 ffmpeg 时静默存原图)。
+		AVIFEnabled: true,
 	}
 }
 
@@ -83,14 +92,21 @@ func readAndValidateImage(input io.Reader, maxBytes int64) ([]byte, error) {
 }
 
 func validateDecodedImageSize(data []byte) error {
-	config, _, err := image.DecodeConfig(bytes.NewReader(data))
-	if err != nil {
-		return fmt.Errorf("failed to decode image configuration: %w", err)
+	// 【本地改动 2026-09-12】改用 imageDimensions 而不是 image.DecodeConfig:
+	// 本包的 nativewebp 会向 image 包注册 WebP 解码器,但 AVIF/HEIC 在 Go 里
+	// 仍然没有解码器,旧实现在这里一律报 "image: unknown format"——用户上传
+	// 的 AVIF(2026-09-02 前本仓库附件的存储格式)或 iPhone 的 HEIC 就直接
+	// 传不上去,这是本次策略重写要修的根因。imageDimensions 先试注册解码器,
+	// 失败再手写读 ISO-BMFF 头。解析不出尺寸仍然是硬错误:尺寸/像素上限是
+	// 资源上限(防压缩炸弹),不能因为格式新就跳过。
+	width, height, ok := imageDimensions(data)
+	if !ok {
+		return fmt.Errorf("failed to decode image configuration: unrecognized image format")
 	}
-	if config.Width <= 0 || config.Height <= 0 || config.Width > MaxDecodedImageDimension || config.Height > MaxDecodedImageDimension {
-		return fmt.Errorf("image dimensions %dx%d exceed the supported limit", config.Width, config.Height)
+	if width > MaxDecodedImageDimension || height > MaxDecodedImageDimension {
+		return fmt.Errorf("image dimensions %dx%d exceed the supported limit", width, height)
 	}
-	pixels := int64(config.Width) * int64(config.Height)
+	pixels := int64(width) * int64(height)
 	if pixels > MaxDecodedImagePixels {
 		return fmt.Errorf("image contains %d pixels, exceeding the supported limit of %d", pixels, MaxDecodedImagePixels)
 	}
@@ -261,8 +277,9 @@ func ProcessAvatarImage(input io.Reader) (io.Reader, error) {
 
 // ProcessAvatarImageWithConfig 从输入 reader 读图,缩放到 MaxAvatarDim 范围内
 // 并保持宽高比,编码为 WebP。输入超过 cfg.MaxUploadSize 时报错。
-// 【本地改动说明 32e1f566 + 2026-09-02】此路径刻意与存储重编码无关:
-// room 附件图片由 EncodeWebP 重编码为 WebP,头像直接由 Go 处理为
+// 【本地改动说明 32e1f566 + 2026-09-02 + 2026-09-12】此路径刻意与存储
+// 重编码无关:room 附件图片上传时由 ffmpeg 重编码为原尺寸 AVIF(见
+// attachment_image.go 的 PrepareAttachmentImage),头像直接由 Go 处理为
 // WebP,绝不混用。
 func ProcessAvatarImageWithConfig(input io.Reader, cfg Config) (io.Reader, error) {
 	// Limit input size to prevent memory exhaustion
@@ -292,9 +309,9 @@ func ProcessLogoImage(input io.Reader) (io.Reader, error) {
 
 // ProcessLogoImageWithConfig 从输入 reader 读图,缩放到 MaxLogoDim 范围内
 // 并保持宽高比,编码为 WebP。输入超过 cfg.MaxUploadSize 时报错。
-// 【本地改动说明 32e1f566 + 2026-09-02】此路径刻意与存储重编码无关:
-// room 附件图片由 EncodeWebP 重编码为 WebP,branding logo 直接由 Go
-// 处理为 WebP,绝不混用。
+// 【本地改动说明 32e1f566 + 2026-09-02 + 2026-09-12】此路径刻意与存储
+// 重编码无关:room 附件图片上传时由 ffmpeg 重编码为原尺寸 AVIF,branding
+// logo 直接由 Go 处理为 WebP,绝不混用。
 func ProcessLogoImageWithConfig(input io.Reader, cfg Config) (io.Reader, error) {
 	// Limit input size to prevent memory exhaustion
 	img, err := decodeBoundedImage(input, cfg)
@@ -353,9 +370,9 @@ const MaxLinkPreviewHeight = 630
 // ProcessLinkPreviewImageWithConfig 从输入 reader 读图,缩放到
 // MaxLinkPreviewWidth x MaxLinkPreviewHeight 范围内并保持宽高比,编码为
 // WebP。输入超过 cfg.MaxUploadSize 时报错。
-// 【本地改动说明 32e1f566 + 2026-09-02】此路径刻意与存储重编码无关:
-// room 附件图片由 EncodeWebP 重编码为 WebP,链接预览图直接由 Go 处理
-// 为 WebP,绝不混用。
+// 【本地改动说明 32e1f566 + 2026-09-02 + 2026-09-12】此路径刻意与存储
+// 重编码无关:room 附件图片上传时由 ffmpeg 重编码为原尺寸 AVIF,链接预览
+// 图直接由 Go 处理为 WebP,绝不混用。
 func ProcessLinkPreviewImageWithConfig(input io.Reader, cfg Config) (io.Reader, error) {
 	// Limit input size to prevent memory exhaustion
 	img, err := decodeBoundedImage(input, cfg)
@@ -396,10 +413,13 @@ func ProcessAttachmentImage(input io.Reader) (*AttachmentImageResult, error) {
 // ProcessAttachmentImageWithConfig 读图并提取元数据(尺寸)。
 // 原图原样返回(这里不重编码)。缩略图由 transform 系统按需生成。
 // 输入超过 cfg.MaxUploadSize 或无法解码时报错。
-// 【本地改动说明 32e1f566 + 2026-09-02】这是唯一允许 WebP 重编码的
-// 上传路径:调用方(room 附件上传)在开关开启且有 ffmpeg libwebp 编码器
-// 时对结果调用 EncodeWebP。头像、服务端 branding、链接预览直接由 Go
-// 处理为 WebP,不经过 EncodeWebP。
+// 【本地改动说明 32e1f566 + 2026-09-02 + 2026-09-12】历史上这是唯一允许
+// WebP 重编码的上传路径(room 附件上传在开关开启且有 ffmpeg libwebp 编码器
+// 时对结果调用 EncodeWebP)。**2026-09-12 起已停用**:room 附件上传改走
+// attachment_image.go 的 PrepareAttachmentImage(统一产出原尺寸 AVIF,不
+// 再生成衍生图)。本函数保留是因为它仍是被导出的公共 API,且上面的
+// imageorient.Decode 只认 image 包已注册的解码器,AVIF/HEIC 输入会在
+// 这里报错——不要在新路径上依赖它读尺寸,用 imageDimensions。
 func ProcessAttachmentImageWithConfig(input io.Reader, cfg Config) (*AttachmentImageResult, error) {
 	// Read all input into memory (limited to MaxUploadSize)
 	originalBytes, err := readAndValidateImage(input, cfg.MaxUploadSize)

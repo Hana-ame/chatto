@@ -17,7 +17,6 @@ import (
 
 	"github.com/nats-io/nats.go/jetstream"
 	"google.golang.org/protobuf/proto"
-	"hmans.de/chatto/internal/assets"
 	evtv1 "hmans.de/chatto/internal/pb/chatto/core/evt/v1"
 )
 
@@ -509,7 +508,23 @@ func (m *AssetUploadModel) materializeUpload(ctx context.Context, session *Asset
 
 func (m *AssetUploadModel) storeCompletedUpload(ctx context.Context, session *AssetUploadSession, reader io.ReadSeeker) (*evtv1.Attachment, bool, error) {
 	attachmentID := NewAssetID()
-	contentType := session.ContentType
+	// 【本地改动 2026-09-12】先嗅探文件头纠正声明类型:上传方(浏览器按
+	// 系统扩展名注册表填 File.type)声明的 Content-Type 不可信,而它决定走
+	// 图片管线还是视频管线。这里不能复用 readUploadHeader:后续逻辑会 Seek,
+	// 所以签名保持 io.ReadSeeker,读头后用 Seek 回退而不是 MultiReader。
+	declaredContentType := session.ContentType
+	header := make([]byte, uploadContentTypeHeaderBytes)
+	n, _ := io.ReadFull(reader, header) // a short read just means no signature
+	if _, err := reader.Seek(-int64(n), io.SeekCurrent); err != nil {
+		return nil, false, fmt.Errorf("rewind upload temp file: %w", err)
+	}
+	contentType := correctUploadContentType(declaredContentType, header[:n])
+	if contentType != declaredContentType {
+		m.core.logger.Info("Corrected upload content type from file header",
+			"attachment_id", attachmentID,
+			"declared", declaredContentType,
+			"detected", contentType)
+	}
 	isImage := strings.HasPrefix(contentType, "image/")
 	var content []byte
 	var size int64
@@ -518,29 +533,25 @@ func (m *AssetUploadModel) storeCompletedUpload(ctx context.Context, session *As
 
 	if isImage {
 		assetsCfg := m.core.AssetsConfig()
-		result, err := assets.ProcessAttachmentImageWithConfig(reader, assetsCfg)
+		// 【本地改动 2026-09-12】与单请求路径共用 prepareUploadImage:图片
+		// 统一重编码为原尺寸 AVIF(动画输入产出动画 AVIF),不再走
+		// ProcessAttachmentImageWithConfig + EncodeWebP,也不再特判动画 GIF。
+		prepared, err := prepareUploadImage(ctx, reader, declaredContentType, assetsCfg, attachmentID,
+			func(msg string, args ...any) {
+				m.core.logger.Warn(msg, args...)
+			})
 		if err != nil {
 			return nil, false, fmt.Errorf("failed to process image: %w", err)
 		}
-		content = result.Original
-		width = int32(result.Width)
-		height = int32(result.Height)
-		animatedGIF = contentType == "image/gif" && assets.IsAnimatedGIF(content)
-		// 【本地改动 32e1f566】动画 GIF 保留原字节:视频管线会把它们转成
-		// MP4/HLS,若在此重编码成静态 AVIF 会丢掉动画。
-		if !animatedGIF {
-			// 【本地改动 32e1f566 + 2026-09-02】2026-09-02 前重编码为
-			// AVIF;存储格式改为 WebP 后调用 EncodeWebP,输出 image/webp。
-			// best-effort:成功就换 content,失败时 ErrWebPUnavailable
-			// (没 ffmpeg/没编码器/webp_enabled=false)静默存原图;其他
-			// 瞬时错误记日志但也不阻塞上传。
-			if encoded, encErr := assets.EncodeWebP(ctx, content, assetsCfg); encErr == nil {
-				content = encoded
-				contentType = "image/webp"
-			} else if !errors.Is(encErr, assets.ErrWebPUnavailable) {
-				m.core.logger.Warn("Failed to re-encode attachment image to WebP; storing original", "error", encErr, "attachment_id", attachmentID)
-			}
-		}
+		content = prepared.content
+		contentType = prepared.contentType
+		width = int32(prepared.width)
+		height = int32(prepared.height)
+		// 【本地改动 2026-09-12】恒 false:fork 停用视频管线(cmd/run.go 不再置
+		// VideoUploadsEnabled),动画 GIF 已作为动画 AVIF 存入图片管线,不再生成
+		// MP4/HLS 衍生图。变量保留是为了 AttachmentNeedsVideoProcessing 的调用点
+		// 在 merge upstream 时仍然可见,而不是被上游悄悄改回"动画 GIF 必须转码"。
+		animatedGIF = false
 		size = int64(len(content))
 		reader = bytes.NewReader(content)
 	} else {

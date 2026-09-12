@@ -85,12 +85,19 @@ type ChattoCore struct {
 	// AVIF 功能),但配置读取位置从 cfg.Video 移到 cfg.AssetProcessing。
 	FFmpegPath string
 
-	// WebPEnabled 控制 room 附件图片上传时是否重编码为 WebP。
-	// 【本地改动 218426d6 + 2026-09-02】2026-09-02 前字段为 AVIFEnabled,
-	// 存储格式改为 WebP 后重命名。ChattoCore 创建后设置,数据来源为
-	// AssetProcessingConfig.WebPEnabledOrDefault()。只影响 room 附件;
-	// 头像/branding/链接预览始终 WebP。
+	// WebPEnabled 是 2026-09-02 ~ 2026-09-12 期间 room 附件 WebP 重编码的
+	// 开关。【本地改动 218426d6 + 2026-09-12】存储格式改回 AVIF 后上传路径
+	// 不再读它,保留是为了兼容既有 `webp_enabled` 配置(它作为 avif_enabled
+	// 的别名在 config 层被消费);新代码请用 AVIFEnabled。
+	// 【2026-09-02 前】此字段曾名为 AVIFEnabled。
 	WebPEnabled bool
+
+	// AVIFEnabled 控制 room 附件图片上传时是否重编码为**原尺寸** AVIF。
+	// 【本地改动 2026-09-12】取代 WebP 存储,动画输入产出动画 AVIF。
+	// ChattoCore 创建后设置,数据来源为
+	// AssetProcessingConfig.AVIFEnabledOrDefault()。只影响 room 附件;
+	// 头像/branding/链接预览仍是 Go 直出的 WebP。
+	AVIFEnabled bool
 
 	// VideoUploadsEnabled makes message commits enqueue durable processing work
 	// for accepted video-shaped attachments. Worker placement is configured

@@ -156,8 +156,18 @@ no longer imported.
 
 | Key                                                  | Description                                      |
 | ---------------------------------------------------- | ------------------------------------------------ |
-| `attachment-stable-v2.{attachmentId}.{paramsHash}`   | Cached attachment derivative at specific bounds |
+| `attachment-stable-v2.{attachmentId}.{paramsHash}`   | Cached attachment derivative at specific bounds; the fork no longer writes this namespace |
 | `server.{assetId}.{paramsHash}`                      | Cached transform of a server asset               |
+
+<!-- 【本地改动 2026-09-12】附件衍生图缓存已取消。
+     背景:fork 上传时就把 room 附件图片重编码成**原尺寸** AVIF(动画输入产出
+     动画 AVIF),请求期 `/assets/files/{id}/image/{w}x{h}/{fit}` 不再缩放/重编码,
+     直接回存储的那一份字节(响应头 X-Cache: BYPASS)。实现见
+     cli/internal/http_server/assets.go 的 transformRequest.BypassTransform 与
+     serveBypassedOriginalAsset。
+     所以上面这行键空间在 fork 里是空的(服务端资产的 server.* 键不受影响,
+     头像/logo/banner/链接预览仍然在请求期缩放并写缓存)。
+     边界:附件删除路径里的“清缓存”逻辑仍在,只是没有附件缓存条目可清。 -->
 
 Notes: Only created when `[core.assets.cache]` is enabled in config. Uses TTL for automatic expiration (default 7 days). Current cache entries for deleted assets are also evicted from the active attachment or server prefix during binary cleanup. Attachment cache namespaces are versioned when encoding changes so older bytes are not reused. `paramsHash` is first 16 hex chars of SHA256(`{width}x{height}_{fit}`). S2 compression enabled.
 
@@ -179,7 +189,7 @@ Notes: Only created when `[core.assets.cache]` is enabled in config. Uses TTL fo
 
 | Key                     | Description                                                  |
 | ----------------------- | ------------------------------------------------------------ |
-| `attachments/{assetId}` | Message attachment originals and derivative binaries         |
+| `attachments/{assetId}` | Message attachment originals and derivative binaries (fork: originals only — attachment derivatives and video derivatives are no longer generated) |
 | `instance/{assetId}`    | Server-scoped assets: user avatars, server branding images, and link-preview images |
 
 Attachment upload storage: chunked uploads first store temporary `asset-upload.*` chunks in `SERVER_ASSETS`. Completion verifies the full SHA-256, stores the final asset in NATS or S3, records SHA-256/uploader/pending-expiry/video hints in `AssetCreatedEvent`, and deletes temporary chunks. Completed but unattached pending assets expire after 24 hours unless a message attaches them.

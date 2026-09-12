@@ -20,6 +20,94 @@ import (
 	"hmans.de/chatto/pkg/events"
 )
 
+// 【本地改动 2026-09-12】纠正规则:声明 image/ 永不覆盖;非 image/ 声明
+// 遇到已知图片签名才纠正;文件头无结论时保留声明。
+func TestCorrectUploadContentTypeTrustingImageDeclaration(t *testing.T) {
+	// A client that declares image/* already routed the upload into the image
+	// pipeline, so its declaration is kept even when the bytes disagree.
+	if got := correctUploadContentType("image/png", []byte("RIFF\x00\x00\x00\x00WEBP")); got != "image/png" {
+		t.Fatalf("correctUploadContentType() = %q, want %q", got, "image/png")
+	}
+}
+
+func TestCorrectUploadContentTypeOverridesMediaDeclaration(t *testing.T) {
+	tests := []struct {
+		name     string
+		declared string
+		header   []byte
+		want     string
+	}{
+		{
+			name:     "avif image declared as mp4 video",
+			declared: "video/mp4",
+			header:   []byte("\x00\x00\x00\x18ftypavif"),
+			want:     "image/avif",
+		},
+		{
+			name:     "webp image declared as octet-stream",
+			declared: "application/octet-stream",
+			header:   []byte("RIFF\x00\x00\x00\x00WEBP"),
+			want:     "image/webp",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := correctUploadContentType(tt.declared, tt.header); got != tt.want {
+				t.Fatalf("correctUploadContentType(%q) = %q, want %q", tt.declared, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCorrectUploadContentTypeKeepsDeclarationWithoutSignature(t *testing.T) {
+	tests := []struct {
+		declared string
+		header   []byte
+	}{
+		{"video/mp4", []byte("\x00\x00\x00\x18ftypmp42")},
+		{"text/plain", []byte("hello world")},
+		{"video/mp4", nil},
+		{"video/mp4", []byte("ftyp")},
+	}
+
+	for _, tt := range tests {
+		if got := correctUploadContentType(tt.declared, tt.header); got != tt.declared {
+			t.Fatalf("correctUploadContentType(%q) = %q, want the declaration kept", tt.declared, got)
+		}
+	}
+}
+
+func TestReadUploadHeaderKeepsTheCompleteStream(t *testing.T) {
+	input := []byte("\x89PNG\r\n\x1a\nremaining payload")
+	header, stream := readUploadHeader(bytes.NewReader(input))
+
+	if string(header) != "\x89PNG\r\n\x1a\nrema" {
+		t.Fatalf("readUploadHeader() header = %q", string(header))
+	}
+	rest, err := io.ReadAll(stream)
+	if err != nil {
+		t.Fatalf("io.ReadAll: %v", err)
+	}
+	if !bytes.Equal(rest, input) {
+		t.Fatalf("stream after header = %q, want the full input", string(rest))
+	}
+}
+
+func TestReadUploadHeaderToleratesShortUploads(t *testing.T) {
+	header, stream := readUploadHeader(bytes.NewReader([]byte("GIF8")))
+	if string(header) != "GIF8" {
+		t.Fatalf("readUploadHeader() header = %q, want %q", string(header), "GIF8")
+	}
+	rest, err := io.ReadAll(stream)
+	if err != nil {
+		t.Fatalf("io.ReadAll: %v", err)
+	}
+	if string(rest) != "GIF8" {
+		t.Fatalf("stream after header = %q, want the full input", string(rest))
+	}
+}
+
 // createTestPNG creates a simple PNG image for testing
 func createTestPNG(width, height int) []byte {
 	img := image.NewRGBA(image.Rect(0, 0, width, height))
@@ -38,13 +126,15 @@ func createTestPNG(width, height int) []byte {
 // Attachment Upload Tests
 // ============================================================================
 
-// ffmpegAvailable 报告上传路径当前是否会真的产出 WebP。
-// 【本地改动 32e1f566 + 2026-08-30 + 2026-09-02】2026-09-02 前存储
-// 格式为 AVIF(AVIFAvailable/image/avif);改为 WebP 后口径同步:能否编
-// WebP 由 core.WebPEnabled、ffmpeg 存在性、libwebp 编码器三者共同决定,
-// 复用 assets.WebPAvailable 和上传路径的同一份 Config(core.AssetsConfig())。
+// ffmpegAvailable 报告上传路径当前是否会真的产出 AVIF。
+// 【本地改动 32e1f566 + 2026-08-30 + 2026-09-02 + 2026-09-12】历史:2026-09-02
+// 前存储格式是 AVIF;2026-09-02 ~ 2026-09-12 改为 WebP(assets.WebPAvailable
+// /image/webp);2026-09-12 又回到原尺寸 AVIF。能否编 AVIF 由 core.AVIFEnabled、
+// ffmpeg 存在性、AV1 编码器三者共同决定,复用 assets.AVIFAvailable 和上传
+// 路径的同一份 Config(core.AssetsConfig())——否则「本地没装 ffmpeg」与
+// 「CI 装了 ffmpeg 期望 image/avif」会互相打架。
 func ffmpegAvailable(ctx context.Context, core *ChattoCore) bool {
-	return assets.WebPAvailable(ctx, core.AssetsConfig())
+	return assets.AVIFAvailable(ctx, core.AssetsConfig())
 }
 
 func TestChattoCore_UploadAttachment(t *testing.T) {
@@ -87,10 +177,10 @@ func TestChattoCore_UploadAttachment(t *testing.T) {
 		}
 
 		wantContentType := "image/png"
-		// 【本地改动 32e1f566 + 2026-09-02】同 ffmpegAvailable:上传路径
-		// 在 WebP 可用时转 WebP,断言必须与环境一致,不能写死 image/png。
+		// 【本地改动 32e1f566 + 2026-09-02 + 2026-09-12】同 ffmpegAvailable:
+		// 上传路径在 AVIF 可用时转原尺寸 AVIF,断言必须与环境一致,不能写死。
 		if ffmpegAvailable(ctx, core) {
-			wantContentType = "image/webp"
+			wantContentType = "image/avif"
 		}
 		if attachment.ContentType != wantContentType {
 			t.Errorf("Expected content type %q, got %q", wantContentType, attachment.ContentType)

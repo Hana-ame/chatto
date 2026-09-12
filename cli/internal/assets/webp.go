@@ -13,6 +13,20 @@ import (
 	"time"
 )
 
+// 【本地改动 2026-09-12 覆盖下方全部历史说明】下面这段是 2026-09-02 的
+// 设计("存储格式定为 WebP"),已经被推翻:room 附件图片现在上传时用 ffmpeg
+// 重编码为**原尺寸 AVIF**(静态与动画都转),请求期**不再有衍生图**——衍生图
+// URL 在 core 的 MediaModel.Get*TransformedAttachmentAssetURL 里被 override
+// 成原图链接,HTTP 的 /image/{w}x{h}/{fit} 路由也直接回原字节(BYPASS)。
+// 现行设计与取舍见 docs/fdr/FDR-008 顶部的 fork 说明块。
+//
+// 本文件现在剩下的真实职责只有两件事:
+//   1. TransformImageWithFFmpeg —— 仍被 http_server 用于**服务端资产**
+//      (branding 图、链接预览)的请求期缩放,输出有损 WebP。
+//   2. EncodeWebP / WebPAvailable —— fork 里已无任何非测试调用方
+//      (上传路径不再走 WebP)。刻意不清理:upstream 仍在用,删掉会在每次
+//      merge 制造大面积冲突。
+//
 // WebP 作为 room 附件图片的后端存储格式。之前本 fork 用 AVIF 存储、请求时
 // 转 WebP 衍生图,AVIF 存储本身只是压缩手段,且衍生图路径需要处理 ISO-BMFF
 // (AVIF/HEIF) 不可 seek 的管道问题(见下方【本地改动 2026-09-01】注释)。

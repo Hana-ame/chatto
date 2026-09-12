@@ -38,9 +38,18 @@
 >   for newly uploaded video/animated-GIF assets"：fork 从不追加。
 > - `### 10` Decision 开头的 "Opaque static derivatives use JPEG quality 75"：fork 已无
 >   衍生图。
+> - `apps/docs-website/.../infrastructure/media-attachments.mdx` 第 16 行
+>   "image URLs can request resized WebP variants, and thumbnails are cached"：fork 的
+>   附件既不发 WebP 变体也不缓存。第 66 行的 "queues durable derivative work"：fork 的
+>   视频管线整体停用。**刻意不改这个页面**：fork 从未改过 docs-website（公开文档归
+>   upstream 所有，改了就每次 merge 冲突），分歧一律记在本文件的 fork 块里。
 >
-> **边界**：只影响 room 附件。头像、branding、链接预览仍是 Go 直出的 WebP，且仍在
-> 请求期缩放并写缓存。
+> **边界**：只影响 room 附件。头像由 Go 用 nativewebp 编成 **lossless WebP**
+> （`assets.ProcessAvatarImageWithConfig`，与附件管线刻意不混用）；branding 与链接
+> 预览仍走**请求期** ffmpeg transform（`assets.TransformImageWithFFmpeg`，输出**有损**
+> WebP）并写 ASSET_CACHE 的 `server.*` 命名空间。注意 `TransformOptions.JPEGQuality`
+> 这个名字是上游遗留：fork 的实现把该数值映射成 libwebp 的 `-q:v`，输出是 WebP 不是
+> JPEG。
 >
 > **已知代价（已接受）**：动画 AVIF 可能比源 GIF 大（实测 GIF 278 KB → AVIF 333 KB）；
 > HEIC 输入无法转 AVIF，原样存为 `image/heic`，只有支持 HEIC 的浏览器能显示；前端原有的

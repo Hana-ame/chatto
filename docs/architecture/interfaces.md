@@ -40,6 +40,26 @@ Related decisions: [ADR-044](../adr/ADR-044-connectrpc-service-conventions.md),
 | Trusted NATS services | `svc.chatto.>` and `svc.chatto_ext.>` | Versioned protobuf request/reply through NATS micro services | NATS account permissions; extension providers receive only their configured service and upstream Core subjects |
 | Reflection | `/api/connect/grpc.reflection.v1*` and `v1alpha*` | Public service descriptors | Public; restricted resolver excludes internal `chatto.core.*` types |
 
+<!-- 【本地改动 2026-09-12】fork 的附件接口面比上面这行描述的小一层。
+
+     1. **URL 生成层（主）**：`MediaModel.Get*TransformedAttachmentAssetURL` 直接
+        忽略 width/height/fit，回原图链接（公开版 `/assets/files/{id}/{fn.ext}`，
+        ticket 版 `/assets/files/{id}?access=…`）。access ticket 里也不再带
+        transform 参数，客户端根本拿不到 `/image/{w}x{h}/{fit}` 链接。两个调用点
+        是 connectapi 的 apiAsset.ThumbnailAssetUrl 与时间线装配。
+     2. **HTTP 层（兜底）**：已经发出去的旧 `/assets/files/{id}/image/{w}x{h}/{fit}`
+        链接（旧客户端缓存、CDN、被粘贴到别处的 URL）仍然可用，但直接返回存储的
+        那一份字节，响应头 `X-Cache: BYPASS`，不缩放、不重编码、不读写
+        ASSET_CACHE。实现见 cli/internal/http_server/assets.go 的
+        transformRequest.BypassTransform 与 serveBypassedOriginalAsset。
+
+     所以上面这行的 "image transform variants" 在 fork 里只是遗留兼容面，不是
+     功能面。服务端资产（头像/logo/banner/链接预览）不受影响：仍然在请求期缩放
+     并写 ASSET_CACHE 的 `server.*` 命名空间。
+
+     背景与取舍见 cli/internal/core/attachments.go 的 override 注释和
+     docs/fdr/FDR-008 的 fork 说明块。合并 upstream 时这两层都要人工恢复。 -->
+
 The public HTTP edge mounts every handler returned by `connectapi.API.Handlers`.
 Authenticated services are wrapped with `connectrpc.com/authn` before protobuf
 decoding and validation. `ExternalIdentityAuthService`,

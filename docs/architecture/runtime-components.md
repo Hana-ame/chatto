@@ -118,3 +118,24 @@ The core model inventory is a list of stable machine-readable keys such as `conf
 | `AssetUploadModel`               | [`asset_uploads.go`](../../cli/internal/core/asset_uploads.go)                                                                                                    | Eagerly wired chunked attachment upload sessions, temporary object assembly, pending-asset expiry, and process-local periodic cleanup           |
 | `projectionSnapshotWorker`       | [`projection_snapshot_worker.go`](../../cli/internal/core/projection_snapshot_worker.go) | Optional per-pass elected post-boot and daily publication of encrypted scalar generations and complete `ServerContentView` projection snapshot cohorts; a separate cluster-wide cooldown limits bounded S3 age expiry when Chatto owns lifecycle cleanup |
 | `video.Service`                  | [`service.go`](../../cli/internal/video/service.go), [`processor.go`](../../cli/internal/video/processor.go)                                                   | Synchronous video/animated-GIF processing attempts: web-compatible stereo audio normalization, HLS segment packaging and upload, animated-GIF MP4 upload, and terminal asset processing events; queue and concurrency remain owned by `video.Unit` |
+
+
+<!-- 【本地改动 2026-09-12】表里三行的 fork 行为。
+
+     - `MediaModel`：URL 构造器不再拼 `/image/{w}x{h}/{fit}` ——
+       GetStableTransformedAttachmentAssetURL 与
+       GetPublicStableTransformedAttachmentAssetURL 忽略宽高直接回原图链接
+       （见 core/attachments.go 的 override 注释，接口面细节见
+       docs/architecture/interfaces.md 的【本地改动】注释）。"transformed image
+       cache operations" 对**附件**已不存在，只对服务端资产生效。
+     - `AssetUploadModel`：分块上传的字节在提交前过一次 AVIF 重编码
+       （cli/internal/assets/attachment_image.go 的 PrepareAttachmentImage：
+       原尺寸、CRF 30、动画输入出动画 AVIF；ffmpeg 或 AV1 编码器不可用、编码
+       失败时存原字节）。所以上面这行 "temporary object assembly" 的产物在 fork
+       里通常是 AVIF 而非上传原格式。
+     - `video.Service`：fork 从不触发。cli/cmd/run.go 从不置
+       VideoUploadsEnabled，PostMessage 不追加 AssetProcessingStartedEvent，
+       durable consumer 全程空转，所以这行的 HLS 分段与动画 GIF 转 MP4 在 fork
+       里都不会发生（见 durable-effects.md 的【本地改动】注释）。
+
+     合并 upstream 时本注释会被删掉，需人工恢复。 -->

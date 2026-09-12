@@ -13,9 +13,13 @@
 >   **原尺寸 AVIF**（CRF 30，优先 `libsvtav1`，回退 `libaom-av1`；静态输入出静态
 >   AVIF，动画 GIF/WebP 出动画 AVIF）。ffmpeg 或 AV1 编码器不可用、或编码失败时
 >   存原字节（best-effort，不阻塞上传）。
-> - **取消衍生图**：`/assets/files/{id}/image/{w}x{h}/{fit}` 仍接收旧客户端发的
->   参数，但直接返回存储的那一份字节（响应头 `X-Cache: BYPASS`），不缩放、不重
->   编码、不读写 ASSET_CACHE。
+> - **取消衍生图（两层）**：
+>   ① **URL 生成层（主）**：`core.Get*TransformedAttachmentAssetURL` 直接忽略
+>   宽高/fit，回原图链接（`/assets/files/{id}/{fn.ext}`，ticket 版保留
+>   `?access=`），客户端根本拿不到 `/image/` 链接。
+>   ② **HTTP 层（兜底）**：已经发出去的旧 `/assets/files/{id}/image/{w}x{h}/{fit}`
+>   链接（旧客户端缓存、CDN、被粘贴到别处的 URL）仍可用，直接返回存储的那一份
+>   字节（响应头 `X-Cache: BYPASS`），不缩放、不重编码、不读写 ASSET_CACHE。
 > - **停用视频转码**：`cmd/run.go` 从不置 `VideoUploadsEnabled`，PostMessage 不追加
 >   `AssetProcessingStartedEvent`，durable worker 空转。视频原样存、原样发；动画
 >   GIF 也不再生成 MP4，走图片管线出动画 AVIF。
@@ -39,8 +43,12 @@
 > 请求期缩放并写缓存。
 >
 > **已知代价（已接受）**：动画 AVIF 可能比源 GIF 大（实测 GIF 278 KB → AVIF 333 KB）；
-> HEIC 输入无法转 AVIF（服务器 ffmpeg 无 `heif` 解码器），原样存为 `image/heic`，只有
-> 支持 HEIC 的浏览器能显示；前端原有的 HEIC→JPEG 兑底已随「终止前端编码」一起移除。
+> HEIC 输入无法转 AVIF，原样存为 `image/heic`，只有支持 HEIC 的浏览器能显示；前端原有的
+> HEIC→JPEG 兑底已随「终止前端编码」一起移除。【2026-09-12 实测定论】cloudcone 上
+> `ffmpeg -version` 显示 `7.0.2-static (johnvansickle)`，`-decoders` 里只有
+> `libdav1d`/`libaom-av1`/`av1` 三个 AV1 解码器，configure 只有
+> `--enable-libaom`/`--enable-libdav1d`/`--enable-libwebp`，**没有 heif/heic 解码器**
+> ——这条不是推测，是服务器上跑出来的。
 >
 > **历史**：2026-08-14 首次引入 AVIF 存储（`32e1f566`）；2026-09-02 改为 WebP 存储 +
 > 请求期衍生图（`218426d6`）；2026-09-12 回到 AVIF 并彻底取消衍生图。
@@ -62,7 +70,7 @@ Users can attach files to messages — images, videos, documents — via drag-an
 - While a message's attachments are being prepared and uploaded, the bundled composer keeps their previews visible, reports committed upload progress for each file, and disables editing and composer actions until the send finishes. A failed send keeps the submitted text and attachments available for correction or retry.
 - Default upload size limits: 25 MB for general files, 100 MB for videos when video processing is enabled. **Fork:** `video.enabled` only controls whether videos can be uploaded and their size limit; the derivative pipeline is never enabled.
 - Video uploads require server-side video processing to be enabled. When it is disabled, the composer rejects `video/*` files immediately and the message-post API rejects them before storage. **Fork:** not applicable — videos are stored exactly as uploaded and never transcoded.
-- Images are inspected for dimensions at upload time and can be resized at render time via URL parameters (width, height, fit mode). Public attachment and avatar APIs expose transform parameters; public server branding images expose canonical URLs only. **Fork:** attachment transform URLs are accepted for client compatibility but return the stored bytes untransformed (`X-Cache: BYPASS`); avatars and branding images are still resized at render time.
+- Images are inspected for dimensions at upload time and can be resized at render time via URL parameters (width, height, fit mode). Public attachment and avatar APIs expose transform parameters; public server branding images expose canonical URLs only. **Fork:** the server no longer issues attachment transform URLs at all — the URL builders override the width/height/fit request to the original file URL; the `/image/{w}x{h}/{fit}` routes still accept already-issued links for client compatibility and return the stored bytes untransformed (`X-Cache: BYPASS`); avatars and branding images are still resized at render time.
 - The room timeline loads attachment images within 960×400 bounds, while the lightbox loads a separate derivative within 2048×2048 bounds. The uploaded image (re-encoded to AVIF when ffmpeg is available) remains available through Open original and file-download actions. **Fork:** the bounds are not applied at render time — timeline and lightbox load the same stored bytes, the original-size AVIF produced at upload. The stored image is the only copy, so Open original and the download action return those same bytes.
 
 <!-- 【本地改动 32e1f566 + 2026-09-12】fork 把上游的 "The untouched upload remains
@@ -148,7 +156,7 @@ Users can attach files to messages — images, videos, documents — via drag-an
      已知不一致（未改）：Decision 开头的 "Opaque static derivatives use JPEG quality
      75" 在 fork 里完全不成立，属 upstream 正文，留给人决定。 -->
 
-**Decision:** Timeline images fit within 960×400 bounds and lightbox images fit within 2048×2048 bounds. Opaque static derivatives use JPEG quality 75, while transparency and animation continue to use lossless WebP. Newly uploaded image attachments are re-encoded to original-size AVIF through ffmpeg (the binary the video pipeline already requires) at CRF 30 using the fastest available encoder (`libsvtav1`, falling back to `libaom-av1`); static inputs produce static AVIF and animated inputs produce animated AVIF, both at source dimensions. When ffmpeg or an AV1 encoder is unavailable, or when encoding fails, uploads are stored unchanged. **Fork:** the render-time bounds above are not applied to attachments — the `/image/{width}x{height}/{fit}` routes accept the parameters but return the stored bytes verbatim (`X-Cache: BYPASS`) without reading or writing the resize cache, so each attachment image is stored and served exactly once.
+**Decision:** Timeline images fit within 960×400 bounds and lightbox images fit within 2048×2048 bounds. Opaque static derivatives use JPEG quality 75, while transparency and animation continue to use lossless WebP. Newly uploaded image attachments are re-encoded to original-size AVIF through ffmpeg (the binary the video pipeline already requires) at CRF 30 using the fastest available encoder (`libsvtav1`, falling back to `libaom-av1`); static inputs produce static AVIF and animated inputs produce animated AVIF, both at source dimensions. When ffmpeg or an AV1 encoder is unavailable, or when encoding fails, uploads are stored unchanged. **Fork:** the render-time bounds above are not applied to attachments — the URL builders return the original file URL and discard the requested dimensions, and the `/image/{width}x{height}/{fit}` routes accept only already-issued links and return the stored bytes verbatim (`X-Cache: BYPASS`) without reading or writing the resize cache, so each attachment image is stored and served exactly once.
 **Why:** Timeline frames are much smaller than typical camera and screenshot uploads, and even full-screen viewing rarely benefits from transferring the source resolution. Separate display sizes reduce bandwidth without sacrificing the original file-sharing behavior. AVIF compresses camera and screenshot uploads better than the original JPEG/PNG bytes while remaining universally supported in modern browsers. **Fork rationale:** encoding once at upload time makes the stored file the only copy, which removes a whole failure class from the request path — resizing an immutable container from a non-seekable stream fails (`partial file` while probing ISO-BMFF) and the bad result is then frozen in cache, which was the dominant cause of attachment 500s in this deployment. Original-size storage is the price.
 **Tradeoff:** Opaque displayed images are lossy and capped in resolution. Transparent and animated images may see smaller savings because preserving their behavior requires lossless encoding. Upload-time re-encoding adds latency proportional to image size and depends on ffmpeg availability; deployments without ffmpeg fall back to storing original bytes, and mixed-version deployments may serve both formats. Stored content type follows the encoded format (`image/avif` or the original type). **Fork tradeoffs:** attachments stream full-resolution bytes in the timeline, so bandwidth grows as users upload large images; animated AVIF can be larger than the source GIF (measured 278 KB GIF → 333 KB AVIF); HEIC inputs cannot be encoded because the server ffmpeg has no `heif` decoder, so they are stored as `image/heic` and display only in HEIC-capable browsers, with the previous client-side HEIC→JPEG fallback removed along with client-side encoding in general.
 

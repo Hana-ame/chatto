@@ -54,6 +54,18 @@ type assetTestEnv struct {
 }
 
 // setupAssetTestServer creates a test server for asset testing with caching enabled.
+// legacyTransformURL builds the pre-2026-09-12 public derivative URL for a
+// stored attachment: /assets/files/{assetID}/image/{width}x{height}/{fit}/{fn.ext}.
+// 【本地改动 2026-09-12】fork 的 URL 生成层已不再产出这种链接,但已经发出去的
+// 旧链接(旧客户端缓存、CDN、被粘贴到别处的 URL)仍然会打到这里,必须仍然可用。
+func legacyTransformURL(originalURL string) string {
+	slash := strings.LastIndex(originalURL, "/")
+	if slash < 0 {
+		return originalURL
+	}
+	return originalURL[:slash] + "/image/960x400/contain" + originalURL[slash:]
+}
+
 func setupAssetTestServer(t *testing.T) *assetTestEnv {
 	return setupAssetTestServerWithConfig(t, false)
 }
@@ -394,10 +406,11 @@ func TestAsset_TransformedAttachmentURLReturnsOriginalWithoutCache(t *testing.T)
 		t.Fatal("Expected original and thumbnail asset URLs")
 	}
 
-	// 【本地改动 2026-09-12】附件的 /image/{w}x{h}/{fit} 请求已整体
-	// bypass:不缩放、不重编码、不读写 resize 缓存,直接回存储的那一份字节。
-	// 因此这个用例不再测缓存命中,改测「transform URL 与原文件 URL 逐字节
-	// 一致」——这才是 fork 想保护的不变量。
+	// 【本地改动 2026-09-12】fork 取消附件衍生图,两道防线都测:
+	// ① URL 生成层——缩略图 URL 被 override 成原图 URL,客户端根本拿不到
+	//   /image/{w}x{h}/{fit} 这种链接(core.GetPublicStableTransformed...);
+	// ② HTTP 层——已经发出去的旧 /image/ 链接(旧客户端缓存、CDN、外部
+	//   粘贴)仍可用,返回存储的原图字节并标 X-Cache: BYPASS。
 	originalResp, err := env.client.Get(env.server.URL + originalURL)
 	if err != nil {
 		t.Fatalf("Failed to get original attachment: %v", err)
@@ -413,47 +426,57 @@ func TestAsset_TransformedAttachmentURLReturnsOriginalWithoutCache(t *testing.T)
 	}
 	originalType := originalResp.Header.Get("Content-Type")
 
-	// 第一次请求 transform URL:必须返回原文件字节,且标记 BYPASS。
-	transformResp, err := env.client.Get(env.server.URL + thumbnailURL)
-	if err != nil {
-		t.Fatalf("Failed to get transformed image: %v", err)
+	// ① 缩略图 URL 就是原图 URL——fork 没有第二份更小的字节。
+	if thumbnailURL != originalURL {
+		t.Fatalf("thumbnail URL = %q, want the original attachment URL %q", thumbnailURL, originalURL)
 	}
-	if transformResp.StatusCode != http.StatusOK {
-		transformResp.Body.Close()
-		t.Fatalf("Expected 200 OK, got %d", transformResp.StatusCode)
+	if strings.Contains(thumbnailURL, "/image/") {
+		t.Fatalf("thumbnail URL = %q must not carry a transform path", thumbnailURL)
 	}
-	got, err := io.ReadAll(transformResp.Body)
-	transformResp.Body.Close()
+
+	resp, err := env.client.Get(env.server.URL + thumbnailURL)
 	if err != nil {
-		t.Fatalf("Failed to read transformed image: %v", err)
+		t.Fatalf("Failed to get thumbnail URL: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		t.Fatalf("Expected 200 OK for the thumbnail URL, got %d", resp.StatusCode)
+	}
+	got, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatalf("Failed to read thumbnail URL: %v", err)
 	}
 	if !bytes.Equal(got, original) {
-		t.Fatal("transformed attachment must be byte-identical to the stored original")
+		t.Fatal("thumbnail URL must serve the stored original bytes")
 	}
-	if got := transformResp.Header.Get("X-Cache"); got != "BYPASS" {
-		t.Fatalf("Expected X-Cache: BYPASS, got: %s", got)
-	}
-	if got := transformResp.Header.Get("Content-Type"); got != originalType {
+	if got := resp.Header.Get("Content-Type"); got != originalType {
 		t.Fatalf("Content-Type = %q, want the stored original's %q", got, originalType)
 	}
 
-	// 第二次请求结果必须一致,且 resize 缓存仍然为空(bypass 不写缓存)。
-	transformResp2, err := env.client.Get(env.server.URL + thumbnailURL)
+	// ② 旧 /image/ 链接仍然可用,直接回原图字节(不缩放、不重编码)。
+	legacyURL := legacyTransformURL(originalURL)
+	legacyResp, err := env.client.Get(env.server.URL + legacyURL)
 	if err != nil {
-		t.Fatalf("Failed to get transformed image again: %v", err)
+		t.Fatalf("Failed to get legacy transform URL: %v", err)
 	}
-	got2, err := io.ReadAll(transformResp2.Body)
-	transformResp2.Body.Close()
+	if legacyResp.StatusCode != http.StatusOK {
+		legacyResp.Body.Close()
+		t.Fatalf("Expected 200 OK for the legacy transform URL, got %d", legacyResp.StatusCode)
+	}
+	if got := legacyResp.Header.Get("X-Cache"); got != "BYPASS" {
+		t.Fatalf("legacy transform URL: X-Cache = %q, want BYPASS", got)
+	}
+	legacy, err := io.ReadAll(legacyResp.Body)
+	legacyResp.Body.Close()
 	if err != nil {
-		t.Fatalf("Failed to read transformed image: %v", err)
+		t.Fatalf("Failed to read legacy transform URL: %v", err)
 	}
-	if !bytes.Equal(got2, original) {
-		t.Fatal("second request must return the same original bytes")
-	}
-	if got := transformResp2.Header.Get("X-Cache"); got != "BYPASS" {
-		t.Fatalf("Expected X-Cache: BYPASS on repeat, got: %s", got)
+	if !bytes.Equal(legacy, original) {
+		t.Fatal("legacy transform URL must serve the stored original bytes")
 	}
 
+	// 附件不再产生衍生图,resize 缓存必须保持为空。
 	cacheKey := core.ImageCacheKey(AttachmentStableCachePrefix, attachment.GetId(), 960, 400, "contain")
 	cached, err := env.core.GetCachedResize(env.ctx, cacheKey)
 	if err != nil {
@@ -482,21 +505,28 @@ func TestAsset_TransformedAttachmentIgnoresStaleCacheAndServesOriginal(t *testin
 
 	imageData := createAssetTestPNG(t, 1200, 800)
 	_, attachment := env.postAssetMessageWithAttachment(t, room.Id, "compressed image", imageData, "compressed.png")
+	originalURL := attachment.GetAssetUrl().GetUrl()
 	thumbnailURL := attachment.GetThumbnailAssetUrl().GetUrl()
-	if !strings.Contains(thumbnailURL, "/960x400/contain") {
-		t.Fatalf("thumbnail URL = %q, want 960x400 contain transform", thumbnailURL)
+	if originalURL == "" || thumbnailURL == "" {
+		t.Fatal("Expected original and thumbnail asset URLs")
+	}
+	// 【本地改动 2026-09-12】这个用例原本断言「缩略图 URL 带 960x400 contain
+	// 参数,且衍生图走压缩 profile」。fork 取消衍生图后前提不成立:缩略图
+	// URL 直接被 override 成原图链接,不再有尺寸参数。
+	if thumbnailURL != originalURL {
+		t.Fatalf("thumbnail URL = %q, want the original attachment URL %q (fork has no derivatives)", thumbnailURL, originalURL)
+	}
+	if strings.Contains(thumbnailURL, "/image/") {
+		t.Fatalf("thumbnail URL = %q must not carry a transform path", thumbnailURL)
 	}
 	oldCacheKey := core.ImageCacheKey("attachment-stable", attachment.GetId(), 960, 400, "contain")
 	if err := env.core.StoreCachedResize(env.ctx, oldCacheKey, []byte("old-quality-cache-entry")); err != nil {
 		t.Fatalf("Failed to seed old attachment cache namespace: %v", err)
 	}
 
-	// 【本地改动 2026-09-12】这个用例原本断言「附件衍生图走压缩 profile,
-	// 并写入版本化缓存命名空间」。fork 取消衍生图后前提不成立:请求期不再
-	// 编码,resize 缓存既不被读也不被写,上面种下的旧缓存条目必须被无视
-	// (否则历史衍生图字节会泄漏给客户端)。现在断言 transform URL 回的是
-	// 存储原文件的字节。
-	originalResp, err := env.client.Get(env.server.URL + attachment.GetAssetUrl().GetUrl())
+	// 【本地改动 2026-09-12】请求期不再编码,resize 缓存既不被读也不被写,
+	// 上面种下的旧缓存条目必须被无视(否则历史衍生图字节会泄漏给客户端)。
+	originalResp, err := env.client.Get(env.server.URL + originalURL)
 	if err != nil {
 		t.Fatalf("Failed to get original attachment: %v", err)
 	}
@@ -513,24 +543,45 @@ func TestAsset_TransformedAttachmentIgnoresStaleCacheAndServesOriginal(t *testin
 
 	resp, err := env.client.Get(env.server.URL + thumbnailURL)
 	if err != nil {
-		t.Fatalf("Failed to get transformed attachment: %v", err)
+		t.Fatalf("Failed to get thumbnail URL: %v", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("Expected 200 OK, got %d", resp.StatusCode)
 	}
-	if got := resp.Header.Get("X-Cache"); got != "BYPASS" {
-		t.Fatalf("X-Cache = %q, want BYPASS: attachment transforms are not encoded", got)
-	}
 	got, err := io.ReadAll(resp.Body)
 	if err != nil {
-		t.Fatalf("Failed to read transformed attachment: %v", err)
+		t.Fatalf("Failed to read thumbnail URL: %v", err)
 	}
 	if !bytes.Equal(got, original) {
-		t.Fatal("transformed attachment must be the stored original bytes, not a re-encoded derivative")
+		t.Fatal("thumbnail URL must be the stored original bytes, not a re-encoded derivative")
+	}
+	if bytes.Equal(got, []byte("old-quality-cache-entry")) {
+		t.Fatal("stale attachment cache entry must not be served")
 	}
 	if got := resp.Header.Get("Content-Type"); got != originalType {
 		t.Fatalf("Content-Type = %q, want the stored original's %q", got, originalType)
+	}
+
+	// 旧 /image/ 链接也不能从历史缓存里读出坏字节。
+	legacyURL := legacyTransformURL(originalURL)
+	legacyResp, err := env.client.Get(env.server.URL + legacyURL)
+	if err != nil {
+		t.Fatalf("Failed to get legacy transform URL: %v", err)
+	}
+	defer legacyResp.Body.Close()
+	if legacyResp.StatusCode != http.StatusOK {
+		t.Fatalf("legacy transform URL: expected 200 OK, got %d", legacyResp.StatusCode)
+	}
+	if got := legacyResp.Header.Get("X-Cache"); got != "BYPASS" {
+		t.Fatalf("legacy transform URL: X-Cache = %q, want BYPASS", got)
+	}
+	legacy, err := io.ReadAll(legacyResp.Body)
+	if err != nil {
+		t.Fatalf("Failed to read legacy transform URL: %v", err)
+	}
+	if !bytes.Equal(legacy, original) {
+		t.Fatal("legacy transform URL must be the stored original bytes, not the stale cache entry")
 	}
 }
 
@@ -569,20 +620,27 @@ func TestAsset_DeleteAttachment_CleansUpCache(t *testing.T) {
 		t.Fatal("Expected original and thumbnail asset URLs")
 	}
 
-	// 【本地改动 2026-09-12】附件 transform 请求已整体 bypass,不再写
-	// resize 缓存,所以这里不再验证「删除前缓存 HIT」;删除后的 404 断言
-	// 不变——原文件与 transform URL 都必须 404,且不能从残留缓存里拿到已
-	// 删除附件的字节。
+	// 【本地改动 2026-09-12】附件不再产生衍生图,也不写 resize 缓存,所以
+	// 这里不再验证「删除前缓存 HIT」;删除后的 404 断言不变——缩略图链接
+	// (现在就是原图链接)与旧 /image/ 链接都必须 404,且不能从残留缓存里
+	// 拿到已删除附件的字节。
 	transformResp, err := env.client.Get(env.server.URL + thumbnailURL)
 	if err != nil {
-		t.Fatalf("Failed to get transformed image: %v", err)
+		t.Fatalf("Failed to get thumbnail URL: %v", err)
 	}
 	transformResp.Body.Close()
 	if transformResp.StatusCode != http.StatusOK {
-		t.Fatalf("Expected 200 OK, got %d", transformResp.StatusCode)
+		t.Fatalf("Expected 200 OK before deletion, got %d", transformResp.StatusCode)
 	}
-	if got := transformResp.Header.Get("X-Cache"); got != "BYPASS" {
-		t.Fatalf("Expected X-Cache: BYPASS before deletion, got %q", got)
+
+	legacyURL := legacyTransformURL(attachmentURL)
+	legacyResp, err := env.client.Get(env.server.URL + legacyURL)
+	if err != nil {
+		t.Fatalf("Failed to get legacy transform URL: %v", err)
+	}
+	legacyResp.Body.Close()
+	if legacyResp.StatusCode != http.StatusOK {
+		t.Fatalf("legacy transform URL: expected 200 OK before deletion, got %d", legacyResp.StatusCode)
 	}
 
 	// Delete the message (which should delete the attachment and its cache)
@@ -601,11 +659,21 @@ func TestAsset_DeleteAttachment_CleansUpCache(t *testing.T) {
 	// Transformed URL should also return 404 (not cache hit from stale cache)
 	transformResp3, err := env.client.Get(env.server.URL + thumbnailURL)
 	if err != nil {
-		t.Fatalf("Failed to get transformed image: %v", err)
+		t.Fatalf("Failed to get thumbnail URL: %v", err)
 	}
 	transformResp3.Body.Close()
 	if transformResp3.StatusCode != http.StatusNotFound {
-		t.Errorf("Expected 404 for deleted attachment transform, got %d", transformResp3.StatusCode)
+		t.Errorf("Expected 404 for deleted attachment thumbnail URL, got %d", transformResp3.StatusCode)
+	}
+
+	// 旧 /image/ 链接同样必须 404,不能从缓存里泄漏已删除附件。
+	legacyResp3, err := env.client.Get(env.server.URL + legacyURL)
+	if err != nil {
+		t.Fatalf("Failed to get legacy transform URL: %v", err)
+	}
+	legacyResp3.Body.Close()
+	if legacyResp3.StatusCode != http.StatusNotFound {
+		t.Errorf("Expected 404 for deleted attachment legacy transform URL, got %d", legacyResp3.StatusCode)
 	}
 }
 
@@ -1176,9 +1244,24 @@ func TestAsset_ForkPublicStableURLNeedsNoAuth(t *testing.T) {
 		t.Fatalf("Expected stable thumbnail request with access ticket to return 200, got %d", thumbResp.StatusCode)
 	}
 
-	mutatedThumbnailURL := strings.Replace(thumbnailURL, "960x400", "961x400", 1)
-	if mutatedThumbnailURL == thumbnailURL {
-		t.Fatalf("Expected thumbnail URL to contain transform dimensions, got %q", thumbnailURL)
+	// 【本地改动 2026-09-12】fork 取消附件衍生图后,缩略图 URL 就是原图 URL,
+	// 不再带可改动的尺寸参数;「尺寸解绑」的验证改到旧 /image/ 链接上做——
+	// 那条路由仍是 fork 对外开放的公开 transform 面(给已发出去的旧链接兜底)。
+	if thumbnailURL != attachmentURL {
+		t.Fatalf("thumbnail URL = %q, want the original attachment URL %q", thumbnailURL, attachmentURL)
+	}
+	legacyURL := legacyTransformURL(thumbnailURL)
+	legacyResp, err := unauthClient.Get(env.server.URL + legacyURL)
+	if err != nil {
+		t.Fatalf("Failed to get legacy stable transform URL: %v", err)
+	}
+	legacyResp.Body.Close()
+	if legacyResp.StatusCode != http.StatusOK {
+		t.Fatalf("fork legacy transform URL needs no credentials: status = %d, want 200", legacyResp.StatusCode)
+	}
+	mutatedThumbnailURL := strings.Replace(legacyURL, "960x400", "961x400", 1)
+	if mutatedThumbnailURL == legacyURL {
+		t.Fatalf("Expected legacy transform URL to contain transform dimensions, got %q", legacyURL)
 	}
 	mutatedResp, err := unauthClient.Get(env.server.URL + mutatedThumbnailURL)
 	if err != nil {
@@ -1188,8 +1271,8 @@ func TestAsset_ForkPublicStableURLNeedsNoAuth(t *testing.T) {
 	// 【本地改动 2026-08-29】上游期望 403（transform 尺寸绑定在 access ticket 上，改一个字节即失效）；
 	// fork 的公开 transform 路由无签名，尺寸是自由 URL 参数，只受 parseStableTransformParams 的
 	// [1,2048] 与 fit 闭集校验约束，故 961x400 被当成另一个合法 rendition 正常返回。
-	// 安全注记：无鉴权 transform 面因此开放，但单请求开销有上限（2048x2048 封顶 + 派生结果按
-	// CachePrefix 缓存），不是开放型放大面。
+	// 安全注记：无鉴权 transform 面因此开放。【2026-09-12 补充】该面现在不再编码也不写
+	// 缓存(BypassTransform),单次请求的开销只是读一遍已存对象,不是放大面。
 	if mutatedResp.StatusCode != http.StatusOK {
 		t.Fatalf("fork transform dims are unbound: status = %d, want 200", mutatedResp.StatusCode)
 	}

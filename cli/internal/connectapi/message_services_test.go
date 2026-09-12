@@ -1731,8 +1731,15 @@ func TestRoomMessageAndAssetServicesListAttachmentsGetMessagesAndGetAssets(t *te
 	if err != nil {
 		t.Fatalf("GetAsset: %v", err)
 	}
-	if got := asset.Msg.GetAsset().GetThumbnailAssetUrl().GetUrl(); !strings.Contains(got, "/64x64/contain") {
-		t.Fatalf("GetAsset thumbnail URL = %q, want 64x64 contain transform", got)
+	// 【本地改动 2026-09-12】fork 取消附件衍生图:无论调用方要多大的缩略图,
+	// ThumbnailAssetUrl 都直接 override 成原图链接(core 的
+	// Get*TransformedAttachmentAssetURL 忽略宽高),尺寸参数被丢弃。
+	thumb := asset.Msg.GetAsset().GetThumbnailAssetUrl().GetUrl()
+	if thumb != asset.Msg.GetAsset().GetAssetUrl().GetUrl() {
+		t.Fatalf("GetAsset thumbnail URL = %q, want the original asset URL %q", thumb, asset.Msg.GetAsset().GetAssetUrl().GetUrl())
+	}
+	if strings.Contains(thumb, "/image/") {
+		t.Fatalf("GetAsset thumbnail URL = %q, must not carry a transform path", thumb)
 	}
 
 	batch, err := env.messages.BatchGetMessages(ctx, connect.NewRequest(&apiv1.BatchGetMessagesRequest{

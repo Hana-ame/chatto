@@ -727,14 +727,19 @@ func TestChattoCore_AssetBaseURL(t *testing.T) {
 		}
 	})
 
-	t.Run("GetStableTransformedAttachmentURL returns absolute when AssetBaseURL is set", func(t *testing.T) {
+	t.Run("GetStableTransformedAttachmentURL returns the original URL in the fork", func(t *testing.T) {
 		core.AssetBaseURL = "https://chat.example.com"
 		defer func() { core.AssetBaseURL = "" }()
 
+		// 【本地改动 2026-09-12】fork 取消附件衍生图:宽高与 fit 参数被忽略,
+		// 回原图链接(仍带 access ticket,绝对化行为不变)。
 		url := core.mediaModel.GetStableTransformedAttachmentURL("attachment456", "Uviewer", 200, 150, "contain")
 
-		if !bytes.HasPrefix([]byte(url), []byte("https://chat.example.com/assets/files/attachment456/image/200x150/contain?access=")) {
-			t.Errorf("Expected absolute URL with base, got '%s'", url)
+		if !bytes.HasPrefix([]byte(url), []byte("https://chat.example.com/assets/files/attachment456?access=")) {
+			t.Errorf("Expected absolute original-form URL with base, got '%s'", url)
+		}
+		if bytes.Contains([]byte(url), []byte("/image/")) {
+			t.Errorf("Transformed attachment URL %q must not carry a transform path", url)
 		}
 	})
 

@@ -257,17 +257,18 @@ func TestMediaModelStableAttachmentURLs(t *testing.T) {
 	if transformed.URL == "" {
 		t.Fatal("GetStableTransformedAttachmentAssetURL returned empty URL")
 	}
-	if !strings.HasPrefix(transformed.URL, "https://assets.example/assets/files/A-url/image/128x96/contain?access=") {
-		t.Fatalf("stable transformed URL = %q, want transformed asset path", transformed.URL)
+	// 【本地改动 2026-09-12】fork 取消附件衍生图:宽高与 fit 参数被忽略,回
+	// 原图链接,ticket 里也不再带 transform 参数(所以下面的断言传 nil)。
+	if !strings.HasPrefix(transformed.URL, "https://assets.example/assets/files/A-url?access=") {
+		t.Fatalf("stable transformed URL = %q, want the original asset path (fork has no derivatives)", transformed.URL)
+	}
+	if strings.Contains(transformed.URL, "/image/") {
+		t.Fatalf("stable transformed URL = %q, must not carry a transform path", transformed.URL)
 	}
 	if transformed.ExpiresAt.IsZero() {
 		t.Fatal("stable transformed URL expiry was zero")
 	}
-	assertStableAssetURLTicket(t, core, transformed, &signedurl.TransformParams{
-		Width:  128,
-		Height: 96,
-		Fit:    "contain",
-	}, before)
+	assertStableAssetURLTicket(t, core, transformed, nil, before)
 	if got := service.GetStableTransformedAttachmentURL("", "U-url", 128, 96, "contain"); got != "" {
 		t.Fatalf("GetStableTransformedAttachmentURL with empty asset id = %q, want empty", got)
 	}
@@ -310,9 +311,12 @@ func TestMediaModelPublicStableAttachmentURLShapes(t *testing.T) {
 		t.Fatalf("public original URL = %q, want exact /assets/files/A-pub/photo.jpg", original.URL)
 	}
 
+	// 【本地改动 2026-09-12】公开版衍生图 URL 也被 override 成原图链接:
+	// 不再有 /image/{w}x{h}/{fit} 段。那一段曾是 2026-08-23 双重前缀 bug 的
+	// 温床,现在整段消失,双重前缀不可能再发生。
 	transformed := service.GetPublicStableTransformedAttachmentAssetURL(attachment, 960, 400, "contain")
-	if transformed.URL != "https://assets.example/assets/files/A-pub/image/960x400/contain/photo.jpg" {
-		t.Fatalf("public transformed URL = %q, want single-prefix image path", transformed.URL)
+	if transformed.URL != original.URL {
+		t.Fatalf("public transformed URL = %q, want the original URL %q", transformed.URL, original.URL)
 	}
 	if strings.Count(transformed.URL, "/assets/files/") != 1 {
 		t.Fatalf("public transformed URL = %q, want exactly one /assets/files/ prefix", transformed.URL)
@@ -413,8 +417,12 @@ func TestMediaModelAssetURLs(t *testing.T) {
 	}
 
 	transformed := service.GetStableTransformedAttachmentURL("A-url", "U-url", 64, 48, "cover")
-	if !strings.HasPrefix(transformed, "https://assets.example/assets/files/A-url/image/64x48/cover?access=") {
-		t.Fatalf("GetStableTransformedAttachmentURL = %q, want stable transform URL", transformed)
+	// 【本地改动 2026-09-12】fork 没有附件衍生图:回原图 URL,不含 /image/ 段。
+	if !strings.HasPrefix(transformed, "https://assets.example/assets/files/A-url?access=") {
+		t.Fatalf("GetStableTransformedAttachmentURL = %q, want the original stable asset URL", transformed)
+	}
+	if strings.Contains(transformed, "/image/") {
+		t.Fatalf("GetStableTransformedAttachmentURL = %q, must not carry a transform path", transformed)
 	}
 	serverAsset := service.GetTransformedServerAssetURL("server.logo", 80, 80, "cover")
 	if !strings.HasPrefix(serverAsset, "https://assets.example/assets/server/server.logo/t/") {

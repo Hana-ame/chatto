@@ -390,8 +390,14 @@ func TestTimelineAndAssetServicesHydrateProcessedVideoAttachments(t *testing.T) 
 	if len(attachments) != 1 {
 		t.Fatalf("attachments = %d, want 1", len(attachments))
 	}
-	if got := attachments[0].GetThumbnailAssetUrl().GetUrl(); !strings.Contains(got, "/960x400/contain") {
-		t.Fatalf("attachment thumbnail URL = %q, want 960x400 contain transform", got)
+	// 【本地改动 2026-09-12】fork 取消附件衍生图:时间线缩略图 URL 直接
+	// override 成原图链接,不再有 /image/{w}x{h}/{fit} 段。
+	thumbnailURL := attachments[0].GetThumbnailAssetUrl().GetUrl()
+	if thumbnailURL != attachments[0].GetAssetUrl().GetUrl() {
+		t.Fatalf("attachment thumbnail URL = %q, want the original asset URL %q", thumbnailURL, attachments[0].GetAssetUrl().GetUrl())
+	}
+	if strings.Contains(thumbnailURL, "/image/") {
+		t.Fatalf("attachment thumbnail URL = %q, must not carry a transform path", thumbnailURL)
 	}
 	processing := attachments[0].GetVideoProcessing()
 	if processing == nil {

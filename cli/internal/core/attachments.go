@@ -806,24 +806,21 @@ func (c *MediaModel) GetStableTransformedAttachmentURL(assetID, userID string, w
 // GetStableTransformedAttachmentAssetURL returns the canonical URL for a
 // derived image form factor together with the exact expiry embedded in its
 // access ticket.
+//
+// 【本地改动 2026-09-12】fork 不再生成衍生图 URL:width/height/fit 直接忽略,
+// 回原图链接(仍带 per-user access ticket)。上传时已经把图片编码成**原尺寸**
+// AVIF(动画输入产出动画 AVIF),请求期没有第二份更小的字节,拼出衍生图 URL
+// 只会让客户端去请求一份和原图逐字节相同的资源;而请求期 ffmpeg 缩放恰恰是
+// 线上 500 的主要来源(pipe 不可 seek 导致 ISO-BMFF 探测报 partial file,
+// 缓存还会把坏字节固化)。函数名与签名保留,merge upstream 时调用点不炸。
 func (c *MediaModel) GetStableTransformedAttachmentAssetURL(assetID, userID string, width, height int, fit string) StableAssetURL {
 	if assetID == "" || userID == "" {
 		return StableAssetURL{}
 	}
-	transformPath := fmt.Sprintf(
-		"/assets/files/%s/image/%dx%d/%s",
-		url.PathEscape(assetID),
-		width,
-		height,
-		url.PathEscape(fit),
-	)
 	expiresAt := c.assetAccessTicketExpiry()
 	return StableAssetURL{
-		URL: c.assetURL(c.stableAttachmentPathWithAccess(assetID, userID, transformPath, &signedurl.TransformParams{
-			Width:  width,
-			Height: height,
-			Fit:    fit,
-		}, expiresAt)),
+		// 尾段为空、无 transform 参数：URL 与原始附件形式一致，ticket 也不带宽高。
+		URL:       c.assetURL(c.stableAttachmentPathWithAccess(assetID, userID, "", nil, expiresAt)),
 		ExpiresAt: expiresAt,
 	}
 }
@@ -890,17 +887,16 @@ func (c *MediaModel) GetPublicStableAttachmentAssetURL(attachment *evtv1.Attachm
 // GetPublicStableTransformedAttachmentAssetURL returns the canonical public
 // URL for a derived image form factor:
 // /assets/files/{assetID}/image/{width}x{height}/{fit}/{fn.ext}
+//
+// 【本地改动 2026-09-12】不再拼 /image/{w}x{h}/{fit}:无论调用方要多大的图,
+// 直接 override 成原图链接 /assets/files/{assetID}/{fn.ext}(见
+// GetStableTransformedAttachmentAssetURL 的说明)。两个 connectapi 调用点
+// (apiAsset 的 ThumbnailAssetUrl、时间线装配)因此拿到的就是原图 URL。
 func (c *MediaModel) GetPublicStableTransformedAttachmentAssetURL(attachment *evtv1.Attachment, width, height int, fit string) StableAssetURL {
-	if attachment == nil || attachment.GetId() == "" {
-		return StableAssetURL{}
-	}
-	// 【本地改动 2026-08-23】修复：这里只能传「尾段」(/image/{w}x{h}/{fit})，
-	// 不能传完整路径——stableAttachmentPath 自己会拼 /assets/files/{id} 前缀。
-	// 此前误传完整路径导致线上缩略图 URL 双重前缀全部 404（2026-08-23 部署
-	// 后由用户浏览器控制台发现；CI 的 HasPrefix 断言与 build-linux 不跑全量
-	// 测试叠加，未能拦截）。
-	transformPath := fmt.Sprintf("/image/%dx%d/%s", width, height, url.PathEscape(fit))
-	return StableAssetURL{URL: c.assetURL(stableAttachmentPath(attachment, transformPath))}
+	// 【本地改动 2026-08-23 的坑(已随本次 override 一起消失)】历史上这里自己拼
+	// /image/{w}x{h}/{fit} 尾段,曾误传完整路径导致 stableAttachmentPath 双重
+	// 前缀、线上缩略图全部 404。现在本函数已不拼任何尾段,坑不在了。
+	return c.GetPublicStableAttachmentAssetURL(attachment)
 }
 
 // stableAttachmentPath builds /assets/files/{assetID}/{suffix}/{fn.ext} where

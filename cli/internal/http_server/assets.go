@@ -115,6 +115,12 @@ type transformRequest struct {
 	// AVIF),存一份、发一份,请求期再缩放只会引入衍生图。旧链路是线上 500
 	// 的主要来源:ffmpeg 缩放拿到不可 seek 的 pipe 输入会报 partial file
 	// (ISO-BMFF 容器探测失败),缓存又把它固化下来。
+	//
+	// 【2026-09-12 第二轮】主防线已移到 URL 生成层:core/attachments.go 的
+	// Get*TransformedAttachmentAssetURL 直接把「衍生图 URL」override 成原图
+	// URL,客户端根本不会再请求 /image/ 路径。这里保留 bypass 是兼底——已经
+	// 发出去的旧 /image/ 链接(旧客户端缓存、CDN 缓存、被人粘贴到别处的
+	// URL)仍然返回原图字节,而不是 500 或 404。
 	// 边界:只给附件的 /image/{w}x{h}/{fit} 两个调用点设置(服务端资产
 	// 的 /t/{sig} 路径不设,否则会把头像、logo、banner 全变原尺寸)。
 	BypassTransform bool
@@ -801,6 +807,8 @@ func (s *HTTPServer) serveTransformedAssetWithParams(c *gin.Context, req transfo
 	// 【本地改动 2026-09-12】附件的 transform 请求整体 bypass:上传时已经是
 	// 原尺寸 AVIF,这里直接回原文件字节。放在函数入口,让缓存查找、缩放、
 	// 缓存写入全都不发生——旧缓存里的衍生图字节也不会被再读出来。
+	// 正常路径下这个分支不该被走到(URL 生成层已 override 成原图链接),它
+	// 只服务于已经发出去的旧 /image/ 链接。
 	if req.BypassTransform {
 		s.serveBypassedOriginalAsset(c, req, ctx)
 		return

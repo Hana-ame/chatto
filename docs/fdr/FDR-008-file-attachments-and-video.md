@@ -44,12 +44,25 @@
 >   视频管线整体停用。**刻意不改这个页面**：fork 从未改过 docs-website（公开文档归
 >   upstream 所有，改了就每次 merge 冲突），分歧一律记在本文件的 fork 块里。
 >
-> **边界**：只影响 room 附件。头像由 Go 用 nativewebp 编成 **lossless WebP**
-> （`assets.ProcessAvatarImageWithConfig`，与附件管线刻意不混用）；branding 与链接
-> 预览仍走**请求期** ffmpeg transform（`assets.TransformImageWithFFmpeg`，输出**有损**
-> WebP）并写 ASSET_CACHE 的 `server.*` 命名空间。注意 `TransformOptions.JPEGQuality`
-> 这个名字是上游遗留：fork 的实现把该数值映射成 libwebp 的 `-q:v`，输出是 WebP 不是
-> JPEG。
+> **边界**：只影响 room 附件。头像、branding、链接预览是另一条管线，而且头像有
+> **两态**：
+>
+> - **头像存储态**：上传时由 Go 用 `nativewebp.Encode` 编成 **lossless WebP**
+>   （chunk 标记 `VP8L`；`assets.ProcessAvatarImageWithConfig`，与附件的 AVIF 管线
+>   刻意不混用）。
+> - **服务端资产请求期**：`serveTransformedServerAsset` → `serveTransformedAssetWithParams`
+>   → `assets.TransformImageWithFFmpeg`（`-c:v libwebp -q:v N`），输出**有损 WebP**
+>   （chunk 标记 `VP8 `），并写 ASSET_CACHE 的 `server.*` 命名空间。头像请求缩放版
+>   （`/assets/server/{key}/t/{w}x{h}/{fit}`）也走这条，所以头像**上传态 lossless、
+>   缩放态 lossy**；branding 与链接预览只有请求期这一态，恒为有损。
+>
+> 注意 `TransformOptions.JPEGQuality` 这个名字是上游遗留：fork 的实现把该数值映射成
+> libwebp 的 `-q:v`，输出是 WebP 不是 JPEG。
+>
+> 【2026-09-13 实测，同一张 100x80 RGBA 合成图跑两条路径】`ProcessAvatarImage` →
+> chunk `VP8L`（1238 B）；`TransformImageWithFFmpeg(96x96, q=85)` → chunk `VP8 `（690 B）。
+> `nativewebp` 本身没有有损模式（源码恒写 `VP8L`），所以「头像也改成有损」不在这条
+> 管线的开关范围内。探针测试已删，结论以本行为准。
 >
 > **已知代价（已接受）**：动画 AVIF 可能比源 GIF 大（实测 GIF 278 KB → AVIF 333 KB）；
 > HEIC 输入无法转 AVIF，原样存为 `image/heic`，只有支持 HEIC 的浏览器能显示；前端原有的

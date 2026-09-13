@@ -55,6 +55,12 @@ max_upload_size = '25MB'
 
 # Image resize cache (optional). When enabled, resized images are cached in
 # NATS Object Store to avoid re-processing on subsequent requests.
+# 【本地改动 2026-09-12 + 2026-09-13】fork 里这个缓存**永远不会被写入**:
+# 附件与服务端资产的请求期 transform 都已取消(附件上传期出原尺寸 AVIF、服务端
+# 资产上传期缩放到上限并压成有损 WebP),http_server 唯一读写 ASSET_CACHE 的
+# 代码路径因 BypassTransform 永不执行,所以两个命名空间(attachment-stable-v2.*
+# 与 server.*)都空。保留开关是为了不打破既有配置;设 false 也不会让 fork 更省。
+# 详见 docs/architecture/runtime-state.md 的【本地改动】注释。
 [core.assets.cache]
 enabled = true
 ttl = '7d'
@@ -99,9 +105,13 @@ enabled = true
 # PATH 自动探测)。静态图 → 静态 AVIF,动画 GIF/WebP → 动画 AVIF;不存在衍生
 # 图,请求期 /assets/files/{id}/image/{w}x{h}/{fit} 直接回这份字节(响应头
 # X-Cache: BYPASS)。设 false 则原样存储。只影响 room 附件;头像/branding/
-# 链接预览始终是 Go 直出的 WebP。【踩坑】ffmpeg 缺失时上传不报错,只是存
-# 原字节(best-effort),日志里有告警。
+# 链接预览走自己的管线(上传期压成有损 WebP,见下方 2026-09-13 注释)。【踩坑】
+# ffmpeg 缺失时上传不报错,只是存原字节(best-effort),日志里有告警。
 # avif_enabled = true   # re-encode room attachment images to original-size AVIF (default: true; set false to store original bytes)
+# 【本地改动 2026-09-13】服务端资产(头像/logo/banner/链接预览)不在本开关范围内:
+# 四条路径共用 assets.processServerAssetImage,上传期缩放到各自上限后用 ffmpeg
+# libwebp 压成**有损 WebP**(-q:v 85),ffmpeg 缺失或失败时回退 Go + nativewebp
+# 无损 WebP;多帧输入(动画 GIF/WebP/PNG)只取第一帧。
 
 # LiveKit voice calls. For local development, run `mise dev-livekit`.
 [livekit]

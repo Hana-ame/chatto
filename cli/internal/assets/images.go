@@ -332,6 +332,37 @@ func ProcessLinkPreviewImageWithConfig(input io.Reader, cfg Config) (io.Reader, 
 	return processServerAssetImage(input, MaxLinkPreviewWidth, MaxLinkPreviewHeight, cfg)
 }
 
+// isMultiFrameImage 报告图片字节是否为多帧动画。覆盖动画 GIF、动画 WebP
+// (VP8X 容器 + ANMF 帧块)、动画 PNG(带 acTL 块)。
+//
+// 【本地改动 2026-09-13】服务端资产要压成单帧,而 ISO-BMFF 家族的动画
+// 判断由 avif.go 的 IsAnimatedImageBytes 负责(avis brand)。这里不直接重用
+// IsAnimatedImageBytes 是因为它是导出的、且还被附件路径的 EncodeAVIF 使用
+// 来决定“保留动画”,附件侧语义相反(附件要留动画),加判断会污染它的契约。
+func isMultiFrameImage(data []byte) bool {
+	if IsAnimatedImageBytes(data) {
+		return true
+	}
+	return isAnimatedPNGBytes(data)
+}
+
+// isAnimatedPNGBytes 报告 PNG 是否带 acTL 块(动画 PNG)。按 chunk 序列走完
+// 前 8 字节签名后的每个 chunk,而不是 bytes.Contains——chunk 名可能偶然出现在
+// IDAT 数据里。
+func isAnimatedPNGBytes(data []byte) bool {
+	if len(data) < 16 || string(data[0:8]) != "\x89PNG\r\n\x1a\n" {
+		return false
+	}
+	for off := 8; off+8 <= len(data); {
+		size := int(binary.BigEndian.Uint32(data[off : off+4]))
+		if string(data[off+4:off+8]) == "acTL" {
+			return true
+		}
+		off += 8 + size + 4 // chunk 长 + 类型 + CRC
+	}
+	return false
+}
+
 // processServerAssetImage 是头像、logo、banner、链接预览四条服务端资产上传路径
 // 共用的实现:读出全部字节(限 cfg.MaxUploadSize)→ 上传期缩放到上限 →
 // 编码为**有损 WebP**(VP8)。
@@ -359,7 +390,19 @@ func processServerAssetImage(input io.Reader, maxWidth, maxHeight int, cfg Confi
 		return nil, fmt.Errorf("image exceeds maximum upload size")
 	}
 
-	if IsAnimatedGIF(data) {
+	// 【本地改动 2026-09-13】服务端资产必须是**单帧**:头像/logo/banner/链接预览
+	// 是身份标识不是媒体内容,取第一帧即可。多帧输入走 Go 路径(Go 解码器对动画
+	// GIF/WebP/APNG 都只解第一帧),而不是让 ffmpeg 把动画输入编成动画 WebP
+	// (VP8X + ANMF 多帧块,可能比源图还大)。
+	//
+	// 【踩坑】只拦动画 GIF 不够。2026-09-13 用本地 ffmpeg 与 cloudcone 7.0.2-static
+	// 各跑了一遍:动画 GIF → ffmpeg `-c:v libwebp -f webp` 输出**动画 WebP**(ANMF
+	// 块在);动画 PNG 同样输出动画 WebP;动画 WebP 则 ffmpeg 解码直接失败
+	// ("Decode error rate 1 exceeds maximum 0.666667" / libwebp -22,两个环境一致),
+	// 靠这个失败才回退到 Go 路径——这是歪打正着,ffmpeg 版本一变就漏,所以显式拦。
+	// 只有 ISO-BMFF 家族(AVIF/HEIC)例外:Go 解码器不认(image: unknown format),
+	// 只能走 ffmpeg,实测 ffmpeg 对它们输出单帧,无回归。
+	if isMultiFrameImage(data) && !isHEIFFamilyBytes(data) {
 		return processServerAssetImageGo(data, maxWidth, maxHeight, cfg)
 	}
 

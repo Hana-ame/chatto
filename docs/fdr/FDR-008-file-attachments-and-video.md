@@ -36,6 +36,14 @@
 >   （`attachment-stable-v2.*` 与 `server.*`）在 fork 里都永不写入。
 >   副作用：头像/logo/banner 现在能收 ISO-BMFF 输入（AVIF/HEIC）了——Go 解码器不认
 >   这些格式，旧路径会直接 `image: unknown format` 拒上传，改走 ffmpeg 后顺带修掉。
+> - **服务端资产永远是单帧**：多帧输入（动画 GIF/WebP/PNG）只取第一帧，不走 ffmpeg。
+>   【2026-09-13 实测，本地 ffmpeg 与 cloudcone 7.0.2-static 一致】动画 GIF 与动画
+>   PNG 经 ffmpeg `-c:v libwebp -f webp` 会输出**动画 WebP**（VP8X + ANMF 多帧块）；
+>   动画 WebP 则 ffmpeg 解码直接失败（"Decode error rate 1 exceeds maximum
+>   0.666667" / libwebp -22），靠这个失败才回退到 Go 路径——歪打正着，所以
+>   `processServerAssetImage` 里显式拦（`isMultiFrameImage`），不依赖 ffmpeg 失败。
+>   例外是 ISO-BMFF（动画 AVIF/HEIC）：Go 解不了只能走 ffmpeg，实测 ffmpeg 对它们
+>   输出单帧，无回归。测试见 assets 包的 server_asset_test.go。
 >
 > **改到的 upstream 正文**
 >
@@ -55,6 +63,11 @@
 >   附件既不发 WebP 变体也不缓存。第 66 行的 "queues durable derivative work"：fork 的
 >   视频管线整体停用。**刻意不改这个页面**：fork 从未改过 docs-website（公开文档归
 >   upstream 所有，改了就每次 merge 冲突），分歧一律记在本文件的 fork 块里。
+> - `docs/adr/ADR-039-service-worker-virtual-asset-urls.md` Consequences 里
+>   "Server-side image resize caching remains available for expensive transforms"：fork
+>   里该缓存两个命名空间都不写入。**刻意不改 ADR**：ADR 是决策的历史记录，fork 从未
+>   改过上游 ADR，改了就每次 merge 冲突；分歧记在这里，实际现状看
+>   `docs/architecture/runtime-state.md` 的【本地改动】注释。
 >
 > **边界（2026-09-13 后）**：room 附件与服务端资产同属「上传期编码一次、请求期零
 > 编码」这条策略，但产物不同——附件是原尺寸 AVIF，服务端资产是缩放到上限的有损

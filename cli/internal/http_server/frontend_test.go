@@ -20,7 +20,6 @@ import (
 	"hmans.de/chatto/internal/core"
 	evtv1 "hmans.de/chatto/internal/pb/chatto/core/evt/v1"
 	"hmans.de/chatto/internal/testutil"
-	"hmans.de/chatto/pkg/signedurl"
 )
 
 func TestExtractImmutableETag(t *testing.T) {
@@ -615,17 +614,24 @@ func TestBrowserIconRoutes(t *testing.T) {
 		return server
 	}
 
-	t.Run("redirects to distinct same-origin server logo transforms", func(t *testing.T) {
+	t.Run("redirects to the original server logo", func(t *testing.T) {
 		chattoCore := setupFrontendTestCoreWithLogo(t)
 		chattoCore.AssetBaseURL = "https://assets.example.com"
 		server := newServer(t, chattoCore)
 
-		expectedSizes := map[string]int{
-			"/favicon":          32,
-			"/apple-touch-icon": 180,
-		}
+		// 【本地改动 2026-09-13】fork 取消服务端资产衍生图:logo/头像/banner/链接
+		// 预览在上传时就缩放到上限并压缩(assets.processServerAssetImage),请求期
+		// 不再缩放,所以 favicon(32) 与 apple-touch-icon(180) 请求的尺寸被丢弃,
+		// 两个路由都 307 到**同一条**原档 URL。上游原本是两个不同尺寸的
+		// transform,这里改为断言它们相等——浏览器自己降采样 512x512 的 logo。
+		//
+		// 发现背景:上游断言 Location 以 /assets/server/logo-asset/t/ 开头并用
+		// ParseSignedTransformPath 解出尺寸;URL 生成层 override 成原档链接后
+		// 签名段不存在,原断言必然红。
+		// 回归提示:若 fork 将来恢复请求期缩放,必须把本断言改回「两个不同尺寸
+		// 的签名 transform」。
 		locations := make(map[string]string)
-		for iconPath, expectedSize := range expectedSizes {
+		for _, iconPath := range []string{"/favicon", "/apple-touch-icon"} {
 			req := httptest.NewRequest(http.MethodGet, iconPath, nil)
 			w := httptest.NewRecorder()
 			server.router.ServeHTTP(w, req)
@@ -633,39 +639,13 @@ func TestBrowserIconRoutes(t *testing.T) {
 			assert.Equal(t, http.StatusTemporaryRedirect, w.Code)
 			assert.Equal(t, cacheControlNoCache, w.Header().Get("Cache-Control"))
 			location := w.Header().Get("Location")
-			assert.True(t, strings.HasPrefix(location, "/assets/server/logo-asset/t/"))
+			assert.True(t, strings.HasPrefix(location, "/assets/server/logo-asset"), "location = %q", location)
 			assert.NotContains(t, location, "assets.example.com")
-
-			signedPath := strings.TrimPrefix(location, "/assets/server/logo-asset/t/")
-			// 【本地改动 2026-08-30】fork 的 server asset transform URL 形如
-			// /assets/server/{key}/t/{params}.{sig}/{fn.ext}:文件名尾段排在签名**之后**
-			// (见 cli/internal/core/attachments.go 的 GetTransformedServerAssetURLWithFilename)。
-			// 直接整段喂给 ParseSignedTransformPath 会因 SplitN(".", 2) 把
-			// "{sig}/{fn.ext}" 整体当作签名去比,必然报 invalid signature。这里先剥掉尾段。
-			// 用 LastIndex 而非固定后缀匹配,使本断言在尾段存在与不存在两种形态下都成立,
-			// 便于将来上游回归无尾段形态时不用改测试。
-			// 发现背景:2026-08-30 ci/deploy 首次跑 mise test-cli 时由
-			// redirects_to_distinct_same-origin_server_logo_transforms 暴露;此前 fork 分支
-			// 不在 ci.yml 的 push 白名单里,该红灯从未进过 CI。
-			// 回归提示:若 fork 放弃 {fn.ext} 尾段,本处剥段逻辑自动退化为原语义,无需改动。
-			if idx := strings.LastIndex(signedPath, "/"); idx >= 0 {
-				signedPath = signedPath[:idx]
-			}
-			params, err := signedurl.ParseSignedTransformPath(
-				"test-signing-secret",
-				core.ServerAssetSignResource,
-				"logo-asset",
-				signedPath,
-			)
-			if err != nil {
-				t.Fatalf("parse transform for %s: %v", iconPath, err)
-			}
-			assert.Equal(t, expectedSize, params.Width)
-			assert.Equal(t, expectedSize, params.Height)
-			assert.Equal(t, "cover", params.Fit)
+			assert.NotContains(t, location, "/t/", "fork issues no server asset transform URL: %q", location)
 			locations[iconPath] = location
 		}
-		assert.NotEqual(t, locations["/favicon"], locations["/apple-touch-icon"])
+		assert.Equal(t, locations["/apple-touch-icon"], locations["/favicon"],
+			"fork discards the requested icon size, so both routes point at the original logo")
 	})
 
 	t.Run("redirects to embedded icons when no server logo exists", func(t *testing.T) {
@@ -725,7 +705,11 @@ func TestServePWAWebManifestUsesServerLogoWhenAvailable(t *testing.T) {
 	assert.Equal(t, "Engineering", manifest["name"])
 	assert.Equal(t, "Engineering", manifest["short_name"])
 	icons := manifest["icons"].([]any)
-	assert.True(t, strings.HasPrefix(icons[0].(map[string]any)["src"].(string), "/assets/server/logo-asset/t/"))
+	// 【本地改动 2026-09-13】fork 取消服务端资产衍生图:manifest 的 192x192 与
+	// 512x512 图标 URL 都指向同一条原档 logo 链接(尺寸被丢弃,不含 /t/),
+	// 浏览器自己降采样。上游原本是两个不同尺寸的签名 transform。
+	assert.True(t, strings.HasPrefix(icons[0].(map[string]any)["src"].(string), "/assets/server/logo-asset"))
+	assert.NotContains(t, icons[0].(map[string]any)["src"], "/t/", "fork issues no server asset transform URL")
 	assert.NotContains(t, icons[0].(map[string]any)["src"], "assets.example.com")
 	assert.Equal(t, "192x192", icons[0].(map[string]any)["sizes"])
 	assert.Equal(t, "image/png", icons[0].(map[string]any)["type"])

@@ -40,7 +40,7 @@ Related decisions: [ADR-044](../adr/ADR-044-connectrpc-service-conventions.md),
 | Trusted NATS services | `svc.chatto.>` and `svc.chatto_ext.>` | Versioned protobuf request/reply through NATS micro services | NATS account permissions; extension providers receive only their configured service and upstream Core subjects |
 | Reflection | `/api/connect/grpc.reflection.v1*` and `v1alpha*` | Public service descriptors | Public; restricted resolver excludes internal `chatto.core.*` types |
 
-<!-- 【本地改动 2026-09-12】fork 的附件接口面比上面这行描述的小一层。
+<!-- 【本地改动 2026-09-12 + 2026-09-13】fork 的附件接口面比上面这行描述的小一层。
 
      1. **URL 生成层（主）**：`MediaModel.Get*TransformedAttachmentAssetURL` 直接
         忽略 width/height/fit，回原图链接（公开版 `/assets/files/{id}/{fn.ext}`，
@@ -53,9 +53,26 @@ Related decisions: [ADR-044](../adr/ADR-044-connectrpc-service-conventions.md),
         ASSET_CACHE。实现见 cli/internal/http_server/assets.go 的
         transformRequest.BypassTransform 与 serveBypassedOriginalAsset。
 
+     【2026-09-13】服务端资产（头像/logo/banner/链接预览）的接口面也缩到了同一
+     层：
+
+     1. **URL 生成层**：`MediaModel.GetTransformedServerAssetURLWithFilename`
+        忽略 width/height/fit，override 成原档链接
+        `/assets/server/{key}[/{fn.ext}]`，不再生成带 HMAC 签名的 `/t/{sig}` 路径。
+        调用点是 core 的 serverAssetURL 与头像 URL、前端 /favicon 与
+        /apple-touch-icon 重定向（两个尺寸现在指向同一条原档链接）、以及 PWA
+        manifest 的 192x512 图标。
+     2. **上传期压缩**：四条服务端资产路径（assets 的
+        ProcessAvatarImageWithConfig / ProcessLogoImageWithConfig /
+        ProcessBannerImageWithConfig / ProcessLinkPreviewImageWithConfig）共用
+        processServerAssetImage：缩放到各自上限后用 ffmpeg libwebp 压成**有损
+        WebP**（-q:v 85）。所以请求期没有第二份更小的字节可给，浏览器自己降采样。
+     3. **HTTP 层**：旧的 `/assets/server/{key}/t/{sig}` 链接同样走 BYPASS，
+        返回存储的原字节 + `X-Cache: BYPASS`。
+
      所以上面这行的 "image transform variants" 在 fork 里只是遗留兼容面，不是
-     功能面。服务端资产（头像/logo/banner/链接预览）不受影响：仍然在请求期缩放
-     并写 ASSET_CACHE 的 `server.*` 命名空间。
+     功能面；ASSET_CACHE 的两个命名空间（attachment-stable-v2.* 与 server.*）
+     都永远不被写入。
 
      背景与取舍见 cli/internal/core/attachments.go 的 override 注释和
      docs/fdr/FDR-008 的 fork 说明块。合并 upstream 时这两层都要人工恢复。 -->

@@ -1021,16 +1021,22 @@ func (c *MediaModel) GetTransformedServerAssetURL(key string, width, height int,
 // 尾段：浏览器按扩展名嗅探类型、CDN 缓存键更可读。签名仍只覆盖 {key} 与
 // transform 参数，文件名段纯粹是装饰，serving 端会剥掉它再验证。
 // filename 为空时保持旧的无尾段形态（推导不出安全扩展名的兜底）。
+//
+// 【本地改动 2026-09-13 覆盖上方签名语义】fork 的「无请求期编码」策略已从
+// room 附件扩展到**服务端资产**：头像/logo/banner/链接预览在上传时就缩放到
+// 上限并压缩成有损 WebP（assets.processServerAssetImage），请求期没有第二份
+// 更小的字节，拼 /t/{w}x{h}/{fit} 只会让客户端去请求一份和原档等价的资源。
+// 所以这里直接忽略 width/height/fit，override 成原档 URL
+// /assets/server/{key}[/{fn.ext}]——客户端根本拿不到 /t/ 链接。
+// 函数名与签名保留，merge upstream 时调用点不炸。
 func (c *MediaModel) GetTransformedServerAssetURLWithFilename(key, filename string, width, height int, fit string) string {
-	// Generate signed transform path component using the server asset resource ID.
-	signedPath := signedurl.SignedTransformPath(c.config.Assets.SigningSecret, ServerAssetSignResource, key, width, height, fit)
-
-	path := fmt.Sprintf("/assets/server/%s/t/%s", key, signedPath)
+	_ = width // 【本地改动 2026-09-13】fork 无服务端资产衍生图，尺寸参数被忽略。
+	_ = height
+	_ = fit
+	path := fmt.Sprintf("/assets/server/%s", key)
 	if filename != "" {
 		path += "/" + url.PathEscape(filename)
 	}
-
-	// Return signed transform URL
 	return c.assetURL(path)
 }
 

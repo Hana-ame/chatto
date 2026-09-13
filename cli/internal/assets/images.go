@@ -277,63 +277,31 @@ func ProcessAvatarImage(input io.Reader) (io.Reader, error) {
 
 // ProcessAvatarImageWithConfig 从输入 reader 读图,缩放到 MaxAvatarDim 范围内
 // 并保持宽高比,编码为 WebP。输入超过 cfg.MaxUploadSize 时报错。
-// 【本地改动说明 32e1f566 + 2026-09-02 + 2026-09-12】此路径刻意与存储
-// 重编码无关:room 附件图片上传时由 ffmpeg 重编码为原尺寸 AVIF(见
-// attachment_image.go 的 PrepareAttachmentImage),头像直接由 Go 处理为
-// WebP,绝不混用。
+// 【本地改动 32e1f566 + 2026-09-02 + 2026-09-13】此路径刻意与 room 附件的
+// AVIF 管线分开(附件原尺寸存储,服务端资产缩放到上限后存储),但同属
+// 「上传期编码一次」这条策略:头像在上传时就压缩好,请求期不再缩放重编码。
 func ProcessAvatarImageWithConfig(input io.Reader, cfg Config) (io.Reader, error) {
-	// Limit input size to prevent memory exhaustion
-	img, err := decodeBoundedImage(input, cfg)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode image: %w", err)
-	}
-
-	// Resize if necessary
-	resized := resizeToFit(img, MaxAvatarDim, MaxAvatarDim)
-
-	// Encode to WebP (lossless)
-	var buf bytes.Buffer
-	if err := nativewebp.Encode(&buf, resized, nil); err != nil {
-		return nil, fmt.Errorf("failed to encode to webp: %w", err)
-	}
-
-	return bytes.NewReader(buf.Bytes()), nil
+	return processServerAssetImage(input, MaxAvatarDim, MaxAvatarDim, cfg)
 }
 
 // ProcessLogoImage reads an image from the input reader, resizes it to fit
-// within MaxLogoDim x MaxLogoDim while maintaining aspect ratio, and
-// encodes it as WebP. Uses default config values.
+// within MaxLogoDim x MaxLogoDim while maintaining aspect ratio, and encodes
+// it as WebP. Returns an error if the input exceeds cfg.MaxUploadSize.
 func ProcessLogoImage(input io.Reader) (io.Reader, error) {
 	return ProcessLogoImageWithConfig(input, DefaultConfig())
 }
 
 // ProcessLogoImageWithConfig 从输入 reader 读图,缩放到 MaxLogoDim 范围内
 // 并保持宽高比,编码为 WebP。输入超过 cfg.MaxUploadSize 时报错。
-// 【本地改动说明 32e1f566 + 2026-09-02 + 2026-09-12】此路径刻意与存储
-// 重编码无关:room 附件图片上传时由 ffmpeg 重编码为原尺寸 AVIF,branding
-// logo 直接由 Go 处理为 WebP,绝不混用。
+// 【本地改动 32e1f566 + 2026-09-02 + 2026-09-13】同头像:上传期压缩一次,
+// 请求期不再缩放重编码。
 func ProcessLogoImageWithConfig(input io.Reader, cfg Config) (io.Reader, error) {
-	// Limit input size to prevent memory exhaustion
-	img, err := decodeBoundedImage(input, cfg)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode image: %w", err)
-	}
-
-	// Resize if necessary
-	resized := resizeToFit(img, MaxLogoDim, MaxLogoDim)
-
-	// Encode to WebP (lossless)
-	var buf bytes.Buffer
-	if err := nativewebp.Encode(&buf, resized, nil); err != nil {
-		return nil, fmt.Errorf("failed to encode to webp: %w", err)
-	}
-
-	return bytes.NewReader(buf.Bytes()), nil
+	return processServerAssetImage(input, MaxLogoDim, MaxLogoDim, cfg)
 }
 
 // ProcessBannerImage reads an image from the input reader, resizes it to fit
 // within MaxBannerWidth x MaxBannerHeight while maintaining aspect ratio, and
-// encodes it as WebP. Uses default config values.
+// encodes it as WebP. Returns an error if the input exceeds cfg.MaxUploadSize.
 func ProcessBannerImage(input io.Reader) (io.Reader, error) {
 	return ProcessBannerImageWithConfig(input, DefaultConfig())
 }
@@ -341,23 +309,10 @@ func ProcessBannerImage(input io.Reader) (io.Reader, error) {
 // ProcessBannerImageWithConfig reads an image from the input reader, resizes it to fit
 // within MaxBannerWidth x MaxBannerHeight while maintaining aspect ratio, and
 // encodes it as WebP. Returns an error if the input exceeds cfg.MaxUploadSize.
+// 【本地改动 2026-09-13】上传期压缩一次,请求期不再缩放重编码(见
+// processServerAssetImage 的说明)。
 func ProcessBannerImageWithConfig(input io.Reader, cfg Config) (io.Reader, error) {
-	// Limit input size to prevent memory exhaustion
-	img, err := decodeBoundedImage(input, cfg)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode image: %w", err)
-	}
-
-	// Resize if necessary
-	resized := resizeToFit(img, MaxBannerWidth, MaxBannerHeight)
-
-	// Encode to WebP (lossless)
-	var buf bytes.Buffer
-	if err := nativewebp.Encode(&buf, resized, nil); err != nil {
-		return nil, fmt.Errorf("failed to encode to webp: %w", err)
-	}
-
-	return bytes.NewReader(buf.Bytes()), nil
+	return processServerAssetImage(input, MaxBannerWidth, MaxBannerHeight, cfg)
 }
 
 // MaxLinkPreviewWidth is the maximum width for link preview OG images.
@@ -370,20 +325,66 @@ const MaxLinkPreviewHeight = 630
 // ProcessLinkPreviewImageWithConfig 从输入 reader 读图,缩放到
 // MaxLinkPreviewWidth x MaxLinkPreviewHeight 范围内并保持宽高比,编码为
 // WebP。输入超过 cfg.MaxUploadSize 时报错。
-// 【本地改动说明 32e1f566 + 2026-09-02 + 2026-09-12】此路径刻意与存储
-// 重编码无关:room 附件图片上传时由 ffmpeg 重编码为原尺寸 AVIF,链接预览
-// 图直接由 Go 处理为 WebP,绝不混用。
+// 【本地改动说明 32e1f566 + 2026-09-02 + 2026-09-13】此路径刻意与 room 附件的
+// AVIF 管线分开(附件原尺寸存储),但同属「上传期编码一次」这条策略:链接预览
+// 图在抓取时就压缩好,请求期不再缩放重编码。
 func ProcessLinkPreviewImageWithConfig(input io.Reader, cfg Config) (io.Reader, error) {
-	// Limit input size to prevent memory exhaustion
-	img, err := decodeBoundedImage(input, cfg)
+	return processServerAssetImage(input, MaxLinkPreviewWidth, MaxLinkPreviewHeight, cfg)
+}
+
+// processServerAssetImage 是头像、logo、banner、链接预览四条服务端资产上传路径
+// 共用的实现:读出全部字节(限 cfg.MaxUploadSize)→ 上传期缩放到上限 →
+// 编码为**有损 WebP**(VP8)。
+//
+// 【本地改动 2026-09-13】此前这四条路径都是 Go 解码 + resizeToFit +
+// nativewebp.Encode,而 nativewebp v1.3.0 只写 VP8L 无损块(writer.go 里硬编码
+// buf.Write([]byte("VP8L")),Options 只有 UseExtendedFormat/CompressionLevel、
+// 没有质量档),所以头像/logo/banner 存的是接近无损的大字节。现在改走 ffmpeg
+// libwebp 有损编码(-q:v = webpStorageQuality),和 room 附件「上传期编码一次」
+// 的策略对齐:存一份、发一份,请求期不再缩放重编码。
+//
+// 【副作用,顺带修的坑】Go 侧解码器只有 jpeg/png/gif + nativewebp 注册的 webp,
+// ISO-BMFF 家族(AVIF/HEIC)输入会直接 image: unknown format——附件管线此前踩过
+// 这个坑。改走 ffmpeg 后这些输入在服务端资产侧也能正常上传。
+//
+// 【回退】ffmpeg 不可用或编码失败时退回旧的 Go + nativewebp 无损路径,保证没有
+// ffmpeg 的部署行为不变(只是字节更大)。动画 GIF 永远走 Go 路径:image.Decode 只
+// 取第一帧,避免把动画 logo 存成多 MB 的动画 WebP。
+func processServerAssetImage(input io.Reader, maxWidth, maxHeight int, cfg Config) (io.Reader, error) {
+	data, err := io.ReadAll(io.LimitReader(input, cfg.MaxUploadSize+1))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read image: %w", err)
+	}
+	if int64(len(data)) > cfg.MaxUploadSize {
+		return nil, fmt.Errorf("image exceeds maximum upload size")
+	}
+
+	if IsAnimatedGIF(data) {
+		return processServerAssetImageGo(data, maxWidth, maxHeight, cfg)
+	}
+
+	if result, err := TransformImageWithFFmpeg(data, maxWidth, maxHeight, FitContain, TransformOptions{
+		JPEGQuality: webpStorageQuality,
+	}, cfg.FFmpegPath); err == nil {
+		if encoded, rerr := io.ReadAll(result.Reader); rerr == nil && len(encoded) > 0 {
+			return bytes.NewReader(encoded), nil
+		}
+	}
+
+	return processServerAssetImageGo(data, maxWidth, maxHeight, cfg)
+}
+
+// processServerAssetImageGo 是 processServerAssetImage 的回退路径:Go 解码 +
+// resizeToFit + nativewebp 无损 WebP(VP8L)。这是 2026-09-13 之前的原始行为,
+// 保留它是为了让没有 ffmpeg 的部署不回归。
+func processServerAssetImageGo(data []byte, maxWidth, maxHeight int, cfg Config) (io.Reader, error) {
+	img, err := decodeBoundedImage(bytes.NewReader(data), cfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode image: %w", err)
 	}
 
-	// Resize if necessary
-	resized := resizeToFit(img, MaxLinkPreviewWidth, MaxLinkPreviewHeight)
+	resized := resizeToFit(img, maxWidth, maxHeight)
 
-	// Encode to WebP (lossless)
 	var buf bytes.Buffer
 	if err := nativewebp.Encode(&buf, resized, nil); err != nil {
 		return nil, fmt.Errorf("failed to encode to webp: %w", err)
@@ -392,7 +393,6 @@ func ProcessLinkPreviewImageWithConfig(input io.Reader, cfg Config) (io.Reader, 
 	return bytes.NewReader(buf.Bytes()), nil
 }
 
-// AttachmentImageResult holds the processed attachment image data.
 type AttachmentImageResult struct {
 	// Original contains the original image bytes (unchanged)
 	Original []byte

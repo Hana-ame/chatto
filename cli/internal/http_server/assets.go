@@ -121,8 +121,10 @@ type transformRequest struct {
 	// URL,客户端根本不会再请求 /image/ 路径。这里保留 bypass 是兼底——已经
 	// 发出去的旧 /image/ 链接(旧客户端缓存、CDN 缓存、被人粘贴到别处的
 	// URL)仍然返回原图字节,而不是 500 或 404。
-	// 边界:只给附件的 /image/{w}x{h}/{fit} 两个调用点设置(服务端资产
-	// 的 /t/{sig} 路径不设,否则会把头像、logo、banner 全变原尺寸)。
+	// 【2026-09-13】策略扩展到服务端资产:头像/logo/banner/链接预览也改成上传期
+	// 就缩放到上限并压缩(见 core 的 GetTransformedServerAssetURLWithFilename
+	// override 注释),请求期不再缩放,所以这里也设 BypassTransform——已发出去的
+	// 旧 /t/{sig} 链接返回存储的原档字节。
 	BypassTransform bool
 }
 
@@ -988,6 +990,11 @@ func (s *HTTPServer) serveTransformedServerAsset(c *gin.Context, key, signedPath
 		SignedPath:  signedPath,
 		CachePrefix: core.ServerAssetSignResource,
 		AssetID:     key,
+		// 【本地改动 2026-09-13】服务端资产也取消请求期缩放:URL 生成层已把
+		// /t/{sig} override 成原档 URL,这个分支只服务于已发出去的旧链接
+		// (旧客户端缓存、CDN、被粘贴到别处的 URL),返回存储的原字节 +
+		// X-Cache: BYPASS,不读也不写 server.* 缩放缓存。
+		BypassTransform: true,
 		FetchAsset: func(ctx context.Context) (io.Reader, string, error) {
 			reader, info, err := s.core.GetPublicServerAsset(ctx, location)
 			if err != nil {

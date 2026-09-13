@@ -38,6 +38,7 @@ import (
 	evtv1 "hmans.de/chatto/internal/pb/chatto/core/evt/v1"
 	"hmans.de/chatto/internal/testutil"
 	"hmans.de/chatto/internal/testutil/fakes3"
+	"hmans.de/chatto/pkg/signedurl"
 )
 
 // ============================================================================
@@ -1427,8 +1428,14 @@ func TestAsset_ServerAsset_FilenameTailURLs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to get transformed avatar URL: %v", err)
 	}
-	if !strings.Contains(transformedURL, "/t/") || !strings.HasSuffix(transformedURL, ".webp") {
-		t.Fatalf("Transformed avatar URL = %q, want signed transform path with .webp tail", transformedURL)
+	// 【本地改动 2026-09-13】fork 取消服务端资产衍生图:头像上传时已缩放到
+	// MaxAvatarDim 并压成有损 WebP,尺寸参数被丢弃,「transform」URL 就是原档
+	// URL(仍带 {fn.ext} 尾段,但不含 /t/)。
+	if transformedURL != originalURL {
+		t.Fatalf("Transformed avatar URL = %q, want the original URL %q (fork issues no server asset transform URL)", transformedURL, originalURL)
+	}
+	if strings.Contains(transformedURL, "/t/") {
+		t.Fatalf("Transformed avatar URL = %q, must not carry a transform path", transformedURL)
 	}
 	transformedResp, err := env.client.Get(env.server.URL + transformedURL)
 	if err != nil {
@@ -1554,7 +1561,7 @@ func TestAsset_HeadRequestsAreRoutedLikeGet(t *testing.T) {
 	}
 }
 
-func TestAsset_ServerAssetTransformKeepsDefaultQuality(t *testing.T) {
+func TestAsset_ServerAssetTransformURLReturnsOriginalWithoutCache(t *testing.T) {
 	env := setupAssetTestServer(t)
 
 	imageData := createAssetTestPNG(t, 400, 300)
@@ -1570,35 +1577,81 @@ func TestAsset_ServerAssetTransformKeepsDefaultQuality(t *testing.T) {
 		t.Fatalf("new NATS branding key = %q, want public namespace", assetPath)
 	}
 
+	// 【本地改动 2026-09-13】服务端资产的「无请求期编码」:banner/logo/头像/链接
+	// 预览在上传时就已经缩放到上限并压缩成有损 WebP(assets.processServerAssetImage),
+	// 请求期没有第二份更小的字节。URL 生成层把 /t/{w}x{h}/{fit} override 成原档
+	// URL,尺寸参数被丢弃,客户端根本拿不到 /t/ 链接。
 	transformURL := env.core.GetTransformedServerAssetURL(assetPath, 200, 200, "contain")
-	resp, err := env.client.Get(env.server.URL + transformURL)
-	if err != nil {
-		t.Fatalf("Failed to get transformed server asset: %v", err)
+	if strings.Contains(transformURL, "/t/") {
+		t.Fatalf("GetTransformedServerAssetURL = %q, fork issues no server asset transform URL", transformURL)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("Expected 200 OK, got %d", resp.StatusCode)
-	}
-	got, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("Failed to read transformed server asset: %v", err)
+	if !strings.HasPrefix(transformURL, "/assets/server/"+assetPath) {
+		t.Fatalf("GetTransformedServerAssetURL = %q, want the original server asset URL", transformURL)
 	}
 
-	// 【本地改动 2026-08-16】期望值走服务器同一条衍生图路径(见
-	// TestAsset_TransformedAttachmentUsesCompressedProfileAndVersionedCache
-	// 的同类注释):有 ffmpeg 时服务器输出有损 WebP,期望必须一致。
-	wantResult, err := assets.TransformImageWithFFmpeg(imageData, 200, 200, assets.FitContain, assets.TransformOptions{
-		JPEGQuality: assets.DefaultTransformJPEGQuality,
-	}, env.core.AssetsConfig().FFmpegPath)
+	transformResp, err := env.client.Get(env.server.URL + transformURL)
 	if err != nil {
-		t.Fatalf("Failed to build expected server transform: %v", err)
+		t.Fatalf("Failed to get server asset: %v", err)
 	}
-	want, err := io.ReadAll(wantResult.Reader)
+	defer transformResp.Body.Close()
+	if transformResp.StatusCode != http.StatusOK {
+		t.Fatalf("Expected 200 OK, got %d", transformResp.StatusCode)
+	}
+	transformBytes, err := io.ReadAll(transformResp.Body)
 	if err != nil {
-		t.Fatalf("Failed to read expected server transform: %v", err)
+		t.Fatalf("Failed to read server asset: %v", err)
 	}
-	if !bytes.Equal(got, want) {
-		t.Fatal("server asset transform did not retain the default image quality")
+
+	// 存储的那一份必须已经是上传期编码的结果:有损 WebP(VP8 块)。
+	// VP8L = 无损(旧的 nativewebp 路径),VP8 = 有损(ffmpeg libwebp -q:v)。
+	if len(transformBytes) < 16 || string(transformBytes[8:12]) != "WEBP" {
+		t.Fatalf("stored server asset is not a WebP container: %q", transformBytes[:min(12, len(transformBytes))])
+	}
+	if chunk := string(transformBytes[12:16]); chunk != "VP8 " {
+		t.Fatalf("stored server asset WebP chunk = %q, want lossy VP8 (not VP8L) = compressed at upload", chunk)
+	}
+
+	// 原档路由与「transform」路由返回同一份字节。
+	originalResp, err := env.client.Get(env.server.URL + "/assets/server/" + assetPath)
+	if err != nil {
+		t.Fatalf("Failed to get original server asset: %v", err)
+	}
+	defer originalResp.Body.Close()
+	originalBytes, err := io.ReadAll(originalResp.Body)
+	if err != nil {
+		t.Fatalf("Failed to read original server asset: %v", err)
+	}
+	if !bytes.Equal(transformBytes, originalBytes) {
+		t.Fatalf("transform URL served %d bytes, original route served %d, want identical stored bytes",
+			len(transformBytes), len(originalBytes))
+	}
+
+	// 已经发出去的旧 /t/{sig} 链接仍然可用(BYPASS):返回存储的原字节,不缩放、
+	// 不读写 server.* 缩放缓存。
+	legacyPath := "/assets/server/" + assetPath + "/t/" + signedurl.SignedTransformPath(
+		"test-signing-secret-32-bytes-!!", core.ServerAssetSignResource, assetPath, 200, 200, "contain")
+	legacyResp, err := env.client.Get(env.server.URL + legacyPath)
+	if err != nil {
+		t.Fatalf("Failed to get legacy server asset transform URL: %v", err)
+	}
+	defer legacyResp.Body.Close()
+	if legacyResp.StatusCode != http.StatusOK {
+		t.Fatalf("legacy /t/ URL status = %d, want 200", legacyResp.StatusCode)
+	}
+	legacyBytes, err := io.ReadAll(legacyResp.Body)
+	if err != nil {
+		t.Fatalf("Failed to read legacy server asset transform: %v", err)
+	}
+	if !bytes.Equal(legacyBytes, transformBytes) {
+		t.Fatalf("legacy /t/ URL served %d bytes, want the stored %d bytes", len(legacyBytes), len(transformBytes))
+	}
+	if got := legacyResp.Header.Get("X-Cache"); got != "BYPASS" {
+		t.Fatalf("legacy /t/ URL X-Cache = %q, want BYPASS", got)
+	}
+
+	cacheKey := core.ImageCacheKey(core.ServerAssetSignResource, assetPath, 200, 200, "contain")
+	if cached, err := env.core.GetCachedResize(env.ctx, cacheKey); err == nil && cached != nil {
+		t.Fatalf("server asset resize cache holds %d bytes for key %q, want empty", len(cached), cacheKey)
 	}
 }
 

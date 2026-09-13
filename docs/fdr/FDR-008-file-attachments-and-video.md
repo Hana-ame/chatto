@@ -3,7 +3,7 @@
 **Status:** Active
 **Last reviewed:** 2026-08-25
 
-> **【本地改动 32e1f566 + 2026-09-02 + 2026-09-12】（room 附件图片存储与衍生图）**
+> **【本地改动 32e1f566 + 2026-09-02 + 2026-09-12 + 2026-09-13】（room 附件图片存储、服务端资产编码与衍生图）**
 > 本文件属 upstream 所有；下列是 fork 独有的文字改动，合并 upstream 时会被上游
 > 版本覆盖，需要人工恢复（正文各处以 `【本地改动 ...】` HTML 注释就地标记）。
 >
@@ -24,6 +24,18 @@
 >   `AssetProcessingStartedEvent`，durable worker 空转。视频原样存、原样发；动画
 >   GIF 也不再生成 MP4，走图片管线出动画 AVIF。
 > - **前端不再编码**：`prepareFiles` 原样透传文件字节（`heic2any` 已移除）。
+> - **2026-09-13 扩展到服务端资产**：头像/logo/banner/链接预览四条路径共用
+>   `assets.processServerAssetImage`，上传期就缩放到各自上限（头像 256、logo 512、
+>   banner/链接预览 1200x630）并用 ffmpeg libwebp 压成**有损 WebP**（VP8，`-q:v 85`）。
+>   ffmpeg 不可用或编码失败时回退到旧的 Go 解码 + `nativewebp` **无损** WebP（VP8L），
+>   保证没有 ffmpeg 的部署不回归；动画 GIF 永远走无损路径（`image.Decode` 只取第一
+>   帧，避免把动画 logo 存成多 MB 的动画 WebP）。
+>   服务端资产的 `/assets/server/{key}/t/{sig}` 同样取消：URL 生成层
+>   （`GetTransformedServerAssetURLWithFilename`）忽略宽高回原档链接，HTTP 层兜底
+>   返回原字节 + `X-Cache: BYPASS`。结果：ASSET_CACHE 的两个命名空间
+>   （`attachment-stable-v2.*` 与 `server.*`）在 fork 里都永不写入。
+>   副作用：头像/logo/banner 现在能收 ISO-BMFF 输入（AVIF/HEIC）了——Go 解码器不认
+>   这些格式，旧路径会直接 `image: unknown format` 拒上传，改走 ffmpeg 后顺带修掉。
 >
 > **改到的 upstream 正文**
 >
@@ -44,25 +56,23 @@
 >   视频管线整体停用。**刻意不改这个页面**：fork 从未改过 docs-website（公开文档归
 >   upstream 所有，改了就每次 merge 冲突），分歧一律记在本文件的 fork 块里。
 >
-> **边界**：只影响 room 附件。头像、branding、链接预览是另一条管线，而且头像有
-> **两态**：
->
-> - **头像存储态**：上传时由 Go 用 `nativewebp.Encode` 编成 **lossless WebP**
->   （chunk 标记 `VP8L`；`assets.ProcessAvatarImageWithConfig`，与附件的 AVIF 管线
->   刻意不混用）。
-> - **服务端资产请求期**：`serveTransformedServerAsset` → `serveTransformedAssetWithParams`
->   → `assets.TransformImageWithFFmpeg`（`-c:v libwebp -q:v N`），输出**有损 WebP**
->   （chunk 标记 `VP8 `），并写 ASSET_CACHE 的 `server.*` 命名空间。头像请求缩放版
->   （`/assets/server/{key}/t/{w}x{h}/{fit}`）也走这条，所以头像**上传态 lossless、
->   缩放态 lossy**；branding 与链接预览只有请求期这一态，恒为有损。
+> **边界（2026-09-13 后）**：room 附件与服务端资产同属「上传期编码一次、请求期零
+> 编码」这条策略，但产物不同——附件是原尺寸 AVIF，服务端资产是缩放到上限的有损
+> WebP。两条上传路径都刻意分开的理由相同：不共用一个开关。
 >
 > 注意 `TransformOptions.JPEGQuality` 这个名字是上游遗留：fork 的实现把该数值映射成
-> libwebp 的 `-q:v`，输出是 WebP 不是 JPEG。
+> libwebp 的 `-q:v`，输出是 WebP 不是 JPEG。`assets.webpStorageQuality`（=85）现在被
+> `processServerAssetImage` 使用；同文件里 `EncodeWebP` / `WebPAvailable` /
+> `Config.WebPEnabled` 仍无生产调用方（2026-09-13 前只有 `webpStorageQuality` 在用），
+> 刻意不清理——upstream 仍在用，删掉每次 merge 都是大面积冲突。
 >
-> 【2026-09-13 实测，同一张 100x80 RGBA 合成图跑两条路径】`ProcessAvatarImage` →
-> chunk `VP8L`（1238 B）；`TransformImageWithFFmpeg(96x96, q=85)` → chunk `VP8 `（690 B）。
-> `nativewebp` 本身没有有损模式（源码恒写 `VP8L`），所以「头像也改成有损」不在这条
-> 管线的开关范围内。探针测试已删，结论以本行为准。
+> 【2026-09-13 实测，同一张 100x80 RGBA 合成图跑两条路径】旧的
+> `ProcessAvatarImage` → chunk `VP8L`（1238 B）；`TransformImageWithFFmpeg(96x96, q=85)`
+> → chunk `VP8 `（690 B）。`nativewebp` 本身没有有损模式（`writer.go` 恒写
+> `VP8L` 块，`Options` 只有 `UseExtendedFormat`/`CompressionLevel`、没有质量档），所以
+> 想让头像有损只能改路由，不是加个开关。改完后 `assets_test.go` 的
+> TestAsset_ServerAssetTransformURLReturnsOriginalWithoutCache 断言存储的 banner 字节
+> chunk 是 `VP8 `（有损），锁定这条路径没有回退到无损。探针测试已删，结论以本行为准。
 >
 > **已知代价（已接受）**：动画 AVIF 可能比源 GIF 大（实测 GIF 278 KB → AVIF 333 KB）；
 > HEIC 输入无法转 AVIF，原样存为 `image/heic`，只有支持 HEIC 的浏览器能显示；前端原有的
@@ -73,7 +83,8 @@
 > ——这条不是推测，是服务器上跑出来的。
 >
 > **历史**：2026-08-14 首次引入 AVIF 存储（`32e1f566`）；2026-09-02 改为 WebP 存储 +
-> 请求期衍生图（`218426d6`）；2026-09-12 回到 AVIF 并彻底取消衍生图。
+> 请求期衍生图（`218426d6`）；2026-09-12 回到 AVIF 并彻底取消附件衍生图；2026-09-13
+> 把「上传期编码一次、请求期零编码」扩展到服务端资产，并删掉 `heic2any`。
 
 ## Overview
 

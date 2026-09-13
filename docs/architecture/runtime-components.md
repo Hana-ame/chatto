@@ -120,14 +120,22 @@ The core model inventory is a list of stable machine-readable keys such as `conf
 | `video.Service`                  | [`service.go`](../../cli/internal/video/service.go), [`processor.go`](../../cli/internal/video/processor.go)                                                   | Synchronous video/animated-GIF processing attempts: web-compatible stereo audio normalization, HLS segment packaging and upload, animated-GIF MP4 upload, and terminal asset processing events; queue and concurrency remain owned by `video.Unit` |
 
 
-<!-- 【本地改动 2026-09-12】表里三行的 fork 行为。
+<!-- 【本地改动 2026-09-12 + 2026-09-13】表里三行的 fork 行为。
 
      - `MediaModel`：URL 构造器不再拼 `/image/{w}x{h}/{fit}` ——
        GetStableTransformedAttachmentAssetURL 与
-       GetPublicStableTransformedAttachmentAssetURL 忽略宽高直接回原图链接
+       GetPublicStableTransformedAttachmentAssetURL 忽略宽高直接回原图链接，
+       GetTransformedServerAssetURLWithFilename 也忽略宽高回服务端资产原档链接
        （见 core/attachments.go 的 override 注释，接口面细节见
-       docs/architecture/interfaces.md 的【本地改动】注释）。"transformed image
-       cache operations" 对**附件**已不存在，只对服务端资产生效。
+       docs/architecture/interfaces.md 的【本地改动】注释）。
+       "transformed image cache operations" 在 fork 里已不存在——附件与服务端
+       资产两个调用点都设了 BypassTransform，ASSET_CACHE 的两个命名空间都不会
+       被写入。
+     - 服务端资产上传（core 的 UploadServerLogo / UploadServerBanner /
+       UploadUserAvatar / linkpreview 抓取，不在本表里但走同一套 assets 包）：
+       四条路径共用 assets.processServerAssetImage，上传期缩放到各自上限后用
+       ffmpeg libwebp 压成**有损 WebP**（VP8，-q:v 85）；ffmpeg 不可用或失败
+       时回退到旧的 Go 解码 + nativewebp **无损** WebP（VP8L）。
      - `AssetUploadModel`：分块上传的字节在提交前过一次 AVIF 重编码
        （cli/internal/assets/attachment_image.go 的 PrepareAttachmentImage：
        原尺寸、CRF 30、动画输入出动画 AVIF；ffmpeg 或 AV1 编码器不可用、编码

@@ -425,8 +425,13 @@ func TestMediaModelAssetURLs(t *testing.T) {
 		t.Fatalf("GetStableTransformedAttachmentURL = %q, must not carry a transform path", transformed)
 	}
 	serverAsset := service.GetTransformedServerAssetURL("server.logo", 80, 80, "cover")
-	if !strings.HasPrefix(serverAsset, "https://assets.example/assets/server/server.logo/t/") {
-		t.Fatalf("GetTransformedServerAssetURL = %q, want signed server asset URL", serverAsset)
+	// 【本地改动 2026-09-13】fork 取消服务端资产衍生图:头像/logo/banner/链接
+	// 预览上传时就缩放到上限并压缩,尺寸参数被忽略,回原档 URL。
+	if serverAsset != "https://assets.example/assets/server/server.logo" {
+		t.Fatalf("GetTransformedServerAssetURL = %q, want the original server asset URL", serverAsset)
+	}
+	if strings.Contains(serverAsset, "/t/") {
+		t.Fatalf("GetTransformedServerAssetURL = %q, must not carry a transform path", serverAsset)
 	}
 	if got := service.GetStableAttachmentURL("", "U-url"); got != "" {
 		t.Fatalf("GetStableAttachmentURL with empty asset id = %q, want empty", got)

@@ -109,7 +109,7 @@ or touch long-press opens the profile menu; avatar clicks open presence settings
     if (room.type === RoomKind.DM) {
       return buildDirectMessagePresentation(
         room.members,
-        navigation?.currentUserId,
+        activeStore.projectionViewerId,
         m('common.you'),
         getLiveDisplayName
       ).label;
@@ -218,9 +218,7 @@ or touch long-press opens the profile menu; avatar clicks open presence settings
     clearingCustomStatus = true;
     try {
       const customStatus = await deleteCustomStatus(config);
-      if (store.currentUser.user?.id === userId) {
-        store.currentUser.user = { ...store.currentUser.user, customStatus };
-      }
+      store.currentUser.update(userId, () => ({ customStatus }));
       if (activeServerId === serverId && activeServerUser?.id === userId) {
         if (statusMenuAnchor === menuAnchor) statusMenuAnchor = null;
         toast.success(m('settings.profile.status.cleared'));
@@ -236,11 +234,7 @@ or touch long-press opens the profile menu; avatar clicks open presence settings
 
   function updateCurrentCustomStatus(status: CustomUserStatus | null) {
     const store = activeStore;
-    if (!store.currentUser.user) return;
-    store.currentUser.user = {
-      ...store.currentUser.user,
-      customStatus: status
-    };
+    store.currentUser.update(store.accountId, () => ({ customStatus: status }));
   }
 
   function openActiveCallRoom(): void {

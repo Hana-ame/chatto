@@ -19,7 +19,14 @@ thread IDs can change while the pane stays mounted.
   /** Composer options that the owner decides. The pane supplies the rest. */
   export type ConversationComposerOptions = Omit<
     MessageComposerProps,
-    'roomId' | 'inThread' | 'canPost' | 'canAttach' | 'onReady' | 'onTyping' | 'onMessageSent'
+    | 'roomId'
+    | 'inThread'
+    | 'canPost'
+    | 'canAttach'
+    | 'onReady'
+    | 'onTyping'
+    | 'onMessageSent'
+    | 'mentionPriorityUserIds'
   >;
 </script>
 
@@ -48,6 +55,7 @@ thread IDs can change while the pane stays mounted.
   import EventList from './EventList.svelte';
   import type { PendingComposerInput, PendingHighlight } from './roomNavigationState.svelte';
   import type { OpenThreadHandler } from './threadOpenOptions';
+  import { threadParticipantIds } from './threadParticipants';
 
   let {
     roomId,
@@ -108,6 +116,12 @@ thread IDs can change while the pane stays mounted.
   const { editState, replyState, jumpState, quoteInsertionState } = composerContext;
 
   const events = $derived(isThread ? messageStore.threadEvents : messageStore.rootEvents);
+  /** Other users in this thread, ranked first in @mention autocomplete. */
+  const mentionPriorityUserIds = $derived(
+    isThread && threadRootEventId
+      ? threadParticipantIds(events, threadRootEventId, stores.viewerId)
+      : undefined
+  );
   const targetKey = $derived(threadRootEventId ? `${roomId}:${threadRootEventId}` : roomId);
 
   const typingIndicator = createTypingIndicator(() => ({
@@ -310,6 +324,7 @@ thread IDs can change while the pane stays mounted.
     {...composer}
     {roomId}
     inThread={threadRootEventId ?? undefined}
+    {mentionPriorityUserIds}
     {canPost}
     {canAttach}
     onReady={(api) => (composerApi = api)}

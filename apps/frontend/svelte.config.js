@@ -14,10 +14,33 @@ function appTemplateScriptHashes() {
   );
 }
 
+/**
+ * Returns the version name that SvelteKit writes to `_app/version.json`.
+ *
+ * Release builds set `CHATTO_BUILD_VERSION`. The mise `build-frontend` task
+ * sets `CHATTO_DEV_BUILD_ID` once per build; together with the workspace name
+ * it gives each local build a new version, so open tabs detect the update and
+ * do a full reload after a failed navigation. The ID must come from the
+ * environment: several processes load this file during one build, and they
+ * must all compute the same version. Turbo does not hash either variable, so
+ * an unchanged build is restored from its cache with its original version.
+ */
 function buildVersionName() {
   if (process.env.CHATTO_BUILD_VERSION) return process.env.CHATTO_BUILD_VERSION;
-  if (process.env.npm_package_version) return process.env.npm_package_version;
 
+  const base = process.env.npm_package_version ?? gitShortHash();
+  const workspace = process.env.CHATTO_DEV_WORKSPACE;
+  const buildId = process.env.CHATTO_DEV_BUILD_ID;
+  if (workspace && buildId) {
+    // The ID format depends on how the task renders it; a short hash keeps the
+    // version name compact and free of characters such as spaces or colons.
+    const token = createHash('sha256').update(buildId).digest('hex').slice(0, 8);
+    return `${base}+${workspace}.${token}`;
+  }
+  return base;
+}
+
+function gitShortHash() {
   try {
     return execSync('git rev-parse --short HEAD', { encoding: 'utf8' }).trim();
   } catch {

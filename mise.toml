@@ -303,6 +303,11 @@ description = "Build the frontend application"
 depends = ["setup-frontend"]
 dir = "apps/frontend"
 # Turbo restores an unchanged build from the cache that all worktrees share.
+# CHATTO_DEV_BUILD_ID gives each local build a unique SvelteKit version name
+# (see svelte.config.js). Set it once here so every process of one build uses
+# the same value; Turbo does not hash it, so cache hits keep their version.
+# The template works on every platform, unlike shell command substitution.
+env = { CHATTO_DEV_BUILD_ID = "{{ now(timestamp=true) }}" }
 run = [
     "pnpm --dir ../.. run build:frontend",
     "bash ../../tools/prepare-embedded-frontend.sh build ../../cli/internal/http_server/.client",

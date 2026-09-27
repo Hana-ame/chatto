@@ -2,37 +2,18 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { userEvent } from 'vitest/browser';
 import { render } from 'vitest-browser-svelte';
 import { queryClient } from '$lib/query/client';
-import { NO_SERVER_PERMISSIONS } from '$lib/state/server/permissions';
+import { createTestServerScope, type TestServerScope } from '$lib/test-utils/serverScope.svelte';
 
-const mocks = vi.hoisted(() => ({
-  canCreateBots: false,
-  listBots: vi.fn(),
-  batchGetUsers: vi.fn()
-}));
+vi.mock(
+  '$lib/state/server/scope.svelte',
+  async () => (await import('$lib/test-utils/serverScope.svelte')).serverScopeModule
+);
 
 // Page titles are tested separately from this page's partial route/server fixtures.
 vi.mock('$lib/render/pageTitle', () => ({ formatPageTitle: () => 'Chatto' }));
 
-vi.mock('$lib/state/server/scope.svelte', () => ({
-  useServerScope: () => ({
-    serverId: 'server-1',
-    store: {
-      serverInfo: { supportsFeature: () => true },
-      currentUser: { user: { settings: null } },
-      get permissions() {
-        return { ...NO_SERVER_PERMISSIONS, loaded: true, canCreateBots: mocks.canCreateBots };
-      }
-    },
-    connection: {
-      queryScope: 'session-1',
-      getAPI: () => ({
-        listBots: mocks.listBots,
-        batchGetUsers: mocks.batchGetUsers
-      })
-    },
-    isCurrent: () => true
-  })
-}));
+const api = { listBots: vi.fn(), batchGetUsers: vi.fn() };
+let server: TestServerScope;
 
 import BotsPage from './+page.svelte';
 
@@ -46,9 +27,9 @@ describe('Bot administration page', () => {
   beforeEach(() => {
     queryClient.clear();
     vi.clearAllMocks();
-    mocks.canCreateBots = false;
-    mocks.listBots.mockResolvedValue({ bots: [], totalCount: 0, hasMore: false });
-    mocks.batchGetUsers.mockResolvedValue([]);
+    server = createTestServerScope({ api });
+    api.listBots.mockResolvedValue({ bots: [], totalCount: 0, hasMore: false });
+    api.batchGetUsers.mockResolvedValue([]);
   });
 
   it('explains why creation is unavailable while preserving the bot-management page', () => {
@@ -62,7 +43,7 @@ describe('Bot administration page', () => {
   });
 
   it('offers creation when the viewer has bot.create', () => {
-    mocks.canCreateBots = true;
+    server.permissions.canCreateBots = true;
     const { container } = render(BotsPage);
 
     expect(createButton(container)).toBeDefined();
@@ -72,7 +53,7 @@ describe('Bot administration page', () => {
   });
 
   it('does not ask for the initial API key name', () => {
-    mocks.canCreateBots = true;
+    server.permissions.canCreateBots = true;
     const { container } = render(BotsPage);
 
     createButton(container)?.click();
@@ -82,7 +63,7 @@ describe('Bot administration page', () => {
   });
 
   it('accepts a bot username without a suffix', async () => {
-    mocks.canCreateBots = true;
+    server.permissions.canCreateBots = true;
     const { container } = render(BotsPage);
 
     await userEvent.click(createButton(container)!);
@@ -102,7 +83,7 @@ describe('Bot administration page', () => {
   });
 
   it('renders bot and owner identities with avatars and display names', async () => {
-    mocks.listBots.mockResolvedValue({
+    api.listBots.mockResolvedValue({
       bots: [
         {
           id: 'bot-user-id',
@@ -121,7 +102,7 @@ describe('Bot administration page', () => {
       totalCount: 1,
       hasMore: false
     });
-    mocks.batchGetUsers.mockResolvedValue([
+    api.batchGetUsers.mockResolvedValue([
       {
         id: 'owner-user-id',
         login: 'alice',
@@ -136,7 +117,7 @@ describe('Bot administration page', () => {
       expect(container.textContent).toContain('Alice Example');
     });
 
-    expect(mocks.batchGetUsers).toHaveBeenCalledWith(['owner-user-id']);
+    expect(api.batchGetUsers).toHaveBeenCalledWith(['owner-user-id']);
     expect(container.textContent).toContain('Owner');
     expect(container.textContent).toContain('Helper Bot');
     expect(container.textContent).not.toContain('owner-user-id');

@@ -75,9 +75,11 @@ Threads, and Reactions component APIs. These components use the shared
 content-view projector. Threads also derives channel-room and DM message-to-root
 mappings and account-to-thread interaction relationships from message-post
 facts. It also consumes room join, leave, and stored suspension facts to derive DM-received
-relationships for the other participants at the time of each post. Its v3
-snapshot contract records DM membership; the schema fingerprint selects a new
-cache namespace when this shape changes. The
+relationships for the other participants at the time of each post. Threads
+keeps only the existence of each relationship, not the facts that caused it,
+because reads only ask whether a relationship exists. Its v3 snapshot contract
+records DM membership; the schema fingerprint selects a new cache namespace
+when this shape changes. The
 RBAC component snapshot contract is v2 and retains decisions from the
 `evt.rbac.dm` singleton lane. Membership, message, thread, reaction, asset, realtime, room-group OCC,
 and sidebar-ordering paths use focused `RoomModel` operations instead of
@@ -256,8 +258,20 @@ the dense and sparse indexes when the post arrives. Each
 row stores references to known thread roots and echo sources as numeric row
 indexes. A sparse fallback keeps the original ID if the referenced event has
 not arrived or is outside the timeline. The Threads component uses structured
-keys for follow state and followed-thread indexes. Both components reconstruct
-detached read results and keep the same snapshot payloads and contract IDs.
+keys for follow state and followed-thread indexes.
+
+Threads interns user and room IDs in one small table and event IDs in a second
+table. Its indexes store `uint32` handles instead of ID strings. Each ID string
+is held once. Handles are process-local; snapshots store ID strings. Room
+deletion removes the room's message references and relationships. The message
+IDs of that room stay in the table. Only a snapshot restore removes them.
+
+Reactions interns message, emoji, user, and room IDs in one table. It keeps the
+source event ID of each active reaction as a string, because each source ID
+occurs only once. Each message has a short slice of active reactions, sorted by
+emoji and user handles.
+
+Timeline, Threads, and Reactions construct detached read results.
 
 Snapshot loads and replay frontiers are projector-local. A successful restore
 starts that projector's ordered consumer at one greater than its cutoff. A
@@ -353,7 +367,9 @@ read models, but only their parent projector is started by `ChattoCore.Run`.
 `chatto_projection_component_estimated_bytes` reports separate room-timeline
 and threads estimates inside the Server Content View. These estimates are
 diagnostic approximations; retained-heap benchmarks measure their actual Go
-heap cost.
+heap cost. `BenchmarkProjectionRetainedHeapFromStore` replays the `EVT` stream
+of a copied NATS data directory from `CHATTO_BENCH_EVT_STORE_DIR` to measure
+the cost with real event mixes.
 
 Independent projectors isolate snapshot availability, replay cost, status,
 lag, failure, and read-your-writes waiters for state outside the content view.

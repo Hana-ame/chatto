@@ -62,11 +62,7 @@ func TestThreadProjectionDMReceivedInteractions(t *testing.T) {
 			require.False(t, p.HasInteraction("RECIPIENT", "DM", "ROOT"))
 		}},
 		{event: postedEvent(postedOpts{envelopeID: "ROOT", roomID: "DM", actorID: "AUTHOR"}), check: func(p *ThreadProjection) {
-			interaction, ok := p.Interaction("RECIPIENT", "DM", "ROOT")
-			require.True(t, ok)
-			require.Len(t, interaction.Causes, 1)
-			require.Equal(t, ThreadInteractionCauseDMReceived, interaction.Causes[0].Kind)
-			require.Equal(t, "ROOT", interaction.Causes[0].SourceEventID)
+			require.True(t, p.HasInteraction("RECIPIENT", "DM", "ROOT"))
 			require.False(t, p.HasInteraction("OUTSIDER", "DM", "ROOT"))
 		}},
 		{event: left},
@@ -179,9 +175,8 @@ func TestThreadProjectionSnapshotRoundTripAndTailReplay(t *testing.T) {
 	if got := restored.FollowState("U2", "R1", "ROOT"); got != ThreadFollowStateFollowing {
 		t.Fatalf("FollowState after restore = %q", got)
 	}
-	interaction, ok := restored.Interaction("U2", "R1", "ROOT")
-	if !ok || len(interaction.Causes) != 2 {
-		t.Fatalf("U2 interaction after restore and tail = %#v, %v; want two direct-mention facts", interaction, ok)
+	if !restored.HasInteraction("U2", "R1", "ROOT") {
+		t.Fatal("U2 interaction missing after restore and tail")
 	}
 }
 
@@ -292,10 +287,6 @@ func TestThreadProjection_DerivesInteractionRelationshipsFromTypedMessageFacts(t
 			t.Errorf("DM HasInteraction(%s) = false, want true", userID)
 		}
 	}
-	interaction, ok := p.Interaction("DIRECT", "R1", "ROOT")
-	if !ok || len(interaction.Causes) != 2 || interaction.Causes[0].SourceEventID != "ROOT" || interaction.Causes[1].SourceEventID != "REPLY" {
-		t.Fatalf("DIRECT interaction = %#v, %v; want root and reply mention facts", interaction, ok)
-	}
 	for eventID, wantRoot := range map[string]string{"ROOT": "ROOT", "REPLY": "ROOT", "ECHO": "ROOT", "PARTIAL-ECHO": "ROOT"} {
 		if got, ok := p.ThreadRootForMessage("R1", eventID); !ok || got != wantRoot {
 			t.Errorf("ThreadRootForMessage(%s) = %q, %v; want %q, true", eventID, got, ok, wantRoot)
@@ -303,21 +294,21 @@ func TestThreadProjection_DerivesInteractionRelationshipsFromTypedMessageFacts(t
 	}
 }
 
-func TestThreadProjection_InteractionCauseOrderIsDeterministic(t *testing.T) {
+func TestThreadProjection_RepeatedInteractionCausesShareOneRelationship(t *testing.T) {
 	p := NewThreadProjection()
 	applyAll(t, p, []*evtv1.Event{
 		roomCreatedTimelineEvent("ROOM", "R1", "room", 1),
-		postedEvent(postedOpts{envelopeID: "ROOT", roomID: "R1", actorID: "AUTHOR", at: 2}),
+		postedEvent(postedOpts{envelopeID: "ROOT", roomID: "R1", actorID: "AUTHOR", at: 2, mentions: []*evtv1.MessageMention{directThreadMention("TARGET")}}),
 		postedEvent(postedOpts{envelopeID: "MENTION-Z", roomID: "R1", actorID: "AUTHOR", inThread: "ROOT", at: 3, mentions: []*evtv1.MessageMention{directThreadMention("TARGET")}}),
 		postedEvent(postedOpts{envelopeID: "MENTION-A", roomID: "R1", actorID: "AUTHOR", inThread: "ROOT", at: 3, mentions: []*evtv1.MessageMention{directThreadMention("TARGET")}}),
 	})
 
-	interaction, ok := p.Interaction("TARGET", "R1", "ROOT")
-	if !ok || len(interaction.Causes) != 2 {
-		t.Fatalf("Interaction = %#v, %v; want two causes", interaction, ok)
+	if !p.HasInteraction("TARGET", "R1", "ROOT") {
+		t.Fatal("TARGET interaction missing")
 	}
-	if interaction.Causes[0].SourceEventID != "MENTION-A" || interaction.Causes[1].SourceEventID != "MENTION-Z" {
-		t.Fatalf("cause order = %#v; want source event ID tie-break", interaction.Causes)
+	// AUTHOR's root authorship and TARGET's three mentions are two relationships.
+	if got := len(p.interactions); got != 2 {
+		t.Fatalf("interactions = %d, want 2", got)
 	}
 }
 
@@ -774,4 +765,47 @@ func TestThreadParticipantsExceedPreviewAndSurviveRestore(t *testing.T) {
 	if restored.ThreadMetadata("ROOT").ParticipantCount != 58 {
 		t.Fatal("participant count did not follow removals")
 	}
+}
+
+func TestThreadProjection_InteractionRequiresMatchingRoom(t *testing.T) {
+	p := NewThreadProjection()
+	applyAll(t, p, []*evtv1.Event{
+		roomCreatedTimelineEvent("ROOM-1", "R1", "one", 1),
+		roomCreatedTimelineEvent("ROOM-2", "R2", "two", 2),
+		postedEvent(postedOpts{envelopeID: "ROOT", roomID: "R1", actorID: "AUTHOR", at: 3}),
+	})
+
+	require.True(t, p.HasInteraction("AUTHOR", "R1", "ROOT"))
+	require.False(t, p.HasInteraction("AUTHOR", "R2", "ROOT"))
+	require.False(t, p.HasInteraction("AUTHOR", "UNKNOWN-ROOM", "ROOT"))
+	_, ok := p.ThreadRootForMessage("R2", "ROOT")
+	require.False(t, ok)
+}
+
+func TestThreadProjection_RoomDeletionClearsInteractionState(t *testing.T) {
+	p := NewThreadProjection()
+	deleted := roomDeletedEvent("R1")
+	deleted.Id = "DELETE"
+	applyAll(t, p, []*evtv1.Event{
+		roomCreatedTimelineEvent("ROOM-1", "R1", "one", 1),
+		roomCreatedTimelineEvent("ROOM-2", "R2", "two", 2),
+		postedEvent(postedOpts{envelopeID: "ROOT-1", roomID: "R1", actorID: "AUTHOR", at: 3}),
+		postedEvent(postedOpts{envelopeID: "ROOT-2", roomID: "R2", actorID: "AUTHOR", at: 4}),
+		deleted,
+	})
+
+	require.False(t, p.HasInteraction("AUTHOR", "R1", "ROOT-1"))
+	_, ok := p.ThreadRootForMessage("R1", "ROOT-1")
+	require.False(t, ok)
+	require.True(t, p.HasInteraction("AUTHOR", "R2", "ROOT-2"))
+	root, ok := p.ThreadRootForMessage("R2", "ROOT-2")
+	require.True(t, ok)
+	require.Equal(t, "ROOT-2", root)
+
+	snapshot, err := p.Snapshot()
+	require.NoError(t, err)
+	restored := NewThreadProjection()
+	require.NoError(t, restored.Restore(snapshot))
+	require.False(t, restored.HasInteraction("AUTHOR", "R1", "ROOT-1"))
+	require.True(t, restored.HasInteraction("AUTHOR", "R2", "ROOT-2"))
 }

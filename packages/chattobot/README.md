@@ -61,7 +61,12 @@ source and console. Without `--watch`, restart to load code or configuration cha
    the bot needs permission to read the thread and `message.post-in-thread`.
 
 The server loads `.env` from this project directory. Restart it after changing
-credentials. The API key authenticates the realtime connection.
+credentials. The API key authenticates the realtime connection. Empty settings
+count as unset. The bot checks its settings before it connects. If a required
+setting is missing or has an invalid format, the terminal shows a `ChattoBot
+configuration error` that names the setting. The bot then stays stopped until you
+correct the setting and restart. Model names, the source directory, and Git refs
+are checked when they are used.
 The web console is available at `http://localhost:5173`.
 
 To restrict the bot to one user, set `CHATTO_ALLOWED_USER_ID` in `.env` to that
@@ -145,7 +150,10 @@ CHATTO_INVESTIGATION_MODEL=openai-codex/gpt-5.6-sol
 ```
 
 The directory must be a local Git checkout. The ref must exist locally; the bot
-does not fetch updates. If omitted, the ref defaults to `HEAD`. Uncommitted changes
+does not fetch updates for investigations. If omitted or empty, the ref defaults to
+`HEAD`. When implementation is enabled, investigations use the implementation base
+branch's remote-tracking ref instead, for example `refs/remotes/origin/main`, so
+plans and changes start from the same branch. Uncommitted changes
 in the supplied checkout are not included. Configure the selected model's
 credentials in Pi or the host environment, then restart ChattoBot and start a new
 conversation. Without `CHATTO_SOURCE_DIRECTORY`, the investigation tool is absent.
@@ -280,7 +288,7 @@ CHATTO_IMPLEMENTATION_MODEL=openai-codex/gpt-5.6-sol
 
 `CHATTO_IMPLEMENTATION_REPOSITORY` enables this capability. Without it, the bot
 can only investigate and propose changes. Implementation uses `CHATTO_SOURCE_REF`
-as its base branch, or `main` when unset. It accepts `main`, `origin/main`, and
+as its base branch, or `main` when it is unset or empty. It accepts `main`, `origin/main`, and
 `refs/remotes/origin/main`. When implementation is enabled, `CHATTO_SOURCE_REF`
 must name a branch that exists on origin, rather than a tag or commit.
 The model shown above is the default.
@@ -412,7 +420,13 @@ network address and requested package names.
 `runling.config.ts` registers the `chatto` event source. `workflows/chat.ts`
 owns the agent instructions and conversation task.
 The `chatto/` directory owns delivery routing, conversation queues, posting,
-and typing indicators. It does not import example code.
+and typing indicators.
+
+Retained implementation metadata stores an owner key: the SHA-256 hash of the
+conversation key from `deliveryConversationKey`. A resume request succeeds only
+when the hash matches the current conversation. If you change how the conversation
+key is built, keep its value unchanged for existing conversations. Otherwise,
+retained implementations cannot be resumed.
 
 Short disconnects resume from the last accepted event. Unavailable replay
 reports a recovery gap and continues live. A process restart starts live.

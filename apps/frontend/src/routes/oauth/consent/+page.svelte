@@ -2,6 +2,7 @@
   import { goto } from '$app/navigation';
   import { resolve } from '$app/paths';
   import { csrfFetch } from '$lib/auth/csrf';
+  import { LOOPBACK_OAUTH_CLIENT_ID } from '$lib/auth/loopbackClient';
   import AuthLayout from '$lib/components/AuthLayout.svelte';
   import { m } from '$lib/i18n/messages';
   import Hint from '$lib/ui/Hint.svelte';
@@ -23,6 +24,13 @@
 
   let request = $state<ConsentRequest | null>(null);
   let clientIdentity = $state('');
+  // The loopback client shows a name that does not endorse it, and its
+  // callback origin instead of its ID.
+  const clientDisplayName = $derived(
+    request?.clientId === LOOPBACK_OAUTH_CLIENT_ID
+      ? m('auth.oauth.loopback_client_name')
+      : (request?.clientName ?? '')
+  );
   let error = $state('');
   let loading = $state(true);
   let submitting = $state<'approve' | 'deny' | null>(null);
@@ -94,6 +102,9 @@
 
       if (!pendingRequest.clientId) {
         return redirectUri.host;
+      }
+      if (pendingRequest.clientId === LOOPBACK_OAUTH_CLIENT_ID) {
+        return pendingRequest.redirectOrigin;
       }
       if (typeof pendingRequest.clientId !== 'string') return '';
       // CIMD IDs are URLs; built-in native IDs can be opaque strings. Keep
@@ -167,8 +178,8 @@
     {:else if request}
       <div class="flex flex-col gap-4">
         <div class="text-center">
-          <p class="font-semibold break-all">{request.clientName || clientIdentity}</p>
-          {#if request.clientName}
+          <p class="font-semibold break-all">{clientDisplayName || clientIdentity}</p>
+          {#if clientDisplayName}
             <p class="mt-1 text-sm break-all text-muted">{clientIdentity}</p>
           {/if}
         </div>

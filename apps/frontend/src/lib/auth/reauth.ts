@@ -24,6 +24,8 @@ import {
   type RegisteredServer
 } from '$lib/state/server/registry.svelte';
 import { serverIdToSegment } from '$lib/navigation';
+import { isLoopbackHostname } from '$lib/runtimeOrigin';
+import { LOOPBACK_OAUTH_CLIENT_ID } from './loopbackClient';
 import { resumePushRegistrationAfterAuthentication } from '$lib/notifications/pushRegistrationCoordinator';
 import { saveReturnUrl } from './returnNavigation';
 import { oauthBearerSession, persistedBearerSession } from './bearerSession';
@@ -148,7 +150,7 @@ async function runServerOAuthFlow(
     return;
   }
   const redirectUri = `${window.location.origin}/servers/callback?mode=popup`;
-  const clientId = oauthClientIdForLocation(window.location);
+  const clientId = oauthClientIdForLocation(window.location, serverUrl);
 
   // Open synchronously from the user's click before hashing the PKCE verifier;
   // otherwise browsers may treat the secondary window as an unsolicited popup.
@@ -403,11 +405,33 @@ export async function completeServerOAuthFlow(
   return id;
 }
 
+function isLoopbackServerUrl(serverUrl: string): boolean {
+  try {
+    return isLoopbackHostname(new URL(serverUrl).hostname);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Choose the OAuth client identity that this frontend presents to `serverUrl`.
+ * A loopback frontend uses the built-in loopback client only for a server that
+ * is not local, because a local server can still fetch the frontend's CIMD
+ * document. This keeps local servers without the built-in client working.
+ */
 export function oauthClientIdForLocation(
-  location: Pick<Location, 'origin' | 'protocol' | 'host'>
+  location: Pick<Location, 'origin' | 'protocol' | 'host' | 'hostname'>,
+  serverUrl: string
 ): string {
   if (location.protocol === 'chatto:' && location.host === 'desktop') {
     return DESKTOP_CLIENT_ID;
+  }
+  if (
+    (location.protocol === 'http:' || location.protocol === 'https:') &&
+    isLoopbackHostname(location.hostname) &&
+    !isLoopbackServerUrl(serverUrl)
+  ) {
+    return LOOPBACK_OAUTH_CLIENT_ID;
   }
   return `${location.origin}${FRONTEND_CIMD_PATH}`;
 }

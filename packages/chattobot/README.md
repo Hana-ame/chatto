@@ -87,8 +87,9 @@ Several people can write in one conversation, so the bot checks permission for
 each request, not for the conversation. When the agent calls `investigateChatto`,
 `implementChatto`, `askImplementation`, or `task_send`, the host checks the author
 of the latest human message that the bot received in the conversation. If that
-author is not a maintainer, the tool does not run, and the bot posts one fixed
-message that a maintainer must ask. Other users can still ask questions, and the
+author is not a maintainer, or the turn started from a task notification, the tool
+does not run. In a user turn, the bot then posts one fixed message that a
+maintainer must ask. Other users can still ask questions, and the
 bot can answer from the documentation and web research.
 
 This gives a simple approval flow: a user reports a problem in a thread, and a
@@ -206,13 +207,14 @@ these limits:
 - It can make at most 5 searches and 5 page reads, and it stops after three
   minutes. It returns an answer and the source URLs. The chat agent can start at
   most 3 research requests for each user message.
-- `browsePage` opens only URLs from the conversation owner's recent messages,
-  `webSearch` results, at most 50 links from the page it read last, and any page
-  under `https://github.com/chattocorp/chatto/`, such as a pull request or issue. URLs that
-  the chat agent writes into the question cannot be opened, so injected text
-  cannot make it add conversation data to a URL. Cloudflare loads each page in a browser on
-  its network and returns up to 30,000 characters of Markdown. Target sites see
-  Cloudflare, not the bot host, and the tool cannot reach private network addresses.
+- `browsePage` opens any public HTTP or HTTPS URL without credentials, including
+  URLs that the research agent builds itself. Cloudflare loads each page in a
+  browser on its network and returns up to 30,000 characters of Markdown. Target
+  sites see Cloudflare, not the bot host, and the tool cannot reach private network
+  addresses.
+- The research agent knows only the question. A hostile page can make it open a URL
+  that contains the question text. Therefore the chat agent is instructed to keep
+  questions self-contained and free of private details.
 
 If Tavily or Cloudflare rejects a request with a rate limit, the bot waits for
 the time in `Retry-After`, at most 10 seconds, and tries once more. The Cloudflare
@@ -268,8 +270,9 @@ If posting fails or the conversation is cancelled, the investigation does not st
 Tool-call preambles stay in agent logs. A delegation announcement or implementation
 refusal supplies the turn's user-facing reply; the supervisor's second version
 is suppressed. Later turns can report progress or answer new questions normally.
-An investigation completion notification cannot authorize implementation. A
-refusal states whether work is active, was already attempted, or was not started.
+A task notification cannot start investigation or implementation. A refusal
+states whether work is active or was already attempted for the same request. The
+bot posts refusals once per user turn, and the rest of its reply still posts.
 Runling's `taskTool` bridge starts a background child workflow and returns a task
 handle. The workflow is shown under the conversation in the console.
 A separate read-only agent reads and searches files in a new detached worktree.
@@ -526,7 +529,12 @@ network address and requested package names.
 `runling.config.ts` registers the `chatto` event source. `workflows/chat.ts`
 owns the agent instructions and conversation task.
 The `chatto/` directory owns delivery routing, conversation queues, posting,
-and typing indicators.
+and typing indicators. `workflows/implement.ts` owns the `implementChatto` tool.
+The implementation run is in `implementation-task.ts`, which uses
+`implementation-tools.ts` (worker tools), `implementation-validation.ts` (host
+checks), `implementation-publication.ts` (commit, push, and PR),
+`implementation-artifacts.ts` (retained state), `implementation-safety.ts`
+(redaction and protected paths), and `implementation-settings.ts`.
 
 Retained implementation metadata stores an owner key: the SHA-256 hash of the
 conversation key from `deliveryConversationKey`. A resume request succeeds only

@@ -123,6 +123,8 @@ vi.mock('$lib/state/activeServer.svelte', () => ({
 }));
 
 vi.mock('$lib/state/globals.svelte', () => ({
+  sidebarNav: vi.fn(),
+  quickSwitcher: vi.fn(),
   appState: mocks.appState
 }));
 

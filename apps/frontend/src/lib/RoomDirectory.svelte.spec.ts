@@ -1,8 +1,11 @@
 import { RoomKind } from '@chatto/api-types/api/v1/rooms_pb';
+import '../app.css';
 import { afterEach, describe, it, expect, vi } from 'vitest';
+import { page, userEvent } from 'vitest/browser';
 import { flushSync } from 'svelte';
 import { render } from 'vitest-browser-svelte';
 import Harness from './RoomDirectoryTestHarness.svelte';
+import { loadLocaleMessages } from '$lib/i18n/messages';
 import { RoomDirectoryStore, type DirectoryRoom } from '$lib/state/server/roomDirectory.svelte';
 import type { RoomsListItem } from '$lib/state/server/rooms.svelte';
 
@@ -150,6 +153,69 @@ describe('RoomDirectory', () => {
     flushSync();
 
     expect(container.textContent).toContain('Restricted');
+  });
+
+  it('explains Universal and Restricted labels in touch-readable help', async () => {
+    render(Harness, {
+      props: {
+        initialRooms: [
+          room('general', { isUniversal: true }),
+          room('locked', { viewerCanJoinRoom: false })
+        ],
+        joinedRooms: [joined('general')],
+        roomGroups: null
+      }
+    });
+
+    const help = page.getByRole('button', { name: 'More information' });
+    await help.first().click();
+    await expect.element(page.getByText('Universal rooms are joined automatically')).toBeVisible();
+    // The pinned popover covers the next row until it closes.
+    await userEvent.keyboard('{Escape}');
+    await help.nth(1).click();
+    await expect
+      .element(page.getByText("You don't have permission to join this room"))
+      .toBeVisible();
+  });
+
+  it('reveals the Leave action on keyboard focus, not only on hover', async () => {
+    const { container } = render(Harness, {
+      props: { initialRooms: [room('r1')], joinedRooms: [joined('r1')], roomGroups: null }
+    });
+    flushSync();
+    const button = [...container.querySelectorAll('button')].find((candidate) =>
+      candidate.textContent?.includes('Joined')
+    ) as HTMLButtonElement;
+    const visibleLabel = () =>
+      [...button.querySelectorAll('span:not([aria-hidden]):not(:has(span))')]
+        .filter((label) => getComputedStyle(label).visibility === 'visible')
+        .map((label) => label.textContent?.trim());
+
+    expect(visibleLabel()).toEqual(['Joined']);
+    button.focus();
+    await expect.poll(visibleLabel).toEqual(['Leave']);
+  });
+
+  it('widens the status column for long translations instead of overflowing', async () => {
+    await loadLocaleMessages('ru-RU');
+    try {
+      const { container } = render(Harness, {
+        props: {
+          initialRooms: [room('r1'), room('r2')],
+          joinedRooms: [joined('r1')],
+          roomGroups: null
+        }
+      });
+      flushSync();
+      const contents = [...container.querySelectorAll<HTMLElement>('li .button-content')];
+      // Joined (Присоединился) and Join (Присоединяйтесь) are wider than w-28.
+      expect(contents).toHaveLength(2);
+      for (const content of contents) {
+        expect(content.scrollWidth).toBeLessThanOrEqual(content.clientWidth);
+      }
+    } finally {
+      await loadLocaleMessages('en-GB');
+    }
   });
 
   it('shows the empty state when there are no visible rooms', () => {

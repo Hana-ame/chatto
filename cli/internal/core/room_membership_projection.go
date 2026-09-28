@@ -21,6 +21,12 @@ import (
 // subject scheme is `evt.room.{roomID}.{eventType}` — kind is a property
 // of the room itself, not of any individual event. Kind-filtered membership
 // queries compose this index with RoomModel's projected room catalog.
+//
+// DM membership is fixed at creation, so UserLeftRoom does not remove a DM
+// member. LeaveRoom rejects DMs; account deletion still records DM leave facts
+// to end the account's call participation, and ignoring them keeps deleted
+// participants in their conversations. The DM check needs the room kind, which
+// RoomDirectoryProjection supplies through roomKind.
 type RoomMembershipProjection struct {
 	events.MemoryProjection
 	// byRoom: room ID → set of user IDs in that room.
@@ -28,6 +34,9 @@ type RoomMembershipProjection struct {
 	// byUser: user ID → set of room IDs that user is in. Mirror of
 	// byRoom, kept in sync.
 	byUser map[string]map[string]struct{}
+	// roomKind resolves a room's kind from the room catalog. When nil, every
+	// UserLeftRoom removes the member.
+	roomKind func(roomID string) (evtv1.RoomKind, bool)
 }
 
 // NewRoomMembershipProjection returns an empty projection. Call Run on a
@@ -53,6 +62,13 @@ func (p *RoomMembershipProjection) Apply(event *evtv1.Event, _ uint64) error {
 	if event == nil {
 		return nil
 	}
+	// Resolve the room kind before taking the membership lock, so this
+	// projection never holds its own lock while it waits for the catalog's.
+	leftDM := false
+	if left := event.GetUserLeftRoom(); left != nil && p.roomKind != nil {
+		kind, ok := p.roomKind(left.GetRoomId())
+		leftDM = ok && kind == evtv1.RoomKind_ROOM_KIND_DM
+	}
 	p.Lock()
 	defer p.Unlock()
 	switch e := event.GetEvent().(type) {
@@ -69,7 +85,9 @@ func (p *RoomMembershipProjection) Apply(event *evtv1.Event, _ uint64) error {
 		if roomID == "" || userID == "" {
 			return fmt.Errorf("UserLeftRoom missing roomID or userID")
 		}
-		p.removeLocked(roomID, userID)
+		if !leftDM {
+			p.removeLocked(roomID, userID)
+		}
 	case *evtv1.Event_RoomMemberBanned:
 		roomID := e.RoomMemberBanned.GetRoomId()
 		userID := e.RoomMemberBanned.GetUserId()

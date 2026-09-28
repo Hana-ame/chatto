@@ -202,15 +202,11 @@ func (a *API) apiRoomWithViewerState(ctx context.Context, userID string, room *c
 	}
 	result.HasMessageHistory = &exists
 
-	members, err := a.core.ListRoomMemberReferencesForList(ctx, userID, room.Room.GetId())
+	// DM participants include deleted accounts; clients show them as deleted
+	// users.
+	result.MemberUserIds, err = a.core.ListRoomMemberIDsForList(ctx, userID, room.Room.GetId())
 	if err != nil {
 		return nil, err
-	}
-	result.MemberUserIds = make([]string, 0, len(members))
-	for _, member := range members {
-		if member.GetId() != "" {
-			result.MemberUserIds = append(result.MemberUserIds, member.GetId())
-		}
 	}
 	return result, nil
 }

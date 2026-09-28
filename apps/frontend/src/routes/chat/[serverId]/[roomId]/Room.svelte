@@ -7,6 +7,7 @@
   import { page } from '$app/state';
   import { useRoomData } from '$lib/hooks';
   import { m } from '$lib/i18n/messages';
+  import { directMessageLabels } from '$lib/render/directMessageLabels';
   import {
     createMentionRoles,
     setRoomMembersStore,
@@ -219,7 +220,7 @@
       isDM: room.isDM,
       dmData: room.dmData,
       directMessageLabel: m('room.title.direct_message'),
-      currentUserLabel: m('common.you'),
+      participantLabels: directMessageLabels(),
       getDisplayName: getLiveDisplayName
     })
   );
@@ -347,7 +348,12 @@
     const otherParticipantIds = participantIds.filter(
       (participantId) => participantId !== room.dmData?.currentUserId
     );
-    if (otherParticipantIds.length === 1) return otherParticipantIds[0];
+    if (otherParticipantIds.length === 1) {
+      const [otherId] = otherParticipantIds;
+      // A deleted partner has no profile to open.
+      const other = room.dmData?.participants.find((participant) => participant.id === otherId);
+      return other?.deleted ? null : otherId;
+    }
     return participantIds.length === 1 && participantIds[0] === room.dmData?.currentUserId
       ? participantIds[0]
       : null;

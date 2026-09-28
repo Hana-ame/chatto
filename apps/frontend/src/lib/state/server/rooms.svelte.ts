@@ -1,7 +1,7 @@
 import { RoomKind } from '$lib/api-client/roomDirectory';
 import { roomKindOrChannel } from '$lib/api-client/enumDefaults';
 import { mapDirectoryRoom, mapRoomGroup } from '$lib/api-client/roomDirectory';
-import type { UserAvatarUserView } from '$lib/render/users';
+import { deletedDirectMessageParticipant, type UserAvatarUserView } from '$lib/render/users';
 import type { ServerProjectionStore } from './projection.svelte';
 import { SvelteSet } from 'svelte/reactivity';
 
@@ -29,6 +29,7 @@ export type RoomsListItem = {
   viewerNotificationCount: number;
   viewerImportantNotificationCount: number;
   hasMessageHistory?: boolean | null;
+  /** DM participants, with a deleted placeholder for each deleted account. */
   members: UserAvatarUserView[];
 };
 
@@ -64,6 +65,20 @@ export type RoomsListGroupItem =
     };
 
 /**
+ * Resolves one DM participant for presentation. Deleted accounts stay DM
+ * participants and resolve to a deleted placeholder; unresolved profiles are
+ * omitted until they load.
+ */
+export function directMessageParticipant(
+  projection: ServerProjectionStore,
+  userId: string
+): UserAvatarUserView[] {
+  const view = projection.users.view(userId);
+  if (view) return [view];
+  return projection.users.isDeleted(userId) ? [deletedDirectMessageParticipant(userId)] : [];
+}
+
+/**
  * Read-only navigation over the retained server projection.
  *
  * The view owns no server-derived room, membership, group, profile, ordering,
@@ -84,8 +99,8 @@ export class NavigationStore {
     const live = [...this.projection.rooms.values()].flatMap((entry) => {
       const room = entry.room ? mapDirectoryRoom(entry) : null;
       if (!room || room.archived) return [];
-      const members = entry.memberUserIds.flatMap(
-        (userId) => this.projection.users.view(userId) ?? []
+      const members = entry.memberUserIds.flatMap((userId) =>
+        directMessageParticipant(this.projection, userId)
       );
       const viewerNotificationCount = this.notificationCounts.roomUnreadCounts[room.id] ?? 0;
       const viewerImportantNotificationCount =

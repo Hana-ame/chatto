@@ -6,6 +6,7 @@ import (
 	"errors"
 	"hmans.de/chatto/internal/pb/chatto/core/notification/v1"
 	"hmans.de/chatto/internal/pb/chatto/core/runtime_state/v1"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -1244,6 +1245,47 @@ func TestThreadServiceListFollowedThreadsRequiresDMOptIn(t *testing.T) {
 	}
 	if got := thread.GetDirectMessageParticipantUserIds(); len(got) != 2 {
 		t.Fatalf("DM participant IDs = %v, want two participants", got)
+	}
+}
+
+func TestThreadServiceListFollowedThreadsLabelsDeletedDMParticipant(t *testing.T) {
+	env := newConnectAPITestEnv(t)
+	participant, err := env.core.CreateUser(env.ctx, core.SystemActorID, "thread-dm-deleted", "Thread DM Deleted", "password")
+	if err != nil {
+		t.Fatalf("CreateUser participant: %v", err)
+	}
+	dm, _, err := env.core.FindOrCreateDM(env.ctx, env.viewer.Id, []string{participant.Id})
+	if err != nil {
+		t.Fatalf("FindOrCreateDM: %v", err)
+	}
+	root, err := env.core.PostMessage(env.ctx, core.KindDM, dm.Id, env.viewer.Id, "root body", nil, "", "", nil, false)
+	if err != nil {
+		t.Fatalf("PostMessage root: %v", err)
+	}
+	if err := env.core.FollowThread(env.ctx, core.KindDM, env.viewer.Id, dm.Id, root.Id); err != nil {
+		t.Fatalf("FollowThread: %v", err)
+	}
+	if err := env.core.DeleteUser(env.ctx, participant.Id, participant.Id); err != nil {
+		t.Fatalf("DeleteUser: %v", err)
+	}
+
+	resp, err := env.threads.ListFollowedThreads(withCaller(env.ctx, env.viewer), connect.NewRequest(&apiv1.ListFollowedThreadsRequest{
+		Page:                        &apiv1.PageRequest{Limit: 20},
+		IncludeDirectMessageThreads: true,
+	}))
+	if err != nil {
+		t.Fatalf("ListFollowedThreads: %v", err)
+	}
+	if got := len(resp.Msg.GetThreads()); got != 1 {
+		t.Fatalf("ListFollowedThreads returned %d threads, want 1", got)
+	}
+	got := resp.Msg.GetThreads()[0].GetDirectMessageParticipantUserIds()
+	if !slices.Contains(got, env.viewer.Id) || !slices.Contains(got, participant.Id) || len(got) != 2 {
+		t.Fatalf("DM participant IDs = %v, want the viewer and the deleted participant", got)
+	}
+	deleted := resp.Msg.GetIncludes().GetUsers()[participant.Id]
+	if deleted == nil || !deleted.GetDeleted() {
+		t.Fatalf("included deleted participant = %+v, want a deleted user", deleted)
 	}
 }
 

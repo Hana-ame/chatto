@@ -182,7 +182,9 @@ export class RoomWithViewerState extends Message<RoomWithViewerState> {
   viewerState?: RoomViewerState;
 
   /**
-   * Complete participant user IDs for a DM. Empty for channel rooms.
+   * Complete participant user IDs for a DM, including participants whose
+   * accounts were deleted. Clients show those as deleted users. Empty for
+   * channel rooms.
    *
    * @generated from field: repeated string member_user_ids = 15;
    */

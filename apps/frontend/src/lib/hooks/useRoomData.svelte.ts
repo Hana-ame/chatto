@@ -32,6 +32,7 @@ export type RoomData = {
 export type DMData = {
   /** Stable member IDs from the room projection, including unresolved users. */
   participantIds: string[];
+  /** Resolved participants, with a deleted placeholder for each deleted account. */
   participants: Array<{
     id: string;
     login: string;

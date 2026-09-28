@@ -60,6 +60,7 @@ import {
   viewerResponseToState,
   type PrivilegedModeAPI
 } from '$lib/api-client/viewer';
+import { directMessageParticipant } from './rooms.svelte';
 import { mapNotificationOccurrencePage } from '$lib/api-client/notifications';
 import { RealtimeProjectionSyncState } from './realtimeSync.svelte';
 import { PrivilegedModeState } from '@chatto/api-types/api/v1/viewer_pb';
@@ -1446,10 +1447,13 @@ export class ServerStateStore {
     return complete;
   }
 
-  /** Resolved member rows for DM presentation outside the room member store. */
+  /**
+   * Resolved member rows for DM presentation outside the room member store.
+   * Deleted participants resolve to deleted placeholders.
+   */
   projectedMembersForRoom(roomId: string): RoomMember[] {
     const memberIds = this.projection.rooms.get(roomId)?.memberUserIds ?? [];
-    return memberIds.flatMap((userId) => this.projection.users.view(userId) ?? []);
+    return memberIds.flatMap((userId) => directMessageParticipant(this.projection, userId));
   }
 
   /**

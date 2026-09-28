@@ -220,6 +220,16 @@ func (a *API) hydrateRealtimeSnapshotUsers(ctx context.Context, captures map[str
 	for i, userID := range userIDs {
 		capture := captures[userID]
 		hydration.Go(func() error {
+			if capture.snapshot.Deleted() {
+				// Deleted accounts stay DM participants. Send a tombstone so
+				// clients show a deleted user rather than dropping the ID.
+				hydrated[i] = &apiv1.DirectoryMember{User: &apiv1.User{
+					Id:          userID,
+					DisplayName: core.DeletedUserDisplayName,
+					Deleted:     true,
+				}}
+				return nil
+			}
 			content, ok, err := a.core.HydrateUserContentSnapshot(hydrationCtx, capture.snapshot)
 			if err != nil {
 				return fmt.Errorf("hydrate referenced user: %w", err)

@@ -30,6 +30,7 @@ or touch long-press opens the profile menu; avatar clicks open presence settings
   import { setPresenceStatus } from '$lib/presenceTracking';
   import { presencePreferences } from '$lib/state/server/presencePreference.svelte';
   import { buildDirectMessagePresentation } from '$lib/render/users';
+  import { directMessageLabels } from '$lib/render/directMessageLabels';
 
   import { getAppUiState, getRoomSidebarPresentation } from '$lib/state/appUi.svelte';
   import { Button } from '$lib/ui/form';
@@ -107,7 +108,7 @@ or touch long-press opens the profile menu; avatar clicks open presence settings
       return buildDirectMessagePresentation(
         room.members,
         activeStore.projectionViewerId,
-        m('common.you'),
+        directMessageLabels(),
         getLiveDisplayName
       ).label;
     }

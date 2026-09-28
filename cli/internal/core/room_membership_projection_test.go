@@ -123,6 +123,33 @@ func TestRoomDirectoryProjectionPrepareRejectsMalformedEventBeforeCommit(t *test
 	}
 }
 
+func TestRoomDirectoryProjectionKeepsDMMembersOnLeave(t *testing.T) {
+	directory := NewRoomDirectoryProjection()
+	for _, event := range []*evtv1.Event{
+		roomCreatedEvent("DM", "", "", evtv1.RoomKind_ROOM_KIND_DM),
+		joinEvent("DM", "U1"),
+		joinEvent("DM", "U2"),
+		roomCreatedEvent("C1", "general", "", evtv1.RoomKind_ROOM_KIND_CHANNEL),
+		joinEvent("C1", "U1"),
+		joinEvent("C1", "U2"),
+		// Older account deletions wrote leave events for DMs.
+		leaveEvent("DM", "U2"),
+		leaveEvent("C1", "U2"),
+	} {
+		mustApply(t, directory, event)
+	}
+
+	if got := sortedStrings(directory.Membership.Members("DM")); !equal(got, []string{"U1", "U2"}) {
+		t.Errorf("Members(DM) = %v, want [U1 U2]", got)
+	}
+	if !directory.Membership.IsMember("DM", "U2") {
+		t.Error("U2 should stay a DM member after a leave event")
+	}
+	if got := directory.Membership.Members("C1"); !equal(got, []string{"U1"}) {
+		t.Errorf("Members(C1) = %v, want [U1]", got)
+	}
+}
+
 func TestRoomMembershipProjection_EmptyRoomDropped(t *testing.T) {
 	// Room should be removed from the index entirely once it has no
 	// members, so Members/Rooms don't return stale entries.
@@ -215,7 +242,9 @@ func TestRoomMembershipProjection_MalformedEventsRejected(t *testing.T) {
 
 // ---- helpers ----
 
-func mustApply(t *testing.T, p *RoomMembershipProjection, e *evtv1.Event) {
+func mustApply(t *testing.T, p interface {
+	Apply(*evtv1.Event, uint64) error
+}, e *evtv1.Event) {
 	t.Helper()
 	if err := p.Apply(e, 0); err != nil {
 		t.Fatalf("Apply: %v", err)

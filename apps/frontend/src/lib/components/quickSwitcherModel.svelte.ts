@@ -16,6 +16,7 @@ import { m } from '$lib/i18n/messages';
 import { buildMessageLinkPath } from '$lib/messageLinks';
 import { serverIdToSegment } from '$lib/navigation';
 import { buildDirectMessagePresentation, type UserAvatarUserView } from '$lib/render/users';
+import { directMessageLabels } from '$lib/render/directMessageLabels';
 import { quickSwitcher } from '$lib/state/globals.svelte';
 import { recentQuickSwitcher } from '$lib/state/recentQuickSwitcher.svelte';
 import { serverRegistry } from '$lib/state/server/registry.svelte';
@@ -356,7 +357,7 @@ export class QuickSwitcherModel {
           const presentation = buildDirectMessagePresentation(
             participants,
             currentUserId,
-            m('common.you')
+            directMessageLabels()
           );
           // Count full membership, not visible avatars: a group can lose profile data.
           const memberIds =

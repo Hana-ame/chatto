@@ -3,6 +3,7 @@ import { RoomKind } from '$lib/api-client/roomDirectory';
 import type { DMData, RoomData } from '$lib/hooks/useRoomData.svelte';
 import { RoomThreadingMode } from '$lib/roomThreading';
 import { buildRoomPresentation } from './roomPresentation';
+import { deletedDirectMessageParticipant } from '$lib/render/users';
 
 function roomData(overrides: Partial<RoomData> = {}): RoomData {
   return {
@@ -37,7 +38,7 @@ function build(room: RoomData | null | undefined, isDM = false, dmData: DMData |
     isDM,
     dmData,
     directMessageLabel: 'Direct message',
-    currentUserLabel: 'You',
+    participantLabels: { currentUser: 'You', deletedUser: '[deleted user]' },
     getDisplayName: (_userId, fallback) => `Live ${fallback}`
   });
 }
@@ -96,7 +97,7 @@ describe('buildRoomPresentation', () => {
         ]
       },
       directMessageLabel: 'Direct message',
-      currentUserLabel: 'You',
+      participantLabels: { currentUser: 'You', deletedUser: '[deleted user]' },
       getDisplayName
     });
 
@@ -129,9 +130,30 @@ describe('buildRoomPresentation', () => {
     });
   });
 
+  it('names a deleted partner instead of presenting a self direct message', () => {
+    expect(
+      build(roomData(), true, {
+        currentUserId: 'self',
+        participantIds: ['self', 'gone'],
+        participants: [
+          { id: 'self', login: 'me', displayName: 'Me', presenceStatus: 0 },
+          deletedDirectMessageParticipant('gone')
+        ]
+      })
+    ).toEqual({
+      title: '[deleted user]',
+      description: undefined,
+      pageTitle: '[deleted user]'
+    });
+  });
+
   it('uses the direct-message label while participant data is empty', () => {
     expect(
-      build(roomData(), true, { currentUserId: 'self', participantIds: [], participants: [] })
+      build(roomData(), true, {
+        currentUserId: 'self',
+        participantIds: [],
+        participants: []
+      })
     ).toEqual({
       title: 'Direct message',
       description: undefined,

@@ -220,7 +220,9 @@ type RoomWithViewerState struct {
 	Room *Room `protobuf:"bytes,1,opt,name=room,proto3" json:"room,omitempty"`
 	// State and permission decisions resolved for the current user.
 	ViewerState *RoomViewerState `protobuf:"bytes,14,opt,name=viewer_state,json=viewerState,proto3" json:"viewer_state,omitempty"`
-	// Complete participant user IDs for a DM. Empty for channel rooms.
+	// Complete participant user IDs for a DM, including participants whose
+	// accounts were deleted. Clients show those as deleted users. Empty for
+	// channel rooms.
 	MemberUserIds []string `protobuf:"bytes,15,rep,name=member_user_ids,json=memberUserIds,proto3" json:"member_user_ids,omitempty"`
 	// Whether this DM has received a root message. Absent for channel rooms.
 	HasMessageHistory *bool `protobuf:"varint,16,opt,name=has_message_history,json=hasMessageHistory,proto3,oneof" json:"has_message_history,omitempty"`

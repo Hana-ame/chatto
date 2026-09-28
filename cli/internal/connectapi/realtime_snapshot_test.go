@@ -7,6 +7,8 @@ package connectapi
 import (
 	"testing"
 
+	"connectrpc.com/connect"
+
 	"hmans.de/chatto/internal/config"
 	"hmans.de/chatto/internal/core"
 	apiv1 "hmans.de/chatto/internal/pb/chatto/api/v1"
@@ -113,4 +115,57 @@ func TestBuildRealtimeSnapshotHidesDMHistoryWithoutReadPermission(t *testing.T) 
 		return
 	}
 	t.Fatalf("DM %q is absent from realtime snapshot", dm.GetId())
+}
+
+func TestDMWithDeletedParticipantKeepsTheParticipant(t *testing.T) {
+	env := newConnectAPITestEnv(t)
+	peer, err := env.core.CreateUser(env.ctx, core.SystemActorID, "deleted-dm-peer", "Deleted DM Peer", "password")
+	if err != nil {
+		t.Fatalf("CreateUser peer: %v", err)
+	}
+	dm, _, err := env.core.FindOrCreateDM(env.ctx, env.viewer.GetId(), []string{peer.GetId()})
+	if err != nil {
+		t.Fatalf("FindOrCreateDM: %v", err)
+	}
+	if err := env.core.DeleteUser(env.ctx, peer.GetId(), peer.GetId()); err != nil {
+		t.Fatalf("DeleteUser: %v", err)
+	}
+
+	assertParticipants := func(t *testing.T, source string, rooms []*apiv1.RoomWithViewerState) {
+		t.Helper()
+		room := directoryRoomsByID(rooms)[dm.GetId()]
+		if room == nil {
+			t.Fatalf("%s: DM %q is absent", source, dm.GetId())
+		}
+		got := map[string]bool{}
+		for _, id := range room.GetMemberUserIds() {
+			got[id] = true
+		}
+		if len(got) != 2 || !got[env.viewer.GetId()] || !got[peer.GetId()] {
+			t.Fatalf("%s: DM member IDs = %v, want the viewer and the deleted participant", source, room.GetMemberUserIds())
+		}
+	}
+
+	resp, err := env.directory.ListRooms(withCaller(env.ctx, env.viewer), connect.NewRequest(&apiv1.ListRoomsRequest{
+		Scope: apiv1.RoomDirectoryScope_ROOM_DIRECTORY_SCOPE_DMS,
+	}))
+	if err != nil {
+		t.Fatalf("ListRooms: %v", err)
+	}
+	assertParticipants(t, "ListRooms", resp.Msg.GetRooms())
+
+	snapshot, err := env.api.BuildRealtimeSnapshot(env.ctx, env.viewer.GetId())
+	if err != nil {
+		t.Fatalf("BuildRealtimeSnapshot: %v", err)
+	}
+	assertParticipants(t, "BuildRealtimeSnapshot", snapshot.Rooms.GetRooms())
+	var deleted *apiv1.User
+	for _, member := range snapshot.Users.GetUsers() {
+		if member.GetUser().GetId() == peer.GetId() {
+			deleted = member.GetUser()
+		}
+	}
+	if deleted == nil || !deleted.GetDeleted() || deleted.GetLogin() != "" {
+		t.Fatalf("snapshot user for deleted participant = %+v, want a tombstone without PII", deleted)
+	}
 }

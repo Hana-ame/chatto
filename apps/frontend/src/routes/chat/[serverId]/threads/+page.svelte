@@ -49,6 +49,7 @@
   import { useLoadMoreWhenVisible } from '$lib/hooks/useLoadMoreWhenVisible.svelte';
   import { getLiveDisplayName } from '$lib/state/userProfiles.svelte';
   import { buildDirectMessagePresentation } from '$lib/render/users';
+  import { directMessageLabels } from '$lib/render/directMessageLabels';
   import { NotificationAttentionLevel } from '$lib/api-client/notifications';
   import { notificationAttentionForThread } from '$lib/state/server/notifications.svelte';
 
@@ -281,7 +282,7 @@
       return buildDirectMessagePresentation(
         thread.directMessageParticipants,
         serverStore.viewerId,
-        m('common.you'),
+        directMessageLabels(),
         getLiveDisplayName
       ).visibleParticipants;
     }
@@ -296,7 +297,7 @@
     return buildDirectMessagePresentation(
       thread.directMessageParticipants,
       serverStore.viewerId,
-      m('common.you'),
+      directMessageLabels(),
       getLiveDisplayName
     ).label;
   }

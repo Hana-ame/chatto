@@ -85,6 +85,11 @@ RBAC component snapshot contract is v2 and retains decisions from the
 and sidebar-ordering paths use focused `RoomModel` operations instead of
 projection fields on `ChattoCore`. Raw membership reads are named as explicit
 membership so they remain distinct from policy-derived Universal-room access.
+DM membership is fixed at creation: the Room Directory component ignores
+`UserLeftRoom` for DM rooms. Account deletion still records DM leave facts,
+which end the account's DM call participation, so deleted accounts stay DM
+members in current and replayed state. Snapshot semantics v2 records this rule,
+so v1 snapshots are rebuilt.
 
 Any non-cancellation error from checkpoint or snapshot restore, consumer setup,
 or event application moves the projector into its failed state before its run

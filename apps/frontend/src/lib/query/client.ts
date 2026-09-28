@@ -1,5 +1,14 @@
 import { Code, ConnectError } from '@connectrpc/connect';
-import { QueryCache, QueryClient, type InfiniteData, type QueryKey } from '@tanstack/svelte-query';
+import {
+  createInfiniteQuery as createInfiniteQueryWithClient,
+  createMutation as createMutationWithClient,
+  createQuery as createQueryWithClient,
+  QueryCache,
+  QueryClient,
+  type Accessor,
+  type InfiniteData,
+  type QueryKey
+} from '@tanstack/svelte-query';
 import type { RoomSuspensionList } from '$lib/api-client/rooms';
 import { queryCaches } from './cacheRegistry';
 import { serverQueryRoot } from './keys';
@@ -57,6 +66,24 @@ export const queryClient = new QueryClient({
     }
   }
 });
+
+type CreateFunction = (options: never, client?: Accessor<QueryClient>) => unknown;
+
+/**
+ * Bind a TanStack `create*` function to the shared client, keeping its types.
+ *
+ * This replaces a `QueryClientProvider` in a layout. Measured on 2026-09-28, a
+ * provider in the `/chat` layout loads TanStack with every chat page and adds
+ * about 11 KiB gzip to the overview and room routes, which do not use queries.
+ */
+function withSharedClient<F extends CreateFunction>(create: F): F {
+  const bound: CreateFunction = (options, client) => create(options, client ?? (() => queryClient));
+  return bound as F;
+}
+
+export const createQuery = withSharedClient(createQueryWithClient);
+export const createInfiniteQuery = withSharedClient(createInfiniteQueryWithClient);
+export const createMutation = withSharedClient(createMutationWithClient);
 
 /** Remove cached private responses when a server session is disposed. */
 export function removeServerQueries(serverId: string): void {

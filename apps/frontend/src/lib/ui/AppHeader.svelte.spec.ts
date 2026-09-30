@@ -11,8 +11,8 @@ const { mocks } = vi.hoisted(() => ({
     activeStore: undefined as
       | {
           serverInfo: { motd: string };
-          notifications: {
-            attention: {
+          attention: {
+            counts: {
               unreadNotificationCount: number;
               importantUnreadNotificationCount: number;
             };
@@ -27,18 +27,14 @@ const { mocks } = vi.hoisted(() => ({
   }
 }));
 
-vi.mock('$app/navigation', () => ({ pushState: mocks.pushState }));
-vi.mock('$app/paths', () => ({
-  base: '',
-  assets: '',
-  resolve: (path: string, params?: Record<string, string>) =>
-    params?.serverId ? path.replace('[serverId]', params.serverId) : path
-}));
-vi.mock('$app/environment', () => ({ version: '0.5.0-dev+f7b4e515c998' }));
-vi.mock('$lib/state/activeServer.svelte', () => ({
-  getActiveServer: () => mocks.activeServer
-}));
-vi.mock('$lib/state/server/registry.svelte', () => ({
+// The store mock also carries the frontend UI state of its server.
+vi.mock(
+  '$lib/state/server/serverUi',
+  async () => (await import('$lib/test-utils/serverUiMock')).serverUiIsStore
+);
+
+vi.mock('$lib/client', async () => ({
+  ...(await import('$lib/test-utils/clientMock')).clientMockDefaults,
   serverRegistry: {
     get servers() {
       return mocks.servers;
@@ -56,15 +52,25 @@ vi.mock('$lib/state/server/registry.svelte', () => ({
         : undefined,
     getStore: mocks.getStore,
     tryGetStore: (id: string) => (id === mocks.activeServer ? mocks.activeStore : undefined)
-  }
-}));
-vi.mock('$lib/state/server/serverConnection.svelte', () => ({
+  },
   serverConnectionManager: {
     originClient: {
       showConnectionLostIcon: false,
       showConnectionLostBanner: false
     }
   }
+}));
+
+vi.mock('$app/navigation', () => ({ pushState: mocks.pushState }));
+vi.mock('$app/paths', () => ({
+  base: '',
+  assets: '',
+  resolve: (path: string, params?: Record<string, string>) =>
+    params?.serverId ? path.replace('[serverId]', params.serverId) : path
+}));
+vi.mock('$app/environment', () => ({ version: '0.5.0-dev+f7b4e515c998' }));
+vi.mock('$lib/state/activeServer.svelte', () => ({
+  getActiveServer: () => mocks.activeServer
 }));
 vi.mock('$lib/state/globals.svelte', () => ({
   sidebarNav: {
@@ -118,7 +124,7 @@ describe('AppHeader', () => {
   it('shows notifications when a server is registered', () => {
     mocks.servers = [{ id: 'remote' }];
     mocks.getStore.mockReturnValue({
-      notifications: { attention: { unreadNotificationCount: 0 } }
+      attention: { counts: { unreadNotificationCount: 0 } }
     });
 
     const { container } = render(AppHeader);
@@ -141,7 +147,7 @@ describe('AppHeader', () => {
     mocks.activeServer = 'remote';
     mocks.authenticated = { remote: true };
     mocks.getStore.mockReturnValue({
-      notifications: { attention: { unreadNotificationCount: 0 } }
+      attention: { counts: { unreadNotificationCount: 0 } }
     });
 
     const { container } = render(AppHeader);
@@ -187,8 +193,8 @@ describe('AppHeader', () => {
         await empty.unmount();
         mocks.activeStore = {
           serverInfo: { motd },
-          notifications: {
-            attention: { unreadNotificationCount: 0, importantUnreadNotificationCount: 0 }
+          attention: {
+            counts: { unreadNotificationCount: 0, importantUnreadNotificationCount: 0 }
           }
         };
         const { container, getByRole } = render(AppHeader);

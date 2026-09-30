@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
 import { page } from 'vitest/browser';
-import { MINIMUM_SUPPORTED_SERVER_VERSION } from '$lib/state/server/compatibility';
+import { MINIMUM_SUPPORTED_SERVER_VERSION } from '@chatto/client/server/compatibility';
 import { createTestServerScope } from '$lib/test-utils/serverScope.svelte';
 
 vi.mock(

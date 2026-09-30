@@ -3,9 +3,9 @@ import { page } from '$app/state';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
 import { q, testSnippet } from '$lib/test-utils';
-import type { PublicServerInfo } from '$lib/api-client/server';
+import type { PublicServerInfo } from '@chatto/client/api/server';
 import { sidebarNav } from '$lib/state/globals.svelte';
-import { serverRegistry } from '$lib/state/server/registry.svelte';
+import { serverRegistry } from '$lib/client';
 
 const { mocks } = vi.hoisted(() => ({
   mocks: {
@@ -24,6 +24,23 @@ const { mocks } = vi.hoisted(() => ({
       forceReconnect: vi.fn()
     },
     updateAppBadge: vi.fn(async () => {})
+  }
+}));
+
+vi.mock('$lib/client', async () => ({
+  ...(await import('$lib/test-utils/clientMock')).clientMockDefaults,
+  serverRegistry: {
+    servers: [],
+    originServer: { id: 'origin' },
+    getStore: vi.fn(),
+    getServer: vi.fn(() => ({ userId: 'U1' })),
+    tryGetStore: vi.fn(() => null),
+    isAuthenticated: vi.fn(() => false),
+    firstAuthenticatedServerId: vi.fn(() => undefined)
+  },
+  serverConnectionManager: {
+    originClient: mocks.originClient,
+    getClient: vi.fn(() => mocks.originClient)
   }
 }));
 
@@ -112,24 +129,8 @@ vi.mock('$lib/state/server/ServerRuntimeCoordinator.svelte', async () => ({
   default: (await import('./chat/ChatRootTestStub.svelte')).default
 }));
 
-vi.mock('$lib/state/server/registry.svelte', () => ({
-  generateServerId: vi.fn(() => 'server-id'),
-  serverRegistry: {
-    servers: [],
-    originServer: { id: 'origin' },
-    getStore: vi.fn(),
-    getServer: vi.fn(() => ({ userId: 'U1' })),
-    tryGetStore: vi.fn(() => null),
-    isAuthenticated: vi.fn(() => false),
-    firstAuthenticatedServerId: vi.fn(() => undefined)
-  }
-}));
-
-vi.mock('$lib/state/server/serverConnection.svelte', () => ({
-  serverConnectionManager: {
-    originClient: mocks.originClient,
-    getClient: vi.fn(() => mocks.originClient)
-  }
+vi.mock('@chatto/client/server/registry', () => ({
+  generateServerId: vi.fn(() => 'server-id')
 }));
 
 import Layout from './+layout.svelte';

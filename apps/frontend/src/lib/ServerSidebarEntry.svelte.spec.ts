@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render } from 'vitest-browser-svelte';
 import { SvelteSet } from 'svelte/reactivity';
 
-import { NotificationSignalKind } from '$lib/api-client/notifications';
+import { NotificationSignalKind } from '@chatto/client/api/notifications';
 import { q } from '$lib/test-utils';
 import { page } from '$app/state';
 
@@ -12,6 +12,7 @@ const connectionLostServers = new SvelteSet<string>();
 const { mocks } = vi.hoisted(() => {
   return {
     mocks: {
+      notificationPath: vi.fn().mockReturnValue('/chat/remote.example.com/room-1'),
       getAuthenticatedServerState: vi.fn(),
       getViewerStateViaConnect: vi.fn(),
       createRoomDirectoryAPI: vi.fn(),
@@ -61,8 +62,7 @@ const { mocks } = vi.hoisted(() => {
           },
           getNonDMNotification: vi.fn().mockReturnValue(null),
           getDMNotification: vi.fn().mockReturnValue(null),
-          markRead: vi.fn(),
-          getCleanPath: vi.fn().mockReturnValue('/chat/remote.example.com/room-1')
+          markRead: vi.fn()
         },
         roomUnread: {
           hasAnyUnread: true,
@@ -86,11 +86,53 @@ const { mocks } = vi.hoisted(() => {
             reason: 'version-confirmed'
           }
         },
-        serverIndicator: vi.fn().mockReturnValue(null)
+        serverIndicator: vi.fn().mockReturnValue(null),
+        /** Notification attention; it forwards to the notification mocks. */
+        get attention() {
+          const notifications = this.notifications;
+          return {
+            get counts() {
+              return notifications.attention;
+            },
+            getNonDMNotification: notifications.getNonDMNotification,
+            getDMNotification: notifications.getDMNotification
+          };
+        }
       }
     }
   };
 });
+
+// The store mock also carries the frontend UI state of its server.
+vi.mock(
+  '$lib/state/server/serverUi',
+  async () => (await import('$lib/test-utils/serverUiMock')).serverUiIsStore
+);
+
+vi.mock('$lib/client', async () => ({
+  ...(await import('$lib/test-utils/clientMock')).clientMockDefaults,
+  serverRegistry: {
+    needsRecovery: () =>
+      Boolean(
+        mocks.server.token && mocks.server.reauthRequiredAt === null && !mocks.store.isAuthenticated
+      ),
+    recoverServer: mocks.recoverServer,
+    isOriginServer: mocks.isOriginServer,
+    getServer: vi.fn((id: string) => (id === mocks.server.id ? mocks.server : undefined)),
+    getStore: vi.fn(() => mocks.store)
+  },
+  serverConnectionManager: {
+    getClient: vi.fn(() => ({
+      get showConnectionLostIcon() {
+        return connectionLostServers.has('remote') || mocks.showConnectionLostIcon;
+      },
+      connectBaseUrl: 'https://remote.example.com/api/connect',
+      bearerToken: 'token'
+    }))
+  }
+}));
+
+vi.mock('$lib/notificationPath', () => ({ notificationPath: mocks.notificationPath }));
 
 vi.mock('$app/state', () => ({
   page: {
@@ -123,40 +165,15 @@ vi.mock('$lib/state/appUi.svelte', () => ({
   getAppUiState: () => mocks.appUi
 }));
 
-vi.mock('$lib/state/server/serverConnection.svelte', () => ({
-  serverConnectionManager: {
-    getClient: vi.fn(() => ({
-      get showConnectionLostIcon() {
-        return connectionLostServers.has('remote') || mocks.showConnectionLostIcon;
-      },
-      connectBaseUrl: 'https://remote.example.com/api/connect',
-      bearerToken: 'token'
-    }))
-  }
-}));
-
-vi.mock('$lib/state/server/registry.svelte', () => ({
-  serverRegistry: {
-    needsRecovery: () =>
-      Boolean(
-        mocks.server.token && mocks.server.reauthRequiredAt === null && !mocks.store.isAuthenticated
-      ),
-    recoverServer: mocks.recoverServer,
-    isOriginServer: mocks.isOriginServer,
-    getServer: vi.fn((id: string) => (id === mocks.server.id ? mocks.server : undefined)),
-    getStore: vi.fn(() => mocks.store)
-  }
-}));
-
-vi.mock('$lib/api-client/serverState', () => ({
+vi.mock('@chatto/client/api/serverState', () => ({
   getAuthenticatedServerState: mocks.getAuthenticatedServerState
 }));
 
-vi.mock('$lib/api-client/viewer', () => ({
+vi.mock('@chatto/client/api/viewer', () => ({
   getViewerStateViaConnect: mocks.getViewerStateViaConnect
 }));
 
-vi.mock('$lib/api-client/roomDirectory', () => ({
+vi.mock('@chatto/client/api/roomDirectory', () => ({
   RoomDirectoryScope: {
     ALL: 1,
     CHANNELS: 2,
@@ -182,7 +199,7 @@ vi.mock('$lib/state/clientAccount', () => ({
   clientAccount: { signOutCurrentServer: mocks.signOutCurrentServer }
 }));
 
-vi.mock('$lib/auth/signOut', () => ({
+vi.mock('$lib/auth/signOutRedirect', () => ({
   hardRedirectAfterSignOut: mocks.hardRedirectAfterSignOut
 }));
 
@@ -278,7 +295,7 @@ describe('ServerSidebarEntry', () => {
     mocks.store.notifications.getNonDMNotification.mockReturnValue(null);
     mocks.store.notifications.getDMNotification.mockReturnValue(null);
     mocks.store.notifications.markRead.mockClear();
-    mocks.store.notifications.getCleanPath.mockReturnValue('/chat/remote.example.com/room-1');
+    mocks.notificationPath.mockReturnValue('/chat/remote.example.com/room-1');
     mocks.store.roomUnread.clear.mockClear();
     mocks.store.roomUnread.captureSnapshotRevision.mockClear();
     mocks.store.roomUnread.captureSnapshotRevision.mockReturnValue(0);
@@ -1006,9 +1023,7 @@ describe('ServerSidebarEntry', () => {
     mocks.store.notifications.unreadNotificationCount = 1;
     mocks.store.notifications.importantUnreadNotificationCount = 1;
     mocks.store.notifications.getNonDMNotification.mockReturnValue(notification);
-    mocks.store.notifications.getCleanPath.mockReturnValue(
-      '/chat/remote.example.com/room-1/thread-1'
-    );
+    mocks.notificationPath.mockReturnValue('/chat/remote.example.com/room-1/thread-1');
 
     const { container } = render(ServerSidebarEntry, {
       props: {

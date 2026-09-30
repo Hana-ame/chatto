@@ -1,17 +1,17 @@
-import type { MemberDirectoryAPI } from '$lib/api-client/memberDirectory';
+import type { MemberDirectoryAPI } from '@chatto/client/api/memberDirectory';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
 import { tick } from 'svelte';
 import { q } from '$lib/test-utils';
 import { RoomKind } from '@chatto/api-types/api/v1/rooms_pb';
-import { RoomThreadingMode } from '$lib/roomThreading';
-import { RealtimeProjectionUpdate } from '$lib/eventBus.svelte';
+import { RoomThreadingMode } from '@chatto/client/util/roomThreading';
+import { RealtimeProjectionUpdate } from '@chatto/client/realtime/eventBus';
 import { MessagePostedEvent, UserJoinedRoomEvent } from '@chatto/api-types/realtime/v1/events_pb';
 import { RealtimeEvent as PublicRealtimeEvent } from '@chatto/api-types/realtime/v1/realtime_pb';
-import type { RoomTimelineAPI } from '$lib/api-client/roomTimeline';
-import { TimelineEventKind } from '$lib/render/timelineEvents';
+import type { RoomTimelineAPI } from '@chatto/client/api/roomTimeline';
+import { TimelineEventKind } from '@chatto/client/timeline/timelineEvents';
 import { MessagesStore, RoomMembersStore } from '$lib/state/room';
-import { MessageSearchState } from '$lib/state/server/messageSearch.svelte';
+import { MessageSearchState } from '$lib/state/server/messageSearch';
 import { userPreferences } from '$lib/state/userPreferences.svelte';
 import { getToasts, toast } from '$lib/ui/toast';
 import { createTestServerScope, type TestServerScope } from '$lib/test-utils/serverScope.svelte';
@@ -63,6 +63,21 @@ const mocks = vi.hoisted(() => ({
   mentionRoles: {
     roles: [],
     refresh: vi.fn().mockResolvedValue(true)
+  }
+}));
+
+// The store mock also carries the frontend UI state of its server.
+vi.mock(
+  '$lib/state/server/serverUi',
+  async () => (await import('$lib/test-utils/serverUiMock')).serverUiIsStore
+);
+
+vi.mock('$lib/client', async () => ({
+  ...(await import('$lib/test-utils/clientMock')).clientMockDefaults,
+  serverRegistry: {
+    getStore: () => server.scope.store,
+    originServer: { id: 'server-1', url: 'https://chat.example.test' },
+    getServer: () => ({ id: 'server-1', url: 'https://chat.example.test' })
   }
 }));
 
@@ -173,21 +188,13 @@ vi.mock(
 
 let server: TestServerScope;
 
-vi.mock('$lib/api-client/roomTimeline', async (importActual) => {
-  const actual = await importActual<typeof import('$lib/api-client/roomTimeline')>();
+vi.mock('@chatto/client/api/roomTimeline', async (importActual) => {
+  const actual = await importActual<typeof import('@chatto/client/api/roomTimeline')>();
   return {
     ...actual,
     createRoomTimelineAPI: () => mocks.timeline
   };
 });
-
-vi.mock('$lib/state/server/registry.svelte', () => ({
-  serverRegistry: {
-    getStore: () => server.scope.store,
-    originServer: { id: 'server-1', url: 'https://chat.example.test' },
-    getServer: () => ({ id: 'server-1', url: 'https://chat.example.test' })
-  }
-}));
 
 vi.mock('$lib/state/activeServer.svelte', () => ({
   getActiveServer: () => 'wrong-server'
@@ -434,9 +441,9 @@ beforeEach(() => {
         messages: mocks.roomMessages,
         members: mocks.roomMembers,
         files: () => ({ retain: mocks.roomFilesRetain }),
-        pins: () => ({ retain: () => () => {}, markSeen: () => {}, hasUnseen: false }),
-        search: () => ({})
+        pins: () => ({ retain: () => () => {}, markSeen: () => {}, hasUnseen: false })
       },
+      roomSearch: () => ({}),
       restoreProjectedRoomWindow: mocks.restoreProjectedRoomWindow
     }
   });
@@ -510,7 +517,8 @@ describe('Room interaction bundles', () => {
 
       render(Room, { props: { roomId: 'room-1' } });
       await vi.waitFor(() => expect(api.listRoomMembers).toHaveBeenCalledOnce());
-      if (state === 'failed') await vi.waitFor(() => expect(store.loadError).toBe('offline'));
+      if (state === 'failed')
+        await vi.waitFor(() => expect(store.loadError).toMatchObject({ message: 'offline' }));
 
       store.resetProjectionState();
       await vi.waitFor(() => expect(api.listRoomMembers).toHaveBeenCalledTimes(2));

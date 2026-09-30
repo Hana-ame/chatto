@@ -18,19 +18,8 @@ const { mocks } = vi.hoisted(() => ({
   }
 }));
 
-vi.mock('$lib/auth/signOut', () => ({
-  beginExplicitSignOutRedirect: mocks.beginExplicitSignOutRedirect,
-  cancelExplicitSignOutRedirect: mocks.cancelExplicitSignOutRedirect,
-  ServerLogoutRejectedError: class ServerLogoutRejectedError extends Error {},
-  signOutServer: mocks.signOutServer,
-  signOutServers: mocks.signOutServers
-}));
-vi.mock('$lib/auth/sessionChannel', () => ({ notifyLogout: mocks.notifyLogout }));
-vi.mock('$lib/notifications/pushNotifications', () => ({
-  unsubscribeBeforeLeaving: mocks.unsubscribePushBeforeLeaving
-}));
-vi.mock('$lib/storage/lastRoom', () => ({ clearLastRoom: mocks.clearLastRoom }));
-vi.mock('$lib/state/server/registry.svelte', () => ({
+vi.mock('$lib/client', async () => ({
+  ...(await import('$lib/test-utils/clientMock')).clientMockDefaults,
   serverRegistry: {
     get servers() {
       return mocks.servers;
@@ -45,6 +34,19 @@ vi.mock('$lib/state/server/registry.svelte', () => ({
     resetToOrigin: mocks.resetToOrigin
   }
 }));
+
+vi.mock('@chatto/client/auth/signOut', () => ({
+  beginExplicitSignOutRedirect: mocks.beginExplicitSignOutRedirect,
+  cancelExplicitSignOutRedirect: mocks.cancelExplicitSignOutRedirect,
+  ServerLogoutRejectedError: class ServerLogoutRejectedError extends Error {},
+  signOutServer: mocks.signOutServer,
+  signOutServers: mocks.signOutServers
+}));
+vi.mock('$lib/auth/sessionChannel', () => ({ notifyLogout: mocks.notifyLogout }));
+vi.mock('$lib/notifications/pushNotifications', () => ({
+  unsubscribeBeforeLeaving: mocks.unsubscribePushBeforeLeaving
+}));
+vi.mock('$lib/storage/lastRoom', () => ({ clearLastRoom: mocks.clearLastRoom }));
 
 import { clientAccount } from './clientAccount';
 
@@ -109,7 +111,7 @@ describe('ClientAccountCoordinator', () => {
   });
 
   it('preserves authentication when the server rejects logout', async () => {
-    const { ServerLogoutRejectedError } = await import('$lib/auth/signOut');
+    const { ServerLogoutRejectedError } = await import('@chatto/client/auth/signOut');
     mocks.signOutServer.mockRejectedValueOnce(new ServerLogoutRejectedError(503));
 
     await expect(clientAccount.signOutCurrentServer('origin')).rejects.toBeInstanceOf(

@@ -1,11 +1,11 @@
 <script lang="ts">
   import { page } from '$app/state';
+  import { serverUi } from '$lib/state/server/serverUi';
   import { goto, pushState } from '$app/navigation';
   import { resolve } from '$app/paths';
   import { serverIdToSegment } from '$lib/navigation';
-  import { serverRegistry } from '$lib/state/server/registry.svelte';
-  import { serverConnectionManager } from '$lib/state/server/serverConnection.svelte';
-  import { notificationTarget } from '$lib/state/server/notifications.svelte';
+  import { serverRegistry, serverConnectionManager } from '$lib/client';
+  import { notificationTarget } from '@chatto/client/server/notifications';
   import { prepareUiForNotificationTarget } from '$lib/notifications/notificationNavigationUi';
   import { getAppUiState } from '$lib/state/appUi.svelte';
   import ServerIcon from './ServerIcon.svelte';
@@ -20,9 +20,10 @@
   import NavigationContextMenu from '$lib/components/menus/NavigationContextMenu.svelte';
   import { markNavigationServerAsRead } from '$lib/navigation/readActions';
   import { beginOriginReauthentication, startRemoteReauthentication } from '$lib/auth/reauth';
-  import { hardRedirectAfterSignOut } from '$lib/auth/signOut';
+  import { hardRedirectAfterSignOut } from '$lib/auth/signOutRedirect';
   import { clientAccount } from '$lib/state/clientAccount';
   import { toast } from '$lib/ui/toast';
+  import { notificationPath } from '$lib/notificationPath';
 
   let { serverId }: { serverId: string } = $props();
 
@@ -33,7 +34,7 @@
   // svelte-ignore state_referenced_locally - serverId is stable per component lifetime (keyed by server.id)
   const stores = serverRegistry.getStore(serverId);
   const notificationStore = stores.notifications;
-  const roomUnreadStore = stores.roomUnread;
+  const roomUnreadStore = serverUi(stores).roomUnread;
   const appUi = getAppUiState();
   // eslint-disable-next-line svelte/no-unused-svelte-ignore -- Svelte compiler warning, not ESLint
   // svelte-ignore state_referenced_locally - serverId is stable per component lifetime (keyed by server.id)
@@ -237,7 +238,8 @@
   // notifications when both are present.
   async function handleServerNotificationClick() {
     const notification =
-      notificationStore.getNonDMNotification() ?? notificationStore.getDMNotification();
+      serverUi(stores).attention.getNonDMNotification() ??
+      serverUi(stores).attention.getDMNotification();
     if (!notification || !notification.targetSupported) {
       await goto(resolve('/chat/notifications'));
       return;
@@ -246,7 +248,7 @@
     const target = notificationTarget(notification);
     prepareUiForNotificationTarget(appUi, serverId, target);
     if (target.eventId && target.roomId) {
-      stores.pendingHighlights.set(
+      serverUi(stores).pendingHighlights.set(
         target.roomId,
         target.threadRootId,
         target.eventId,
@@ -254,7 +256,7 @@
       );
     }
 
-    const path = notificationStore.getCleanPath(serverId, notification);
+    const path = notificationPath(serverId, notification);
     await goto(resolve(path as '/'));
   }
 
@@ -283,9 +285,9 @@
     ? resolve('/setup')
     : resolve('/chat/[serverId]', { serverId: serverSegment })}
   selected={isActiveServer}
-  indicator={stores.serverIndicator()}
-  notificationCount={notificationStore.attention.unreadNotificationCount}
-  importantNotificationCount={notificationStore.attention.importantUnreadNotificationCount}
+  indicator={serverUi(stores).serverIndicator()}
+  notificationCount={serverUi(stores).attention.counts.unreadNotificationCount}
+  importantNotificationCount={serverUi(stores).attention.counts.importantUnreadNotificationCount}
   onclick={handleServerClick}
   onIndicatorClick={handleServerIndicatorClick}
   contextMenuTrigger={serverContextMenuTrigger}

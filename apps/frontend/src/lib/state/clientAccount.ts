@@ -4,11 +4,11 @@ import {
   ServerLogoutRejectedError,
   signOutServer,
   signOutServers
-} from '$lib/auth/signOut';
+} from '@chatto/client/auth/signOut';
 import { notifyLogout } from '$lib/auth/sessionChannel';
 import { unsubscribeBeforeLeaving as unsubscribePushBeforeLeaving } from '$lib/notifications/pushNotifications';
 import { clearLastRoom } from '$lib/storage/lastRoom';
-import { serverRegistry } from '$lib/state/server/registry.svelte';
+import { serverRegistry } from '$lib/client';
 
 export interface ClientAccountNavigation {
   kind: 'hard' | 'soft';

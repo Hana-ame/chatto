@@ -10,11 +10,11 @@ discovery has a result; see `ServerInfoState.compatibilityProblem`.
 <script lang="ts">
   import ServerLogo from '$lib/components/ServerLogo.svelte';
   import { m } from '$lib/i18n/messages';
-  import type { ServerRegistration } from '$lib/state/server/catalog.svelte';
+  import type { ServerRegistration } from '@chatto/client/server/catalog';
   import {
     MINIMUM_SUPPORTED_SERVER_VERSION,
     type ServerCompatibilityProblem
-  } from '$lib/state/server/compatibility';
+  } from '@chatto/client/server/compatibility';
   import { useServerScope } from '$lib/state/server/scope.svelte';
   import { PageTitle } from '$lib/ui';
   import { Button } from '$lib/ui/form';

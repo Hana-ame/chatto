@@ -6,15 +6,14 @@
  * still treated as a notification trigger rather than authoritative app state.
  */
 
-import { createPushNotificationAPI } from '$lib/api-client/pushNotifications';
-import type { PushNotificationAPI } from '$lib/api-client/pushNotifications';
-import { isBackendCapableOrigin } from '$lib/runtimeOrigin';
+import { createPushNotificationAPI } from '$lib/api/pushNotifications';
+import type { PushNotificationAPI } from '$lib/api/pushNotifications';
+import { isBackendCapableOrigin } from '@chatto/client/util/runtimeOrigin';
 import {
   NOTIFICATION_CLICK_ACK_MESSAGE_TYPE,
   NOTIFICATION_CLICK_MESSAGE_TYPE
 } from '$lib/pwa/notificationClick.worker';
-import { serverConnectionManager } from '$lib/state/server/serverConnection.svelte';
-import { serverRegistry } from '$lib/state/server/registry.svelte';
+import { serverConnectionManager, serverRegistry } from '$lib/client';
 import {
   completePushRegistrationRefresh,
   enqueuePushRegistration,

@@ -1,10 +1,9 @@
-import '$lib/apiClientHooks';
 import { redirect } from '@sveltejs/kit';
 import { loadCurrentUser } from '$lib/auth/loadAuth';
-import { getPublicServerInfo } from '$lib/api-client/server';
+import { getPublicServerInfo } from '@chatto/client/api/server';
 import { preloadPublicLocaleMessages } from '$lib/i18n/messages';
-import { isBackendCapableOrigin } from '$lib/runtimeOrigin';
-import { serverRegistry } from '$lib/state/server/registry.svelte';
+import { isBackendCapableOrigin } from '@chatto/client/util/runtimeOrigin';
+import { serverRegistry } from '$lib/client';
 import { deleteLegacySavedViews } from '$lib/storage/legacySavedViews';
 import type { LayoutLoad } from './$types';
 
@@ -32,7 +31,7 @@ export const load: LayoutLoad = async ({ url }) => {
           if (!info) return null;
           await serverRegistry.probeOrigin(false, undefined, info);
         }
-        return loadCurrentUser();
+        return loadCurrentUser(serverRegistry);
       })()
     : Promise.resolve(null);
   const [, serverInfo, user] = await Promise.all([

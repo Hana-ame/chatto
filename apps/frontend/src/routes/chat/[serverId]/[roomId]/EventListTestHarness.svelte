@@ -1,7 +1,13 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
+  import { setTimelineViewport } from '$lib/state/room/timelineViewport';
+  import type { MessagesStore } from '@chatto/client/room/messages/MessagesStore';
   import { onMount } from 'svelte';
   import { PresenceStatus } from '@chatto/api-types/api/v1/presence_pb';
-  import { TimelineEventKind, type TimelineEventView } from '$lib/render/timelineEvents';
+  import {
+    TimelineEventKind,
+    type TimelineEventView
+  } from '@chatto/client/timeline/timelineEvents';
   import {
     createComposerContext,
     createRoomMembers,
@@ -118,25 +124,34 @@
       return hasReachedStart;
     },
     loadMore: async () => {},
-    loadNewer: async () => {},
-    jumpToPresent: async () => (await onJumpToPresent?.()) ?? false,
-    get recoveryViewport() {
+    canLoadNewer: false,
+    loadNewer: async () => ({ status: 'declined' }),
+    jumpToLatest: async () => (await onJumpToPresent?.()) ?? false,
+    get recoveryAnchor() {
       onStoreRead?.();
-      return recoveryViewport;
+      return recoveryViewport
+        ? { eventId: recoveryViewport.eventId, hasNewer: recoveryViewport.hasNewer }
+        : null;
     },
-    set recoveryViewport(value) {
-      recoveryViewport = value;
-    },
-    clearViewport: () => {
+    completeRecovery: () => {
       recoveryViewport = null;
     },
-    setViewport: () => {},
+    clearAnchor: () => {
+      recoveryViewport = null;
+    },
+    setAnchor: () => true,
     refreshCurrentWindow: async () => ({
       hasOlder: false,
       hasNewer: false,
       refreshed: false,
       changed: false
     })
+  });
+  // Keep the recovery offset where the room view keeps it.
+  untrack(() => {
+    if (recoveryViewport) {
+      setTimelineViewport(messageStore as unknown as MessagesStore, recoveryViewport);
+    }
   });
 </script>
 

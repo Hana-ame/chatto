@@ -1,14 +1,25 @@
 <script lang="ts">
   import { onDestroy, tick, untrack } from 'svelte';
+  import {
+    clearTimelineViewport,
+    isLoadingOlder,
+    loadOlder,
+    recoveryViewport,
+    setTimelineViewport
+  } from '$lib/state/room/timelineViewport';
+  import { serverUi } from '$lib/state/server/serverUi';
   import { SvelteSet } from 'svelte/reactivity';
   import { fade } from 'svelte/transition';
   import { Virtualizer, type VirtualizerHandle } from 'virtua/svelte';
   import { m } from '$lib/i18n/messages';
   import { getLocale } from '$lib/i18n/runtime';
-  import { isMessagePostedEvent, type TimelineEventView } from '$lib/render/timelineEvents';
+  import {
+    isMessagePostedEvent,
+    type TimelineEventView
+  } from '@chatto/client/timeline/timelineEvents';
   import type { MessagesStore, RoomMember } from '$lib/state/room';
   import { getComposerContext, getRoomMembers, getRoomPermissions } from '$lib/state/room';
-  import type { UserAvatarUserView } from '$lib/render/users';
+  import type { UserAvatarUserView } from '@chatto/client/timeline/users';
   import RoomEvent from './RoomEvent.svelte';
   import MessageUserOverlays from './MessageUserOverlays.svelte';
   import { MessageUserInteractionState } from './messageUserInteractions.svelte';
@@ -21,14 +32,14 @@
   import { findLastEditableMessage } from './lastEditableMessage';
   import { LoadingDots, ScrollFader } from '$lib/ui';
   import { useServerScope } from '$lib/state/server/scope.svelte';
-  import { INITIAL_ROOM_MESSAGE_BACKFILL_TARGET } from '$lib/state/room/messages/MessagesStore.svelte';
+  import { INITIAL_ROOM_MESSAGE_BACKFILL_TARGET } from '@chatto/client/room/messages/MessagesStore';
   import { formatDayLabel, timeFormatSettingsFor } from '$lib/utils/formatTime';
   import { useTabResumeCallback } from '$lib/hooks/useTabResumeCallback.svelte';
   import type { OpenThreadHandler, ThreadOpenOptions } from './threadOpenOptions';
   import { convergeAtBottom } from './bottomScrollConvergence';
   import { visibleTombstoneEvents, visibleUnreadMarkerEventId } from './tombstoneVisibility';
   import { TimelineViewportController } from './TimelineViewportController.svelte';
-  import { RoomThreadingMode } from '$lib/roomThreading';
+  import { RoomThreadingMode } from '@chatto/client/util/roomThreading';
   import { appState } from '$lib/state/globals.svelte';
   import type { TimelineReadPosition } from './readThroughTracker';
 
@@ -117,7 +128,8 @@
   const scrollState = composerContext.scrollState;
   const jumpState = composerContext.jumpState;
   const isLoading = $derived(messageStore.isInitialLoading);
-  const isLoadingMore = $derived(messageStore.isLoadingMore);
+  // Stays true one frame after a page, so virtua's `shift` keeps the position.
+  const isLoadingMore = $derived(isLoadingOlder(messageStore));
   const hasReachedStart = $derived(messageStore.hasReachedStart);
   const isJumpedMode = $derived(jumpState.isJumpedMode);
   const isLoadingNewer = $derived(jumpState.isLoadingNewer);
@@ -257,7 +269,7 @@
   function reportReadPosition() {
     if (!onReadPosition) return;
     // A loading or recovering window is not what the viewer sees yet.
-    if (isLoading || stores.realtimeSync.isRecoveringSnapshot || messageStore.recoveryViewport) {
+    if (isLoading || stores.realtimeSync.isRecoveringSnapshot || recoveryViewport(messageStore)) {
       return;
     }
     const position = currentReadPosition();
@@ -280,7 +292,7 @@
     void viewport.shouldScrollToBottom;
     void isLoading;
     void stores.realtimeSync.isRecoveringSnapshot;
-    void messageStore.recoveryViewport;
+    void recoveryViewport(messageStore);
     untrack(reportReadPosition);
   });
 
@@ -385,7 +397,7 @@
 
   // Build a DOM command only after fresh authority and the virtualizer are ready.
   const recoveryTarget = $derived.by(() => {
-    const position = messageStore.recoveryViewport;
+    const position = recoveryViewport(messageStore);
     if (!position || isLoading || stores.realtimeSync.isRecoveringSnapshot) return null;
     const items = virtualItems;
     if (items.length > 0 && !virtualizerHandle) return null;
@@ -409,7 +421,7 @@
     if (!effectiveUnreadAfterEventId || isJumpedMode) return null;
     if (!appState.isPresent) return null;
     if (!virtualizerHandle || virtualItems.length === 0) return null;
-    if (messageStore.recoveryViewport || stores.realtimeSync.isRecoveringSnapshot) return null;
+    if (recoveryViewport(messageStore) || stores.realtimeSync.isRecoveringSnapshot) return null;
     return { timelineKey, skip: false };
   });
 
@@ -427,7 +439,7 @@
 
   /** Coordinates belong to this mounted timeline, not to its cached store. */
   function ownViewport(store: MessagesStore) {
-    return () => () => store.clearViewport();
+    return () => () => clearTimelineViewport(store);
   }
 
   /** Apply the derived scroll command after layout; detach cancels pending work. */
@@ -443,9 +455,9 @@
           jumpState.isJumpedMode = position.hasNewer ?? false;
           jumpState.hasReachedEnd = !position.hasNewer;
           safeScrollToIndex(index, { align: 'start', offset: position.offset });
-          store.recoveryViewport = null;
+          store.completeRecovery();
         } else {
-          store.clearViewport();
+          clearTimelineViewport(store);
           jumpState.reset();
           viewport.followBottom();
           void requestBottomScroll();
@@ -470,7 +482,8 @@
   }
 
   function requestBottomScroll(): Promise<boolean> | undefined {
-    if (stores.realtimeSync.isRecoveringSnapshot || messageStore.recoveryViewport) return undefined;
+    if (stores.realtimeSync.isRecoveringSnapshot || recoveryViewport(messageStore))
+      return undefined;
     if (!scrollContainer || !virtualizerHandle || virtualItems.length === 0) return undefined;
 
     const token = viewport.beginBottomScroll(roomId);
@@ -479,7 +492,7 @@
         // Check lifetime before reading derived props from the old room.
         !destroyed &&
         !stores.realtimeSync.isRecoveringSnapshot &&
-        !messageStore.recoveryViewport &&
+        !recoveryViewport(messageStore) &&
         viewport.canContinueBottomScroll(token, roomId, isJumpedMode) &&
         Boolean(scrollContainer && virtualizerHandle),
       waitForFrame: async () => {
@@ -558,7 +571,7 @@
     onReachedBottom?.();
     const requestedRoomId = roomId;
     const intentRevision = viewport.captureIntentRevision();
-    if (!(await messageStore.jumpToPresent(jumpState))) return;
+    if (!(await jumpState.returnToLatest(messageStore))) return;
     await tick();
     if (roomId !== requestedRoomId || !viewport.hasIntentRevision(intentRevision)) return;
     void requestBottomScroll();
@@ -636,7 +649,7 @@
 
     forwardLoadInFlight = true;
     try {
-      await messageStore.loadNewer(jumpState);
+      await jumpState.loadNewer(messageStore);
       await tick();
       await new Promise((resolve) => requestAnimationFrame(resolve));
 
@@ -650,7 +663,7 @@
   }
 
   async function loadOlderIfTimelineNeedsBackfill(): Promise<void> {
-    if (stores.realtimeSync.isRecoveringSnapshot || messageStore.recoveryViewport) return;
+    if (stores.realtimeSync.isRecoveringSnapshot || recoveryViewport(messageStore)) return;
     if (
       isLoading ||
       isLoadingMore ||
@@ -667,7 +680,7 @@
       // Virtualizer in that state, but pagination still needs to walk backward
       // until it finds visible history or reaches the beginning.
       if (timelineEvents.length > 0 && filteredEvents.length === 0) {
-        await messageStore.loadMore();
+        await loadOlder(messageStore);
         return;
       }
 
@@ -691,7 +704,7 @@
         timelineEvents.length > 0 &&
         messageEventCount < INITIAL_ROOM_MESSAGE_BACKFILL_TARGET;
       if (scrollSize <= viewportSize + 50 || lacksInitialRoomMessages) {
-        await messageStore.loadMore();
+        await loadOlder(messageStore);
       }
     } finally {
       underfilledBackfillInFlight = false;
@@ -720,7 +733,7 @@
       !virtualizerHandle ||
       isLoading ||
       stores.realtimeSync.isRecoveringSnapshot ||
-      messageStore.recoveryViewport
+      recoveryViewport(messageStore)
     )
       return;
 
@@ -759,7 +772,8 @@
         : anchor?.type === 'system-group'
           ? anchor.events[0]
           : undefined;
-    messageStore.setViewport(
+    setTimelineViewport(
+      messageStore,
       !viewport.shouldScrollToBottom && anchorEvent
         ? { eventId: anchorEvent.id, offset: offset - virtualizerHandle.getItemOffset(anchorIndex) }
         : null
@@ -775,7 +789,7 @@
       !hasReachedStart
     ) {
       // No manual scroll restoration needed — virtua's shift=true handles it
-      void messageStore.loadMore();
+      void loadOlder(messageStore);
     }
 
     // Forward pagination when near bottom in jumped mode
@@ -896,7 +910,7 @@
                   {permalinkThreadRootEventId}
                   {messageStore}
                   onOpenThread={getOpenThreadHandler(eventData)}
-                  activeCallId={stores.activeCallRooms.getCallId(roomId)}
+                  activeCallId={serverUi(stores).activeCallRooms.getCallId(roomId)}
                   {onOpenCall}
                   onOpenUser={openUserMenu}
                   {threadingMode}

@@ -164,6 +164,7 @@ run = [
     "buf generate",
     "node ../tools/split-connectrpc-docs.mjs",
     "node ../tools/trim-proto-codegen-output.mjs",
+    "node ../packages/chatto-client/scripts/generate-types.mjs",
     "pnpm --dir .. run build:api-types",
 ]
 
@@ -249,24 +250,14 @@ depends = ["setup-frontend"]
 run = "pnpm turbo run build --filter=@chatto/runling-bot^..."
 
 [tasks.build-chatto-client]
-description = "Build the framework-neutral Chatto integration client"
+description = "Build the framework-neutral Chatto client"
 depends = ["setup-frontend"]
 run = "pnpm run build:chatto-client"
 
 [tasks.test-chatto-client]
-description = "Check and test the Chatto integration client"
+description = "Check, lint, and test the Chatto client"
 depends = ["setup-frontend"]
-run = "pnpm turbo run check test --filter=@chatto/client"
-
-[tasks.build-chatto-bot-client]
-description = "Build the framework-neutral Chatto bot helpers"
-depends = ["setup-frontend"]
-run = "pnpm turbo run build --filter=@chatto/bot-client"
-
-[tasks.test-chatto-bot-client]
-description = "Check and test the Chatto bot helpers"
-depends = ["setup-frontend"]
-run = "pnpm turbo run check test --filter=@chatto/bot-client"
+run = "pnpm turbo run check lint test --filter=@chatto/client"
 
 [tasks.check-runling]
 description = "Check Runling types and Svelte components"
@@ -811,6 +802,11 @@ run = "pnpm run test:frontend:focused"
 description = "Test the JSON internationalisation runtime package"
 depends = ["setup-frontend"]
 run = "pnpm run test:lingua"
+
+[tasks.check-workspace]
+description = "Type-check every pnpm workspace package"
+depends = ["setup-frontend"]
+run = "pnpm run check"
 
 [tasks.test-workspace]
 description = "Run all pnpm workspace package tests"

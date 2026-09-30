@@ -14,6 +14,17 @@ import type { JumpToMessageState } from '$lib/state/room';
 
 const resumeCallbacks = vi.hoisted(() => [] as Array<() => void>);
 
+vi.mock('$lib/client', async () => ({
+  ...(await import('$lib/test-utils/clientMock')).clientMockDefaults,
+  serverRegistry: {
+    getStore: () => ({
+      currentUser: { user: { id: 'test-user' } },
+      realtimeSync: { isRecoveringSnapshot: false },
+      serverInfo: { messageEditWindowSeconds: 300 }
+    })
+  }
+}));
+
 vi.mock('virtua/svelte', async () => {
   const { default: Virtualizer } = await import('./EventListVirtualizerMock.svelte');
   return { Virtualizer };
@@ -28,18 +39,8 @@ vi.mock('$lib/state/activeServer.svelte', () => ({
   getActiveServer: () => 'server-1'
 }));
 
-vi.mock('$lib/state/server/registry.svelte', () => ({
-  serverRegistry: {
-    getStore: () => ({
-      currentUser: { user: { id: 'test-user' } },
-      realtimeSync: { isRecoveringSnapshot: false },
-      serverInfo: { messageEditWindowSeconds: 300 }
-    })
-  }
-}));
-
 vi.mock('$lib/state/server/scope.svelte', async () => {
-  const { serverRegistry } = await import('$lib/state/server/registry.svelte');
+  const { serverRegistry } = await import('$lib/client');
   return {
     useServerScope: () => ({
       serverId: 'server-1',

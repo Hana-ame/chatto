@@ -1,18 +1,19 @@
 # Interface Inventory
 
 The internal [`@chatto/client`](../../packages/chatto-client/README.md) package
-owns HTTP requests, realtime consumption, message splitting, thread history, reactions, and typing
-helpers for Chatto's local Runling bot, the ChattoBot package, and Runling's
-Chatto examples. It
-does not add server endpoints or depend on Runling. Hosts retain credential
-loading, webhook handling, and conversation state; see
-[ADR-100](../adr/ADR-100-shared-chatto-integration-client.md).
+is the Chatto client. The bundled frontend, ChattoBot, and the local Runling
+bot use it. It owns the ConnectRPC facades, sessions, the realtime transport
+and projection, the server data, and the Store boundary events. It does not
+add server endpoints or depend on Runling or a UI framework. Hosts retain
+their UI state, credential loading, webhook handling, and conversation state;
+see [ADR-111](../adr/ADR-111-move-client-state-into-chatto-client.md).
 
-The internal [`@chatto/bot-client`](../../packages/chatto-bot-client/README.md)
-package composes that client. It owns bot addressing conventions, reply context,
-bot-relative thread roles, conversation keys, and accepted-delivery tracking.
-It has no Runling dependency or connection lifecycle. ChattoBot retains routing,
-inboxes, cancellation, and configuration reload state.
+The client also owns what bots need: servers with fixed API keys, an
+ordered message loop with a context per addressed message, message splitting,
+thread history, reactions, typing refresh, addressing recognition, reply
+context, conversation keys, and accepted-delivery tracking. It has no Runling
+dependency. ChattoBot retains routing, inboxes, cancellation, and
+configuration reload state.
 
 The official mobile client uses the built-in OAuth identity `eu.chattocorp.chatto.mobile`
 and exact callback `eu.chattocorp.chatto.mobile:/oauth/callback`. System authentication

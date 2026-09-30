@@ -1,6 +1,6 @@
 import { goto } from '$app/navigation';
 import { resolve } from '$app/paths';
-import { getPublicServerInfo, type PublicServerInfo } from '$lib/api-client/server';
+import { getPublicServerInfo, type PublicServerInfo } from '@chatto/client/api/server';
 import {
   generateCodeChallenge,
   generateCodeVerifier,
@@ -18,17 +18,14 @@ import {
   openAuthorizationWindow,
   type AuthorizationWindow
 } from '$lib/oauth/authorizationWindow';
-import {
-  generateServerId,
-  serverRegistry,
-  type RegisteredServer
-} from '$lib/state/server/registry.svelte';
+import { serverRegistry } from '$lib/client';
+import { generateServerId, type RegisteredServer } from '@chatto/client/server/registry';
 import { serverIdToSegment } from '$lib/navigation';
-import { isLoopbackHostname } from '$lib/runtimeOrigin';
-import { LOOPBACK_OAUTH_CLIENT_ID } from './loopbackClient';
+import { isLoopbackHostname } from '@chatto/client/util/runtimeOrigin';
+import { LOOPBACK_OAUTH_CLIENT_ID } from '$lib/auth/loopbackClient';
 import { resumePushRegistrationAfterAuthentication } from '$lib/notifications/pushRegistrationCoordinator';
 import { saveReturnUrl } from './returnNavigation';
-import { oauthBearerSession, persistedBearerSession } from './bearerSession';
+import { oauthBearerSession, persistedBearerSession } from '@chatto/client/auth/bearerSession';
 import {
   authorizeNatively,
   hasNativeAuthorization,

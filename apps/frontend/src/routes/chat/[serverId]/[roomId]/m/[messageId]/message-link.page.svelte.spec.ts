@@ -1,18 +1,24 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { RoomTimelineAPI } from '$lib/api-client/roomTimeline';
+import type { RoomTimelineAPI } from '@chatto/client/api/roomTimeline';
 import {
   TimelineEventKind,
   type MessagePostedPayload,
   type TimelineEventView
-} from '$lib/render/timelineEvents';
-import { PendingHighlightStore } from '$lib/state/server/pendingHighlight.svelte';
+} from '@chatto/client/timeline/timelineEvents';
+import { PendingHighlightStore } from '$lib/state/server/pendingHighlight';
 import { resolveAndRedirect } from './+page.svelte';
 
 const { goto } = vi.hoisted(() => ({ goto: vi.fn() }));
+// The store mock also carries the frontend UI state of its server.
+vi.mock(
+  '$lib/state/server/serverUi',
+  async () => (await import('$lib/test-utils/serverUiMock')).serverUiIsStore
+);
+
 vi.mock('$app/navigation', () => ({ goto }));
 vi.mock('$app/state', () => ({ page: {} }));
 vi.mock('$lib/state/server/scope.svelte', () => ({ useServerScope: vi.fn() }));
-vi.mock('$lib/api-client/roomTimeline', () => ({ createRoomTimelineAPI: vi.fn() }));
+vi.mock('@chatto/client/api/roomTimeline', () => ({ createRoomTimelineAPI: vi.fn() }));
 vi.mock('$app/paths', () => ({
   resolve: (path: string, params: Record<string, string>) =>
     path.replace(/\[(\w+)\]/g, (_, key: string) => params[key])

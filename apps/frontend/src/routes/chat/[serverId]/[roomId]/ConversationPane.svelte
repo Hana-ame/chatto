@@ -15,6 +15,8 @@ thread IDs can change while the pane stays mounted.
 -->
 <script lang="ts" module>
   import type { MessageComposerProps } from '$lib/components/composer/messageComposerState.svelte';
+  import { queryCaches } from '$lib/query/cacheRegistry';
+  import { serverUi } from '$lib/state/server/serverUi';
 
   /** Composer options that the owner decides. The pane supplies the rest. */
   export type ConversationComposerOptions = Omit<
@@ -33,7 +35,7 @@ thread IDs can change while the pane stays mounted.
 <script lang="ts">
   import { onDestroy, tick, untrack, type Snippet } from 'svelte';
   import type { ClassValue, HTMLAttributes } from 'svelte/elements';
-  import { createReadStateAPI, type MarkThreadAsReadResult } from '$lib/api-client/readState';
+  import { createReadStateAPI, type MarkThreadAsReadResult } from '@chatto/client/api/readState';
   import { dropZone } from '$lib/dom/dropZone.svelte';
   import DropZoneOverlay from '$lib/dom/DropZoneOverlay.svelte';
   import MessageComposer, {
@@ -46,7 +48,7 @@ thread IDs can change while the pane stays mounted.
     useUnreadMarker
   } from '$lib/hooks';
   import { m } from '$lib/i18n/messages';
-  import { RoomThreadingMode } from '$lib/roomThreading';
+  import { RoomThreadingMode } from '@chatto/client/util/roomThreading';
   import { appState } from '$lib/state/globals.svelte';
   import { createComposerContext, getRoomMembers, type MessagesStore } from '$lib/state/room';
   import { useServerScope } from '$lib/state/server/scope.svelte';
@@ -56,7 +58,7 @@ thread IDs can change while the pane stays mounted.
   import type { PendingComposerInput, PendingHighlight } from './roomNavigationState.svelte';
   import type { OpenThreadHandler } from './threadOpenOptions';
   import { threadParticipantIds } from './threadParticipants';
-  import { isMessagePostedEvent } from '$lib/render/timelineEvents';
+  import { isMessagePostedEvent } from '@chatto/client/timeline/timelineEvents';
   import { ReadThroughTracker, type TimelineReadPosition } from './readThroughTracker';
 
   let {
@@ -146,7 +148,7 @@ thread IDs can change while the pane stays mounted.
   // A jump to a message is about to start or is running. The entry read waits
   // for it, so that it does not read past the target.
   const highlightPending = $derived(
-    highlight !== null || stores.pendingHighlights.has(roomId, threadRootEventId)
+    highlight !== null || serverUi(stores).pendingHighlights.has(roomId, threadRootEventId)
   );
   const atLatest = $derived(!highlightPending && (currentReadPosition?.latest ?? true));
 
@@ -203,6 +205,7 @@ thread IDs can change while the pane stays mounted.
       );
     if (!signal.aborted && dataGeneration === connection.dataGeneration) {
       readStores.reconcileThreadRead(readRoomId, targetThreadRootEventId);
+      queryCaches.followedThreads?.refresh(readStores.serverId);
     }
     return result;
   }
@@ -246,7 +249,7 @@ thread IDs can change while the pane stays mounted.
   // around a target that the loaded window does not contain.
   jumpState.setJumpHandler(async (eventId: string) => {
     if (!canReadMessages) return false;
-    return messageStore.jumpToMessage(eventId, jumpState);
+    return jumpState.show(messageStore, eventId);
   });
 
   // Projection v2 folds retractions and crypto-erasure into the authoritative

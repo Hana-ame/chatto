@@ -3,8 +3,9 @@
 </script>
 
 <script lang="ts">
-  import { createMessageAPI } from '$lib/api-client/messages';
-  import { createLinkPreviewAPI } from '$lib/api-client/linkPreviews';
+  import { createMessageAPI } from '@chatto/client/api/messages';
+  import { serverUi } from '$lib/state/server/serverUi';
+  import { createLinkPreviewAPI } from '@chatto/client/api/linkPreviews';
   import { m } from '$lib/i18n/messages';
   import { useServerScope } from '$lib/state/server/scope.svelte';
   import { ConfirmDialog, Dialog, FormDialog, CompactActionButton } from '$lib/ui';
@@ -19,7 +20,7 @@
     formatSlowModeInterval,
     slowModeRemainingSeconds as remainingSlowModeSeconds
   } from '$lib/slowMode';
-  import { Code, ConnectError } from '$lib/api-client/connect';
+  import { Code, ConnectError } from '@chatto/client/api/connect';
   import { SvelteDate } from 'svelte/reactivity';
   import type { Component } from 'svelte';
   import EmojiAutocomplete from './EmojiAutocomplete.svelte';
@@ -43,7 +44,7 @@
   const serverScope = useServerScope();
   const stores = serverScope.store;
   const serverInfo = stores.serverInfo;
-  const roomUnreadStore = stores.roomUnread;
+  const roomUnreadStore = serverUi(stores).roomUnread;
   const mentionRolesStore = stores.mentionRoles;
 
   let {

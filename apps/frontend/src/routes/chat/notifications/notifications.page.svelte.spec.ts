@@ -7,10 +7,10 @@ import {
   NotificationAttentionLevel,
   NotificationSignalKind,
   type NotificationOccurrenceItem
-} from '$lib/api-client/notifications';
+} from '@chatto/client/api/notifications';
 import { TimeFormat } from '@chatto/api-types/api/v1/viewer_pb';
 import { getToasts, toast } from '$lib/ui/toast';
-import { NotificationStore } from '$lib/state/server/notifications.svelte';
+import { NotificationStore } from '@chatto/client/server/notifications';
 
 const { mocks } = vi.hoisted(() => ({
   mocks: {
@@ -67,21 +67,28 @@ const { mocks } = vi.hoisted(() => ({
 }));
 
 // Page titles are tested separately from this page's partial route/server fixtures.
-vi.mock('$lib/render/pageTitle', () => ({ formatPageTitle: () => 'Chatto' }));
+// The store mock also carries the frontend UI state of its server.
+vi.mock(
+  '$lib/state/server/serverUi',
+  async () => (await import('$lib/test-utils/serverUiMock')).serverUiIsStore
+);
 
-vi.mock('$app/navigation', () => ({
-  goto: mocks.goto,
-  pushState: vi.fn(),
-  replaceState: vi.fn()
-}));
-
-vi.mock('$lib/state/server/registry.svelte', () => ({
+vi.mock('$lib/client', async () => ({
+  ...(await import('$lib/test-utils/clientMock')).clientMockDefaults,
   serverRegistry: {
     servers: mocks.servers,
     getStore: vi.fn((serverId: string) => mocks.stores.get(serverId)),
     isOriginServer: vi.fn((serverId: string) => serverId === 'origin'),
     getServer: vi.fn((serverId: string) => mocks.servers.find((server) => server.id === serverId))
   }
+}));
+
+vi.mock('$lib/render/pageTitle', () => ({ formatPageTitle: () => 'Chatto' }));
+
+vi.mock('$app/navigation', () => ({
+  goto: mocks.goto,
+  pushState: vi.fn(),
+  replaceState: vi.fn()
 }));
 
 vi.mock('$lib/state/appUi.svelte', () => ({

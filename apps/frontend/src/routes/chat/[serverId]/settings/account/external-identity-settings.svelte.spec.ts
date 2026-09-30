@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { page as browserPage } from 'vitest/browser';
 import { flushSync } from 'svelte';
 import { render } from 'vitest-browser-svelte';
-import type { CurrentUserState } from '$lib/auth/currentUser.svelte';
+import type { CurrentUserState } from '@chatto/client/auth/currentUser';
 import {
   removeRegisteredAdminQueries,
   removeRegisteredServerQueries
@@ -42,6 +42,14 @@ const connection = {
   })
 };
 
+vi.mock('$lib/client', async () => ({
+  ...(await import('$lib/test-utils/clientMock')).clientMockDefaults,
+  serverRegistry: {
+    isOriginServer: (serverId: string) => serverId === 'origin',
+    clearServerAuthentication: mocks.clearServerAuthentication
+  }
+}));
+
 vi.mock('$app/state', () => ({
   page: {
     get url() {
@@ -70,20 +78,17 @@ vi.mock('$lib/state/server/scope.svelte', () => ({
   })
 }));
 
-vi.mock('$lib/auth/signOut', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('$lib/auth/signOut')>()),
+vi.mock('@chatto/client/auth/signOut', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@chatto/client/auth/signOut')>()),
   beginExplicitSignOutRedirect: mocks.beginExplicitSignOutRedirect,
-  cancelExplicitSignOutRedirect: mocks.cancelExplicitSignOutRedirect,
+  cancelExplicitSignOutRedirect: mocks.cancelExplicitSignOutRedirect
+}));
+
+vi.mock('$lib/auth/signOutRedirect', () => ({
   hardRedirectAfterSignOut: mocks.hardRedirectAfterSignOut
 }));
 
 vi.mock('$lib/auth/sessionChannel', () => ({ notifyLogout: mocks.notifyLogout }));
-vi.mock('$lib/state/server/registry.svelte', () => ({
-  serverRegistry: {
-    isOriginServer: (serverId: string) => serverId === 'origin',
-    clearServerAuthentication: mocks.clearServerAuthentication
-  }
-}));
 
 const currentUser = {
   user: { id: 'user-alice', hasPassword: true }

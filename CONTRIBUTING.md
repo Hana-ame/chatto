@@ -25,8 +25,10 @@ configuration for those.
 ## Local Development Stack
 
 The root pnpm workspace contains the JavaScript apps, examples, and libraries.
-[`@chatto/client`](packages/chatto-client/README.md) provides shared request,
-message, thread, reaction, and typing helpers for bot integrations.
+[`@chatto/client`](packages/chatto-client/README.md) is the Chatto client:
+connections, the realtime projection, the server and room stores, and the
+request helpers and message loop for bots. The bundled frontend and ChattoBot
+use it.
 The independent [Runling](packages/runling/README.md) workflow and agent
 orchestrator lives in `packages/runling/` and is published to npm as `runling`.
 It keeps its own version and MIT license. The Chatto bot uses this local package.

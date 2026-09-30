@@ -5,7 +5,7 @@ draft's inset, with a quiet cancel control for pointer and keyboard users.
 -->
 <script lang="ts">
   import AccountName from '$lib/components/users/AccountName.svelte';
-  import type { AccountNameIdentity } from '$lib/render/accountName';
+  import type { AccountNameIdentity } from '@chatto/client/timeline/accountName';
   import { m } from '$lib/i18n/messages';
   import { CompactActionButton } from '$lib/ui';
 

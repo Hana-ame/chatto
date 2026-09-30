@@ -15,6 +15,12 @@ const input = {
   message: { id: 'source', author_id: 'human', body: 'Hello' }
 };
 
+/** Connect sends JSON request bodies as bytes. */
+function requestJson(init: RequestInit | undefined) {
+  const body = init?.body;
+  return JSON.parse(typeof body === 'string' ? body : new TextDecoder().decode(body as Uint8Array));
+}
+
 function fixture(
   options: {
     wrongBot?: boolean;
@@ -36,21 +42,25 @@ function fixture(
     async (url, init) => {
       assert.equal(new Headers(init?.headers).get('Authorization'), 'Bearer test-secret');
       assert.equal(init?.redirect, 'error');
+      // Every request has a deadline, so a silent server cannot stall a run.
+      assert.ok(new Headers(init?.headers).get('Connect-Timeout-Ms'));
       const path = new URL(String(url)).pathname;
       if (path.endsWith('GetViewer'))
         return Response.json({
           user: { profile: { id: options.wrongBot ? 'other' : 'bot' } }
         });
-      if (path.endsWith('GetUser'))
+      if (path.endsWith('GetUser')) {
+        assert.deepEqual(requestJson(init), { userId: 'human' });
         return Response.json({
           user: { user: { bot: options.botAuthor ? { ownerUserId: 'owner' } : undefined } }
         });
+      }
       if (path.endsWith('RefreshTypingIndicator')) {
-        typing.push(JSON.parse(String(init?.body)));
+        typing.push(requestJson(init));
         return Response.json({}, { status: options.typingFailure ? 503 : 200 });
       }
       if (path.endsWith('GetThreadEvents')) {
-        const body = JSON.parse(String(init?.body));
+        const body = requestJson(init);
         assert.equal(body.roomId, 'room');
         const event = (id: string, body: string, actorId = 'human') => ({
           id,
@@ -67,7 +77,7 @@ function fixture(
         });
       }
       assert.ok(path.endsWith('CreateMessage'));
-      posts.push(JSON.parse(String(init?.body)));
+      posts.push(requestJson(init));
       return Response.json({ message: { id: 'reply' } }, { status: options.postStatus ?? 200 });
     },
     async (_r, context) => {

@@ -1,9 +1,10 @@
 <script lang="ts">
   import { untrack } from 'svelte';
+  import { serverUi } from '$lib/state/server/serverUi';
   import { resolve } from '$app/paths';
   import MessageView from '$lib/components/messages/MessageView.svelte';
   import LinkPreviewCard from '$lib/components/LinkPreviewCard.svelte';
-  import type { TimelineEventView } from '$lib/render/timelineEvents';
+  import type { TimelineEventView } from '@chatto/client/timeline/timelineEvents';
   import {
     getRoomPermissions,
     getRoomMembers,
@@ -14,13 +15,12 @@
     type QuoteInsertionContent
   } from '$lib/state/room';
   import { useServerScope } from '$lib/state/server/scope.svelte';
-  import type { UserAvatarUserView } from '$lib/render/users';
+  import type { UserAvatarUserView } from '@chatto/client/timeline/users';
 
   const serverScope = useServerScope();
   const stores = serverScope.store;
-  const notificationStore = $derived(stores.notifications);
   const serverInfo = $derived(stores.serverInfo);
-  const activeCallRooms = $derived(stores.activeCallRooms);
+  const activeCallRooms = $derived(serverUi(stores).activeCallRooms);
   import { getLiveDisplayName } from '$lib/state/userProfiles.svelte';
   import MessageHoverBar from './MessageHoverBar.svelte';
   import MessageAttachments from './MessageAttachments.svelte';
@@ -37,7 +37,7 @@
   import { roomReplyTargetEventId } from './messageReplyTarget';
   import { selectedQuoteTextForMessageBody } from './selectedReplyQuote';
   import type { OpenThreadHandler } from './threadOpenOptions';
-  import { isMessagePostedEvent } from '$lib/render/timelineEvents';
+  import { isMessagePostedEvent } from '@chatto/client/timeline/timelineEvents';
   import { m } from '$lib/i18n/messages';
   import MessageReplyAttribution from './MessageReplyAttribution.svelte';
   import MessageEventActionOverlays from './MessageEventActionOverlays.svelte';
@@ -52,7 +52,7 @@
   } from './messageEventModel';
   import { ThreadFollowState } from './threadFollowState.svelte';
   import { buildMessageActionModel } from './messageActionModel';
-  import { RoomThreadingMode } from '$lib/roomThreading';
+  import { RoomThreadingMode } from '@chatto/client/util/roomThreading';
 
   let {
     event,
@@ -440,13 +440,13 @@
 
   // Check if this thread has pending reply notifications
   const hasThreadNotification = $derived(
-    hasReplies && event && notificationStore.hasThreadNotification(event.id)
+    hasReplies && event && serverUi(stores).attention.hasThreadNotification(event.id)
   );
   const hasThreadUnread = $derived(
     hasReplies &&
       event &&
       messageEvent?.viewerHasUnreadThread === true &&
-      !stores.readViews.covers(roomId, event.id)
+      !serverUi(stores).readViews.covers(roomId, event.id)
   );
   const hasMessageFooter = $derived(
     (isEcho && !!onOpenThread) ||

@@ -2,6 +2,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { authorizationLaunchTarget } from '$lib/test-utils/authorizationWindow';
 
 const native = vi.hoisted(() => ({ available: false, authorize: vi.fn() }));
+vi.mock('$lib/client', async () => ({
+  ...(await import('$lib/test-utils/clientMock')).clientMockDefaults,
+  serverRegistry: {
+    servers: [],
+    addServer: addServerMock,
+    getStore: vi.fn(() => ({ serverInfo: { init: initServerInfoMock } })),
+    updateServer: updateServerMock,
+    replaceServerAuthentication: replaceServerAuthenticationMock,
+    clearOriginAuthentication: clearOriginAuthenticationMock
+  }
+}));
+
 vi.mock('$lib/desktop/nativeAuthorization', async (importOriginal) => ({
   ...(await importOriginal<typeof import('$lib/desktop/nativeAuthorization')>()),
   hasNativeAuthorization: () => native.available,
@@ -33,18 +45,10 @@ vi.mock('$app/paths', () => ({
   resolve: (route: string, params?: { serverId?: string }) =>
     params?.serverId ? `/chat/${params.serverId}` : route
 }));
-vi.mock('$lib/api-client/server', () => ({ getPublicServerInfo: getPublicServerInfoMock }));
+vi.mock('@chatto/client/api/server', () => ({ getPublicServerInfo: getPublicServerInfoMock }));
 vi.mock('$lib/navigation', () => ({ serverIdToSegment: (serverId: string) => serverId }));
-vi.mock('$lib/state/server/registry.svelte', () => ({
-  generateServerId: generateServerIdMock,
-  serverRegistry: {
-    servers: [],
-    addServer: addServerMock,
-    getStore: vi.fn(() => ({ serverInfo: { init: initServerInfoMock } })),
-    updateServer: updateServerMock,
-    replaceServerAuthentication: replaceServerAuthenticationMock,
-    clearOriginAuthentication: clearOriginAuthenticationMock
-  }
+vi.mock('@chatto/client/server/registry', () => ({
+  generateServerId: generateServerIdMock
 }));
 
 class FakeBroadcastChannel {

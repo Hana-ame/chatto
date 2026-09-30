@@ -1,14 +1,35 @@
 import { SvelteMap } from 'svelte/reactivity';
 
 // Title composition has separate coverage; these fixtures model route access only.
+vi.mock('$lib/client', async () => ({
+  ...(await import('$lib/test-utils/clientMock')).clientMockDefaults,
+  serverRegistry: {
+    originProbed: true,
+    originServer: { id: 'origin' },
+    tryGetStore: () => mocks.store,
+    getStore: () => mocks.store,
+    isOriginServer: (serverId: string) => serverId === 'origin',
+    getServer: (serverId: string) => mocks.servers?.get(serverId),
+    recoverServer: mocks.recoverServer
+  },
+  serverConnectionManager: {
+    getClient: () => ({
+      queryScope: 'layout-test',
+      get status() {
+        return mocks.servers?.get('origin')?.connectionStatus ?? 'connected';
+      }
+    })
+  }
+}));
+
 vi.mock('$lib/render/pageTitle', () => ({ formatPageTitle: () => 'Chatto' }));
 import { tick } from 'svelte';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
 import { page, userEvent } from 'vitest/browser';
 import { testSnippet } from '$lib/test-utils';
-import { RealtimeProjectionSyncState } from '$lib/state/server/realtimeSync.svelte';
-import type { ServerCompatibilityProblem } from '$lib/state/server/compatibility';
+import { RealtimeProjectionSyncState } from '@chatto/client/server/realtimeSync';
+import type { ServerCompatibilityProblem } from '@chatto/client/server/compatibility';
 
 type RegisteredState = {
   reauthRequiredAt: number | null;
@@ -75,29 +96,6 @@ vi.mock('$lib/auth/returnNavigation', () => ({
 
 vi.mock('$lib/state/activeServer.svelte', () => ({
   getActiveServer: () => 'origin'
-}));
-
-vi.mock('$lib/state/server/registry.svelte', () => ({
-  serverRegistry: {
-    originProbed: true,
-    originServer: { id: 'origin' },
-    tryGetStore: () => mocks.store,
-    getStore: () => mocks.store,
-    isOriginServer: (serverId: string) => serverId === 'origin',
-    getServer: (serverId: string) => mocks.servers?.get(serverId),
-    recoverServer: mocks.recoverServer
-  }
-}));
-
-vi.mock('$lib/state/server/serverConnection.svelte', () => ({
-  serverConnectionManager: {
-    getClient: () => ({
-      queryScope: 'layout-test',
-      get status() {
-        return mocks.servers?.get('origin')?.connectionStatus ?? 'connected';
-      }
-    })
-  }
 }));
 
 vi.mock('$lib/state/server/scope.svelte', () => ({

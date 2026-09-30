@@ -21,4 +21,4 @@ export {
   receivedRequest,
   type FakeServerRoutes,
   type MockService
-} from './fakeServer';
+} from '@chatto/client/testing/fakeServer';

@@ -1,7 +1,7 @@
 import { flushSync } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
-import type { NeighborhoodServerProfile, PublicServerInfo } from '$lib/api-client/server';
+import type { NeighborhoodServerProfile, PublicServerInfo } from '@chatto/client/api/server';
 import type { ServerDirectoryEntry } from '$lib/serverDirectory';
 
 const mocks = vi.hoisted(() => ({
@@ -24,6 +24,16 @@ const mocks = vi.hoisted(() => ({
 }));
 
 // Page titles are tested separately from this page's partial route/server fixtures.
+vi.mock('$lib/client', async () => ({
+  ...(await import('$lib/test-utils/clientMock')).clientMockDefaults,
+  serverRegistry: {
+    get servers() {
+      return mocks.servers;
+    },
+    isAuthenticated: (serverId: string) => mocks.authenticated.has(serverId)
+  }
+}));
+
 vi.mock('$lib/render/pageTitle', () => ({ formatPageTitle: () => 'Chatto' }));
 
 vi.mock('$app/state', () => ({
@@ -45,8 +55,8 @@ vi.mock('$lib/navigation', async (importOriginal) => {
   const actual = await importOriginal<typeof import('$lib/navigation')>();
   return { ...actual, serverIdToSegment: (serverId: string) => serverId };
 });
-vi.mock('$lib/api-client/server', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('$lib/api-client/server')>();
+vi.mock('@chatto/client/api/server', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@chatto/client/api/server')>();
   return { ...actual, getPublicServerInfo: mocks.getPublicServerInfo };
 });
 vi.mock('$lib/serverDirectory', async (importOriginal) => {
@@ -57,14 +67,6 @@ vi.mock('$lib/auth/reauth', () => ({
   startServerOAuthFlow: mocks.startServerOAuthFlow,
   startServerOAuthFlowWhenReady: mocks.startServerOAuthFlowWhenReady,
   startRemoteReauthentication: mocks.startRemoteReauthentication
-}));
-vi.mock('$lib/state/server/registry.svelte', () => ({
-  serverRegistry: {
-    get servers() {
-      return mocks.servers;
-    },
-    isAuthenticated: (serverId: string) => mocks.authenticated.has(serverId)
-  }
 }));
 
 import ServerDirectory from '$lib/components/ServerDirectory.svelte';

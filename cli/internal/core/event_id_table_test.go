@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -218,5 +219,54 @@ func TestEventIDTable_ConcurrentInternOfSameIDsAgreesOnHandles(t *testing.T) {
 		if got := table.id(handle); got != fmt.Sprintf("E%05d", n) {
 			t.Fatalf("id(%d) = %q, want E%05d", handle, got, n)
 		}
+	}
+}
+
+// TestEventIDTable_ReadsPublishedHandlesDuringGrowth reads handles that other
+// goroutines published while writers add location pages and arena chunks. It
+// models components that apply and read under different locks.
+func TestEventIDTable_ReadsPublishedHandlesDuringGrowth(t *testing.T) {
+	table := newEventIDTable()
+	const writers, perWriter = 4, 3 * idLocationPageSize
+	var published sync.Map
+	var writing sync.WaitGroup
+	var done atomic.Bool
+	for writer := range writers {
+		writing.Go(func() {
+			for i := range perWriter {
+				id := fmt.Sprintf("W%d-%06d", writer, i)
+				published.Store(id, table.intern(id))
+			}
+		})
+	}
+	var reading sync.WaitGroup
+	for range 4 {
+		reading.Go(func() {
+			// Read every published ID until the writers finish, then once more.
+			for last := false; !last; {
+				last = done.Load()
+				published.Range(func(key, value any) bool {
+					id, handle := key.(string), value.(uint32)
+					if got := table.id(handle); got != id {
+						t.Errorf("id(%d) = %q, want %q", handle, got, id)
+						return false
+					}
+					if got, ok := table.lookup(id); !ok || got != handle {
+						t.Errorf("lookup(%q) = %d, %v; want %d, true", id, got, ok, handle)
+						return false
+					}
+					return true
+				})
+			}
+		})
+	}
+	writing.Wait()
+	done.Store(true)
+	reading.Wait()
+	if got := table.len(); got != writers*perWriter {
+		t.Fatalf("len = %d, want %d", got, writers*perWriter)
+	}
+	if pages := len(table.loadPages()); pages < writers*perWriter/idLocationPageSize {
+		t.Fatalf("table used %d location pages, want at least %d", pages, writers*perWriter/idLocationPageSize)
 	}
 }

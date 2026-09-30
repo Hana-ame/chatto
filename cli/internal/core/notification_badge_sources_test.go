@@ -536,3 +536,92 @@ func TestBadgeRoomDeletionClearsMessageRecords(t *testing.T) {
 		t.Fatalf("withCurrent: %v", err)
 	}
 }
+
+func TestBadgeAccountDeletionForgetsTheAccountsSources(t *testing.T) {
+	f := newBadgeTestFixture(t)
+	f.post("ROOT", "U1", "")
+	f.apply(&evtv1.Event{Id: "REACT", ActorId: "U2", Event: &evtv1.Event_ReactionAdded{ReactionAdded: &evtv1.ReactionAddedEvent{RoomId: "R1", MessageEventId: "ROOT", Emoji: "tada"}}})
+	f.post("MENTION", "U2", "", &evtv1.MessageMention{UserId: "U1", Cause: &evtv1.MessageMention_Direct{Direct: &evtv1.DirectUserMention{}}})
+	f.apply(&evtv1.Event{Event: &evtv1.Event_ThreadFollowed{ThreadFollowed: &evtv1.ThreadFollowedEvent{RoomId: "R1", ThreadRootEventId: "ROOT", UserId: "U1"}}})
+	f.apply(&evtv1.Event{Event: &evtv1.Event_UserAccountDeleted{UserAccountDeleted: &evtv1.UserAccountDeletedEvent{UserId: "U1"}}})
+
+	if err := f.p.withCurrent(time.Now(), func(snapshot *notificationDecisionSnapshot) error {
+		encoded := snapshot.badges.snapshot()
+		for _, row := range encoded.GetMemberships() {
+			if row.GetUserId() == "U1" {
+				t.Fatalf("snapshot keeps the membership start of the deleted account in %s", row.GetRoomId())
+			}
+		}
+		for _, row := range encoded.GetAccounts() {
+			if row.GetUserId() == "U1" {
+				t.Fatal("snapshot keeps the deleted account")
+			}
+		}
+		for _, row := range encoded.GetFollows() {
+			if row.GetUserId() == "U1" {
+				t.Fatalf("snapshot keeps a follow of the deleted account: %s", row.GetThreadRootEventId())
+			}
+		}
+		for _, row := range encoded.GetTargets() {
+			if row.GetUserId() == "U1" {
+				t.Fatalf("snapshot keeps a source addressed to the deleted account: %s", row.GetMessageEventId())
+			}
+		}
+		if got := len(snapshot.badges.reactions); got != 0 {
+			t.Fatalf("reactions on the deleted account's messages = %d, want 0", got)
+		}
+		// The account's messages stay indexed as reply parents and roots for
+		// other users.
+		if roomID, _, _, _ := snapshot.badgeAudience("ROOT"); roomID != "R1" {
+			t.Fatalf("badgeAudience(ROOT) room = %q, want R1", roomID)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("withCurrent: %v", err)
+	}
+}
+
+func TestBadgeAudienceIgnoresExpiredTargetedSources(t *testing.T) {
+	f := newBadgeTestFixture(t)
+	mentionU2 := []*evtv1.MessageMention{{UserId: "U2", Cause: &evtv1.MessageMention_Direct{Direct: &evtv1.DirectUserMention{}}}}
+	f.apply(&evtv1.Event{Id: "ROOT", ActorId: "U1", CreatedAt: timestamppb.New(time.Now().Add(-notificationTTL - 2*time.Hour)), Event: &evtv1.Event_MessagePosted{MessagePosted: &evtv1.MessagePostedEvent{
+		RoomId: "R1", AuthorId: "U1",
+	}}})
+	f.apply(&evtv1.Event{Id: "OLD", ActorId: "U1", CreatedAt: timestamppb.New(time.Now().Add(-notificationTTL - time.Hour)), Event: &evtv1.Event_MessagePosted{MessagePosted: &evtv1.MessagePostedEvent{
+		RoomId: "R1", InThread: "ROOT", AuthorId: "U1", Mentions: mentionU2,
+	}}})
+	// A new mention in another thread keeps the expired source in the live
+	// list of ROOT, while the snapshot drops it.
+	f.post("ROOT2", "U1", "")
+	f.post("NEW", "U1", "ROOT2", mentionU2...)
+
+	audience := func(p *NotificationDecisionProjection, messageEventID string) []string {
+		t.Helper()
+		var users []string
+		if err := p.withCurrent(time.Now(), func(snapshot *notificationDecisionSnapshot) error {
+			_, _, _, users = snapshot.badgeAudience(messageEventID)
+			return nil
+		}); err != nil {
+			t.Fatalf("withCurrent: %v", err)
+		}
+		return users
+	}
+	data, err := f.p.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored := NewNotificationDecisionProjection()
+	if err := restored.Restore(data); err != nil {
+		t.Fatal(err)
+	}
+	for name, p := range map[string]*NotificationDecisionProjection{"live": f.p, "restored": restored} {
+		// The root author U1 is in the audience of every reply. The expired
+		// mention no longer adds U2; the current one does.
+		if got := audience(p, "OLD"); !slices.Equal(got, []string{"U1"}) {
+			t.Fatalf("%s badgeAudience(OLD) = %v, want [U1]", name, got)
+		}
+		if got := audience(p, "NEW"); !slices.Equal(got, []string{"U1", "U2"}) {
+			t.Fatalf("%s badgeAudience(NEW) = %v, want [U1 U2]", name, got)
+		}
+	}
+}

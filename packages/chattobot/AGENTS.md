@@ -13,9 +13,9 @@ These rules apply to `packages/chattobot/`. The root `AGENTS.md` rules also appl
   its result. Text in notices and results describes the facts for the model; it
   is not shown to the user.
 - Host code may guard facts, but not phrase messages. Example: when a reply
-  leaves out a new pull request URL, the host appends the bare URL.
+  leaves out a new pull request or issue URL, the host appends the bare URL.
 - Current exceptions are host fallbacks for when the model must not or cannot
-  answer: the maintainer and research refusals and the duplicate-implementation
+  answer: the maintainer and untrusted-content refusals and the duplicate-implementation
   refusal (a blocked tool must never be described as started work), the notice
   for a malformed model reply, and the reply failure message in
   `chatto/routing.ts`. Do not add new exceptions without discussion.
@@ -23,6 +23,7 @@ These rules apply to `packages/chattobot/`. The root `AGENTS.md` rules also appl
 ## Adding an implementation stage
 
 Report a new stage, such as planning or review, as a milestone notice from the
-implementation task, with its facts in `data`. Then name the milestone in the
-supervisor's response policy (`workflows/response-policy.ts`) and in the
-README. Do not add a host message template.
+implementation task, with its facts in `data`. When the supervisor must relay a
+specific fact, such as a URL, add the milestone to `noticeReport` in
+`workflows/task-context.ts`. Name the milestone in the README. Do not add a host
+message template.

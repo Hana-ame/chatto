@@ -12,7 +12,6 @@ dialog shows it directly on its work plane. See FDR-042.
   import { onMount } from 'svelte';
   import { SvelteMap } from 'svelte/reactivity';
   import { goto } from '$app/navigation';
-  import { page } from '$app/state';
   import { resolve } from '$app/paths';
   import {
     getPublicServerInfo,
@@ -20,25 +19,18 @@ dialog shows it directly on its work plane. See FDR-042.
     type NeighborhoodServerProfile,
     type PublicServerInfo
   } from '@chatto/client/api/server';
-  import {
-    startRemoteReauthentication,
-    startServerOAuthFlow,
-    startServerOAuthFlowWhenReady,
-    type ServerOAuthFlowOptions
-  } from '$lib/auth/reauth';
   import ServerProfileCard from '$lib/components/ServerProfileCard.svelte';
   import { m } from '$lib/i18n/messages';
   import { getReactiveLocale } from '$lib/i18n/state.svelte';
   import { serverIdToSegment } from '$lib/navigation';
   import {
-    canonicalServerOrigin,
     loadServerDirectory,
     type ServerDirectory,
     type ServerDirectoryEntry
   } from '$lib/serverDirectory';
+  import { canonicalServerOrigin, serverHost } from '@chatto/client/util/serverUrl';
   import { evaluateServerCompatibility } from '@chatto/client/server/compatibility';
   import { serverRegistry } from '$lib/client';
-  import { type RegisteredServer } from '@chatto/client/server/registry';
   import { EmptyState, Hint, LoadingFog, Panel } from '$lib/ui';
   import { Button, Form, TextInput } from '$lib/ui/form';
   import { toast } from '$lib/ui/toast';
@@ -49,8 +41,8 @@ dialog shows it directly on its work plane. See FDR-042.
     /**
      * The directory is the content of the history-backed Add Server dialog.
      * Sections then sit on the dialog's work plane with one lower heading
-     * level. Opening, joining, or signing in to a server replaces the
-     * dialog's history entry while it is open, so Back does not reopen it.
+     * level. Opening a server replaces the dialog's history entry, so Back
+     * does not reopen it. Joining a server keeps the dialog open.
      */
     inDialog?: boolean;
   } = $props();
@@ -58,7 +50,7 @@ dialog shows it directly on its work plane. See FDR-042.
   /** A live profile from a direct lookup, or a cached Server Directory profile. */
   type ServerVersionProfile = PublicServerInfo | NeighborhoodServerProfile | null;
 
-  /** The current profile cannot start a sign-in from this client. */
+  /** The current profile does not let this client sign in. */
   class ServerJoinUnavailableError extends Error {}
 
   /** The user asked for the direct address lookup. */
@@ -152,19 +144,8 @@ dialog shows it directly on its work plane. See FDR-042.
     }
   }
 
-  function registeredServer(origin: string): RegisteredServer | undefined {
-    return serverRegistry.servers.find(
-      (server) => canonicalServerOrigin(server.url) === canonicalServerOrigin(origin)
-    );
-  }
-
   function actionLabel(origin: string, profile: ServerVersionProfile): string {
-    const joined = registeredServer(origin);
-    if (joined) {
-      return serverRegistry.isAuthenticated(joined.id)
-        ? m('add_server.directory.open')
-        : m('add_server.sign_in');
-    }
+    if (serverRegistry.findServerByUrl(origin)) return m('add_server.directory.open');
     if (opensInServerClient(origin, profile)) return m('add_server.directory.open_in_new_tab');
     if (isPublicServerInfo(profile) && !profile.authorizeUrl) {
       return m('add_server.directory.sign_in_unavailable');
@@ -192,50 +173,51 @@ dialog shows it directly on its work plane. See FDR-042.
 
   function opensInServerClient(origin: string, profile: ServerVersionProfile): boolean {
     return (
-      !registeredServer(origin) &&
+      !serverRegistry.findServerByUrl(origin) &&
       profile !== null &&
       evaluateServerCompatibility({ serverVersion: profile.version }).status !== 'supported'
     );
   }
 
   /**
-   * Sign-in can finish after the dialog closes. Replace history only when the
-   * Add Server dialog is still the current entry at that time.
-   */
-  const signInOptions: ServerOAuthFlowOptions = {
-    replaceHistory: () => inDialog && page.state.modal?.type === 'addServer'
-  };
-
-  /**
-   * Open a registered server or start joining a new one. A Server Directory
-   * result has only the cached profile, so joining first loads the server's
-   * current sign-in data. The user starts this request explicitly.
+   * Open a registered server, or add a new one to the gutter. Adding a server
+   * neither opens it nor starts sign-in, so the user can add more servers
+   * before they close the directory. The entry then shows the joined state
+   * with an open action. The server's signed-out view offers **Log in to this
+   * server**. A Server Directory result has only the cached profile, so adding
+   * it first loads the server's current profile. The user starts this request
+   * explicitly.
    */
   async function openOrJoin(origin: string, profile: ServerVersionProfile) {
-    const joined = registeredServer(origin);
+    const joined = serverRegistry.findServerByUrl(origin);
     if (!joined && !canJoin(profile)) return;
     pendingOrigin = origin;
     try {
-      if (joined && serverRegistry.isAuthenticated(joined.id)) {
+      if (joined) {
         await goto(resolve('/chat/[serverId]', { serverId: serverIdToSegment(joined.id) }), {
           replaceState: inDialog
         });
-      } else if (joined) {
-        await startRemoteReauthentication(joined, signInOptions);
-      } else if (isPublicServerInfo(profile)) {
-        await startServerOAuthFlow(origin, profile, signInOptions);
-      } else if (profile) {
-        // The sign-in window must open from this click, before the cached
-        // profile is refreshed. A stale cached profile can hide an
-        // incompatible version or missing sign-in support.
-        await startServerOAuthFlowWhenReady(origin, loadJoinableProfile(origin), signInOptions);
+        return;
       }
-    } catch (error) {
-      toast.error(
-        error instanceof ServerJoinUnavailableError
-          ? m('add_server.directory.sign_in_unavailable')
-          : m('add_server.start_failed')
-      );
+      let current: PublicServerInfo;
+      try {
+        // A stale cached profile can hide an incompatible version or missing
+        // sign-in support.
+        current = isPublicServerInfo(profile) ? profile : await loadJoinableProfile(origin);
+      } catch (error) {
+        toast.error(
+          error instanceof ServerJoinUnavailableError
+            ? m('add_server.directory.sign_in_unavailable')
+            : discoveryError(error)
+        );
+        return;
+      }
+      serverRegistry.addSignedOutServer(origin, {
+        name: current.name,
+        iconUrl: current.iconUrl ?? null
+      });
+    } catch {
+      toast.error(m('common.error.generic'));
     } finally {
       pendingOrigin = null;
     }
@@ -256,15 +238,11 @@ dialog shows it directly on its work plane. See FDR-042.
   }
 
   function sourceName(origin: string): string {
-    const registered = registeredServer(origin);
+    const registered = serverRegistry.findServerByUrl(origin);
     if (registered) return registered.name;
     const discovered = entries.find((entry) => entry.origin === origin);
     if (discovered?.profile?.name) return discovered.profile.name;
-    try {
-      return new URL(origin).host;
-    } catch {
-      return origin;
-    }
+    return serverHost(origin);
   }
 
   function sourceAttribution(entry: ServerDirectoryEntry): { visible: string; full: string } {
@@ -291,7 +269,7 @@ dialog shows it directly on its work plane. See FDR-042.
 </script>
 
 {#snippet entryAction(origin: string, profile: ServerVersionProfile, fullWidth: boolean)}
-  {@const joined = registeredServer(origin)}
+  {@const joined = serverRegistry.findServerByUrl(origin)}
   {#if opensInServerClient(origin, profile)}
     <Button href={origin} opensInNewTab variant="secondary" size="sm" {fullWidth}>
       <span>{actionLabel(origin, profile)}</span>
@@ -365,7 +343,7 @@ dialog shows it directly on its work plane. See FDR-042.
 
     {#if customProfile && customOrigin}
       {@const profile = customProfile}
-      {@const joined = registeredServer(customOrigin)}
+      {@const joined = serverRegistry.findServerByUrl(customOrigin)}
       {@const external = opensInServerClient(customOrigin, profile)}
       <div class="max-w-md">
         {#snippet customActions()}
@@ -422,7 +400,7 @@ dialog shows it directly on its work plane. See FDR-042.
     <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
       {#each entries as entry (entry.origin)}
         {@const profile = liveProfiles.get(entry.origin) ?? entry.profile}
-        {@const joined = registeredServer(entry.origin)}
+        {@const joined = serverRegistry.findServerByUrl(entry.origin)}
         {@const external = opensInServerClient(entry.origin, profile)}
         {#snippet cardActions()}
           <div class="flex items-center gap-3">

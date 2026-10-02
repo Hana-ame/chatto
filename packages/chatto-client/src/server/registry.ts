@@ -8,6 +8,7 @@ import { Codecs, globalSlot, serverSlot } from '../storage/slot.js';
 import { getPublicServerInfo } from '../api/server.js';
 import type { PublicServerInfo } from '../api/server.js';
 import { isBackendCapableOrigin } from '../util/runtimeOrigin.js';
+import { canonicalServerOrigin } from '../util/serverUrl.js';
 import { getViewerStateViaConnect, type CurrentUser } from '../api/viewer.js';
 import { connectEndpoint } from '../api/connect.js';
 import { isAuthenticationRequiredError } from '../auth/errors.js';
@@ -1050,6 +1051,33 @@ export class ServerRegistry {
     });
   }
 
+  /**
+   * Register a remote server without a session and return its ID. When
+   * `findServerByUrl` finds a registered server for `url`, return that server
+   * and leave it unchanged. A later sign-in adds its session to this
+   * registration. The server stays signed out until the host starts sign-in.
+   *
+   * @throws Error when the registry cannot add the server, for example after
+   *   it was disposed.
+   */
+  addSignedOutServer(url: string, profile: { name: string; iconUrl: string | null }): string {
+    const existing = this.findServerByUrl(url);
+    if (existing) return existing.id;
+    const id = generateServerId(
+      url,
+      this.servers.map((server) => server.id)
+    );
+    this.addServer({
+      id,
+      url,
+      name: profile.name || 'Chatto',
+      iconUrl: profile.iconUrl,
+      addedAt: Date.now()
+    });
+    if (!this.getServer(id)) throw new Error('The server could not be registered.');
+    return id;
+  }
+
   /** Remove a server by ID. Disposes its event bus, store, and connection state. */
   removeServer(id: string): boolean {
     return batch(() => {
@@ -1248,6 +1276,17 @@ export class ServerRegistry {
   /** Get a server by ID. */
   getServer(id: string): RegisteredServer | undefined {
     return this.servers.find((s) => s.id === id);
+  }
+
+  /**
+   * Get the registered server that `url` addresses, compared by canonical
+   * origin (see `canonicalServerOrigin`). Returns `undefined` for a URL that
+   * is not an HTTP(S) server URL.
+   */
+  findServerByUrl(url: string): RegisteredServer | undefined {
+    const origin = canonicalServerOrigin(url);
+    if (!origin) return undefined;
+    return this.servers.find((server) => canonicalServerOrigin(server.url) === origin);
   }
 
   /**

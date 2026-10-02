@@ -258,6 +258,10 @@ describe('server route authentication privacy', () => {
     });
 
     await expect.element(page.getByTestId('server-unavailable')).toBeVisible();
+    // The origin belongs to the deployment and cannot be removed.
+    await expect
+      .element(page.getByRole('button', { name: 'Remove server' }))
+      .not.toBeInTheDocument();
     expect(container.querySelector('[data-testid="server-chrome"]')).toBeNull();
     expect(container.querySelector('[data-testid="private-route"]')).toBeNull();
 
@@ -269,6 +273,23 @@ describe('server route authentication privacy', () => {
     await expect.element(page.getByTestId('server-chrome')).toBeInTheDocument();
     expect(container.querySelector('[data-testid="server-unavailable"]')).toBeNull();
   });
+
+  it('offers to remove an unusable remote server', async () => {
+    mocks.activeServerId = 'remote';
+    mocks.servers!.set('remote', { reauthRequiredAt: null, token: 'remote-token' });
+    // The fixture's store reads its compatibility problem from the origin entry.
+    mocks.servers!.set('origin', {
+      reauthRequiredAt: null,
+      compatibilityProblem: 'server-too-old'
+    });
+    render(Layout, {
+      props: { children: testSnippet('<main data-testid="private-route">Rooms</main>') }
+    });
+
+    await expect.element(page.getByTestId('server-unavailable')).toBeVisible();
+    await expect.element(page.getByRole('button', { name: 'Remove server' })).toBeVisible();
+  });
+
   it('explains a signed-out remote server instead of rendering its chrome and routes', async () => {
     mocks.activeServerId = 'remote';
     mocks.servers!.set('remote', {
@@ -284,6 +305,7 @@ describe('server route authentication privacy', () => {
 
     await expect.element(page.getByTestId('server-signed-out')).toBeVisible();
     await expect.element(page.getByRole('button', { name: 'Log in to this server' })).toBeVisible();
+    await expect.element(page.getByRole('button', { name: 'Remove server' })).toBeVisible();
     expect(container.querySelector('[data-testid="server-chrome"]')).toBeNull();
     expect(container.querySelector('[data-testid="private-route"]')).toBeNull();
   });

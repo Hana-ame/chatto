@@ -35,13 +35,17 @@ vi.mock('$lib/client', async () => ({
     getStore: vi.fn(),
     getServer: vi.fn(() => ({ userId: 'U1' })),
     tryGetStore: vi.fn(() => null),
-    isAuthenticated: vi.fn(() => false),
-    firstAuthenticatedServerId: vi.fn(() => undefined)
+    isAuthenticated: vi.fn(() => false)
   },
   serverConnectionManager: {
     originClient: mocks.originClient,
     getClient: vi.fn(() => mocks.originClient)
   }
+}));
+
+vi.mock('$lib/serverCatalogue', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('$lib/serverCatalogue')>()),
+  firstAuthenticatedServerId: vi.fn(() => undefined)
 }));
 
 vi.mock('$app/navigation', () => ({
@@ -127,10 +131,6 @@ vi.mock('$lib/state/server/useServerRegistry.svelte', () => ({
 
 vi.mock('$lib/state/server/ServerRuntimeCoordinator.svelte', async () => ({
   default: (await import('./chat/ChatRootTestStub.svelte')).default
-}));
-
-vi.mock('@chatto/client/server/registry', () => ({
-  generateServerId: vi.fn(() => 'server-id')
 }));
 
 import Layout from './+layout.svelte';

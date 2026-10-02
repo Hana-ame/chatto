@@ -1,6 +1,6 @@
 import { createApi, createClient, type AddressedMessage, type Server } from '@chatto/client';
 import { parseServerUrl } from '@chatto/client/util/serverUrl';
-import { createThreadReader } from '../thread.ts';
+import { createAttachmentReader, createThreadReader } from '../thread.ts';
 import { createEyesReaction } from '../reaction.ts';
 import { ConfigurationError, setting, thinkingSetting } from '../settings.ts';
 import { webSettings } from '../web.ts';
@@ -83,7 +83,7 @@ function sourceSettings() {
       // Match the server-authenticated actor ID, never a display name or user-supplied message field.
       allowedUserId: setting('CHATTO_ALLOWED_USER_ID'),
       model: setting('CHATTO_AGENT_MODEL'),
-      thinkingLevel: thinkingSetting('CHATTO_AGENT_THINKING', 'low'),
+      thinkingLevel: thinkingSetting('CHATTO_AGENT_THINKING', 'medium'),
       investigation,
       implementation,
       maintainers,
@@ -144,6 +144,7 @@ async function consume(
     },
     typing: (destination, signal) => api.refreshTyping(destination, { signal }),
     readThread: createThreadReader(api),
+    readAttachment: createAttachmentReader(api),
     acknowledge: createEyesReaction(api)
   });
   await chatto.consumeEvents({

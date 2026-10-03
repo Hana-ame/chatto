@@ -1,6 +1,6 @@
 <script lang="ts">
+  import { loadPublicServerImage, publicServerImageURL } from '$lib/publicServerImage';
   import { getGradientForName } from '$lib/utils/gradients';
-  import SkeletonImg from '$lib/ui/SkeletonImg.svelte';
 
   /**
    * Minimal data needed for logo display.
@@ -12,14 +12,24 @@
 
   let {
     server,
-    fill = false
+    fill = false,
+    publicImageOrigin
   }: {
     server: ServerForLogo;
     /** Fill the available parent frame instead of using the default gutter size. */
     fill?: boolean;
+    /** Load the logo as an untrusted public image from this server origin. */
+    publicImageOrigin?: string;
   } = $props();
 
-  const gradientStyle = $derived(server.logoUrl ? undefined : getGradientForName(server.name));
+  const logoURL = $derived(
+    publicImageOrigin
+      ? publicServerImageURL(publicImageOrigin, server.logoUrl ?? null)
+      : (server.logoUrl ?? null)
+  );
+  let failedLogoURL = $state<string | null>(null);
+  const showLogo = $derived(!!logoURL && failedLogoURL !== logoURL);
+  const gradientStyle = $derived(showLogo ? undefined : getGradientForName(server.name));
   const initial = $derived(server.name[0]?.toUpperCase() ?? '?');
 </script>
 
@@ -29,13 +39,25 @@
 	Used by ServerIcon for the server gutter icon.
 -->
 <div
-  class="shimmer-hover flex shrink-0 items-center justify-center overflow-hidden rounded-xl text-3xl font-black transition-[background-color,color] duration-100 {fill
+  class="shimmer-hover flex shrink-0 items-center justify-center overflow-hidden rounded-xl text-3xl font-black transition-[background-color,color] feedback-quick {fill
     ? 'h-full w-full'
     : 'h-12 w-12'}"
   style:background={gradientStyle}
 >
-  {#if server.logoUrl}
-    <SkeletonImg src={server.logoUrl} alt={server.name} class="h-full w-full object-cover" />
+  {#if showLogo && logoURL && publicImageOrigin}
+    <img
+      alt={server.name}
+      class="h-full w-full object-cover"
+      {@attach loadPublicServerImage(logoURL)}
+      onerror={() => (failedLogoURL = logoURL)}
+    />
+  {:else if showLogo && logoURL}
+    <img
+      src={logoURL}
+      alt={server.name}
+      class="h-full w-full object-cover"
+      onerror={() => (failedLogoURL = logoURL)}
+    />
   {:else}
     <span class="text-white drop-shadow-sm">{initial}</span>
   {/if}

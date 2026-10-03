@@ -4,6 +4,7 @@ package chatto.api.v1;
 
 import "buf/validate/validate.proto";
 import "chatto/api/v1/pagination.proto";
+import "chatto/api/v1/presence.proto";
 import "chatto/api/v1/users.proto";
 import "google/protobuf/timestamp.proto";
 
@@ -20,7 +21,7 @@ message DirectoryMember {
 }
 
 // Request for members of one room.
-message ListRoomMembersRequest {
+message ListMembersRequest {
   reserved 3, 4;
   reserved "limit", "offset";
 
@@ -30,23 +31,33 @@ message ListRoomMembersRequest {
   string room_id = 1 [(buf.validate.field).string.min_len = 1];
   // Optional case-insensitive search against login and display name.
   string search = 2 [(buf.validate.field).string.max_len = 100];
-  // Page request. Defaults to 250 results when absent or limit is zero.
+  // Defaults to 250 results when absent or limit is zero. Maximum: 500.
   PageRequest page = 5;
+  // Optional status filter applied before pagination. Empty means all statuses.
+  // Select ONLINE, AWAY, and DO_NOT_DISTURB for all connected members.
+  // Presence can change between pages; use realtime updates to keep it current.
+  repeated PresenceStatus presence_statuses = 6 [(buf.validate.field).repeated = {
+    max_items: 4
+    unique: true
+    items: {enum: {defined_only: true, not_in: [0]}}
+  }];
 }
 
-// Room member page.
-message ListRoomMembersResponse {
-  reserved 2, 3;
-  reserved "total_count", "has_more";
+// Room membership IDs. Resolve profiles with UserService.BatchGetUsers.
+// Empty searches do not read user profiles. Search results require profile
+// reads to match names. Both paths use ascending user ID order.
+message ListMembersResponse {
+  reserved 1, 2, 3;
+  reserved "members", "total_count", "has_more";
 
-  // Members in the requested page.
-  repeated DirectoryMember members = 1;
-  // Page metadata.
+  // Current member IDs in ascending order. Missing or deleted users are omitted.
+  repeated string user_ids = 5;
+  // Page metadata for the members that match both filters.
   PageInfo page = 4;
 }
 
 // Request one member of one room by stable user ID.
-message GetRoomMemberRequest {
+message GetMemberRequest {
   // Required room ID.
   string room_id = 1 [(buf.validate.field).string.min_len = 1];
   // Required target user ID.
@@ -54,13 +65,13 @@ message GetRoomMemberRequest {
 }
 
 // Room member response.
-message GetRoomMemberResponse {
+message GetMemberResponse {
   // Requested room member.
   DirectoryMember member = 1;
 }
 
 // Request room member rows for a set of stable user IDs.
-message BatchGetRoomMembersRequest {
+message BatchGetMembersRequest {
   // Required room ID.
   string room_id = 1 [(buf.validate.field).string.min_len = 1];
   // Required target user IDs. Unknown IDs and users that are not members of the
@@ -75,7 +86,7 @@ message BatchGetRoomMembersRequest {
 }
 
 // Batch room member response.
-message BatchGetRoomMembersResponse {
+message BatchGetMembersResponse {
   // Found members. The server preserves first-seen request order and
   // de-duplicates repeated IDs.
   repeated DirectoryMember members = 1;

@@ -5,11 +5,11 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -19,22 +19,20 @@ import (
 	"github.com/zitadel/oidc/v3/pkg/op"
 	"hmans.de/authling/internal/ids"
 	"hmans.de/authling/internal/issuer"
+	"hmans.de/authling/internal/runtimejson"
 	"hmans.de/authling/internal/storage"
-	"hmans.de/chatto/pkg/datacrypto"
 )
 
 const (
 	authRequestLifetime = 10 * time.Minute
 	accessTokenLifetime = 5 * time.Minute
+	maxAuthRequests     = 1000
 )
 
-var errOIDCStateNotFound = errors.New("OIDC state not found")
+// ErrLoginRequired means the browser must authenticate again before approval.
+var ErrLoginRequired = errors.New("fresh authentication required")
 
-type sealedState struct {
-	Version    int    `json:"version"`
-	Nonce      []byte `json:"nonce"`
-	Ciphertext []byte `json:"ciphertext"`
-}
+var errOIDCStateNotFound = errors.New("OIDC state not found")
 
 type authRequestState struct {
 	ID            string                      `json:"id"`
@@ -51,11 +49,15 @@ type authRequestState struct {
 	ResponseMode  liboidc.ResponseMode        `json:"response_mode,omitempty"`
 	CodeChallenge string                      `json:"code_challenge"`
 	CodeMethod    liboidc.CodeChallengeMethod `json:"code_challenge_method"`
+	MaxAge        *uint                       `json:"max_age,omitempty"`
+	ForceLogin    bool                        `json:"force_login,omitempty"`
 	ForceConsent  bool                        `json:"force_consent,omitempty"`
-	Subject       string                      `json:"subject,omitempty"`
-	Authorized    bool                        `json:"authorized"`
-	AuthTime      time.Time                   `json:"auth_time,omitempty"`
-	CodeKey       string                      `json:"code_key,omitempty"`
+	// Silent prohibits login, consent, and other interactive pages.
+	Silent     bool      `json:"silent,omitempty"`
+	Subject    string    `json:"subject,omitempty"`
+	Authorized bool      `json:"authorized"`
+	AuthTime   time.Time `json:"auth_time,omitempty"`
+	CodeKey    string    `json:"code_key,omitempty"`
 }
 
 func (r *authRequestState) GetID() string { return r.ID }
@@ -70,6 +72,9 @@ func (r *authRequestState) GetAudience() []string  { return []string{r.ClientID}
 func (r *authRequestState) GetAuthTime() time.Time { return r.AuthTime }
 func (r *authRequestState) GetClientID() string    { return r.ClientID }
 func (r *authRequestState) GetCodeChallenge() *liboidc.CodeChallenge {
+	if r.CodeChallenge == "" {
+		return nil
+	}
 	return &liboidc.CodeChallenge{Challenge: r.CodeChallenge, Method: r.CodeMethod}
 }
 func (r *authRequestState) GetNonce() string                      { return r.Nonce }
@@ -98,6 +103,8 @@ type ConsentRequest struct {
 	ID, ClientID, ClientName, ClientHost, RedirectOrigin string
 	Scopes                                               []string
 	ForceConsent                                         bool
+	// Silent requires a code or protocol error without interactive pages.
+	Silent bool
 }
 
 // Storage persists OIDC protocol state in Authling's encrypted runtime bucket.
@@ -109,16 +116,29 @@ type Storage struct {
 	issuer  *issuer.Service
 	now     func() time.Time
 	profile func(context.Context, string) (string, string, error)
+	active  func(context.Context, string) error
+	email   func(context.Context, string) (string, error)
 }
 
-func NewStorage(kv jetstream.KeyValue, js jetstream.JetStream, key []byte, clients *Resolver, issuerService *issuer.Service, profile func(context.Context, string) (string, string, error)) *Storage {
-	return &Storage{kv: kv, js: js, key: append([]byte(nil), key...), clients: clients, issuer: issuerService, now: time.Now, profile: profile}
+// NewStorage receives account read boundaries. Email must return the current
+// verified address; no account PII is retained in protocol state.
+func NewStorage(kv jetstream.KeyValue, js jetstream.JetStream, key []byte, clients *Resolver, issuerService *issuer.Service, profile func(context.Context, string) (string, string, error), active func(context.Context, string) error, email func(context.Context, string) (string, error)) *Storage {
+	return &Storage{kv: kv, js: js, key: append([]byte(nil), key...), clients: clients, issuer: issuerService, now: time.Now, profile: profile, active: active, email: email}
+}
+
+// admitAuthRequest runs at HTTP admission before client lookup or state creation.
+func (s *Storage) admitAuthRequest(ctx context.Context) error {
+	return storage.AdmitRequest(ctx, s.kv, s.js, "oidc.admission.global", maxAuthRequests, authRequestLifetime)
 }
 
 func (s *Storage) CreateAuthRequest(ctx context.Context, request *liboidc.AuthRequest, _ string) (op.AuthRequest, error) {
 	client, err := s.clients.Resolve(ctx, request.ClientID)
 	if err != nil {
 		return nil, err
+	}
+	if (client.requiresPKCE() || request.CodeChallenge != "" || request.CodeChallengeMethod != "") &&
+		(!validPKCEValue(request.CodeChallenge) || request.CodeChallengeMethod != liboidc.CodeChallengeMethodS256) {
+		return nil, liboidc.ErrInvalidRequest().WithDescription("S256 PKCE is required")
 	}
 	id, err := ids.New("ar")
 	if err != nil {
@@ -131,7 +151,10 @@ func (s *Storage) CreateAuthRequest(ctx context.Context, request *liboidc.AuthRe
 		State: request.State, Nonce: request.Nonce, Scopes: append([]string(nil), request.Scopes...),
 		ResponseType: request.ResponseType, ResponseMode: request.ResponseMode,
 		CodeChallenge: request.CodeChallenge, CodeMethod: request.CodeChallengeMethod,
-		ForceConsent: len(request.Prompt) == 1 && request.Prompt[0] == liboidc.PromptConsent,
+		ForceConsent: slices.Contains(request.Prompt, liboidc.PromptConsent),
+		ForceLogin:   slices.Contains(request.Prompt, liboidc.PromptLogin),
+		Silent:       slices.Contains(request.Prompt, liboidc.PromptNone),
+		MaxAge:       request.MaxAge,
 	}
 	if err := s.create(ctx, s.requestKey(id), state, authRequestLifetime); err != nil {
 		return nil, err
@@ -216,16 +239,46 @@ func (s *Storage) Consent(ctx context.Context, id string) (ConsentRequest, error
 		RedirectOrigin: redirectOrigin,
 		Scopes:         append([]string(nil), state.Scopes...),
 		ForceConsent:   state.ForceConsent,
+		Silent:         state.Silent,
 	}, nil
 }
 
+// CheckAuthentication checks persisted request constraints against server-owned
+// authentication evidence. It does not consume the request or change consent.
+func (s *Storage) CheckAuthentication(ctx context.Context, id string, authenticatedAt time.Time) error {
+	_, state, err := s.readRequest(ctx, id)
+	if err != nil || state.Authorized {
+		return errOIDCStateNotFound
+	}
+	return state.checkAuthentication(authenticatedAt, s.now().UTC())
+}
+
+// checkAuthentication compares full precision times. In particular, a session
+// from earlier in the same second cannot satisfy forced authentication.
+func (r *authRequestState) checkAuthentication(authenticatedAt, now time.Time) error {
+	if authenticatedAt.IsZero() || authenticatedAt.After(now) {
+		return ErrLoginRequired
+	}
+	if r.ForceLogin || r.MaxAge != nil && *r.MaxAge == 0 {
+		if !authenticatedAt.After(r.CreatedAt) {
+			return ErrLoginRequired
+		}
+	} else if r.MaxAge != nil && now.Sub(authenticatedAt).Seconds() > float64(*r.MaxAge) {
+		return ErrLoginRequired
+	}
+	return nil
+}
+
 // Authorize binds the current account to a pending request using OCC.
-func (s *Storage) Authorize(ctx context.Context, id, accountID string) error {
+func (s *Storage) Authorize(ctx context.Context, id, accountID string, authenticatedAt time.Time) error {
 	entry, state, err := s.readRequest(ctx, id)
 	if err != nil || state.Authorized || accountID == "" {
 		return errOIDCStateNotFound
 	}
-	state.Subject, state.Authorized, state.AuthTime = accountID, true, s.now().UTC()
+	if err := state.checkAuthentication(authenticatedAt, s.now().UTC()); err != nil {
+		return err
+	}
+	state.Subject, state.Authorized, state.AuthTime = accountID, true, authenticatedAt.UTC()
 	remaining := state.ExpiresAt.Sub(s.now().UTC())
 	data, err := s.seal(s.requestKey(id), state)
 	if err != nil {
@@ -237,6 +290,11 @@ func (s *Storage) Authorize(ctx context.Context, id, accountID string) error {
 
 // Deny consumes a pending request and returns its already-validated client redirect.
 func (s *Storage) Deny(ctx context.Context, id string) (string, error) {
+	return s.reject(ctx, id, "access_denied")
+}
+
+// reject consumes a pending request and returns an error to its validated URI.
+func (s *Storage) reject(ctx context.Context, id, code string) (string, error) {
 	_, state, err := s.readRequest(ctx, id)
 	if err != nil || state.Authorized {
 		return "", errOIDCStateNotFound
@@ -246,7 +304,7 @@ func (s *Storage) Deny(ctx context.Context, id string) (string, error) {
 		return "", errOIDCStateNotFound
 	}
 	query := redirect.Query()
-	query.Set("error", "access_denied")
+	query.Set("error", code)
 	if state.State != "" {
 		query.Set("state", state.State)
 	}
@@ -343,17 +401,18 @@ func (s *Storage) GetClientByClientID(ctx context.Context, id string) (op.Client
 func (s *Storage) AuthorizeClientIDSecret(ctx context.Context, id, secret string) error {
 	return s.clients.AuthorizeSecret(ctx, id, secret)
 }
-func (s *Storage) SetUserinfoFromScopes(ctx context.Context, info *liboidc.UserInfo, subject, _ string, _ []string) error {
-	info.Subject = subject
-	if s.profile == nil {
-		return nil
-	}
-	username, name, err := s.profile(ctx, subject)
+func (s *Storage) SetUserinfoFromScopes(ctx context.Context, info *liboidc.UserInfo, subject, _ string, scopes []string) error {
+	claims, err := s.accountClaims(ctx, subject, scopes)
 	if err != nil {
 		return err
 	}
-	info.PreferredUsername = username
-	info.Name = name
+	info.Subject = subject
+	info.PreferredUsername, _ = claims["preferred_username"].(string)
+	info.Name, _ = claims["name"].(string)
+	info.Email, _ = claims["email"].(string)
+	if info.Email != "" {
+		info.EmailVerified = liboidc.Bool(true)
+	}
 	return nil
 }
 func (s *Storage) SetUserinfoFromToken(ctx context.Context, info *liboidc.UserInfo, tokenID, subject, _ string) error {
@@ -361,37 +420,52 @@ func (s *Storage) SetUserinfoFromToken(ctx context.Context, info *liboidc.UserIn
 	if err := s.read(s.tokenKey(tokenID), ctx, &state); err != nil || state.Subject != subject || !state.Expires.After(s.now().UTC()) {
 		return errOIDCStateNotFound
 	}
-	info.Subject = subject
-	if s.profile != nil {
-		username, name, err := s.profile(ctx, subject)
-		if err != nil {
-			return err
-		}
-		info.PreferredUsername = username
-		info.Name = name
-	}
-	return nil
+	return s.SetUserinfoFromScopes(ctx, info, subject, state.ClientID, state.Scopes)
 }
 func (*Storage) SetIntrospectionFromToken(context.Context, *liboidc.IntrospectionResponse, string, string, string) error {
 	return errOIDCStateNotFound
 }
-func (s *Storage) GetPrivateClaimsFromScopes(ctx context.Context, subject, _ string, _ []string) (map[string]any, error) {
-	if s.profile == nil {
-		return map[string]any{}, nil
+func (s *Storage) GetPrivateClaimsFromScopes(ctx context.Context, subject, _ string, scopes []string) (map[string]any, error) {
+	return s.accountClaims(ctx, subject, scopes)
+}
+
+// accountClaims enforces the stored authorization scopes at both claim-release
+// boundaries. Even subject-only responses require a currently active account.
+func (s *Storage) accountClaims(ctx context.Context, subject string, scopes []string) (map[string]any, error) {
+	if s.active == nil {
+		return nil, errors.New("account service unavailable")
 	}
-	username, name, err := s.profile(ctx, subject)
-	if err != nil {
+	if err := s.active(ctx, subject); err != nil {
 		return nil, err
 	}
 	claims := map[string]any{}
-	if username != "" {
-		claims["preferred_username"] = username
+	if slices.Contains(scopes, liboidc.ScopeProfile) {
+		if s.profile == nil {
+			return nil, errors.New("profile service unavailable")
+		}
+		username, name, err := s.profile(ctx, subject)
+		if err != nil {
+			return nil, err
+		}
+		if username != "" {
+			claims["preferred_username"] = username
+		}
+		if name != "" {
+			claims["name"] = name
+		}
 	}
-	if name != "" {
-		claims["name"] = name
-	}
-	if len(claims) == 0 {
-		return map[string]any{}, nil
+	if slices.Contains(scopes, liboidc.ScopeEmail) {
+		if s.email == nil {
+			return nil, errors.New("email service unavailable")
+		}
+		email, err := s.email(ctx, subject)
+		if err != nil {
+			return nil, err
+		}
+		if email != "" {
+			claims["email"] = email
+			claims["email_verified"] = true
+		}
 	}
 	return claims, nil
 }
@@ -473,28 +547,14 @@ func (s *Storage) read(key string, ctx context.Context, value any) error {
 	return s.open(key, entry.Value(), value)
 }
 func (s *Storage) seal(key string, value any) ([]byte, error) {
-	plain, err := json.Marshal(value)
-	if err != nil {
-		return nil, err
-	}
-	sealed, err := datacrypto.Seal(s.key, plain, []byte("authling:oidc-runtime:v1\x00"+key))
-	clear(plain)
-	if err != nil {
-		return nil, err
-	}
-	return json.Marshal(sealedState{Version: 1, Nonce: sealed.Nonce, Ciphertext: sealed.Ciphertext})
+	return runtimejson.Seal(s.key, []byte("authling:oidc-runtime:v1\x00"+key), value, runtimejson.LowercaseFields)
 }
 func (s *Storage) open(key string, data []byte, value any) error {
-	var envelope sealedState
-	if json.Unmarshal(data, &envelope) != nil || envelope.Version != 1 {
+	err := runtimejson.Open(s.key, []byte("authling:oidc-runtime:v1\x00"+key), data, value)
+	if errors.Is(err, runtimejson.ErrInvalidEnvelope) {
 		return fmt.Errorf("invalid OIDC state envelope")
 	}
-	plain, err := datacrypto.Open(s.key, envelope.Ciphertext, envelope.Nonce, []byte("authling:oidc-runtime:v1\x00"+key))
-	if err != nil {
-		return err
-	}
-	defer clear(plain)
-	return json.Unmarshal(plain, value)
+	return err
 }
 func (s *Storage) derivedKey(kind, secret string) string {
 	digest := hmac.New(sha256.New, s.key)

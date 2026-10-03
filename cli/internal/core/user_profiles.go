@@ -4,72 +4,25 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"hmans.de/chatto/internal/pb/chatto/core/live/v1"
 	"strings"
 	"time"
 	"unicode/utf8"
 
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	"hmans.de/chatto/internal/core/subjects"
 	"hmans.de/chatto/internal/evtstream"
 	evtv1 "hmans.de/chatto/internal/pb/chatto/core/evt/v1"
+	"hmans.de/chatto/pkg/events"
 )
 
 const (
 	MaxCustomStatusEmojiLength = 16
 	MaxCustomStatusTextLength  = 100
-	// MaxBioLength bounds a user's self-authored public bio in Unicode
-	// characters.
+	// MaxBioLength bounds a user's public bio in Unicode characters.
 	MaxBioLength = 1000
 )
 
 var ErrBioTooLong = fmt.Errorf("bio is too long")
-
-// publishUserProfileUpdate publishes a transient snapshot of the current public
-// profile. Durable profile facts remain authoritative in EVT.
-func (c *ChattoCore) publishUserProfileUpdate(ctx context.Context, userID string) {
-	// Get current user data
-	user, err := c.GetUser(ctx, userID)
-	if err != nil {
-		c.logger.Warn("failed to get user for profile update event", "error", err, "user_id", userID)
-		return
-	}
-
-	// Get current avatar URL (full resolution for events)
-	avatarURL, err := c.GetUserAvatarURL(ctx, userID, nil, nil, "")
-	if err != nil {
-		c.logger.Warn("failed to get avatar URL for profile update event", "error", err, "user_id", userID)
-		avatarURL = ""
-	}
-
-	// Include the user's shareable time zone so clients can render local time
-	// without an extra read. Absent settings mean no public zone.
-	timezone := ""
-	if settings, err := c.GetUserSettings(ctx, userID); err == nil && settings != nil && settings.GetShareTimezone() {
-		timezone = settings.GetTimezone()
-	}
-
-	event := newLiveEvent(userID, &livev1.LiveEvent{
-		Event: &livev1.LiveEvent_UserProfileUpdated{
-			UserProfileUpdated: &livev1.UserProfileSyncEvent{
-				UserId:      userID,
-				DisplayName: user.DisplayName,
-				AvatarUrl:   avatarURL,
-				Login:       user.Login,
-				Bio:         user.GetBio(),
-				Timezone:    timezone,
-			},
-		},
-	})
-
-	// Publish to live.sync.user.{userId}.profile_updated for real-time delivery.
-	// Profile updates are transient (no need for JetStream storage/replay)
-	subject := subjects.LiveSyncUserEvent(userID, "profile_updated")
-	if err := c.publishLiveEvent(ctx, subject, event); err != nil {
-		c.logger.Warn("failed to publish user profile update event", "error", err, "user_id", userID)
-	}
-}
 
 var ErrCustomStatusEmojiRequired = fmt.Errorf("custom status emoji is required")
 var ErrCustomStatusEmojiInvalid = fmt.Errorf("custom status emoji must be a single supported emoji")
@@ -125,22 +78,6 @@ func (c *ChattoCore) updateUserDisplayNameAs(ctx context.Context, actorID, userI
 
 	c.logger.Info("Updated user display name", "id", userID)
 
-	// Publish profile update event
-	c.publishUserProfileUpdate(ctx, userID)
-
-	return user, nil
-}
-
-// AdminUpdateUserDisplayName updates a user's display name as an admin action.
-// Behavior matches UpdateUserDisplayName; this exists as a distinct entry point
-// for audit clarity in logs.
-// Authorization: Caller must verify admin privileges.
-func (c *ChattoCore) AdminUpdateUserDisplayName(ctx context.Context, userID, displayName string) (*evtv1.User, error) {
-	user, err := c.updateUserDisplayNameAs(ctx, SystemActorID, userID, displayName)
-	if err != nil {
-		return nil, err
-	}
-	c.logger.Info("Admin updated user display name", "id", userID)
 	return user, nil
 }
 
@@ -163,7 +100,39 @@ func normalizeBio(bio string) string {
 	return strings.TrimSpace(bio)
 }
 
+// UpdateOwnUserProfile applies one self-service identity patch as an atomic
+// batch. Omitted fields remain unchanged. Login changes retain the existing
+// cooldown and permission-based bypass. Conflicts are returned to the caller;
+// replacement values are never replayed after a concurrent profile edit.
+// Authorization: userID must identify the authenticated caller.
+func (c *ChattoCore) UpdateOwnUserProfile(ctx context.Context, userID string, login, displayName, bio *string) (*evtv1.User, error) {
+	if err := requireAuthenticatedActor(userID); err != nil {
+		return nil, err
+	}
+	if login == nil && displayName == nil && bio == nil {
+		return nil, ErrInvalidArgument
+	}
+	enforceCooldown := false
+	if login != nil {
+		if err := c.authorizeAtStableInputs(ctx, func() error {
+			canManage, err := c.CanManageUserAccounts(ctx, userID)
+			if err != nil {
+				return err
+			}
+			enforceCooldown = !canManage
+			return nil
+		}); err != nil {
+			return nil, err
+		}
+	}
+	return c.updateUserProfileWithCooldown(ctx, userID, userID, login, displayName, bio, false, enforceCooldown)
+}
+
 func (c *ChattoCore) updateUserProfileAs(ctx context.Context, actorID, userID string, login, displayName, bio *string, retryConflicts bool) (*evtv1.User, error) {
+	return c.updateUserProfileWithCooldown(ctx, actorID, userID, login, displayName, bio, retryConflicts, false)
+}
+
+func (c *ChattoCore) updateUserProfileWithCooldown(ctx context.Context, actorID, userID string, login, displayName, bio *string, retryConflicts, enforceCooldown bool) (*evtv1.User, error) {
 	user, err := c.GetUser(ctx, userID)
 	if err != nil {
 		return nil, fmt.Errorf("user not found: %w", err)
@@ -174,14 +143,8 @@ func (c *ChattoCore) updateUserProfileAs(ctx context.Context, actorID, userID st
 	var loginNeedsMentionCheck bool
 	if login != nil {
 		nextLogin = strings.TrimSpace(*login)
-		var validationErr error
-		if user.GetIsBot() {
-			validationErr = ValidateBotLogin(nextLogin)
-		} else {
-			validationErr = ValidateHumanLogin(nextLogin)
-		}
-		if validationErr != nil {
-			return nil, validationErr
+		if err := ValidateLogin(nextLogin); err != nil {
+			return nil, err
 		}
 		loginChanged = user.GetLogin() != nextLogin
 		loginNeedsMentionCheck = loginChanged && !strings.EqualFold(user.GetLogin(), nextLogin)
@@ -193,6 +156,22 @@ func (c *ChattoCore) updateUserProfileAs(ctx context.Context, actorID, userID st
 				return nil, ErrUsernameBlocked
 			}
 		}
+	}
+
+	checkCooldown := func() error {
+		if enforceCooldown && loginNeedsMentionCheck {
+			lastChange, err := c.GetLastLoginChange(ctx, userID)
+			if err != nil {
+				return err
+			}
+			if !lastChange.IsZero() && time.Since(lastChange) < LoginChangeCooldown {
+				return ErrLoginChangeCooldown
+			}
+		}
+		return nil
+	}
+	if err := checkCooldown(); err != nil {
+		return nil, err
 	}
 
 	var nextDisplayName string
@@ -233,6 +212,13 @@ func (c *ChattoCore) updateUserProfileAs(ctx context.Context, actorID, userID st
 		}
 		loginChangedEvent.GetUserLoginChanged().EncryptedLogin = encryptedLogin
 		entries = append(entries, evtstream.BatchEntry{Subject: agg.SubjectFor(loginChangedEvent), Event: loginChangedEvent})
+		if enforceCooldown && loginNeedsMentionCheck {
+			cooldown := newEvent(actorID, &evtv1.Event{Event: &evtv1.Event_UserLoginCooldownStarted{
+				UserLoginCooldownStarted: &evtv1.UserLoginCooldownStartedEvent{UserId: userID},
+			}})
+			cooldown.CreatedAt = loginChangedEvent.GetCreatedAt()
+			entries = append(entries, evtstream.BatchEntry{Subject: agg.SubjectFor(cooldown), Event: cooldown})
+		}
 	}
 	if displayNameChanged {
 		displayNameChangedEvent := newEvent(actorID, &evtv1.Event{Event: &evtv1.Event_UserDisplayNameChanged{
@@ -264,8 +250,20 @@ func (c *ChattoCore) updateUserProfileAs(ctx context.Context, actorID, userID st
 	}
 
 	checkUserExists := func() error {
-		if _, err := c.GetUser(ctx, userID); err != nil {
+		if err := checkCooldown(); err != nil {
+			return err
+		}
+		current, err := c.GetUser(ctx, userID)
+		if err != nil {
 			return fmt.Errorf("user not found: %w", err)
+		}
+		// Batch construction can precede the append helper's OCC capture.
+		// Recheck selected source values after projection catch-up so a stale
+		// case-only rename cannot bypass a concurrent rename's cooldown.
+		if !retryConflicts && ((login != nil && current.GetLogin() != user.GetLogin()) ||
+			(displayName != nil && current.GetDisplayName() != user.GetDisplayName()) ||
+			(bio != nil && current.GetBio() != user.GetBio())) {
+			return events.ErrConflict
 		}
 		return nil
 	}
@@ -306,31 +304,55 @@ func (c *ChattoCore) updateUserProfileAs(ctx context.Context, actorID, userID st
 		user.Bio = nextBio
 	}
 	c.logger.Info("Updated user profile", "id", userID)
-	c.publishUserProfileUpdate(ctx, userID)
 	return user, nil
 }
 
-type AdminUpdateUserInput struct {
-	Login       *string
-	DisplayName *string
-	Bio         *string
-}
-
-func (c *ChattoCore) AdminUpdateUser(ctx context.Context, actorID, targetUserID string, input AdminUpdateUserInput) (*evtv1.User, error) {
-	if err := c.requireCanAdminManageOtherUser(ctx, actorID, targetUserID); err != nil {
+// UpdateManagedUserProfile applies one identity patch to targetUserID as an
+// atomic batch. Omitted fields remain unchanged.
+//
+// A self-update delegates to UpdateOwnUserProfile and keeps its login
+// cooldown rules. Updating another account uses the same target-aware policy
+// as avatars: user.manage-accounts for humans; ownership, bot.manage, or
+// user.manage-accounts for bots. Such updates record actorID on the facts. A
+// login change by a bot owner or bot manager checks and starts the target's
+// login cooldown, as a self-service change would. An actor with
+// user.manage-accounts neither checks nor advances it. Conflicts are returned
+// to the caller; replacement values are never replayed after a concurrent
+// profile edit.
+func (c *ChattoCore) UpdateManagedUserProfile(ctx context.Context, actorID, targetUserID string, login, displayName, bio *string) (*evtv1.User, error) {
+	if err := requireAuthenticatedActor(actorID); err != nil {
 		return nil, err
 	}
-	if input.Login == nil && input.DisplayName == nil && input.Bio == nil {
+	if login == nil && displayName == nil && bio == nil {
 		return nil, fmt.Errorf("%w: at least one of login, display_name, or bio must be provided", ErrInvalidArgument)
 	}
-	if err := c.requireHumanUser(ctx, targetUserID); err != nil {
+	if actorID == targetUserID {
+		return c.UpdateOwnUserProfile(ctx, actorID, login, displayName, bio)
+	}
+	enforceCooldown := false
+	if err := c.authorizeAtStableInputs(ctx, func() error {
+		if _, err := c.requireCanManageUserIdentity(ctx, actorID, targetUserID); err != nil {
+			return err
+		}
+		if login == nil {
+			return nil
+		}
+		canManageAccounts, err := c.CanManageUserAccounts(ctx, actorID)
+		if err != nil {
+			return fmt.Errorf("check user.manage-accounts: %w", err)
+		}
+		enforceCooldown = !canManageAccounts
+		return nil
+	}); err != nil {
 		return nil, err
 	}
-	return c.updateUserProfileAs(ctx, actorID, targetUserID, input.Login, input.DisplayName, input.Bio, true)
+	return c.updateUserProfileWithCooldown(ctx, actorID, targetUserID, login, displayName, bio, false, enforceCooldown)
 }
 
+// AdminClearLoginChangeCooldown clears a human account's login cooldown.
+// The actor needs user.manage-accounts, including when targeting their own account.
 func (c *ChattoCore) AdminClearLoginChangeCooldown(ctx context.Context, actorID, targetUserID string) error {
-	if err := c.requireCanAdminManageOtherUser(ctx, actorID, targetUserID); err != nil {
+	if err := c.requireCanAdminManageUser(ctx, actorID, targetUserID); err != nil {
 		return err
 	}
 	if err := c.requireHumanUser(ctx, targetUserID); err != nil {
@@ -339,15 +361,12 @@ func (c *ChattoCore) AdminClearLoginChangeCooldown(ctx context.Context, actorID,
 	return c.ClearLoginChangeCooldownAs(ctx, actorID, targetUserID)
 }
 
-func (c *ChattoCore) requireCanAdminManageOtherUser(ctx context.Context, actorID, targetUserID string) error {
+func (c *ChattoCore) requireCanAdminManageUser(ctx context.Context, actorID, targetUserID string) error {
 	if actorID == "" {
 		return ErrNotAuthenticated
 	}
 	if targetUserID == "" {
 		return fmt.Errorf("%w: target user ID is required", ErrInvalidArgument)
-	}
-	if actorID == targetUserID {
-		return ErrPermissionDenied
 	}
 	canManage, err := c.CanManageUserAccounts(ctx, actorID)
 	if err != nil {
@@ -362,11 +381,6 @@ func (c *ChattoCore) requireCanAdminManageOtherUser(ctx context.Context, actorID
 // ============================================================================
 // Login Change Operations
 // ============================================================================
-
-// userLoginChangedAtKey returns the KV key for tracking when a user last changed their login.
-func userLoginChangedAtKey(userID string) string {
-	return "user_login_changed_at." + userID
-}
 
 // UpdateUserLogin changes a user's login/username. The 30-day cooldown applies
 // unless the user has user.manage-accounts. A bypassed change does not advance
@@ -412,11 +426,7 @@ func (c *ChattoCore) applyLoginChange(ctx context.Context, actorID, userID, newL
 	if err != nil {
 		return nil, fmt.Errorf("user not found: %w", err)
 	}
-	if user.GetIsBot() {
-		if err := ValidateBotLogin(newLogin); err != nil {
-			return nil, err
-		}
-	} else if err := ValidateHumanLogin(newLogin); err != nil {
+	if err := ValidateLogin(newLogin); err != nil {
 		return nil, err
 	}
 
@@ -496,9 +506,6 @@ func (c *ChattoCore) applyLoginChange(ctx context.Context, actorID, userID, newL
 
 	c.logger.Info("Updated user login", "id", userID)
 
-	// Publish profile update event
-	c.publishUserProfileUpdate(ctx, userID)
-
 	return user, nil
 }
 
@@ -531,7 +538,6 @@ func (c *ChattoCore) ClearLoginChangeCooldownAs(ctx context.Context, actorID, us
 		return fmt.Errorf("failed to clear login change cooldown: %w", err)
 	}
 	c.logger.Info("Cleared user login change cooldown", "id", userID)
-	c.publishUserProfileUpdate(ctx, userID)
 	return nil
 }
 

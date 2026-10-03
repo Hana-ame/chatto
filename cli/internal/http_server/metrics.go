@@ -22,6 +22,7 @@ type processMetrics struct {
 	realtimeCatchUpsRateLimited  atomic.Uint64
 	realtimeCatchUpsUserBusy     atomic.Uint64
 	realtimeCatchUpsServerBusy   atomic.Uint64
+	realtimeSnapshotBytes        atomic.Uint64
 }
 
 func (m *processMetrics) realtimeCatchUpStarted() {
@@ -104,6 +105,7 @@ type chattoCollector struct {
 	realtimeCatchUpsStarted  *prometheus.Desc
 	realtimeCatchUpsTimedOut *prometheus.Desc
 	realtimeCatchUpsRejected *prometheus.Desc
+	realtimeSnapshotBytes    *prometheus.Desc
 	myEventsActive           *prometheus.Desc
 	myEventsDelivered        *prometheus.Desc
 	myEventsSlowDisconnects  *prometheus.Desc
@@ -124,6 +126,7 @@ type chattoCollector struct {
 	projectionLag            *prometheus.Desc
 	projectionEntries        *prometheus.Desc
 	projectionBytes          *prometheus.Desc
+	projectionComponentBytes *prometheus.Desc
 	scrapeError              *prometheus.Desc
 }
 
@@ -151,7 +154,7 @@ func newChattoCollector(server *HTTPServer) *chattoCollector {
 		),
 		realtimeCatchUps: prometheus.NewDesc(
 			"chatto_realtime_catch_ups",
-			"Current realtime replay or compacted-bootstrap catch-ups in this process.",
+			"Current realtime replay or snapshot catch-ups in this process.",
 			nil,
 			nil,
 		),
@@ -171,6 +174,12 @@ func newChattoCollector(server *HTTPServer) *chattoCollector {
 			"chatto_realtime_catch_ups_rejected_total",
 			"Total realtime catch-ups rejected by the process-local capacity guard.",
 			[]string{"reason"},
+			nil,
+		),
+		realtimeSnapshotBytes: prometheus.NewDesc(
+			"chatto_realtime_snapshot_bytes",
+			"Uncompressed protobuf bytes in the most recently constructed realtime snapshot.",
+			nil,
 			nil,
 		),
 		myEventsActive: prometheus.NewDesc(
@@ -293,6 +302,12 @@ func newChattoCollector(server *HTTPServer) *chattoCollector {
 			[]string{"projection"},
 			nil,
 		),
+		projectionComponentBytes: prometheus.NewDesc(
+			"chatto_projection_component_estimated_bytes",
+			"Estimated heap bytes held by a component of the combined server content view.",
+			[]string{"component"},
+			nil,
+		),
 		scrapeError: prometheus.NewDesc(
 			"chatto_metrics_scrape_error",
 			"Whether a Chatto metrics collector failed during this scrape.",
@@ -310,6 +325,7 @@ func (c *chattoCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.realtimeCatchUpsStarted
 	ch <- c.realtimeCatchUpsTimedOut
 	ch <- c.realtimeCatchUpsRejected
+	ch <- c.realtimeSnapshotBytes
 	ch <- c.myEventsActive
 	ch <- c.myEventsDelivered
 	ch <- c.myEventsSlowDisconnects
@@ -329,6 +345,7 @@ func (c *chattoCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.projectionLag
 	ch <- c.projectionEntries
 	ch <- c.projectionBytes
+	ch <- c.projectionComponentBytes
 	ch <- c.scrapeError
 }
 
@@ -345,6 +362,7 @@ func (c *chattoCollector) Collect(ch chan<- prometheus.Metric) {
 	ch <- prometheus.MustNewConstMetric(c.realtimeCatchUpsRejected, prometheus.CounterValue, float64(c.server.metrics.realtimeCatchUpsRateLimited.Load()), "rate_limited")
 	ch <- prometheus.MustNewConstMetric(c.realtimeCatchUpsRejected, prometheus.CounterValue, float64(c.server.metrics.realtimeCatchUpsUserBusy.Load()), "user_busy")
 	ch <- prometheus.MustNewConstMetric(c.realtimeCatchUpsRejected, prometheus.CounterValue, float64(c.server.metrics.realtimeCatchUpsServerBusy.Load()), "server_busy")
+	ch <- prometheus.MustNewConstMetric(c.realtimeSnapshotBytes, prometheus.GaugeValue, float64(c.server.metrics.realtimeSnapshotBytes.Load()))
 
 	c.collectNATSMetrics(ch)
 	c.collectCoreMetrics(ch)
@@ -418,6 +436,18 @@ func (c *chattoCollector) collectCoreMetrics(ch chan<- prometheus.Metric) {
 		ch <- prometheus.MustNewConstMetric(c.projectionLag, prometheus.GaugeValue, float64(projection.Lag), projection.Key)
 		ch <- prometheus.MustNewConstMetric(c.projectionEntries, prometheus.GaugeValue, float64(projection.EntryCount), projection.Key)
 		ch <- prometheus.MustNewConstMetric(c.projectionBytes, prometheus.GaugeValue, float64(projection.EstimatedBytes), projection.Key)
+		for _, metric := range projection.Metrics {
+			switch metric.Name {
+			case "component_room_timeline":
+				ch <- prometheus.MustNewConstMetric(c.projectionComponentBytes, prometheus.GaugeValue, float64(metric.Bytes), "room_timeline")
+			case "component_threads":
+				ch <- prometheus.MustNewConstMetric(c.projectionComponentBytes, prometheus.GaugeValue, float64(metric.Bytes), "threads")
+			case "component_reactions":
+				ch <- prometheus.MustNewConstMetric(c.projectionComponentBytes, prometheus.GaugeValue, float64(metric.Bytes), "reactions")
+			case "component_event_ids":
+				ch <- prometheus.MustNewConstMetric(c.projectionComponentBytes, prometheus.GaugeValue, float64(metric.Bytes), "event_ids")
+			}
+		}
 	}
 }
 

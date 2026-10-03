@@ -39,16 +39,13 @@ export async function verifyRealtimeSync(
 }
 
 /**
- * Wait for a page's WebSocket subscription to be ready by watching for
- * any real-time event. This is useful when you need to ensure a user's
- * subscription is connected before another user performs an action.
+ * Wait for a page's WebSocket subscription and live projection to be ready.
+ * Use this before a test inspects live room data or another user acts.
  *
  * The strategy is to wait for the room to be fully loaded, including:
  * - The room header is visible
  * - The message input is ready
- * - Any existing messages have loaded
- *
- * This gives the subscription time to connect during the initial load.
+ * - The server projection has completed its initial catch-up
  *
  * @example
  * ```typescript
@@ -76,11 +73,18 @@ export async function waitForRoomReady(
   // if the user doesn't have posting permission (e.g., announcements room).
   await expect(page.getByTestId('message-input')).toBeVisible({ timeout });
 
-  // Wait for ServerPresenceSync to have mounted and initiated the subscription.
+  // Wait for ServerSubscriptionMarker to have mounted and initiated the subscription.
   // The hidden marker element proves the component rendered, and since
   // the `myEvents` subscription is started in the first $effect cycle after
   // render, the subscription request has been sent by the time this resolves.
   await expect(page.getByTestId('server-subscription-active')).toBeAttached({
     timeout
   });
+  // A saved room can render before its replacement snapshot completes.
+  // Tests that mutate or inspect live room data must wait for that handoff.
+  await expect(page.getByTestId('server-subscription-active')).toHaveAttribute(
+    'data-projection-ready',
+    'true',
+    { timeout }
+  );
 }

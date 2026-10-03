@@ -1,9 +1,10 @@
-import type { ServerConnection } from '$lib/state/server/serverConnection.svelte';
+import type { ServerConnection } from '@chatto/client/server/serverConnection';
+import { serverSessionQueryRoot } from './keys';
 
 type DirectoryQueryConnection = Pick<ServerConnection, 'queryScope'>;
 
 function directoryRoot(serverId: string, connection: DirectoryQueryConnection) {
-  return ['server', serverId, 'session', connection.queryScope, 'directory'] as const;
+  return [...serverSessionQueryRoot(serverId, connection), 'directory'] as const;
 }
 
 export const directoryQueryKeys = {

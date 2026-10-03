@@ -33,6 +33,8 @@ async function touchDrag(
 }
 
 test.describe('Mobile Navigation', () => {
+  // A narrow mouse window has compact chrome. These cases exercise touch chrome.
+  test.use({ hasTouch: true });
   test('hamburger menu toggles sidebar on mobile', async ({ page, chatPage }) => {
     await createAndLoginTestUser(page);
     await chatPage.goto();
@@ -43,6 +45,23 @@ test.describe('Mobile Navigation', () => {
 
     // Resize to mobile viewport (below md breakpoint of 768px)
     await page.setViewportSize({ width: 375, height: 667 });
+
+    // Browser/PWA content reaches the viewport bottom even when the device
+    // reports a home-indicator safe area. Only the native host reserves it.
+    const client = await page.context().newCDPSession(page);
+    await client.send('Emulation.setSafeAreaInsetsOverride', {
+      insets: { top: 0, left: 0, right: 0, bottom: 34 }
+    });
+    expect(
+      await page.evaluate(() => {
+        const probe = document.createElement('div');
+        probe.style.paddingBottom = 'env(safe-area-inset-bottom, 0px)';
+        document.body.appendChild(probe);
+        const inset = getComputedStyle(probe).paddingBottom;
+        probe.remove();
+        return inset;
+      })
+    ).toBe('34px');
 
     // Hamburger menu should be visible in the app header (also proves layout settled)
     const hamburger = page.locator('button[title="Toggle sidebar"]');
@@ -57,6 +76,17 @@ test.describe('Mobile Navigation', () => {
 
     // Sidebar should now be visible
     await expect(roomList).toBeVisible({ timeout: TIMEOUTS.UI_STANDARD });
+
+    for (const testId of ['mobile-sidebar-panel', 'server-sidebar', 'mobile-sidebar-backdrop']) {
+      await expect
+        .poll(() =>
+          page.getByTestId(testId).evaluate((element) => ({
+            top: element.getBoundingClientRect().top,
+            bottom: element.getBoundingClientRect().bottom
+          }))
+        )
+        .toEqual({ top: 56, bottom: 667 });
+    }
 
     // Click hamburger again to close sidebar
     await hamburger.click();

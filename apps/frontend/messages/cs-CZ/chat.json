@@ -1,8 +1,14 @@
 {
   "chat": {
+    "privileged_mode": {
+      "enable": "Zapnout privilegovaný režim",
+      "disable": "Vypnout privilegovaný režim",
+      "confirmation": "Tímto na 15 minut zapnete další oprávnění, která vám byla na tomto serveru přidělena."
+    },
     "notifications": {
       "title": "Oznámení",
       "subtitle": "Zde je novinka",
+      "list_title": "Nedávná aktivita",
       "clear_read": "Odstranit přečtené",
       "empty_title": "Žádná upozornění",
       "empty_body": "Už jste všichni chyceni!",
@@ -42,40 +48,96 @@
       "send_message": "Odeslat zprávu",
       "view_profile": "Zobrazit profil",
       "profile_requires_direct_message": "K zobrazení tohoto profilu je nutná přímá zpráva.",
+      "manage_bot": "Spravovat robota",
       "view_in_admin": "Zobrazit ve správě serveru",
       "copy_user_id": "Zkopírovat ID uživatele"
     },
     "server_gutter": {
       "add_server": "Přidat server",
+      "log_in": "Přihlásit se k tomuto serveru",
+      "sign_out": "Odhlásit se z tohoto serveru",
       "version": "Verze {version}",
-      "version_unknown": "Verze neznámá",
       "unreachable": "Server je nedostupný",
+      "connection_unavailable": "Připojení není dostupné",
       "compatibility_server_too_old": "Aby se tato aplikace mohla připojit, musí být tento server upgradován na Chatto 0.5 nebo novější.",
-      "compatibility_unknown": "Tato aplikace nemůže určit kompatibilitu z verze serveru."
+      "compatibility_unknown": "Tato aplikace nemůže určit kompatibilitu z verze serveru.",
+      "go_to_notifications_count": {
+        "one": "Přejít na {count} oznámení",
+        "other": "Přejít na {count} oznámení"
+      },
+      "go_to_notification": "Přejít na oznámení",
+      "go_to_first_unread": "Přejít na první nepřečtenou místnost",
+      "notifications_count": {
+        "one": "{count} oznámení",
+        "other": "{count} oznámení"
+      }
+    },
+    "server_unavailable": {
+      "too_old_title": "Je nutná aktualizace serveru",
+      "too_old_body": "Tento server používá verzi Chatto, kterou tato aplikace již nepodporuje. Požádejte správce serveru o aktualizaci Chatto.",
+      "unknown_title": "Neznámá verze serveru",
+      "unknown_body": "Tato aplikace nedokáže zjistit verzi Chatto na tomto serveru, a proto se nemůže připojit.",
+      "unreachable_body": "Tato aplikace se nemůže připojit k tomuto serveru. Zkontrolujte síťové připojení nebo to zkuste později.",
+      "server_version": "Verze serveru",
+      "required_version": "Požadovaná verze",
+      "required_version_value": "{version} nebo novější",
+      "check_again": "Zkontrolovat znovu"
+    },
+    "server_signed_out": {
+      "title": "Jste odhlášeni z tohoto serveru",
+      "body": "Přihlaste se, abyste mohli na tomto serveru číst a posílat zprávy."
     },
     "threads": {
       "title": "Moje vlákna",
       "subtitle": "Vlákna, která sledujete",
+      "list_title": "Sledovaná vlákna",
       "filter_label": "Filtrační závity",
       "filter_all": "všechny",
       "filter_unread": "Nepřečteno",
       "empty_title": "Žádná sledovaná vlákna",
       "empty_body": "Zde se zobrazí vlákna, která sledujete. Automaticky sledujete vlákna, kterých se účastníte.",
-      "no_unread_loaded": "Nebyla načtena žádná nepřečtená vlákna",
       "all_caught_up": "Vše dohnáno",
-      "loaded_summary": "Načteno {loaded} z {total} sledovaných vláken.",
       "load_more": "Načíst více",
       "no_unread": "Momentálně žádná nepřečtená vlákna.",
       "message_missing": "Zpráva již není dostupná",
       "in_room": "v",
-      "in_room_capitalized": "In"
+      "in_room_capitalized": "In",
+      "load_failed": "Nepodařilo se načíst vlákna",
+      "notifications_count": {
+        "one": "{count} oznámení",
+        "other": "{count} oznámení"
+      }
     },
     "profile": {
       "title": "Profil",
       "fallback_title": "Profil",
       "not_found": "Uživatel nenalezen",
       "bot": "Bot",
-      "local_time": "{time} místního času ({zone})"
+      "local_time": "{time} místního času ({zone})",
+      "permissions": {
+        "title": "Co může dělat",
+        "empty": "Nejsou pro tebe viditelná žádná aktivní oprávnění.",
+        "error": "Oprávnění tohoto bota se nepodařilo načíst.",
+        "inactive_title": "Neaktivní oprávnění",
+        "inactive_note": "Tato oprávnění jsou uložená, ale aktuální oprávnění vlastníka je neumožňují.",
+        "read": "Číst všechny zprávy",
+        "interactions": "Číst vlákna, která vytvořil nebo ve kterých byl přímo zmíněn",
+        "post": "Posílat nové zprávy",
+        "room": "#{name}",
+        "group": "Skupina: {name}",
+        "dm": "Jeho přímé zprávy",
+        "joined_rooms": "Místnosti, do kterých se připojil",
+        "all_rooms": "Místnosti",
+        "server": "Tento server",
+        "list_rooms": "Procházet místnosti",
+        "echo": "Zobrazovat odpovědi z vláken na časové ose místnosti",
+        "start_calls": "Zahajovat hovory",
+        "browse_join": "Procházet místnosti a připojovat se",
+        "reply": "Odpovídat ve vláknech",
+        "manage_messages": "Spravovat zprávy"
+      },
+      "owned_by": "Vlastník",
+      "open_card": "Otevřít profilovou kartu uživatele {name}"
     }
   }
 }

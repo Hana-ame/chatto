@@ -1,8 +1,14 @@
 {
   "chat": {
+    "privileged_mode": {
+      "enable": "Enable privileged mode",
+      "disable": "Disable privileged mode",
+      "confirmation": "For 15 minutes, this enables the additional permissions assigned to you on this server."
+    },
     "notifications": {
       "title": "Notifications",
       "subtitle": "Here's what's new",
+      "list_title": "Recent activity",
       "clear_read": "Dismiss read",
       "empty_title": "No notifications",
       "empty_body": "You're all caught up!",
@@ -42,40 +48,96 @@
       "send_message": "Send Message",
       "view_profile": "View profile",
       "profile_requires_direct_message": "A direct message is required to view this profile.",
+      "manage_bot": "Manage bot",
       "view_in_admin": "View in Server Admin",
       "copy_user_id": "Copy User ID"
     },
     "server_gutter": {
       "add_server": "Add Server",
+      "log_in": "Log in to this server",
+      "sign_out": "Sign out of this server",
       "version": "Version {version}",
-      "version_unknown": "Version unknown",
       "unreachable": "Server unreachable",
+      "connection_unavailable": "Connection unavailable",
       "compatibility_server_too_old": "This server must be upgraded to Chatto 0.5 or newer before this app can connect.",
-      "compatibility_unknown": "This app cannot determine compatibility from the server version."
+      "compatibility_unknown": "This app cannot determine compatibility from the server version.",
+      "go_to_notifications_count": {
+        "one": "Go to {count} notification",
+        "other": "Go to {count} notifications"
+      },
+      "go_to_notification": "Go to notification",
+      "go_to_first_unread": "Go to first unread room",
+      "notifications_count": {
+        "one": "{count} notification",
+        "other": "{count} notifications"
+      }
+    },
+    "server_unavailable": {
+      "too_old_title": "Server upgrade required",
+      "too_old_body": "This server runs a Chatto version that this app no longer supports. Ask the server administrator to upgrade Chatto.",
+      "unknown_title": "Unknown server version",
+      "unknown_body": "This app cannot identify the Chatto version of this server, so it cannot connect.",
+      "unreachable_body": "This app cannot connect to this server. Check your network connection or try again later.",
+      "server_version": "Server version",
+      "required_version": "Required version",
+      "required_version_value": "{version} or newer",
+      "check_again": "Check Again"
+    },
+    "server_signed_out": {
+      "title": "You are signed out of this server",
+      "body": "Log in to read and send messages on this server."
     },
     "threads": {
       "title": "My Threads",
       "subtitle": "Threads you're following",
+      "list_title": "Followed threads",
       "filter_label": "Filter threads",
       "filter_all": "All",
       "filter_unread": "Unread",
       "empty_title": "No followed threads",
       "empty_body": "Threads you follow will appear here. You automatically follow threads you participate in.",
-      "no_unread_loaded": "No unread threads loaded",
       "all_caught_up": "All caught up",
-      "loaded_summary": "{loaded} of {total} followed threads loaded.",
       "load_more": "Load more",
       "no_unread": "No unread threads right now.",
       "message_missing": "Message no longer available",
       "in_room": "in",
-      "in_room_capitalized": "In"
+      "in_room_capitalized": "In",
+      "load_failed": "Failed to load threads",
+      "notifications_count": {
+        "one": "{count} notification",
+        "other": "{count} notifications"
+      }
     },
     "profile": {
       "title": "Profile",
       "fallback_title": "Profile",
       "not_found": "User not found",
       "bot": "Bot",
-      "local_time": "{time} local time ({zone})"
+      "local_time": "{time} local time ({zone})",
+      "permissions": {
+        "title": "What it can do",
+        "empty": "No active permissions are visible to you.",
+        "error": "Could not load this bot’s permissions.",
+        "inactive_title": "Inactive grants",
+        "inactive_note": "These grants are saved, but the owner’s current permissions do not allow them.",
+        "read": "Read all messages",
+        "interactions": "Read threads it authored or where it was directly mentioned",
+        "post": "Post new messages",
+        "room": "#{name}",
+        "group": "Group: {name}",
+        "dm": "Its direct messages",
+        "joined_rooms": "Rooms it has joined",
+        "all_rooms": "Rooms",
+        "server": "This server",
+        "list_rooms": "Browse rooms",
+        "echo": "Show thread replies in the room timeline",
+        "start_calls": "Start calls",
+        "browse_join": "Browse and join rooms",
+        "reply": "Reply in threads",
+        "manage_messages": "Manage messages"
+      },
+      "owned_by": "Owned by",
+      "open_card": "Open profile card of {name}"
     }
   }
 }

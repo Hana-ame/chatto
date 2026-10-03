@@ -5,11 +5,14 @@
 
   let {
     children,
+    title,
     compact = false,
     showBranding = true,
     centerContent = false
   }: {
     children: Snippet;
+    /** Visible page heading, rendered as the form column's `h1` above the content. */
+    title?: string;
     compact?: boolean;
     showBranding?: boolean;
     centerContent?: boolean;
@@ -28,8 +31,8 @@
 <div class="flex min-h-0 flex-1 overflow-hidden">
   <!-- Left pane: server branding (hidden on mobile, hidden entirely if no branding content) -->
   {#if showBranding && hasBranding && !compact}
-    <div class="hidden flex-1 overflow-y-auto border-r border-border bg-surface/30 p-8 md:block">
-      <div class="mx-auto max-w-md">
+    <div class="hidden flex-1 overflow-y-auto border-e border-border bg-surface/30 p-8 md:block">
+      <div data-page-reveal class="mx-auto max-w-md">
         <ServerBranding name={serverName} {iconUrl} {bannerUrl} {description} {welcomeMessage} />
       </div>
     </div>
@@ -43,20 +46,24 @@
       compact ? 'p-5 sm:p-6' : 'p-8'
     ]}
   >
-    <div class="w-full max-w-sm">
+    <div data-page-reveal class="w-full max-w-sm">
       <!-- Show compact branding header on mobile, or when no left pane -->
       {#if showBranding && compact}
-        <div class="mb-5">
+        <div data-page-reveal class="mb-5">
           <ServerBranding name={serverName} {iconUrl} compact />
         </div>
       {:else if showBranding && !hasBranding}
-        <div class="mb-8">
+        <div data-page-reveal class="mb-8">
           <ServerBranding name={serverName} {iconUrl} />
         </div>
       {:else if showBranding}
-        <div class="mb-8 md:hidden">
+        <div data-page-reveal class="mb-8 md:hidden">
           <ServerBranding name={serverName} {iconUrl} {bannerUrl} {description} {welcomeMessage} />
         </div>
+      {/if}
+
+      {#if title}
+        <h1 class={[compact ? 'mb-4' : 'mb-6', 'text-center text-2xl font-bold']}>{title}</h1>
       {/if}
 
       {@render children()}

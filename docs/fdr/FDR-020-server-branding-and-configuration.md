@@ -1,7 +1,7 @@
 # FDR-020: Server Branding & Configuration
 
 **Status:** Active
-**Last reviewed:** 2026-08-27
+**Last reviewed:** 2026-09-18
 
 ## Overview
 
@@ -13,9 +13,11 @@ Operators can customize how their Chatto server presents itself. The server's na
 - **Description** — used in OG metadata for link previews when sharing the server URL.
 - **Welcome message** — shown on the login page. Markdown is supported.
 - **MOTD (message of the day)** — appears in a banner across the top of the
-  chat surface for all members. It supports the same constrained Markdown
-  renderer as other trusted Chatto presentation text and broadcasts to live
-  clients when changed.
+  chat surface for all members. The header shows a single-line Markdown preview
+  with an ellipsis when space is limited. Click or tap the preview to open the
+  full message in a modal with Markdown rendering. Back, Escape, or the close
+  button dismisses the modal. Header links open their destinations directly.
+  Changes broadcast to live clients.
 - **Logo** — shown in the chat header, login page, and OG image fallback. Uploaded as an image; the public server profile exposes its canonical URL without transform arguments.
 - **Banner** — shown on the login page and in OG previews. Same upload/serve pipeline as the logo.
 - **Blocked usernames** — newline-separated list checked at signup. Matches are rejected before account creation.
@@ -29,11 +31,18 @@ Operators can customize how their Chatto server presents itself. The server's na
 **Why:** Partial-update semantics let UI forms send only changed fields without GET-then-PUT round-trips and without overwriting other fields with whatever defaults the form thinks they should be. It also makes API clients (CLI tools, scripts) safer.
 **Tradeoff:** Two ways to "clear" a string field: empty-string vs unset. The API treats empty string as a clear and nil as "leave alone". Documented; consistent across all string fields.
 
-### 2. Public profile/config changes publish one internal live signal
+### 2. Durable profile facts map to one public change event
 
-**Decision:** Public server profile/config changes publish one transient `ServerUpdatedEvent` on `live.sync.config.server_updated`. The realtime service consumes that internal invalidation signal and emits an authoritative server projection replacement to each authenticated client; the internal event is not part of the public wire protocol.
-**Why:** Server name, MOTD, logo, banner, description, and welcome copy are visible across the UI. One internal signal keeps profile/config live behavior clear, avoids duplicate broadcasts from text updates, and lets the public stream converge without a client-side refetch.
-**Tradeoff:** Every connected client rebuilds the small projected server resource when public profile/config changes, including fields it may not render. Volume is low (operators don't tweak branding constantly), so this is preferable to exposing invalidation mechanics to clients.
+**Decision:** Public server profile changes stay as durable config facts in
+EVT. The realtime service maps the applicable facts to one content-free
+`ServerProfileChangedEvent`. The client reads the canonical server resource at
+the event cursor. Blocked usernames and other private operator values do not
+produce this public event.
+**Why:** The durable fact is already the ordered source of truth. A second
+transient publication can be lost and can disagree with replay. One public
+resource-change event also hides internal config fact names from clients.
+**Tradeoff:** A connected client makes a small cursor-bounded resource read
+when the public server profile changes. These changes are infrequent.
 
 ### 3. Logo and banner have their own upload mutations
 
@@ -54,8 +63,9 @@ sanitizing Markdown renderer.
 **Why:** Operators can add a link or small amount of emphasis without giving
 configuration text an unrestricted HTML boundary. One reviewed renderer keeps
 the two presentation surfaces consistent.
-**Tradeoff:** Complex layout and unrestricted HTML are not supported. An MOTD
-with rich structure can be visually noisy in the compact banner.
+**Tradeoff:** Complex layout and unrestricted HTML are not supported. The MOTD
+header supports inline formatting and links, with line breaks replaced by spaces.
+Users open the modal to read the complete message with block formatting.
 
 ### 6. Blocked usernames as a dedicated security mutation
 
@@ -81,5 +91,5 @@ with rich structure can be visually noisy in the compact banner.
 
 ## Related
 
-- **ADRs:** ADR-012 (two-tier real-time events), ADR-033 (event-sourced state with projections), ADR-035 (per-aggregate phased migration)
-- **FDRs:** FDR-001 (Roles & Permissions), FDR-004 (Message Editing & Deletion), FDR-008 (File Attachments & Video Processing), FDR-021 (Admin Dashboard & System Monitoring)
+- **ADRs:** ADR-012 (two-tier real-time events), ADR-033 (event-sourced state with projections), ADR-035 (per-aggregate phased migration), ADR-091 (semantic realtime events)
+- **FDRs:** FDR-001 (Roles & Permissions), FDR-004 (Message Editing & Deletion), FDR-008 (File Attachments & Video Processing), FDR-021 (Admin Dashboard & System Monitoring), FDR-045 (Realtime Event Stream)

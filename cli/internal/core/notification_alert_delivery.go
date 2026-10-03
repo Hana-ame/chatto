@@ -190,14 +190,16 @@ func (c *ChattoCore) NotificationSoundEligible(ctx context.Context, occurrence *
 	if !c.notificationAlertDelivery.currentPolicyAllowsSound(current) {
 		return false, nil
 	}
-	presence, err := c.GetUserPresence(ctx, current.GetRecipientId())
+	presence, err := c.notificationPresence(ctx, current.GetRecipientId())
 	if err != nil {
 		return false, fmt.Errorf("read notification recipient presence: %w", err)
 	}
 	if presence == PresenceStatusDoNotDisturb {
 		return false, nil
 	}
-	visible, err := c.notificationOccurrences.VisibleOccurrences(ctx, current.GetRecipientId(), []*notificationv1.NotificationOccurrence{current})
+	// Alerts are not bound to a session, so they use the unprivileged view.
+	visibilityCtx := withPrivilegedModeEvaluation(ctx, current.GetRecipientId(), false)
+	visible, err := c.notificationOccurrences.VisibleOccurrences(visibilityCtx, current.GetRecipientId(), []*notificationv1.NotificationOccurrence{current})
 	if err != nil {
 		return false, fmt.Errorf("revalidate notification visibility: %w", err)
 	}
@@ -231,14 +233,16 @@ func (c *ChattoCore) NotificationAlertEligible(ctx context.Context, occurrence *
 	if !c.notificationAlertDelivery.currentPolicyAllowsAlert(occurrence) {
 		return false, nil
 	}
-	presence, err := c.GetUserPresence(ctx, occurrence.GetRecipientId())
+	presence, err := c.notificationPresence(ctx, occurrence.GetRecipientId())
 	if err != nil {
 		return false, fmt.Errorf("read notification recipient presence: %w", err)
 	}
 	if presence == PresenceStatusDoNotDisturb {
 		return false, nil
 	}
-	visible, err := c.notificationOccurrences.VisibleOccurrences(ctx, occurrence.GetRecipientId(), []*notificationv1.NotificationOccurrence{occurrence})
+	// Alerts are not bound to a session, so they use the unprivileged view.
+	visibilityCtx := withPrivilegedModeEvaluation(ctx, occurrence.GetRecipientId(), false)
+	visible, err := c.notificationOccurrences.VisibleOccurrences(visibilityCtx, occurrence.GetRecipientId(), []*notificationv1.NotificationOccurrence{occurrence})
 	if err != nil {
 		return false, fmt.Errorf("revalidate notification visibility: %w", err)
 	}

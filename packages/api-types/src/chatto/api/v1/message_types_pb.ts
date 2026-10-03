@@ -391,6 +391,14 @@ export class MessageAttachment extends Message$1<MessageAttachment> {
    */
   videoProcessing?: MessageVideoProcessing;
 
+  /**
+   * User-provided description for accessibility and attachment details.
+   * Absent when the attachment has no description.
+   *
+   * @generated from field: optional string description = 9;
+   */
+  description?: string;
+
   constructor(data?: PartialMessage<MessageAttachment>) {
     super();
     proto3.util.initPartial(data, this);
@@ -407,6 +415,7 @@ export class MessageAttachment extends Message$1<MessageAttachment> {
     { no: 6, name: "asset_url", kind: "message", T: MessageAssetUrl },
     { no: 7, name: "thumbnail_asset_url", kind: "message", T: MessageAssetUrl },
     { no: 8, name: "video_processing", kind: "message", T: MessageVideoProcessing },
+    { no: 9, name: "description", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): MessageAttachment {
@@ -628,6 +637,50 @@ export class ThreadSummary extends Message$1<ThreadSummary> {
 }
 
 /**
+ * Viewer-specific capabilities for one message, independent of whether its
+ * canonical thread has been established.
+ *
+ * @generated from message chatto.api.v1.MessageViewerState
+ */
+export class MessageViewerState extends Message$1<MessageViewerState> {
+  /**
+   * Whether the viewer can reply in this message's canonical thread, including
+   * starting the first reply to a root. Includes read access, room policy, and
+   * broad or interaction-scoped posting authority. Absent when not resolved.
+   *
+   * @generated from field: optional bool can_reply_in_thread = 1;
+   */
+  canReplyInThread?: boolean;
+
+  constructor(data?: PartialMessage<MessageViewerState>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "chatto.api.v1.MessageViewerState";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "can_reply_in_thread", kind: "scalar", T: 8 /* ScalarType.BOOL */, opt: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): MessageViewerState {
+    return new MessageViewerState().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): MessageViewerState {
+    return new MessageViewerState().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): MessageViewerState {
+    return new MessageViewerState().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: MessageViewerState | PlainMessage<MessageViewerState> | undefined, b: MessageViewerState | PlainMessage<MessageViewerState> | undefined): boolean {
+    return proto3.util.equals(MessageViewerState, a, b);
+  }
+}
+
+/**
  * Renderable message data.
  *
  * The same shape is used for top-level room messages, thread replies, and
@@ -762,6 +815,14 @@ export class Message extends Message$1<Message> {
    */
   pinned = false;
 
+  /**
+   * State resolved for the current viewer. Available even before a durable
+   * thread exists. Absent when viewer state has not been resolved.
+   *
+   * @generated from field: chatto.api.v1.MessageViewerState viewer_state = 23;
+   */
+  viewerState?: MessageViewerState;
+
   constructor(data?: PartialMessage<Message>) {
     super();
     proto3.util.initPartial(data, this);
@@ -787,6 +848,7 @@ export class Message extends Message$1<Message> {
     { no: 20, name: "thread", kind: "message", T: ThreadSummary },
     { no: 21, name: "deleted_at", kind: "message", T: Timestamp },
     { no: 22, name: "pinned", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+    { no: 23, name: "viewer_state", kind: "message", T: MessageViewerState },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): Message {

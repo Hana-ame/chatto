@@ -2,9 +2,10 @@
 @component
 
 A dialog wrapping a `<form>`. Owns the form element, the submit handler,
-and a standard footer with cancel + submit buttons. Use this whenever a
+and responsive submit and Cancel actions. Use this whenever a
 modal dialog is collecting input — the submit button gets Enter-to-submit
 for free and the boilerplate stays out of the calling component.
+Below md the form becomes a sheet automatically; callers do not select a layout.
 
 ```svelte
 <FormDialog
@@ -36,8 +37,11 @@ The submit button's color follows `submitTone` (`action` by default; use
   let {
     children,
     description,
+    secondaryActions,
+    overlays,
     visible = $bindable(false),
     title,
+    titleContent,
     size = 'md',
     submitLabel = m('common.save'),
     submitTone = 'action',
@@ -54,8 +58,21 @@ The submit button's color follows `submitTone` (`action` by default; use
     children: Snippet;
     /** Optional copy rendered above the form fields. */
     description?: Snippet;
+    /**
+     * Alternative actions that do not submit the form, such as removing the
+     * record being edited. Use ordinary `type="button"` buttons.
+     */
+    secondaryActions?: Snippet;
+    /**
+     * Floating content that belongs to the dialog but must stay outside its
+     * form, such as a picker popover whose buttons would otherwise submit it.
+     * It renders inside the modal, so it stays interactive.
+     */
+    overlays?: Snippet;
     visible?: boolean;
     title: string;
+    /** Rich visual title; title remains the plain-text fallback. */
+    titleContent?: Snippet;
     size?: 'sm' | 'md' | 'lg';
     submitLabel?: string;
     /** Visual weight of the submit button. */
@@ -99,7 +116,15 @@ The submit button's color follows `submitTone` (`action` by default; use
   const descriptionId = `${formDialogId}-description`;
 </script>
 
-<Dialog bind:visible {title} {size} describedBy={description ? descriptionId : undefined} {onclose}>
+<Dialog
+  bind:visible
+  {title}
+  {titleContent}
+  {size}
+  {secondaryActions}
+  describedBy={description ? descriptionId : undefined}
+  {onclose}
+>
   <form id={formId} onsubmit={handleSubmit} class="flex flex-col gap-5">
     {#if description}
       <div id={descriptionId} class="text-muted">
@@ -113,12 +138,15 @@ The submit button's color follows `submitTone` (`action` by default; use
       <FormError {error} />
     {/if}
   </form>
+  {@render overlays?.()}
 
-  {#snippet footer()}
+  {#snippet dismissAction()}
     <Button type="button" variant="secondary" onclick={onclose} disabled={loading}>
-      {#if cancelIcon}<span class={cancelIcon}></span>{/if}
+      {#if cancelIcon}<span aria-hidden="true" class={cancelIcon}></span>{/if}
       {cancelLabel}
     </Button>
+  {/snippet}
+  {#snippet primaryAction()}
     <Button
       type="submit"
       form={formId}
@@ -127,7 +155,7 @@ The submit button's color follows `submitTone` (`action` by default; use
       loadingText={submitLoadingText}
       {disabled}
     >
-      {#if submitIcon}<span class={submitIcon}></span>{/if}
+      {#if submitIcon}<span aria-hidden="true" class={submitIcon}></span>{/if}
       {submitLabel}
     </Button>
   {/snippet}

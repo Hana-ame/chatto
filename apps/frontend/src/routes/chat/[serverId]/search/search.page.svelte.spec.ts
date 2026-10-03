@@ -2,9 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { userEvent } from 'vitest/browser';
 import { render } from 'vitest-browser-svelte';
 import { tick } from 'svelte';
-import type { MessageSearchResult } from '$lib/api-client/messageSearch';
-import { RoomKind } from '$lib/api-client/roomDirectory';
-import { MessageSearchOrder, MessageSearchState } from '$lib/state/server/messageSearch.svelte';
+import type { MessageSearchResult } from '@chatto/client/api/messageSearch';
+import { RoomKind } from '@chatto/client/api/roomDirectory';
+import { MessageSearchOrder, MessageSearchState } from '$lib/state/server/messageSearch';
 import SearchPageTestHarness from './SearchPageTestHarness.svelte';
 
 const { mocks } = vi.hoisted(() => ({
@@ -19,6 +19,23 @@ const { mocks } = vi.hoisted(() => ({
     serverStores: {} as Record<string, object>
   }
 }));
+
+// Page titles are tested separately from this page's partial route/server fixtures.
+// The store mock also carries the frontend UI state of its server.
+vi.mock(
+  '$lib/state/server/serverUi',
+  async () => (await import('$lib/test-utils/serverUiMock')).serverUiIsStore
+);
+
+vi.mock('$lib/client', async () => ({
+  ...(await import('$lib/test-utils/clientMock')).clientMockDefaults,
+  serverRegistry: {
+    getStore: (serverId: string) => mocks.serverStores[serverId],
+    tryGetStore: (serverId: string) => mocks.serverStores[serverId]
+  }
+}));
+
+vi.mock('$lib/render/pageTitle', () => ({ formatPageTitle: () => 'Chatto' }));
 
 vi.mock('$app/navigation', () => ({
   goto: mocks.goto,
@@ -46,12 +63,6 @@ vi.mock('$lib/navigation', () => ({
   segmentToServerId: (serverId: string) => serverId
 }));
 vi.mock('$lib/state/activeServer.svelte', () => ({ getActiveServer: mocks.activeServer }));
-vi.mock('$lib/state/server/registry.svelte', () => ({
-  serverRegistry: {
-    getStore: (serverId: string) => mocks.serverStores[serverId],
-    tryGetStore: (serverId: string) => mocks.serverStores[serverId]
-  }
-}));
 vi.mock('$lib/state/server/scope.svelte', () => ({
   useServerScope: () => ({
     get serverId() {
@@ -124,6 +135,59 @@ describe('message search page', () => {
     document.documentElement.dir = 'ltr';
   });
 
+  it.each([
+    [MessageSearchState.UNAVAILABLE, 'Search is unavailable', 'Try Again'],
+    [MessageSearchState.DISABLED, 'Search is disabled', null],
+    [MessageSearchState.STARTING, 'Search is getting ready', 'Check again'],
+    [MessageSearchState.INDEXING, 'Search is getting ready', 'Check again']
+  ] as const)('shows search availability for state %s', async (state, title, action) => {
+    const store = serverStore();
+    store.messageSearch.status.state = state;
+    mocks.serverStores.origin = store;
+    const rendered = render(SearchPageTestHarness);
+
+    await expect.element(rendered.getByText(title, { exact: true })).toBeVisible();
+    await expect.element(rendered.getByRole('textbox')).not.toBeInTheDocument();
+    if (action) {
+      await userEvent.click(rendered.getByRole('button', { name: action }));
+      expect(store.messageSearch.refreshStatus).toHaveBeenCalledOnce();
+    } else {
+      expect(store.messageSearch.refreshStatus).not.toHaveBeenCalled();
+    }
+  });
+
+  it('shows search checking before errors and returns to the form after recovery', async () => {
+    const store = serverStore();
+    store.messageSearch.statusLoading = true;
+    store.messageSearch.statusLoaded = false;
+    store.messageSearch.statusError = true;
+    mocks.serverStores.origin = store;
+    const rendered = render(SearchPageTestHarness);
+
+    await expect
+      .element(rendered.getByRole('status', { name: 'Checking search availability...' }))
+      .toBeInTheDocument();
+    store.messageSearch.statusLoading = false;
+    await tick();
+    await expect
+      .element(rendered.getByText('Search is unavailable', { exact: true }))
+      .toBeVisible();
+    store.messageSearch.statusError = false;
+    store.messageSearch.statusLoaded = true;
+    store.messageSearch.status.state = MessageSearchState.DEGRADED;
+    await tick();
+    await expect.element(rendered.getByRole('textbox')).toBeVisible();
+    await expect
+      .element(rendered.getByText('Search is available, but some results may be missing.'))
+      .toBeVisible();
+
+    // A background status read must not unmount an already available search form.
+    const input = rendered.container.querySelector('input');
+    store.messageSearch.statusLoading = true;
+    await tick();
+    expect(rendered.container.querySelector('input')).toBe(input);
+  });
+
   it('mounts as a server page and debounces unscoped searches without a button', async () => {
     const { container } = render(SearchPageTestHarness);
 
@@ -185,17 +249,21 @@ describe('message search page', () => {
     );
   });
 
-  it('switches form state when SvelteKit reuses the page for another server', async () => {
+  it('shows the form state of the server that mounted the page', async () => {
     mocks.serverStores = {
       origin: serverStore('private origin query', MessageSearchOrder.NEWEST),
       remote: serverStore('remote query', MessageSearchOrder.RELEVANCE)
     };
+    const origin = render(SearchPageTestHarness);
+    expect((origin.container.querySelector('input') as HTMLInputElement).value).toBe(
+      'private origin query'
+    );
+    origin.unmount();
+
+    // The server layout remounts the page with a new scope for another server.
+    activeServerId = 'remote';
     const { container } = render(SearchPageTestHarness);
     const input = container.querySelector('input') as HTMLInputElement;
-    expect(input.value).toBe('private origin query');
-
-    activeServerId = 'remote';
-    await tick();
 
     expect(input.value).toBe('remote query');
     await userEvent.keyboard('{Enter}');
@@ -387,7 +455,9 @@ describe('message search page', () => {
         ?.getAttribute('datetime')
     ).toBe('2026-07-22T09:42:00.000Z');
     expect(container.querySelector('[role="article"]')?.textContent).toContain('2');
-    expect(container.querySelector('[role="article"] [class~="icon-[uil--paperclip]"]')).not.toBeNull();
+    expect(
+      container.querySelector('[role="article"] [class~="icon-[uil--paperclip]"]')
+    ).not.toBeNull();
     expect(container.querySelector('[role="article"] button')).toBeNull();
     expect(container.querySelectorAll('[role="article"]')[1]?.textContent).toContain('Unknown');
     expect(container.querySelectorAll('[role="article"]')[1]?.textContent).not.toContain(
@@ -398,9 +468,15 @@ describe('message search page', () => {
       '[data-search-result-id="message-1"]'
     ) as HTMLElement;
     expect(firstResult.getAttribute('role')).toBe('link');
-    expect(firstResult.querySelector('.message-row')?.classList).toContain('md:mx-0');
-    expect(firstResult.querySelector('.message-row')?.classList).toContain('md:pe-2');
-    expect(firstResult.querySelector('.message-row')?.classList).not.toContain('md:pr-2');
+    expect(firstResult.querySelector('.message-row')?.classList).toContain(
+      'desktop-presentation:mx-0'
+    );
+    expect(firstResult.querySelector('.message-row')?.classList).toContain(
+      'desktop-presentation:pe-2'
+    );
+    expect(firstResult.querySelector('.message-row')?.classList).not.toContain(
+      'desktop-presentation:pr-2'
+    );
     expect(container.querySelector('ol')?.classList).not.toContain('divide-y');
     expect(container.querySelector('ol')?.classList).toContain('gap-4');
 
@@ -411,5 +487,17 @@ describe('message search page', () => {
     await userEvent.click(firstResult.querySelector('.prose a')!);
     expect(mocks.goto).toHaveBeenCalledOnce();
     expect(mocks.goto).toHaveBeenCalledWith('/chat/origin/room-1/thread-root/m/message-1');
+
+    mocks.goto.mockClear();
+    firstResult.focus();
+    await userEvent.keyboard('{Enter}');
+    expect(mocks.goto).toHaveBeenCalledOnce();
+    expect(mocks.goto).toHaveBeenCalledWith('/chat/origin/room-1/thread-root/m/message-1');
+
+    mocks.goto.mockClear();
+    firstResult
+      .querySelector('a')!
+      .dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    expect(mocks.goto).not.toHaveBeenCalled();
   });
 });

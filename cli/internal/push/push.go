@@ -73,8 +73,13 @@ type Payload struct {
 	Badge          string `json:"badge,omitempty"`
 	Tag            string `json:"tag,omitempty"`
 	NotificationID string `json:"notificationId,omitempty"`
-	URL            string `json:"url,omitempty"`
-	AppBadge       string `json:"-"`
+	// ServerOrigin and RecipientID scope native notification cleanup to one account.
+	ServerOrigin string `json:"serverOrigin,omitempty"`
+	RecipientID  string `json:"recipientId,omitempty"`
+	URL          string `json:"url,omitempty"`
+	// AttentionLevel is "important" or "ambient". Workers badge only explicit
+	// important activity; an absent or unknown value leaves the badge unchanged.
+	AttentionLevel string `json:"attentionLevel,omitempty"`
 	// TTLSeconds overrides the provider retention horizon. Notification alerts
 	// set this to their remaining immutable delivery lifetime; other push types
 	// retain the normal 24-hour default.
@@ -95,13 +100,16 @@ type declarativeNotification struct {
 	Tag      string                       `json:"tag,omitempty"`
 	Icon     string                       `json:"icon,omitempty"`
 	Badge    string                       `json:"badge,omitempty"`
-	AppBadge string                       `json:"app_badge,omitempty"`
 	Data     *declarativeNotificationData `json:"data,omitempty"`
 }
 
 type declarativeNotificationData struct {
 	NotificationID string `json:"notificationId,omitempty"`
+	// ServerOrigin and RecipientID scope native notification cleanup to one account.
+	ServerOrigin   string `json:"serverOrigin,omitempty"`
+	RecipientID    string `json:"recipientId,omitempty"`
 	URL            string `json:"url,omitempty"`
+	AttentionLevel string `json:"attentionLevel,omitempty"`
 }
 
 func (p Payload) MarshalJSON() ([]byte, error) {
@@ -112,11 +120,13 @@ func (p Payload) MarshalJSON() ([]byte, error) {
 		Badge          string                   `json:"badge,omitempty"`
 		Tag            string                   `json:"tag,omitempty"`
 		NotificationID string                   `json:"notificationId,omitempty"`
+		ServerOrigin   string                   `json:"serverOrigin,omitempty"`
+		RecipientID    string                   `json:"recipientId,omitempty"`
 		URL            string                   `json:"url,omitempty"`
 		Action         string                   `json:"action,omitempty"`
+		AttentionLevel string                   `json:"attentionLevel,omitempty"`
 		WebPush        int                      `json:"web_push,omitempty"`
 		Mutable        bool                     `json:"mutable,omitempty"`
-		AppBadge       string                   `json:"app_badge,omitempty"`
 		Notification   *declarativeNotification `json:"notification,omitempty"`
 	}
 
@@ -127,9 +137,11 @@ func (p Payload) MarshalJSON() ([]byte, error) {
 		Badge:          p.Badge,
 		Tag:            p.Tag,
 		NotificationID: p.NotificationID,
+		ServerOrigin:   p.ServerOrigin,
+		RecipientID:    p.RecipientID,
 		URL:            p.URL,
 		Action:         p.Action,
-		AppBadge:       p.AppBadge,
+		AttentionLevel: p.AttentionLevel,
 	}
 	if p.declarativeNotificationEligible() {
 		out.WebPush = declarativeWebPushValue
@@ -141,9 +153,11 @@ func (p Payload) MarshalJSON() ([]byte, error) {
 			Tag:      p.Tag,
 			Icon:     p.Icon,
 			Badge:    p.Badge,
-			AppBadge: p.AppBadge,
 			Data: &declarativeNotificationData{
 				NotificationID: p.NotificationID,
+				AttentionLevel: p.AttentionLevel,
+				ServerOrigin:   p.ServerOrigin,
+				RecipientID:    p.RecipientID,
 				URL:            p.URL,
 			},
 		}
@@ -433,24 +447,29 @@ func BuildPayloadFromOccurrence(occurrence *notificationv1.NotificationOccurrenc
 
 // BuildPayloadFromOccurrenceForSubscription creates a payload whose click
 // target opens the server in the web client that owns this subscription.
+// serverOrigins contains the trusted, exact public origins of this server.
 func BuildPayloadFromOccurrenceForSubscription(
 	occurrence *notificationv1.NotificationOccurrence,
 	actorDisplayName, serverBaseURL string,
 	subscription *runtimestatev1.PushSubscription,
 	payloadCtx *PayloadContext,
+	serverOrigins ...string,
 ) *Payload {
 	return buildPayloadFromOccurrence(
 		occurrence,
 		actorDisplayName,
 		serverBaseURL,
-		NavigationBaseURL(subscription, serverBaseURL),
+		NavigationBaseURL(subscription, serverBaseURL, serverOrigins...),
 		payloadCtx,
 	)
 }
 
 // NavigationBaseURL reconstructs the client route for a subscription. Records
 // without a usable client host fall back to this server's bundled app route.
-func NavigationBaseURL(subscription *runtimestatev1.PushSubscription, serverBaseURL string) string {
+// serverOrigins must contain only trusted, exact HTTP or HTTPS public origins
+// of this server, such as WebserverConfig.ServerOrigins. Matching aliases use
+// the bundled app route and the configured origin's scheme.
+func NavigationBaseURL(subscription *runtimestatev1.PushSubscription, serverBaseURL string, serverOrigins ...string) string {
 	legacyURL := buildAppURL(serverBaseURL, []string{"chat", "-"}, "", "")
 	if subscription == nil || subscription.ClientHost == "" {
 		return legacyURL
@@ -469,6 +488,18 @@ func NavigationBaseURL(subscription *runtimestatev1.PushSubscription, serverBase
 		return legacyURL
 	}
 	clientURL.Host = hostnameWithOptionalPort(clientHostname, clientURL.Port())
+
+	for _, origin := range serverOrigins {
+		aliasURL, err := url.Parse(origin)
+		if err != nil || (aliasURL.Scheme != "https" && aliasURL.Scheme != "http") || aliasURL.Hostname() == "" {
+			continue
+		}
+		candidate := *clientURL
+		candidate.Scheme = aliasURL.Scheme
+		if sameOriginHost(&candidate, aliasURL) {
+			return buildAppURL(candidate.String(), []string{"chat", "-"}, "", "")
+		}
+	}
 
 	if sameOriginHost(clientURL, serverURL) {
 		return buildAppURL(clientURL.String(), []string{"chat", "-"}, "", "")
@@ -555,8 +586,20 @@ func buildPayloadFromOccurrence(
 ) *Payload {
 	payload := &Payload{
 		NotificationID: occurrence.GetId(),
+		RecipientID:    occurrence.GetRecipientId(),
 		Icon:           buildAppURL(serverBaseURL, []string{"icons", "icon-192.png"}, "", ""),
 		Badge:          buildAppURL(serverBaseURL, []string{"icons", "icon-192.png"}, "", ""), // Badge should be monochrome, but use same for now
+	}
+	switch occurrence.GetAttentionLevel() {
+	case notificationv1.NotificationAttentionLevel_NOTIFICATION_ATTENTION_LEVEL_IMPORTANT:
+		payload.AttentionLevel = "important"
+	case notificationv1.NotificationAttentionLevel_NOTIFICATION_ATTENTION_LEVEL_AMBIENT:
+		payload.AttentionLevel = "ambient"
+	}
+
+	// Match the browser origin without a trailing slash or server path.
+	if serverURL, err := url.Parse(serverBaseURL); err == nil && serverURL.Host != "" {
+		payload.ServerOrigin = serverURL.Scheme + "://" + serverURL.Host
 	}
 
 	// Get preview from context, truncate if needed

@@ -2,23 +2,33 @@
 @component
 
 The standard semantic record table. Consumers provide header and row snippets;
-this component provides the viewport, empty state, row interaction, grouping,
-and optional incremental loading.
+this component provides the viewport, empty state, grouping, and optional
+incremental loading.
+
+To make a row navigable, render a real link with the `data-table-row-link`
+class in a cell that uniquely identifies the record, usually its name. The
+link stays the row's single keyboard stop and names the row for assistive
+technology. Plain clicks elsewhere in the row activate it, while other links,
+buttons, and context menus in the row keep their own behaviour.
 -->
 <script lang="ts" generics="T">
   import type { Snippet } from 'svelte';
   import type { Attachment } from 'svelte/attachments';
   import ScrollFader from './ScrollFader.svelte';
   import { m } from '$lib/i18n/messages';
+  import LoadingFog from './LoadingFog.svelte';
+  import { forwardRowClicks } from './dataTableRowLinks';
 
   let {
     items,
     columns,
     header,
     row,
+    beforeRow,
     emptyMessage = m('ui.data_table.empty'),
     empty,
-    onRowClick,
+    loading = false,
+    loadingMessage = m('common.loading'),
     getKey,
     getGroupKey,
     group,
@@ -38,10 +48,19 @@ and optional incremental loading.
     columns: number;
     header: Snippet;
     row: Snippet<[T]>;
+    /** Optional semantic table rows before each item, such as stacked matrix headings. */
+    beforeRow?: Snippet<[T]>;
     /** Optional rich empty-state content. Takes precedence over `emptyMessage`. */
     emptyMessage?: string;
     empty?: Snippet;
-    onRowClick?: (item: T) => void;
+    /** Show a pending content block when the first page has no rows yet. */
+    loading?: boolean;
+    /**
+     * Accessible status label for the initial `loading` block. Name what is
+     * loading, for example "Loading members...". Defaults to the generic
+     * loading message.
+     */
+    loadingMessage?: string;
     getKey?: (item: T, index: number) => unknown;
     getGroupKey?: (item: T, index: number) => string | null | undefined;
     group?: Snippet<[T]>;
@@ -79,6 +98,21 @@ and optional incremental loading.
     /** Compact status text shown in the trailing loading row. */
     loadingMoreMessage?: string;
   } = $props();
+
+  // A horizontally overflowing table needs a keyboard stop so keyboard users
+  // can scroll it; read-only tables may contain nothing else focusable.
+  let viewportOverflows = $state(false);
+
+  function trackViewportOverflow(viewport: HTMLDivElement) {
+    const update = () => {
+      viewportOverflows = viewport.scrollWidth > viewport.clientWidth;
+    };
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(viewport);
+    if (viewport.firstElementChild) observer.observe(viewport.firstElementChild);
+    return () => observer.disconnect();
+  }
 
   let loadMoreInFlight = false;
 
@@ -141,11 +175,11 @@ and optional incremental loading.
 {#snippet tableContent()}
   <table class={[fitContent ? 'w-max' : 'w-full', '[&_thead_th]:whitespace-nowrap']}>
     <thead class={stickyHeader ? 'sticky top-0 z-20' : ''}>
-      <tr class="panel-header text-left text-sm text-muted">
+      <tr class="panel-header text-start text-sm text-muted">
         {@render header()}
       </tr>
     </thead>
-    <tbody class="bg-background">
+    <tbody class="bg-background" {@attach forwardRowClicks}>
       {#each items as item, index (keyFn(item, index))}
         {#if shouldRenderGroup(item, index)}
           <tr class="border-b border-border bg-surface/80">
@@ -154,20 +188,24 @@ and optional incremental loading.
             </td>
           </tr>
         {/if}
+        {@render beforeRow?.(item)}
         <tr
           class={[
-            'border-b border-border last:border-0',
-            hoverable ? 'hover:bg-surface/70' : '',
-            onRowClick ? 'cursor-pointer' : ''
+            'data-table-row border-b border-border last:border-0',
+            hoverable ? 'hover:bg-surface/70' : ''
           ]}
-          onclick={() => onRowClick?.(item)}
         >
           {@render row(item)}
         </tr>
       {:else}
         <tr>
-          <td colspan={columns} class={empty ? 'p-0' : 'px-4 py-8 text-center text-muted'}>
-            {#if empty}
+          <td
+            colspan={columns}
+            class={empty || loading ? 'p-0' : 'px-4 py-8 text-center text-muted'}
+          >
+            {#if loading}
+              <LoadingFog class="m-4 h-32" label={loadingMessage} />
+            {:else if empty}
               {@render empty()}
             {:else}
               {emptyMessage}
@@ -186,13 +224,7 @@ and optional incremental loading.
             colspan={columns}
             class={loadingMore ? 'px-4 py-3 text-center text-sm text-muted' : 'h-px p-0'}
           >
-            {#if loadingMore}
-              <span class="inline-flex items-center gap-2" aria-live="polite">
-                <span class="iconify icon-[uil--spinner] animate-spin text-base" aria-hidden="true"
-                ></span>
-                {loadingMoreMessage}
-              </span>
-            {/if}
+            {#if loadingMore}<LoadingFog class="h-10 w-full" label={loadingMoreMessage} />{/if}
           </td>
         </tr>
       {/if}
@@ -211,7 +243,15 @@ and optional incremental loading.
     {@render tableContent()}
   </ScrollFader>
 {:else}
-  <div class="overflow-x-auto data-table-viewport">
+  <!-- A scroll viewport must be keyboard-focusable for WCAG 2.1. Svelte's
+       generic non-interactive tabindex warning does not model that exception. -->
+  <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+  <div
+    class="overflow-x-auto data-table-viewport"
+    role={viewportOverflows ? 'region' : undefined}
+    tabindex={viewportOverflows ? 0 : undefined}
+    {@attach trackViewportOverflow}
+  >
     {@render tableContent()}
   </div>
 {/if}

@@ -1,11 +1,12 @@
 <script lang="ts">
+  import { errorMessage } from '$lib/utils/errorMessage';
   import { Code, ConnectError } from '@connectrpc/connect';
-  import type { AccountAPI } from '$lib/api-client/account';
-  import type { CurrentUserState } from '$lib/auth/currentUser.svelte';
-  import Panel from '$lib/ui/Panel.svelte';
+  import type { AccountAPI } from '@chatto/client/api/account';
+  import type { CurrentUserState } from '@chatto/client/auth/currentUser';
+  import { Panel } from '$lib/ui';
   import { m } from '$lib/i18n/messages';
   import { Button, FormError, TextInput, validate, z } from '$lib/ui/form';
-  import { toast } from '$lib/ui/toast/toastState.svelte';
+  import { toast } from '$lib/ui/toast';
 
   let {
     currentUser,
@@ -36,7 +37,7 @@
       ? m('common.validation.passwords_match')
       : undefined
   );
-  const canUpdatePassword = $derived(
+  const canChangePassword = $derived(
     password !== '' &&
       confirmPassword !== '' &&
       (!hasPassword || currentPassword !== '') &&
@@ -46,9 +47,9 @@
       !passwordSubmitting
   );
 
-  async function handleUpdatePassword(e: Event) {
+  async function handleChangePassword(e: Event) {
     e.preventDefault();
-    if (!canUpdatePassword) {
+    if (!canChangePassword) {
       passwordError =
         passwordValidationError ||
         currentPasswordError ||
@@ -61,7 +62,7 @@
     passwordSubmitting = true;
     passwordError = '';
     try {
-      await getAccountAPI().updatePassword({
+      await getAccountAPI().changePassword({
         password,
         currentPassword: wasChangingPassword ? currentPassword : undefined
       });
@@ -82,8 +83,7 @@
           ? m('settings.account.password.already_set')
           : m('settings.account.password.fresh_auth_required');
       } else {
-        passwordError =
-          err instanceof Error ? err.message : m('settings.account.password.save_failed');
+        passwordError = errorMessage(err, m('settings.account.password.save_failed'));
       }
     } finally {
       passwordSubmitting = false;
@@ -92,7 +92,7 @@
 </script>
 
 <Panel title={m('settings.account.password.title')} icon="iconify icon-[uil--key-skeleton]">
-  <form class="flex max-w-md flex-col gap-4" onsubmit={handleUpdatePassword}>
+  <form class="flex max-w-md flex-col gap-4" onsubmit={handleChangePassword}>
     <p class="text-sm text-muted">
       {hasPassword
         ? m('settings.account.password.change_description')
@@ -137,9 +137,9 @@
         type="submit"
         loading={passwordSubmitting}
         loadingText={m('settings.account.password.saving')}
-        disabled={!canUpdatePassword}
+        disabled={!canChangePassword}
       >
-        <span class="iconify icon-[mdi--key-plus]"></span>
+        <span aria-hidden="true" class="iconify icon-[mdi--key-plus]"></span>
         {hasPassword
           ? m('settings.account.password.change_button')
           : m('settings.account.password.add_button')}

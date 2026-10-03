@@ -6,13 +6,17 @@ their own contextual metadata and actions while this component keeps message
 identity, body rendering, and row geometry consistent.
 -->
 <script lang="ts">
+  import AccountName from '$lib/components/users/AccountName.svelte';
+  import UserCustomStatusBadge from '$lib/components/UserCustomStatusBadge.svelte';
+  import { getLiveCustomStatus } from '$lib/state/userProfiles.svelte';
   import type { Snippet } from 'svelte';
   import type { ClassValue } from 'svelte/elements';
-  import type { UserAvatarUserView } from '$lib/render/users';
+  import type { UserAvatarUserView } from '@chatto/client/timeline/users';
   import type { RoomMember } from '$lib/state/room';
   import type { TimeFormatSettings } from '$lib/utils/formatTime';
   import UserAvatar from '$lib/components/UserAvatar.svelte';
   import DeletedUserLabel from '$lib/components/DeletedUserLabel.svelte';
+  import { LoadingFog } from '$lib/ui';
   import MessageContent from '$lib/components/MessageContent.svelte';
   import { m } from '$lib/i18n/messages';
 
@@ -21,6 +25,7 @@ identity, body rendering, and row geometry consistent.
     actor,
     displayName,
     missingActorIsDeleted = true,
+    authorLoading = false,
     body = null,
     deleted = false,
     edited = false,
@@ -59,6 +64,8 @@ identity, body rendering, and row geometry consistent.
     actor: UserAvatarUserView | null;
     displayName: string;
     missingActorIsDeleted?: boolean;
+    /** Keep the author name empty while a realtime lookup is pending. */
+    authorLoading?: boolean;
     body?: string | null;
     deleted?: boolean;
     edited?: boolean;
@@ -97,9 +104,16 @@ identity, body rendering, and row geometry consistent.
   const actorInteractive = $derived(
     actor !== null && (!!onActorClick || !!onActorContextMenu || !!onActorTouchStart)
   );
+  // Read the current profile so retained messages follow status changes and clears.
+  const customStatus = $derived(
+    actor && !actor.deleted && !authorLoading && !compact
+      ? getLiveCustomStatus(actor.id, actor.customStatus)
+      : null
+  );
 </script>
 
 <div class={['group relative hover:z-10', className]} role="article" data-event-id={eventId}>
+  <!-- Touch and context-menu gestures mirror the hover-bar actions, which are keyboard-reachable buttons. -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     class={[
@@ -140,7 +154,7 @@ identity, body rendering, and row geometry consistent.
           </div>
         {/if}
       {:else}
-        {@const deletedActor = actor?.deleted || missingActorIsDeleted}
+        {@const deletedActor = actor?.deleted || (missingActorIsDeleted && !authorLoading)}
         <div
           class={[
             'absolute start-2 z-10 flex h-11 w-11 items-center justify-center rounded-full bg-surface-emphasized text-muted shadow-md ring-1 ring-surface-emphasized/30',
@@ -169,26 +183,32 @@ identity, body rendering, and row geometry consistent.
             {#if actorInteractive}
               <button
                 type="button"
-                class="inline-flex shrink-0 cursor-pointer items-center gap-1.5 leading-none font-semibold hover:underline"
+                class="inline-flex max-w-full min-w-0 cursor-pointer items-center gap-1.5 leading-tight font-semibold hover:underline"
                 onclick={onActorClick}
                 ontouchstart={onActorTouchStart}
                 oncontextmenu={onActorContextMenu}
               >
-                <bdi>{displayName}</bdi>
+                <AccountName name={displayName} identity={actor} badgeSize="md" />
+                <UserCustomStatusBadge status={customStatus} />
                 {@render authorSuffix?.()}
               </button>
             {:else}
-              <strong class="inline-flex shrink-0 items-center gap-1.5 leading-none font-semibold">
-                <bdi>{displayName}</bdi>
+              <strong
+                class="inline-flex max-w-full min-w-0 items-center gap-1.5 leading-tight font-semibold"
+              >
+                <AccountName name={displayName} identity={actor} badgeSize="md" />
+                <UserCustomStatusBadge status={customStatus} />
                 {@render authorSuffix?.()}
               </strong>
             {/if}
-          {:else if actor?.deleted || missingActorIsDeleted}
-            <strong class="shrink-0 leading-none font-semibold text-muted">
+          {:else if authorLoading && !actor?.deleted}
+            <LoadingFog class="h-4 w-24 shrink-0" />
+          {:else if actor?.deleted || (missingActorIsDeleted && !authorLoading)}
+            <strong class="shrink-0 leading-tight font-semibold text-muted">
               <DeletedUserLabel />
             </strong>
           {:else}
-            <strong class="shrink-0 leading-none font-semibold text-muted"
+            <strong class="shrink-0 leading-tight font-semibold text-muted"
               ><bdi>{displayName}</bdi></strong
             >
           {/if}

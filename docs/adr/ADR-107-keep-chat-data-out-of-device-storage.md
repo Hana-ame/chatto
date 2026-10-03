@@ -1,0 +1,82 @@
+# ADR-107: Keep Chat Data Out of Device Storage
+
+**Date:** 2026-09-26
+**Status:** Accepted
+
+## Context
+
+[ADR-103](ADR-103-cached-first-client-startup.md) and
+[ADR-104](ADR-104-checkpointed-client-projection-snapshots.md) stored a copy of
+each server's client projection in IndexedDB. The copy contained room
+resources, public profiles, timeline windows, member lists, notification
+state, and a realtime replay checkpoint. On a cold load, the client showed the
+copy before the server verified the viewer.
+
+This design had these costs:
+
+- Private chat data stayed on the device. Each privacy boundary needed a disk
+  purge. Stale tabs needed write generations, persisted invalidation cutoffs,
+  and clock-order protection so that they could not write purged data again.
+- The client serialized the complete server projection 100 ms after most
+  changes. On busy servers, this used main-thread time during normal use.
+- The saved view was display data without authority. Route loads, the
+  connection, management pages, account forms, and recovery needed separate
+  gates for the time before viewer verification.
+- 0.5 beta users reported slow room switches that came from repeated snapshot
+  reads.
+
+The benefits were a faster first paint on reload and offline reading of loaded
+messages. No stable release included the feature.
+
+## Decision
+
+The client does not store chat data on the device. Server projections,
+timelines, member lists, notification state, and the realtime resume cursor
+exist only in memory. Each page load starts without a cursor and receives a
+fresh snapshot from the server.
+
+Device storage keeps the server catalogue, authentication records, and UI
+preferences such as the last room and pane widths. It keeps no messages,
+member lists, profiles, or notification content.
+
+Registry start begins discovery for each registered server and the viewer
+check for each remote server. The root route load waits for origin discovery
+and the origin viewer. A remote server route load waits for that server's
+viewer check. The client does not keep remote servers dormant until the user
+opens them.
+
+A reconnect without a page load resumes from the in-memory cursor and keeps
+the mounted view. [ADR-091](ADR-091-semantic-realtime-events-with-bounded-resume.md)
+defines that behavior.
+
+The service worker keeps its complete, versioned application shell as an
+offline fallback. The shell contains no private data. App navigations load
+the document from the network first. The worker serves the cached shell
+document only when the network request fails or the server returns a server
+error. Without a saved view, a cached document shows no content sooner. Its
+only effect would be that a reload after a deploy loads the previous frontend
+version.
+
+The `chatto-private-cache` cross-tab channel is removed. Its main purpose was
+to delete saved chat views in other tabs. FDR-023 describes how other tabs
+learn of a sign-out.
+
+On each page load, the client deletes the `chatto-saved-views` IndexedDB
+database that 0.5 beta clients created. A tab that runs an older client can
+create the database again, so the deletion runs on every load. Remove this
+cleanup when no supported client version can create the database.
+
+This decision supersedes ADR-103 and ADR-104.
+
+## Consequences
+
+- A reload or cold launch shows loading states until the server responds. An
+  offline launch shows no chat content.
+- The first reload after a deploy loads the new frontend version. An online
+  launch waits for the server's document before the shell starts.
+- Privacy boundaries clear memory only. Disk purges, invalidation cutoffs, and
+  the private-request hold are no longer necessary.
+- No snapshot capture runs during normal use.
+- Each registered server receives discovery and viewer requests at startup,
+  as it did before ADR-103. This reveals the user's IP address to each
+  registered server when the app starts.

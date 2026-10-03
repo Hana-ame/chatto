@@ -35,10 +35,11 @@ POST /api/connect/chatto.admin.v1.AdminOAuthClientService/ListOAuthClients
 #### Input: ListOAuthClientsRequest
 
 Lists OAuth clients with recorded authorizations using offset pagination.
+Results use first authorization order, oldest first.
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `page` | [`chatto.api.v1.PageRequest`](/reference/connectrpc-api/types/#chatto-api-v1-PageRequest) | Requested offset and page size. |
+| `page` | [`chatto.api.v1.PageRequest`](/reference/connectrpc-api/types/#chatto-api-v1-PageRequest) | Defaults to 20 results when absent or limit is zero. Maximum: 100. |
 
 
 <a id="chatto-admin-v1-ListOAuthClientsResponse"></a>
@@ -104,7 +105,8 @@ Replaces the administrative policy for one OAuth client.
 | Field | Type | Description |
 | --- | --- | --- |
 | `client_id` | `string` | Exact CIMD URL or built-in application URI. |
-| `policy` | [`OAuthClientPolicy`](/reference/connectrpc-api/types/#chatto-admin-v1-OAuthClientPolicy) | New complete policy value. Default removes any trusted or blocked label. |
+| `policy` | [`OauthClientPolicy`](/reference/connectrpc-api/types/#chatto-admin-v1-OauthClientPolicy) | New complete policy value. Default removes any trusted or blocked label. |
+| `update_mask` | `google.protobuf.FieldMask` | Editable fields to apply or reset: policy. Omit to infer populated fields; * selects all editable fields. An explicit empty mask is invalid. Unselected values are ignored. Selected absent values reset the field to its default, subject to field validation. |
 
 
 <a id="chatto-admin-v1-UpdateOAuthClientPolicyResponse"></a>

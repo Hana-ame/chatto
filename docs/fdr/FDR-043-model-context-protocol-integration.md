@@ -1,7 +1,7 @@
 # FDR-043: Model Context Protocol Integration
 
 **Status:** Experimental
-**Last reviewed:** 2026-08-30
+**Last reviewed:** 2026-09-10
 **Implementation state:** Tester tool catalog implemented with OAuth, server
 and account identity, room and message reads, posting, and room membership.
 
@@ -202,15 +202,15 @@ trusted operator must use the CLI, the Unix socket, or a future local bridge.
 
 ### 9. Keep bootstrap outside MCP
 
-**Decision:** Continue to bootstrap and recover Chatto through configuration
-and the local Operator API. Do not add initial-owner or recovery tools to the
-network MCP server.
+**Decision:** Keep recovery in configuration and the local Operator API.
+First-run web setup is a separate public flow described in
+[FDR-047](FDR-047-first-run-setup.md). Do not add initial-owner or recovery tools
+to the network MCP server.
 **Why:** A normal user cannot approve OAuth access before the server has a
 usable identity and recovery path. MCP transport does not solve this circular
 authority problem.
-**Tradeoff:** A remote-only deployment still needs an out-of-band bootstrap
-procedure. A future one-time network bootstrap flow needs its own security
-decision.
+**Tradeoff:** A remote-only deployment can use the first-run wizard, but
+recovery still requires operator access.
 
 ### 10. Treat each configured origin as a separate resource
 
@@ -233,9 +233,9 @@ The MCP integration adds no RBAC permissions.
 - `room.list` controls room-directory visibility where applicable.
 - `room.join` controls channel joins where applicable.
 - `message.post` controls root message posting.
-- `message.read` controls broad message access in channel rooms.
+- `message.read` controls broad message access in channel rooms and DMs.
 - `message.read-interactions` controls relationship-scoped message access.
-- DM membership continues to authorize DM reads.
+- DM membership is an additional requirement for DM reads.
 - Bot calls also require the bot's explicit permission and sufficient current
   authority from its owner.
 

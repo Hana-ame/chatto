@@ -1,17 +1,34 @@
+<!--
+@component
+
+Neighbor administration. Each card shows the public profile from the current
+server's cached Neighborhood, so the browser contacts no advertised server.
+Discovery picks up a Neighbor change within about fifteen seconds; the page
+polls the cache briefly after a change. See FDR-042.
+-->
 <script lang="ts">
-  import { createMutation, createQuery } from '@tanstack/svelte-query';
-  import { createNeighborAPI, type Neighbor } from '$lib/api-client/neighbors';
+  import { errorMessage, toastError } from '$lib/utils/errorMessage';
+  import { onDestroy } from 'svelte';
+  import { createNeighborAPI, type Neighbor } from '$lib/api/neighbors';
+  import { listNeighborhoodServers, type NeighborhoodServer } from '@chatto/client/api/server';
   import ServerProfileCard from '$lib/components/ServerProfileCard.svelte';
   import { adminQueryKeys } from '$lib/query/admin';
-  import { queryClient } from '$lib/query/client';
-  import { loadServerProfiles, serverOriginFromInput } from '$lib/serverDirectory';
+  import { createMutation, createQuery, queryClient } from '$lib/query/client';
+  import { serverOriginFromInput } from '$lib/serverDirectory';
+  import { canonicalServerOrigin } from '$lib/serverUrl';
   import { useServerScope } from '$lib/state/server/scope.svelte';
-  import type { ServerConnection } from '$lib/state/server/serverConnection.svelte';
+  import type { ServerConnection } from '@chatto/client/server/serverConnection';
   import { m } from '$lib/i18n/messages';
-  import { ConfirmDialog, EmptyState, Hint, PaneContent } from '$lib/ui';
-  import PageTitle from '$lib/ui/PageTitle.svelte';
-  import PaneHeader from '$lib/ui/PaneHeader.svelte';
-  import Panel from '$lib/ui/Panel.svelte';
+  import {
+    ConfirmDialog,
+    EmptyState,
+    Hint,
+    LoadingFog,
+    PaneContent,
+    PageTitle,
+    PaneHeader,
+    Panel
+  } from '$lib/ui';
   import { Button, TextInput } from '$lib/ui/form';
   import { toast } from '$lib/ui/toast';
 
@@ -37,90 +54,115 @@
   let editTarget = $state<UpdateVariables | null>(null);
   let deleteTarget = $state<DeleteVariables | null>(null);
 
-  const neighborsQuery = createQuery(
-    () => ({
-      queryKey: adminQueryKeys.neighbors(serverScope.serverId, serverScope.connection),
-      queryFn: ({ signal }) => serverScope.connection.getAPI(createNeighborAPI).list({ signal })
-    }),
-    () => queryClient
-  );
+  const neighborsQuery = createQuery(() => ({
+    queryKey: adminQueryKeys.neighbors(serverScope.serverId, serverScope.connection),
+    queryFn: ({ signal }) => serverScope.connection.getAPI(createNeighborAPI).list({ signal })
+  }));
 
-  const createMutationState = createMutation(
-    () => ({
-      mutationFn: ({ connection, origin }: CreateVariables) =>
-        connection.getAPI(createNeighborAPI).create(origin),
-      onSuccess: (neighbor, variables) => {
-        if (!isCurrent(variables)) return;
-        queryClient.setQueryData<Neighbor[]>(variables.queryKey, (current = []) => [
-          ...current,
-          neighbor
-        ]);
-        newOrigin = '';
-        toast.success(m('admin.neighbors.created'));
-      },
-      onError: (error, variables) => {
-        if (isCurrent(variables)) showError(error);
-      }
-    }),
-    () => queryClient
-  );
+  const createMutationState = createMutation(() => ({
+    mutationFn: ({ connection, origin }: CreateVariables) =>
+      connection.getAPI(createNeighborAPI).create(origin),
+    onSuccess: (neighbor, variables) => {
+      if (!serverScope.isCurrent()) return;
+      queryClient.setQueryData<Neighbor[]>(variables.queryKey, (current = []) => [
+        ...current,
+        neighbor
+      ]);
+      newOrigin = '';
+      expectDiscovery();
+      toast.success(m('admin.neighbors.created'));
+    },
+    onError: (error) => {
+      if (serverScope.isCurrent()) toastError(error);
+    }
+  }));
 
-  const updateMutationState = createMutation(
-    () => ({
-      mutationFn: ({ connection, neighbor, origin }: UpdateVariables) =>
-        connection.getAPI(createNeighborAPI).update(neighbor, origin),
-      onSuccess: (updated, variables) => {
-        if (!isCurrent(variables)) return;
-        queryClient.setQueryData<Neighbor[]>(variables.queryKey, (current = []) =>
-          current.map((neighbor) => (neighbor.id === updated.id ? updated : neighbor))
-        );
-        editTarget = null;
-        editOrigin = '';
-        toast.success(m('admin.neighbors.updated'));
-      },
-      onError: (error, variables) => {
-        if (isCurrent(variables)) showError(error);
-      }
-    }),
-    () => queryClient
-  );
+  const updateMutationState = createMutation(() => ({
+    mutationFn: ({ connection, neighbor, origin }: UpdateVariables) =>
+      connection.getAPI(createNeighborAPI).update(neighbor, origin),
+    onSuccess: (updated, variables) => {
+      if (!serverScope.isCurrent()) return;
+      queryClient.setQueryData<Neighbor[]>(variables.queryKey, (current = []) =>
+        current.map((neighbor) => (neighbor.id === updated.id ? updated : neighbor))
+      );
+      editTarget = null;
+      editOrigin = '';
+      expectDiscovery();
+      toast.success(m('admin.neighbors.updated'));
+    },
+    onError: (error) => {
+      if (serverScope.isCurrent()) toastError(error);
+    }
+  }));
 
-  const deleteMutationState = createMutation(
-    () => ({
-      mutationFn: ({ connection, neighbor }: DeleteVariables) =>
-        connection.getAPI(createNeighborAPI).delete(neighbor),
-      onSuccess: (_result, variables) => {
-        if (!isCurrent(variables)) return;
-        queryClient.setQueryData<Neighbor[]>(variables.queryKey, (current = []) =>
-          current.filter((neighbor) => neighbor.id !== variables.neighbor.id)
-        );
-        deleteTarget = null;
-        if (editTarget?.neighbor.id === variables.neighbor.id) editTarget = null;
-        toast.success(m('admin.neighbors.deleted'));
-      },
-      onError: (error, variables) => {
-        if (isCurrent(variables)) showError(error);
-      }
-    }),
-    () => queryClient
-  );
+  const deleteMutationState = createMutation(() => ({
+    mutationFn: ({ connection, neighbor }: DeleteVariables) =>
+      connection.getAPI(createNeighborAPI).delete(neighbor),
+    onSuccess: (_result, variables) => {
+      if (!serverScope.isCurrent()) return;
+      queryClient.setQueryData<Neighbor[]>(variables.queryKey, (current = []) =>
+        current.filter((neighbor) => neighbor.id !== variables.neighbor.id)
+      );
+      deleteTarget = null;
+      if (editTarget?.neighbor.id === variables.neighbor.id) editTarget = null;
+      toast.success(m('admin.neighbors.deleted'));
+    },
+    onError: (error) => {
+      if (serverScope.isCurrent()) toastError(error);
+    }
+  }));
 
   const neighbors = $derived(neighborsQuery.data ?? []);
-  const profilesQuery = createQuery(
-    () => ({
-      queryKey: ['public', 'neighbor-profiles', neighbors.map((neighbor) => neighbor.origin)],
-      queryFn: ({ signal }) =>
-        loadServerProfiles(
-          neighbors.map((neighbor) => neighbor.origin),
-          { signal }
-        ),
-      enabled: neighbors.length > 0
-    }),
-    () => queryClient
-  );
-  const profilesByOrigin = $derived(
-    new Map((profilesQuery.data ?? []).map((entry) => [entry.origin, entry.profile]))
-  );
+  /** Origin of the current server. It hosts the cached profile images. */
+  const serverOrigin = $derived(new URL(serverScope.connection.connectBaseUrl).origin);
+
+  /** How long the page polls the cached Neighborhood after a Neighbor change. */
+  const DISCOVERY_WAIT_MS = 60_000;
+  const DISCOVERY_POLL_MS = 3_000;
+  /** A Neighbor change is recent, so discovery can still add its profile. */
+  let awaitingDiscovery = $state(false);
+  let discoveryTimer: ReturnType<typeof setTimeout> | undefined;
+
+  function expectDiscovery() {
+    awaitingDiscovery = true;
+    clearTimeout(discoveryTimer);
+    discoveryTimer = setTimeout(() => (awaitingDiscovery = false), DISCOVERY_WAIT_MS);
+  }
+
+  onDestroy(() => clearTimeout(discoveryTimer));
+
+  const neighborhoodQuery = createQuery(() => {
+    // Read the flag here so that a Neighbor change updates the poll timer.
+    const polling = awaitingDiscovery;
+    return {
+      queryKey: ['public', 'neighborhood', serverOrigin],
+      queryFn: ({ signal }) => listNeighborhoodServers(serverOrigin, { signal }),
+      enabled: neighbors.length > 0,
+      refetchInterval: (query) =>
+        polling &&
+        neighbors.some((neighbor) => !cachedProfiles(query.state.data).has(neighbor.origin))
+          ? DISCOVERY_POLL_MS
+          : false
+    };
+  });
+  const profilesByOrigin = $derived(cachedProfiles(neighborhoodQuery.data));
+
+  /** Map cached Neighborhood profiles by canonical origin. */
+  function cachedProfiles(servers: NeighborhoodServer[] = []) {
+    return new Map(
+      servers.flatMap((server) => {
+        const origin = canonicalServerOrigin(server.origin);
+        return origin ? [[origin, server.profile] as const] : [];
+      })
+    );
+  }
+
+  /** `undefined` shows a loading card; `null` shows an unavailable profile. */
+  function neighborProfile(origin: string) {
+    const profile = profilesByOrigin.get(origin);
+    if (profile) return profile;
+    return neighborhoodQuery.isPending || awaitingDiscovery ? undefined : null;
+  }
 
   function startEdit(neighbor: Neighbor) {
     editTarget = {
@@ -141,21 +183,17 @@
     };
   }
 
-  function isCurrent(variables: NeighborMutationVariables): boolean {
-    return (
-      serverScope.isCurrent() &&
-      variables.serverId === serverScope.serverId &&
-      variables.connection.queryScope === serverScope.connection.queryScope
-    );
-  }
-
   function cancelEdit() {
     editTarget = null;
     editOrigin = '';
   }
 
-  function showError(error: unknown) {
-    toast.error(error instanceof Error ? error.message : String(error));
+  /** Saves the inline origin edit for a Neighbor; Enter in the field submits it. */
+  function submitOriginEdit(event: SubmitEvent, neighbor: Neighbor) {
+    event.preventDefault();
+    if (updateMutationState.isPending) return;
+    if (!editTarget || !normalizedEditOrigin || normalizedEditOrigin === neighbor.origin) return;
+    updateMutationState.mutate({ ...editTarget, origin: normalizedEditOrigin });
   }
 </script>
 
@@ -164,11 +202,7 @@
 />
 
 <div class="pane-page">
-  <PaneHeader
-    title={m('admin.neighbors.title')}
-    subtitle={m('admin.neighbors.subtitle')}
-    showMobileNav
-  />
+  <PaneHeader title={m('admin.neighbors.title')} subtitle={m('admin.neighbors.subtitle')} />
 
   <PaneContent>
     <div class="flex flex-col gap-6">
@@ -200,7 +234,7 @@
               loading={createMutationState.isPending}
               disabled={!normalizedNewOrigin}
             >
-              <span class="iconify icon-[uil--plus]"></span>
+              <span aria-hidden="true" class="iconify icon-[uil--plus]"></span>
               {m('admin.neighbors.add')}
             </Button>
           </div>
@@ -209,19 +243,22 @@
 
       <Panel title={m('admin.neighbors.list_title')} count={neighbors.length || undefined}>
         {#if neighborsQuery.error}
-          <div class="mb-4"><Hint tone="danger">{String(neighborsQuery.error)}</Hint></div>
+          <div class="mb-4"><Hint tone="danger">{errorMessage(neighborsQuery.error)}</Hint></div>
         {/if}
 
         {#if neighborsQuery.isPending && neighbors.length === 0}
-          <div class="text-muted">{m('admin.common.loading')}</div>
+          <LoadingFog class="h-40 w-full" />
         {:else if neighbors.length === 0}
           <EmptyState icon="icon-[uil--server-connection]" title={m('admin.neighbors.empty')} />
         {:else}
           <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {#each neighbors as neighbor (neighbor.id)}
               {#snippet actions()}
-                <div class="flex flex-col gap-3">
-                  {#if editTarget?.neighbor.id === neighbor.id}
+                {#if editTarget?.neighbor.id === neighbor.id}
+                  <form
+                    class="flex flex-col gap-3"
+                    onsubmit={(event) => submitOriginEdit(event, neighbor)}
+                  >
                     <TextInput
                       id={`neighbor-origin-${neighbor.id}`}
                       label={m('admin.neighbors.origin')}
@@ -229,49 +266,42 @@
                       bind:value={editOrigin}
                       disabled={updateMutationState.isPending}
                     />
-                  {/if}
 
-                  <div class="flex justify-end gap-2">
-                    {#if editTarget?.neighbor.id === neighbor.id}
+                    <div class="flex justify-end gap-2">
                       <Button size="sm" variant="secondary" onclick={cancelEdit}>
                         {m('admin.neighbors.cancel')}
                       </Button>
                       <Button
+                        type="submit"
                         size="sm"
                         loading={updateMutationState.isPending}
                         disabled={!normalizedEditOrigin || normalizedEditOrigin === neighbor.origin}
-                        onclick={() =>
-                          editTarget &&
-                          normalizedEditOrigin &&
-                          updateMutationState.mutate({
-                            ...editTarget,
-                            origin: normalizedEditOrigin
-                          })}
                       >
                         {m('admin.neighbors.save')}
                       </Button>
-                    {:else}
-                      <Button size="sm" variant="secondary" onclick={() => startEdit(neighbor)}>
-                        <span class="iconify icon-[uil--edit]"></span>
-                        {m('admin.neighbors.edit')}
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="danger"
-                        onclick={() => (deleteTarget = { ...mutationVariables(), neighbor })}
-                      >
-                        <span class="iconify icon-[uil--trash-alt]"></span>
-                        {m('admin.neighbors.delete')}
-                      </Button>
-                    {/if}
+                    </div>
+                  </form>
+                {:else}
+                  <div class="flex justify-end gap-2">
+                    <Button size="sm" variant="secondary" onclick={() => startEdit(neighbor)}>
+                      <span aria-hidden="true" class="iconify icon-[uil--edit]"></span>
+                      {m('admin.neighbors.edit')}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="danger"
+                      onclick={() => (deleteTarget = { ...mutationVariables(), neighbor })}
+                    >
+                      <span aria-hidden="true" class="iconify icon-[uil--trash-alt]"></span>
+                      {m('admin.neighbors.delete')}
+                    </Button>
                   </div>
-                </div>
+                {/if}
               {/snippet}
               <ServerProfileCard
                 origin={neighbor.origin}
-                profile={profilesQuery.isPending
-                  ? undefined
-                  : (profilesByOrigin.get(neighbor.origin) ?? null)}
+                imageOrigin={serverOrigin}
+                profile={neighborProfile(neighbor.origin)}
                 {actions}
                 testId="neighbor-card"
               />

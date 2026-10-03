@@ -1,17 +1,16 @@
 <script lang="ts">
+  import { errorMessage } from '$lib/utils/errorMessage';
   import { resolve } from '$app/paths';
-  import { browserCookieAuthenticationHeaders } from '$lib/auth/authenticationMode';
-  import { completeOriginAuthentication } from '$lib/auth/originAuthentication';
-  import { startRemoteReauthentication } from '$lib/auth/reauth';
+  import { onDestroy } from 'svelte';
+  import { openProviderSignIn, verifyProviderSignIn } from '$lib/auth/providerSignIn';
+  import type { OAuthPopup } from '$lib/oauth/popup';
+  import { browserCookieAuthenticationHeaders } from '@chatto/client/auth/authenticationMode';
   import { navigateAfterAuthentication } from '$lib/auth/returnNavigation';
   import AuthLayout from '$lib/components/AuthLayout.svelte';
   import { m } from '$lib/i18n/messages';
-  import type { PublicAuthProvider } from '$lib/api-client/server';
-  import Divider from '$lib/ui/Divider.svelte';
-  import Hint from '$lib/ui/Hint.svelte';
-  import PageTitle from '$lib/ui/PageTitle.svelte';
+  import type { PublicAuthProvider } from '@chatto/client/api/server';
+  import { Divider, Hint, PageTitle } from '$lib/ui';
   import { TextInput, Button, Form } from '$lib/ui/form';
-  import { serverRegistry, type RegisteredServer } from '$lib/state/server/registry.svelte';
 
   const { data } = $props();
 
@@ -21,7 +20,14 @@
   let isLoading = $state(false);
   let selectedProviderId = $state<string | null>(null);
   let pageErrorDismissed = $state(false);
-  let connectingServerId = $state<string | null>(null);
+  let providerPopup: OAuthPopup | null = null;
+  let active = true;
+  onDestroy(() => {
+    active = false;
+    providerPopup?.close();
+  });
+
+  const compact = $derived(data.redirectUrl.startsWith('/oauth/'));
 
   const canSubmit = $derived(identifier.trim() && password);
   const authProviders = $derived(data.serverInfo?.authProviders ?? []);
@@ -32,7 +38,6 @@
     pageErrorDismissed ? '' : loginErrorMessage(data.loginErrorCode || '')
   );
   const displayedError = $derived(error || pageError);
-  const signedOutServers = $derived(serverRegistry.servers.filter((server) => !server.token));
 
   // Standalone detection: if public server info failed to load, there is no local
   // backend to log in to. Redirect URLs are backend-driven flows, so keep the
@@ -81,24 +86,29 @@
     }
   }
 
-  function handleProviderClick(e: MouseEvent, provider: PublicAuthProvider) {
+  async function handleProviderClick(e: MouseEvent, provider: PublicAuthProvider) {
     e.preventDefault();
     error = '';
     pageErrorDismissed = true;
     selectedProviderId = provider.id;
-    window.setTimeout(() => {
+    // Remote authorization already owns a popup and must keep its server-side
+    // OAuth continuation in that window.
+    if (compact) {
       window.location.href = providerLoginHref(provider);
-    }, 250);
-  }
-
-  async function handleKnownServerSignIn(server: RegisteredServer) {
-    error = '';
-    connectingServerId = server.id;
+      return;
+    }
     try {
-      await startRemoteReauthentication(server);
-    } catch (cause) {
-      error = cause instanceof Error ? cause.message : m('add_server.start_failed');
-      connectingServerId = null;
+      providerPopup = openProviderSignIn(provider.loginUrl);
+      await verifyProviderSignIn(providerPopup);
+      if (!active) return;
+      const { completeOriginAuthentication } = await import('$lib/auth/originAuthentication');
+      const resumed = await completeOriginAuthentication();
+      if (!resumed) await navigateAfterAuthentication(data.redirectUrl);
+    } catch (err) {
+      if (active) error = errorMessage(err, m('auth.login.failed'));
+    } finally {
+      providerPopup = null;
+      selectedProviderId = null;
     }
   }
 
@@ -126,12 +136,14 @@
         return;
       }
 
+      // Session completion is only needed after a successful password login.
+      const { completeOriginAuthentication } = await import('$lib/auth/originAuthentication');
       const resumedReturnNavigation = await completeOriginAuthentication();
       if (!resumedReturnNavigation) {
         await navigateAfterAuthentication(data.redirectUrl);
       }
     } catch (err) {
-      error = err instanceof Error ? err.message : m('auth.login.failed');
+      error = errorMessage(err, m('auth.login.failed'));
     } finally {
       isLoading = false;
     }
@@ -147,7 +159,7 @@
         class="mb-8 flex h-20 w-20 items-center justify-center rounded-xl border border-dashed border-action/50 bg-action/10 text-action"
         aria-hidden="true"
       >
-        <span class="iconify icon-[mdi--server-plus] text-4xl"></span>
+        <span aria-hidden="true" class="iconify icon-[mdi--server-plus] text-4xl"></span>
       </div>
 
       <div class="flex flex-col gap-3">
@@ -160,13 +172,8 @@
       </div>
 
       <div class="mt-8 w-full">
-        <Button
-          variant="action"
-          size="lg"
-          fullWidth
-          href={resolve('/chat/servers')}
-        >
-          <span class="iconify icon-[mdi--plus] text-lg"></span>
+        <Button variant="action" size="lg" fullWidth href={resolve('/chat/servers')}>
+          <span aria-hidden="true" class="iconify icon-[mdi--plus] text-lg"></span>
           {m('auth.login.add_server')}
         </Button>
       </div>
@@ -176,40 +183,10 @@
           <Hint tone="danger">{displayedError}</Hint>
         </div>
       {/if}
-
-      {#if signedOutServers.length > 0}
-        <div class="mt-8 flex w-full flex-col gap-3 text-left">
-          {#each signedOutServers as server (server.id)}
-            <div class="flex items-center gap-3 rounded-lg border border-border bg-surface p-3">
-              <div class="min-w-0 flex-1">
-                <div class="truncate font-semibold">{server.name}</div>
-                <div class="truncate text-xs text-muted">{new URL(server.url).host}</div>
-              </div>
-              <Button
-                variant="secondary"
-                size="sm"
-                onclick={() => handleKnownServerSignIn(server)}
-                loading={connectingServerId === server.id}
-                disabled={connectingServerId !== null && connectingServerId !== server.id}
-              >
-                {m('add_server.sign_in')}
-              </Button>
-            </div>
-          {/each}
-        </div>
-      {/if}
-
-      <p class="mt-4 flex items-start gap-2 text-left text-sm text-muted">
-        <span class="iconify mt-0.5 icon-[mdi--open-in-new] shrink-0 text-base" aria-hidden="true"
-        ></span>
-        <span>{m('auth.login.welcome_sign_in_hint')}</span>
-      </p>
     </div>
   </AuthLayout>
 {:else}
-  <AuthLayout>
-    <h1 class="mb-6 text-center text-2xl font-bold">{m('auth.login.title')}</h1>
-
+  <AuthLayout {compact} title={m('auth.login.title')}>
     {#if data.passwordResetSuccess}
       <div class="mb-4">
         <Hint tone="success">
@@ -224,7 +201,7 @@
         {#each authProviders as provider (provider.id)}
           <Button
             variant="secondary"
-            size="lg"
+            size={compact ? 'md' : 'lg'}
             fullWidth
             href={providerLoginHref(provider)}
             disabled={selectedProviderId !== null && selectedProviderId !== provider.id}
@@ -232,7 +209,8 @@
             loadingText={m('auth.login.connecting_provider', { provider: provider.label })}
             onclick={(e) => handleProviderClick(e, provider)}
           >
-            <span class={['iconify text-lg', providerIcon(provider.type)]}></span>
+            <span aria-hidden="true" class={['iconify text-lg', providerIcon(provider.type)]}
+            ></span>
             {m('auth.login.continue_with_provider', { provider: provider.label })}
           </Button>
         {/each}
@@ -277,12 +255,12 @@
 
         <Button
           type="submit"
-          size="lg"
+          size={compact ? 'md' : 'lg'}
           disabled={!canSubmit || isAuthenticating}
           loading={isLoading}
           loadingText={m('auth.login.signing_in')}
         >
-          <span class="iconify icon-[mdi--login]"></span>
+          <span aria-hidden="true" class="iconify icon-[mdi--login]"></span>
           {m('common.sign_in')}
         </Button>
       </Form>
@@ -295,7 +273,12 @@
     {#if directRegistrationEnabled}
       <Divider label={m('common.or')} />
 
-      <Button href={resolve('/register')} variant="secondary" size="lg" fullWidth>
+      <Button
+        href={resolve('/register')}
+        variant="secondary"
+        size={compact ? 'md' : 'lg'}
+        fullWidth
+      >
         {m('common.create_account')}
       </Button>
     {/if}

@@ -1,11 +1,12 @@
 <script lang="ts">
+  import { errorMessage } from '$lib/utils/errorMessage';
   import { useServerScope } from '$lib/state/server/scope.svelte';
   import { m } from '$lib/i18n/messages';
-  import { createRoomCommandAPI } from '$lib/api-client/rooms';
-  import { normalizeRoomName, roomNameValidationError } from '$lib/utils/roomName';
+  import { createRoomCommandAPI } from '@chatto/client/api/rooms';
+  import { normalizeRoomName, roomNameValidationError } from '@chatto/client/util/roomName';
   import { TextInput, createFormState, z } from '$lib/ui/form';
   import { FormDialog } from '$lib/ui';
-  import { RoomThreadingMode } from '$lib/roomThreading';
+  import { RoomThreadingMode } from '@chatto/client/util/roomThreading';
 
   let {
     groupId,
@@ -87,7 +88,7 @@
       if (!serverScope.isCurrent()) return;
       onroomcreated?.(roomId);
     } catch (err) {
-      submitError = err instanceof Error ? err.message : m('room.create.failed');
+      submitError = errorMessage(err, m('room.create.failed'));
     } finally {
       isLoading = false;
     }

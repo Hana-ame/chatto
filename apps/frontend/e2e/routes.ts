@@ -62,8 +62,7 @@ export const serverAdminPermissionsNew = serverAdmin('permissions/new');
 export const serverAdminPermission = (roleName: string) => serverAdmin(`permissions/${roleName}`);
 export const serverAdminMembers = serverAdmin('members');
 export const serverAdminMember = (userId: string) => serverAdmin(`members/${userId}`);
-export const serverAdminMemberDelete = (userId: string) =>
-  serverAdmin(`members/${userId}/delete`);
+export const serverAdminMemberDelete = (userId: string) => serverAdmin(`members/${userId}/delete`);
 export const serverAdminBots = serverAdmin('bots');
 export const serverAdminSecurity = serverAdmin('security');
 export const serverAdminSystem = serverAdmin('system');
@@ -78,6 +77,7 @@ export const settingsProfile = `/chat/${HOME}/settings/profile`;
 /** The canonical default page for user-settings test flows. */
 export const settings = settingsProfile;
 export const settingsAccount = `/chat/${HOME}/settings/account`;
+export const settingsVerifyEmail = `/chat/${HOME}/settings/account/verify-email`;
 export const settingsNotifications = `/chat/${HOME}/settings/notifications`;
 export const settingsTime = `/chat/${HOME}/settings/time`;
 export const settingsAppearance = `/chat/${HOME}/settings/appearance`;
@@ -104,7 +104,7 @@ export const patterns = {
   anyThread: /\/chat\/-\/(?!manage\/)[a-zA-Z0-9]+\/[a-zA-Z0-9]+$/,
   /** Any admin user page: /chat/-/manage/server/members/{id} */
   anyAdminUser: /\/chat\/-\/manage\/server\/members\/[a-zA-Z0-9]+/,
-  /** Any bot-management page: /chat/-/manage/server/bots/{id} */
+  /** Any bot overview page: /chat/-/manage/server/bots/{id} */
   anyAdminBot: /\/chat\/-\/manage\/server\/bots\/[a-zA-Z0-9]+$/,
   /** Any non-admin chat route (home instance or instance-agnostic) */
   nonAdmin: /\/chat\/(?:-(?:\/(?!manage(?:\/|$))|$)|notifications|preferences)/,

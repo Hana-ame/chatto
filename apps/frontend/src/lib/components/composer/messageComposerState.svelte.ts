@@ -1,16 +1,17 @@
 import { tick, untrack } from 'svelte';
-import type { TimelineEventView } from '$lib/render/timelineEvents';
+import { SvelteSet } from 'svelte/reactivity';
+import type { TimelineEventView } from '@chatto/client/timeline/timelineEvents';
 import type {
   ComposerContext,
   QuoteInsertionContent,
   RoomMember,
   RoomMembersStore
 } from '$lib/state/room';
-import type { MentionRolesStore } from '$lib/state/server/mentionRoles.svelte';
-import type { RoomUnreadStore } from '$lib/state/server/roomUnread.svelte';
-import type { ServerInfoState } from '$lib/state/server/state.svelte';
-import type { createMessageAPI, UpdateMessageInput } from '$lib/api-client/messages';
-import type { createLinkPreviewAPI } from '$lib/api-client/linkPreviews';
+import type { MentionRolesStore } from '@chatto/client/server/mentionRoles';
+import type { RoomUnreadStore } from '$lib/state/server/roomUnread';
+import type { ServerInfoState } from '@chatto/client/server/state';
+import type { createMessageAPI, UpdateMessageInput } from '@chatto/client/api/messages';
+import type { createLinkPreviewAPI } from '@chatto/client/api/linkPreviews';
 import { hasVisibleContent } from '$lib/validation';
 import { shouldAutoFocus } from '$lib/utils/shouldAutoFocus';
 import { prefersTouchActions } from '$lib/utils/inputCapabilities';
@@ -54,9 +55,6 @@ export type RecentThreadRootCandidate = {
 export type MessageComposerProps = {
   roomId: string;
   inThread?: string;
-  inReplyTo?: string;
-  replyDisplayName?: string;
-  replyExcerpt?: string;
   placeholder?: string;
   canPost?: boolean;
   canAttach?: boolean;
@@ -67,26 +65,23 @@ export type MessageComposerProps = {
   onReady?: (api: MessageComposerApi) => void;
   onTyping?: () => void;
   onMessageSent?: (event: TimelineEventView | null) => void;
-  /** Called after a room-level post successfully creates a thread. */
-  onThreadCreated?: (threadRootEventId: string) => void;
-  onCancelReply?: () => void;
   onEscape?: () => void;
   showAlsoSendToChannel?: boolean;
+  /** Use direct-message copy for the room-timeline echo control. */
+  echoToConversation?: boolean;
   showCreateThread?: boolean;
   createThreadRequired?: boolean;
   createThreadDefault?: boolean;
   threadsEncouraged?: boolean;
+  /** Users that rank first in @mention autocomplete, such as thread participants. */
+  mentionPriorityUserIds?: ReadonlySet<string>;
   getRecentThreadRootCandidate?: () => RecentThreadRootCandidate | null;
-  onThreadMessageSent?: (
-    threadRootEventId: string,
-    event: TimelineEventView | null
-  ) => void;
+  onThreadMessageSent?: (threadRootEventId: string, event: TimelineEventView | null) => void;
 };
 
 type MessageComposerDependencies = {
   getRoomId: () => string;
   getThreadRootEventId: () => string | undefined;
-  getReplyEventId: () => string | undefined;
   getCanPost: () => boolean;
   getCanAttach: () => boolean;
   getSlowModeBlocked: () => boolean;
@@ -100,23 +95,18 @@ type MessageComposerDependencies = {
   getOnReady: () => MessageComposerProps['onReady'];
   getCallbacks: () => Pick<
     MessageComposerProps,
-    | 'onTyping'
-    | 'onMessageSent'
-    | 'onThreadCreated'
-    | 'onThreadMessageSent'
-    | 'onCancelReply'
-    | 'onEscape'
+    'onTyping' | 'onMessageSent' | 'onThreadMessageSent' | 'onEscape'
   >;
   onPostError?: (error: unknown) => boolean;
   context: ComposerContext;
   getMembers: () => RoomMember[];
+  getMentionPriorityUserIds: () => ReadonlySet<string> | undefined;
   membersStore: RoomMembersStore;
   mentionRolesStore: MentionRolesStore;
   serverInfo: ServerInfoState;
   roomUnreadStore: RoomUnreadStore;
   getMessageAPI: () => ReturnType<typeof createMessageAPI>;
   getLinkPreviewAPI: () => ReturnType<typeof createLinkPreviewAPI>;
-  isConnectionLost: () => boolean;
 };
 
 export function bodyForSend(text: string): string {
@@ -154,6 +144,8 @@ export class MessageComposerState {
   readonly #mentionSearchDebounce = useDebounce();
   #mentionSearchRequestId = 0;
   #editSeededForEvent = '';
+  /** Draft key of the room or thread the composer currently shows. */
+  #shownDraftKey = '';
   #autocompleteRoomId = '';
   #insertedQuoteRequestId = 0;
   #focusRequested = false;
@@ -171,7 +163,8 @@ export class MessageComposerState {
     this.autocomplete = new AutocompleteState(
       () => this.editorApi,
       () => this.mentionCandidates,
-      () => this.mentionRoles
+      () => this.mentionRoles,
+      () => this.mentionPriorityUserIds
     );
     this.submission = new ComposerSubmissionState({
       getAPI: dependencies.getMessageAPI,
@@ -180,7 +173,7 @@ export class MessageComposerState {
       getMentionRoleNames: () => this.mentionRoles.map((role) => role.name),
       onPostSuccess: (post, event) => this.#handlePostSuccess(post, event),
       onPostError: dependencies.onPostError,
-      onEditSuccess: () => this.#handleEditSuccess()
+      onEditSuccess: (input) => this.#handleEditSuccess(input)
     });
 
     void dependencies.mentionRolesStore.load();
@@ -208,10 +201,15 @@ export class MessageComposerState {
     return this.#dependencies.mentionRolesStore.roles;
   }
 
+  get mentionPriorityUserIds(): ReadonlySet<string> | undefined {
+    return this.#dependencies.getMentionPriorityUserIds();
+  }
+
   get mentionCandidates(): RoomMember[] {
-    return this.mentionSearchMembers.length > 0
-      ? this.mentionSearchMembers
-      : this.#dependencies.getMembers();
+    const members = this.#dependencies.getMembers();
+    if (this.mentionSearchMembers.length === 0) return members;
+    const loadedIds = new SvelteSet(members.map((member) => member.id));
+    return [...members, ...this.mentionSearchMembers.filter((member) => !loadedIds.has(member.id))];
   }
 
   get draftKey(): string {
@@ -232,16 +230,14 @@ export class MessageComposerState {
     return (
       this.isEditing &&
       this.editState.threadRootEventId !== null &&
-      (this.editState.channelEchoEventId !== null || this.editState.canAddChannelEcho)
+      (this.editState.channelEchoEventId !== null
+        ? this.editState.canRemoveChannelEcho
+        : this.editState.canAddChannelEcho)
     );
   }
 
   get inputDisabled(): boolean {
-    return (
-      this.submission.loading ||
-      (!this.#dependencies.getCanPost() && !this.isEditing) ||
-      this.#dependencies.isConnectionLost()
-    );
+    return this.submission.loading || (!this.#dependencies.getCanPost() && !this.isEditing);
   }
 
   get hasSendableAttachments(): boolean {
@@ -258,14 +254,6 @@ export class MessageComposerState {
       (hasVisibleContent(this.message) || this.hasSendableAttachments || this.isEditing)
     );
   }
-
-  observeResize = (node: HTMLDivElement) => {
-    const scrollState = this.#dependencies.context.scrollState;
-    if (!scrollState) return;
-    const observer = new ResizeObserver(() => scrollState.scrollToBottomIfSticky());
-    observer.observe(node);
-    return () => observer.disconnect();
-  };
 
   handleFileSelect(event: Event): void {
     const input = event.target as HTMLInputElement;
@@ -404,8 +392,8 @@ export class MessageComposerState {
       const query = this.autocomplete.mention?.query ?? null;
       const requestId = ++this.#mentionSearchRequestId;
       this.#mentionSearchDebounce.cancel();
+      this.mentionSearchMembers = [];
       if (!query) {
-        this.mentionSearchMembers = [];
         return;
       }
       this.#mentionSearchDebounce.run(() => {
@@ -421,7 +409,7 @@ export class MessageComposerState {
       const eventId = this.editState.eventId;
       const originalBody = this.editState.originalBody;
       const api = this.editorApi;
-      if (eventId && originalBody && this.#editSeededForEvent !== eventId) {
+      if (eventId && this.#editSeededForEvent !== eventId) {
         this.#editSeededForEvent = eventId;
         this.autocomplete.reset();
         this.draft.clearText();
@@ -444,6 +432,11 @@ export class MessageComposerState {
       if (this.#autocompleteRoomId !== roomId) {
         this.#autocompleteRoomId = roomId;
         this.autocomplete.resetForRoom();
+      }
+      // A reused composer drops its edit when it moves to another room or thread.
+      if (this.#shownDraftKey !== this.draftKey) {
+        if (this.#shownDraftKey && this.isEditing) this.#dropEdit();
+        this.#shownDraftKey = this.draftKey;
       }
       if (this.isEditing) {
         this.draft.switchKey(this.draftKey);
@@ -491,15 +484,28 @@ export class MessageComposerState {
   }
 
   #synchronizeAutoFocus(): void {
+    // Scalar derived values filter parent updates that do not change the target.
+    const destination = $derived(this.draftKey);
+    const reply = $derived(this.#dependencies.context.replyState.messageEventId);
+    const autoFocus = $derived(this.#dependencies.getAutoFocus());
+    const target = $derived({ destination, reply, autoFocus, api: this.editorApi });
+    let focusedTarget: typeof target | null = null;
+
+    // Availability can defer initial focus, but cannot focus the same target twice.
     $effect(() => {
-      const autoFocus = this.#dependencies.getAutoFocus();
-      const roomId = this.#dependencies.getRoomId();
-      const inReplyTo = this.#dependencies.getReplyEventId();
-      void roomId;
-      void inReplyTo;
-      if (autoFocus && shouldAutoFocus() && this.editorApi && !this.inputDisabled) {
-        tick().then(() => this.editorApi?.focus());
+      const current = target;
+      const api = current.api;
+      if (
+        current === focusedTarget ||
+        !current.autoFocus ||
+        !api ||
+        !shouldAutoFocus() ||
+        this.inputDisabled
+      ) {
+        return;
       }
+      focusedTarget = current;
+      untrack(() => api.focus());
     });
   }
 
@@ -509,7 +515,8 @@ export class MessageComposerState {
       const api = this.editorApi;
       if (!request || !api || request.id === this.#insertedQuoteRequestId) return;
       this.#insertedQuoteRequestId = request.id;
-      api.insertQuote(request.text);
+      // Let the message action sheet close before the editor takes focus.
+      this.insertQuote(request.text);
     });
   }
 
@@ -542,6 +549,7 @@ export class MessageComposerState {
     const stashedFiles = this.draft.discardFiles(post.draftKey);
     this.draft.clearText(post.draftKey);
     if (activeDraftWasSent) {
+      const api = this.editorApi;
       this.#resetEditor();
       this.attachments.clear();
       this.linkPreviews.clear();
@@ -550,19 +558,38 @@ export class MessageComposerState {
         callbacks.onThreadMessageSent(post.threadRootEventId, event);
       } else {
         callbacks.onMessageSent?.(event);
-        if (post.createThread && event) {
-          callbacks.onThreadCreated?.(event.id);
-        }
       }
-      this.#dependencies.context.scrollState?.requestScrollToBottom();
-      callbacks.onCancelReply?.();
+      this.#dependencies.context.scrollState.requestScrollToBottom();
+      this.#dependencies.context.replyState.cancelReply();
+      // Submission clears loading after this callback. Wait for the editor to
+      // become editable again before restoring the caret for the next message.
+      void tick().then(() => {
+        if (
+          api &&
+          this.editorApi === api &&
+          this.draftKey === post.draftKey &&
+          !this.inputDisabled
+        ) {
+          api.focus();
+        }
+      });
     } else {
       for (const { url } of stashedFiles) URL.revokeObjectURL(url);
     }
     this.#dependencies.roomUnreadStore.setRoomUnread(post.roomId, false);
   }
 
-  #handleEditSuccess(): void {
+  /** Cancels the edit without the edit-exit reset, which would clear the new draft. */
+  #dropEdit(): void {
+    this.#editSeededForEvent = '';
+    this.alsoSendToChannel = false;
+    this.editState.cancelEdit();
+  }
+
+  #handleEditSuccess(input: UpdateMessageInput): void {
+    // A room or thread switch can cancel the edit while its save is in flight.
+    // The composer then shows another draft or edit, so keep it.
+    if (this.editState.eventId !== input.eventId) return;
     this.#resetEditor();
     this.editState.cancelEdit();
   }
@@ -577,8 +604,9 @@ export class MessageComposerState {
       roomId: this.#dependencies.getRoomId(),
       bodyToSend,
       filesToSend,
+      attachmentDescriptions: this.attachments.descriptions,
       threadRootEventId: this.#dependencies.getThreadRootEventId() ?? null,
-      inReplyTo: this.#dependencies.getReplyEventId() ?? null,
+      inReplyTo: this.#dependencies.context.replyState.messageEventId,
       linkPreviewToken: this.linkPreviews.buildToken(),
       alsoSendToChannel: this.alsoSendToChannel,
       createThread:
@@ -600,18 +628,22 @@ export class MessageComposerState {
 
   async #editMessage(): Promise<void> {
     const body = bodyForSend(this.message);
-    if (!body) {
-      toast.error('Message cannot be empty');
+    const echoStateChanged =
+      this.showEditEchoToggle &&
+      this.alsoSendToChannel !== (this.editState.channelEchoEventId !== null);
+    if (!body && !(this.editState.originalBody === '' && echoStateChanged)) {
+      toast.error(m('composer.edit_empty'));
       return;
     }
     const eventId = this.editState.eventId;
     if (!eventId) return;
     const input: UpdateMessageInput = {
       roomId: this.#dependencies.getRoomId(),
-      eventId,
-      body
+      eventId
     };
-    if (this.showEditEchoToggle) input.alsoSendToChannel = this.alsoSendToChannel;
+    if (body) input.body = body;
+    // Omit unchanged placement so text edits do not request echo authority.
+    if (echoStateChanged) input.alsoSendToChannel = this.alsoSendToChannel;
     await this.submission.editMessage(input);
   }
 
@@ -641,8 +673,9 @@ export class MessageComposerState {
       return true;
     }
     const callbacks = this.#dependencies.getCallbacks();
-    if (this.#dependencies.getReplyEventId() && callbacks.onCancelReply) {
-      callbacks.onCancelReply();
+    const replyState = this.#dependencies.context.replyState;
+    if (replyState.messageEventId) {
+      replyState.cancelReply();
       return true;
     }
     if (callbacks.onEscape) {
@@ -665,7 +698,8 @@ export class MessageComposerState {
     this.editState.startEdit(message.eventId, message.body, {
       threadRootEventId: message.threadRootEventId,
       channelEchoEventId: message.channelEchoEventId,
-      canAddChannelEcho: message.canAddChannelEcho
+      canAddChannelEcho: message.canAddChannelEcho,
+      canRemoveChannelEcho: message.canRemoveChannelEcho
     });
     return true;
   }

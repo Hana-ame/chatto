@@ -3,6 +3,7 @@
     "cancel": "Tühista",
     "close_sidebar": "Sule külgriba",
     "or": "või",
+    "unknown_user": "Tundmatu kasutaja",
     "loading": "Laadimine...",
     "continue": "Jätka",
     "submit": "Esita",
@@ -35,7 +36,11 @@
     },
     "error": {
       "network": "Võrgu viga. Palun proovi uuesti.",
-      "generic": "Midagi läks valesti"
+      "generic": "Midagi läks valesti",
+      "permission_denied": "Sul pole selleks õigust.",
+      "not_found": "Soovitud üksust ei leitud.",
+      "unauthenticated": "Sinu seanss on aegunud. Logi uuesti sisse.",
+      "conflict": "See muutus sinu muutmise ajal. Laadi leht uuesti ja proovi uuesti."
     },
     "delete": "Kustuta",
     "save": "Salvesta",

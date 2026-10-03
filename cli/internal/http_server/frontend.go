@@ -167,10 +167,10 @@ func (s *HTTPServer) currentPWAServerName() string {
 	return name
 }
 
-// sameOriginServerAssetURL keeps browser metadata on the frontend origin. General
-// asset URLs may use a configured asset base, but each Chatto frontend serves
-// its own public server assets and browsers must be able to fetch metadata
-// images from the frontend's origin.
+// sameOriginServerAssetURL keeps browser metadata on the frontend origin. Each
+// Chatto frontend serves its own public server assets, and browsers must be
+// able to fetch metadata images from the frontend's origin. It accepts only
+// public server asset paths and drops any origin.
 func sameOriginServerAssetURL(rawURL string) string {
 	parsed, err := url.Parse(rawURL)
 	if err != nil || parsed.Opaque != "" || !strings.HasPrefix(parsed.Path, "/assets/server/") {
@@ -409,7 +409,8 @@ func serveFrontendFile(c *gin.Context, clientFS fs.FS, filePath string) error {
 func isReservedNonFrontendPath(urlPath string) bool {
 	return hasPathSegmentPrefix(urlPath, "/api") ||
 		hasPathSegmentPrefix(urlPath, "/auth") ||
-		hasPathSegmentPrefix(urlPath, "/assets")
+		hasPathSegmentPrefix(urlPath, "/assets") ||
+		hasPathSegmentPrefix(urlPath, "/.well-known")
 }
 
 func hasPathSegmentPrefix(urlPath string, prefix string) bool {
@@ -500,7 +501,7 @@ func (s *HTTPServer) setupFrontendRoutes() error {
 			return
 		}
 
-		// Skip if path starts with /api, /auth, /assets (handled by other routes)
+		// Skip paths that belong to backend interfaces or discovery resources.
 		urlPath := c.Request.URL.Path
 		if isReservedNonFrontendPath(urlPath) {
 			c.Next()

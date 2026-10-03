@@ -1,13 +1,13 @@
 <script module lang="ts">
   import { defineMeta } from '@storybook/addon-svelte-csf';
-  import { UNIVERSAL_ROOM_HELP_TEXT } from '$lib/utils/roomCopy';
   import Checkbox from './Checkbox.svelte';
 
   const componentDescription = `
     Use Checkbox for independent boolean settings. Prefer immediate-save behavior for settings where
     one checkbox maps to one backend change, and keep supporting text inside the component instead of
     building custom option rows. Its selected row matches ChoiceRow, while the square check indicator
-    distinguishes a boolean setting from a one-of-many choice.
+    distinguishes a boolean setting from a one-of-many choice. Rows have a soft raised
+    edge, with an inset empty indicator and a glossy checked indicator.
   `.trim();
 
   const { Story } = defineMeta({
@@ -72,7 +72,7 @@
     id="with-description"
     bind:checked={b}
     label="Universal room"
-    description={UNIVERSAL_ROOM_HELP_TEXT}
+    description="Every member who can join this room is a member automatically."
   />
 </Story>
 
@@ -123,5 +123,14 @@
     <Checkbox id="g2" bind:checked={b} label="Direct messages" />
     <Checkbox id="g3" bind:checked={c} label="Replies in my threads" />
     <Checkbox id="g4" bind:checked={d} label="All messages in subscribed rooms" />
+  </div>
+</Story>
+
+<Story name="Inside a scrolled pane" asChild>
+  <div class="relative h-48 overflow-hidden">
+    <div class="h-full overflow-auto">
+      <div class="h-64" aria-hidden="true"></div>
+      <Checkbox id="scrolled-story" label="Low-cut filter" />
+    </div>
   </div>
 </Story>

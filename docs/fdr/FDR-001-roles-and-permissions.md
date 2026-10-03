@@ -1,13 +1,81 @@
 # FDR-001: Roles & Permissions (RBAC)
 
 **Status:** Active
-**Last reviewed:** 2026-09-01
+**Last reviewed:** 2026-09-28
 
 ## Overview
 
 Chatto controls who can do what through role-based access control. Every authenticated human user holds one or more roles; each role grants or denies specific permissions. Permissions can also be overridden per room-group and per room, giving operators fine-grained control without inventing parallel role systems. Bot accounts are the deliberate exception: they use an explicit direct-permission allowlist bounded by their human owner's current authority (FDR-038).
 
+Role metadata and member role lists update through realtime events. Display
+changes do not reload the full client. Permission changes refresh affected data
+in place for every user, including non-owners. The server shell and permitted
+pages stay visible and mounted, so filters, drafts, and scroll positions remain
+intact. Input is blocked during the authority check. Revoked access removes
+the affected data or page; failed checks clear only the data they could not
+reauthorize. Older reads and mutation results cannot restore that data.
+Unrelated users keep their data.
+A successful role creation or deletion can
+still navigate after this cleanup, provided the user has not left the page or
+changed session. This separates privacy cleanup from request completion
+(ADR-062).
+
+## Account Room Membership
+
+Role and account permission matrices show only channels that are not archived.
+Server, DM, and group columns remain available, including empty groups.
+Archiving preserves permissions and membership. Unarchiving restores the channel
+column with its existing permissions on the next matrix fetch.
+
+The account permission matrix has a **Joined** row for human and bot accounts.
+A confirmation dialog explains that the membership change takes effect
+immediately after confirmation. Cancel leaves membership unchanged.
+Configured permission grants stay unchanged.
+`user.manage-accounts` or `room.manage` for the room can add an account without
+its `room.join` permission. This lets a room manager invite a user who cannot
+join independently. These permissions also authorize removal after join
+permission is lost. Archived channels have no column in this matrix.
+
+Bot owners and human bot managers can manage their bots without `room.manage`.
+Without an account or room management override, adding a bot requires its
+effective `room.join`, including its owner's ceiling. Suspensions and archived rooms
+prevent adding. Universal membership remains automatic; DMs are excluded.
+The event log records the acting manager and target account for each change,
+including management overrides. Membership does not grant message permissions.
+See [FDR-038](FDR-038-bot-accounts.md).
+
+## Permission Help
+
+Each row of a role or account permission matrix has an information button after
+the permission name. The button opens a dialog. In narrow touch windows, the
+dialog opens as a bottom sheet, so touch users can read the help too. The dialog
+shows:
+
+- the short description and a longer explanation of the permission;
+- the category and the scopes where the permission can be set;
+- whether the permission needs privileged mode;
+- the permissions that it includes, and the permissions that include it.
+
+A related permission is a button that shows the help for that permission. The
+**Joined** row has its own dialog that explains membership. A permission from a
+newer server shows only its identifier and category.
+
+The frontend copies scopes, inclusions, and privileged-mode requirements from
+the backend permission catalog. Update both catalogs together.
+
 ## Behavior
+
+- Role and account permission reads use bounded scope pages or an exact scope
+  filter. Each scope includes its applicable decisions, with inheritance from
+  broader scopes even when those scopes are outside the page. The editors load
+  more columns at the horizontal scroll edge. This bounds each calculation
+  while allowing large servers to expose their full configuration.
+
+- Role details and assigned members are separate reads. Member lists load in
+  bounded pages so large roles do not require every user profile at once.
+  Roster access requires `role.assign`, not access to the full administrative
+  user directory. Only explicit assignments appear; `everyone` has no roster.
+  Pages reflect current assignments, so concurrent changes can shift offsets.
 
 - Every authenticated human user belongs to the implicit `everyone` role and may additionally hold one or more named roles. Bots inherit neither `everyone` nor named-role permissions.
 - The system roles are `owner`, `admin`, `moderator`, `everyone`. Role position controls ordering/display and legacy event compatibility; it is not an authorization rank.
@@ -15,17 +83,20 @@ Chatto controls who can do what through role-based access control. Every authent
 - A permission identifier is an opaque, stable value. Current identifiers use
   punctuation to help developers recognize them, but punctuation does not
   define authority. The permission catalog defines inclusion explicitly.
-- Permission grants/denies can be configured at three scopes: per-server, per room-group, and per room. Each direct user or named role contributes its nearest decision; denies win across those explicit subjects. The implicit `everyone` role supplies the scoped baseline, and an allow overrides its deny only at the same or a nearer scope.
+- Permission grants and denies can be configured at Server, Direct messages,
+  Room group, and Room scope. Channel checks use Room, Room group, then Server.
+  DM checks use Direct messages, then Server. Each direct user or named role
+  contributes its nearest decision. Denies win across those explicit subjects.
 - Permissions gate capabilities and channel-room message access. Channel-room
   membership is necessary for message reads. `message.read` supplies broad
   read authority and includes `message.read-interactions`, which
-  supplies authority for related threads only. DM membership authorizes DM
-  reads. `message.post` separately
+  supplies authority for related threads only. The same read rules apply in
+  DMs after the membership check. `message.post` separately
   gates root-message posting and permits human users to start DMs. Bot accounts
   cannot start DMs regardless of their permissions.
 - Server admins can drag-and-drop to reorder custom roles. System role positions are fixed for ordering consistency.
 - Custom role display names are limited to 80 bytes; descriptions are limited to 500 bytes.
-- Owners are always granted all permissions. An effective owner has the durable `owner` role; verified users listed in `owners.emails` in `chatto.toml` are materialized into that role at boot or through retryable durable work after verification.
+- Owners are always entitled to all permissions. The owner override becomes effective only while the human session has privileged mode active. Without it, an owner resolves through direct grants, other roles, and `everyone` like any other user. An effective owner has the durable `owner` role; verified users listed in `owners.emails` in `chatto.toml` are materialized into that role at boot or through retryable durable work after verification.
 - `admin` and every other non-owner role confer only their explicit permission decisions; they have no role-name-based authority.
 - Owner permissions are virtual rather than persisted defaults: fresh servers do not seed editable owner permission rows, and the admin UI shows owner permissions as read-only green checks.
 - RBAC editor and inspection APIs are exposed through ConnectRPC admin services. Admin entry is authenticated, and individual operations keep narrower gates such as `role.manage`, `role.assign`, `user.manage-accounts`, `user.manage-permissions`, or `room.manage`.
@@ -48,20 +119,28 @@ Chatto controls who can do what through role-based access control. Every authent
 
 ### 2. Named subjects with an `everyone` baseline
 
-**Decision:** For non-owner human users, select the nearest room/group/server decision independently for the direct user and every explicitly assigned named role. Denies win across those decisions. Select `everyone`'s nearest decision as the scoped baseline; a direct-user or named-role allow overrides an `everyone` deny only at the same or a nearer scope. If nothing applies, the result is denied at the API boundary. Bots instead use only explicit direct-user allows, further bounded by their owner's current effective permissions.
+**Decision:** For non-owner human users, select the nearest room/group/server decision independently for the direct user and every explicitly assigned named role. Denies win across those decisions. Select `everyone`'s nearest decision as the scoped baseline; a direct-user or named-role allow overrides an `everyone` deny only at the same or a nearer scope. If nothing applies, the result is denied at the API boundary. Bots instead use only explicit direct-user allows, further bounded by their owner's current RBAC entitlement.
 **Why:** Operators can express an allowlist by denying the `everyone` baseline and granting a named role, while a named restriction role such as `suspended` still reliably denies. Role position remains irrelevant to authorization. See ADR-052.
 **Tradeoff:** An `everyone` deny can be overridden deliberately at its own scope or a nearer one. A restriction role's deny beats other subjects' grants, but a nearer allow configured on that same role replaces its broader deny. Direct-user decisions follow the same nearest-scope rule. ADR-052 records the compatibility audit.
 
-### 3. Three permission scopes (server / group / room)
+### 3. Four permission scopes
 
-**Decision:** For each subject, room checks use the nearest decision at room, group, or server scope. Server-scope message and room permissions act as broad defaults; room/group decisions are local overrides for that same subject. Fresh dev/bootstrap servers grant ordinary member capabilities such as `room.list`, `room.join`, `message.read`, `message.post`, `message.post-in-thread`, `message.attach`, `message.react`, and `message.echo` to `everyone` at server scope. The effective `message.read` allow includes `message.read-interactions`; bootstrap does not store a second grant. Fresh servers do not grant `room.create` to `everyone`. Admins get explicit server-tier administrative and `room.*` defaults plus `message.manage`, while ordinary content participation continues to come from `everyone`. Moderators get server-tier `message.manage` and `room.ban-member`.
-**Why:** Operators want both "system-wide policy" and "this one channel works differently" without modelling separate role systems. See ADR-031 and ADR-052.
+**Decision:** For each subject, channel checks use the nearest decision at Room,
+Room group, or Server scope. DM checks use the nearest decision at Direct
+messages or Server scope. All `message.*` permissions apply to Direct messages.
+No `room.*` permission applies there. Fresh servers store no Direct messages
+decision, so human users inherit Server decisions. Bots need an explicit
+direct-user allow at the applicable scope. The effective `message.read` allow
+includes `message.read-interactions`; bootstrap does not store a second grant.
+**Why:** Operators need system-wide defaults, channel overrides, and a DM-only
+policy for integrations without one permission object for each DM. See ADR-031,
+ADR-052, and ADR-091.
 **Tradeoff:** Scope precedence is per subject, not global: one role's room allow does not erase a different named role's deny.
 
 ### 4. Owners are effective-owner overrides
 
-**Decision:** Owners are always granted all permissions. Owner role permission rows are not seeded on fresh servers and are not editable through the RBAC UI/API.
-**Why:** Instance owners must not be able to lock themselves out through unusual role or per-user permission configuration. See ADR-040.
+**Decision:** Owners are always entitled to all permissions. Owner role permission rows are not seeded on fresh servers and are not editable through the RBAC UI/API. Privileged mode gates the complete owner override at request time (ADR-105).
+**Why:** Instance owners must not be able to lock themselves out through unusual role or per-user permission configuration. Activation depends only on entitlement, so the gate does not lock owners out. See ADR-040.
 **Tradeoff:** RBAC cannot be used to restrict owners, and owner permissions appear as virtual read-only allows rather than stored permission decisions. Restricting owner access requires changing ownership configuration or account state.
 
 ### 5. Config-designated owners converge on the durable role
@@ -75,7 +154,7 @@ owner that notification cleanup cannot recognize.
 
 ### 6. Target-user mutations are permission-gated and role assignment is bounded
 
-**Decision:** Mutations that target another user require concrete permissions, not actor-vs-target rank checks. Role assignment uses `role.assign`, but a non-owner may assign only roles whose explicit allows they themselves effectively hold at each exact scope. Revocation is also bounded by every explicit allow and deny on the role, because removing a deny can restore authority. The `owner` role remains owner-only; `admin` has no implicit authority outside its explicit permissions. Account lifecycle and recovery operations use `user.manage-accounts`; direct user permission overrides use `user.manage-permissions`; room bans use `room.ban-member`.
+**Decision:** Mutations that target another user require concrete permissions, not actor-vs-target rank checks. Role assignment uses `role.assign`, but a non-owner may assign only roles whose explicit allows they themselves effectively hold at each exact scope. Revocation is also bounded by every explicit allow and deny on the role, because removing a deny can restore authority. The `owner` role remains owner-only; `admin` has no implicit authority outside its explicit permissions. Account lifecycle and recovery operations use `user.manage-accounts`; direct user permission overrides use `user.manage-permissions`; moderated room removal uses `room.remove-member`.
 **Why:** Concrete permissions are easier to audit and explain than a role-rank hierarchy, while bounding `role.assign` prevents delegated role managers from granting authority they do not possess or removing restrictions they cannot control.
 **Tradeoff:** A delegated assigner may need the target role's underlying permissions even when they only administer membership. Owners remain the recovery path, and old replicas can enforce the earlier unbounded rule during a rolling upgrade until they are replaced.
 
@@ -95,9 +174,13 @@ User-triggered RBAC events are audit facts as well as state facts, so their even
 
 ### 9. Defaults are one-time initialization, not startup policy
 
-**Decision:** Apply the current server default set only when the durable RBAC stream is empty. New groups and ordinary rooms store no default decisions. Commit a channel room and any exceptional default decisions in one atomic EVT batch: fresh announcements rooms deny `message.post` to `everyone` and allow it for `admin`. Do not inspect, copy, reset, or reconcile existing permission state during startup.
+**Decision:** Apply the current server default set only when the durable RBAC stream is empty. New groups and ordinary rooms store no default decisions. Commit a channel room and any exceptional default decisions in one atomic EVT batch: fresh announcements rooms deny `message.post` to `everyone` and allow it for `admin`. Do not reset existing permission state during startup. The introduction of
+call permissions has one explicit upgrade exception: initialize each missing
+server-level `everyone` call permission once. Any historical grant, deny, or
+clear prevents that initialization. This preserves the existing human call
+feature without undoing an operator's later decision.
 **Why:** Absence is a meaningful RBAC state. Reapplying code defaults on every startup makes an operator's explicit clear indistinguishable from incomplete bootstrap state.
-**Tradeoff:** Adding a new code default does not grant it to existing servers or rooms automatically. Older replicas in a rolling deployment still use their historical non-atomic room-creation path until they are replaced.
+**Tradeoff:** Apart from the explicit call-permission upgrade above, adding a new code default does not grant it to existing servers or rooms automatically. Older replicas in a rolling deployment still use their historical non-atomic room-creation path until they are replaced.
 
 ### 10. The permission catalog defines inclusion
 
@@ -119,6 +202,11 @@ relationships in sync. Tests cover the current relationship.
 
 ## Permissions
 
+- `call.start`, `call.join`, `call.voice`, `call.camera`, and `call.screenshare`
+  separate starting, joining, and publishing media. Room membership remains
+  mandatory. These permissions apply to rooms and the shared Direct messages
+  scope. See [FDR-016](FDR-016-voice-calls.md).
+
 The full permission catalog is in `cli/internal/core/permission.go`. Key permissions that gate RBAC management itself:
 
 - `role.manage` — configure role definitions and the permissions attached to them.
@@ -127,26 +215,28 @@ The full permission catalog is in `cli/internal/core/permission.go`. Key permiss
 - `user.manage-permissions` — edit direct per-user permission overrides.
 - `admin.view-users`, `admin.view-audit` — gate specific admin UI sub-views; admin UI entry is derived from concrete capabilities rather than a standalone `admin.access` permission. System diagnostics are owner-only and exposed through a viewer capability, not through grantable RBAC.
 - `message.read` — read message content and message-specific metadata in
-  channel rooms. Fresh servers grant this to `everyone` at server scope.
+  channel rooms and DMs. Fresh servers grant this to `everyone` at server scope.
   Existing servers are not backfilled or reconciled, so operators must add any
-  wanted grants during upgrade. DM membership authorizes DM reads without this
-  permission.
-- `message.read-interactions` — read only channel-room threads that the account
+  wanted grants during upgrade.
+- `message.read-interactions` — read only threads that the account
   started or where another account directly mentioned it. A relationship gives
   access to the complete thread. An effective `message.read` allow includes
   this permission. Fresh servers store only the `message.read` grant for
-  `everyone`. Existing servers are not backfilled or reconciled. DM membership
-  authorizes DM reads without this permission.
-- `message.post` — post root messages in rooms and let human users start DMs.
+  `everyone`. Existing servers are not backfilled or reconciled.
+- `message.post` — post root messages and thread replies, and let human users start DMs.
+  Includes `message.post-in-thread` and `message.post-in-interactions`. A narrow
+  deny cannot restrict an effective broad allow.
   Bot accounts cannot start DMs. Fresh servers grant this permission to
   `everyone` at server scope. Fresh announcement rooms replace that baseline
   with a room-level `everyone` deny and a room-level `admin` allow. Moderators
   and other named roles need their own room-level posting grant.
+- `message.post-in-thread` — reply in any readable thread where room policy permits it.
+- `message.post-in-interactions` — reply only in readable threads with an interaction relationship.
 - `message.attach` — attach files to new messages. Fresh servers grant this to `everyone` at server scope; existing servers are not automatically backfilled after upgrade, so operators may need to grant it manually if uploads should remain enabled.
 - `room.manage` — edit/configure/delete channel rooms.
-- `room.ban-member` — ban members from channel rooms. DM membership is not managed through this permission.
+- `room.remove-member` — remove current channel-room members with an optional suspension. DM membership is not managed through this permission.
 
 ## Related
 
-- **ADRs:** ADR-027 (instance/space consolidation), ADR-030 (space tier retirement), ADR-031 (room-group-centric ACL), ADR-033 (event-sourced state), ADR-035 (per-aggregate migration), ADR-037 (DM access via membership), ADR-040 (permission-only RBAC with owner override and explicit catalog inclusion), ADR-042 (protobuf-first public API), ADR-044 (ConnectRPC service conventions), ADR-052 (subject-specific RBAC with an everyone baseline), ADR-076 (notification occurrences), ADR-077 (persistent notification list), ADR-080 (explicit message-read permissions), ADR-082 (derived thread interactions), ADR-087 (request-time authorization with aggregate OCC)
-- **FDRs:** Every FDR that mentions a permission depends on this one; see also FDR-012 (Notifications), FDR-038 (Bot Accounts), and FDR-039 (Message Access & Interactions).
+- **ADRs:** ADR-027 (instance/space consolidation), ADR-030 (space tier retirement), ADR-031 (room-group-centric ACL), ADR-033 (event-sourced state), ADR-035 (per-aggregate migration), ADR-037 (DM access via membership), ADR-040 (permission-only RBAC with owner override and explicit catalog inclusion), ADR-042 (protobuf-first public API), ADR-044 (ConnectRPC service conventions), ADR-052 (subject-specific RBAC with an everyone baseline), ADR-076 (notification occurrences), ADR-077 (persistent notification list), ADR-080 (explicit message-read permissions), ADR-082 (derived thread interactions), ADR-087 (request-time authorization with aggregate OCC), ADR-096 (session-scoped privileged mode), ADR-105 (privileged mode gates the owner override)
+- **FDRs:** Every FDR that mentions a permission depends on this one; see also FDR-012 (Notifications), FDR-038 (Bot Accounts), FDR-039 (Message Access & Interactions), and FDR-046 (Privileged Mode).

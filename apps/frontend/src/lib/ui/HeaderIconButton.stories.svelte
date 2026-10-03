@@ -4,8 +4,8 @@
 
   const componentDescription = `
     Use HeaderIconButton for compact icon-only actions in pane headers and tight toolbars. Provide
-    a clear label for accessibility and prefer the active tone for toggled-on state, not hover-only
-    emphasis.
+    a clear label for accessibility. Use the active tone to mark the panel that a button currently
+    shows. For on/off settings, change the icon and label instead of adding a background.
   `.trim();
 
   const { Story } = defineMeta({
@@ -23,7 +23,7 @@
 <Story name="Tones" asChild>
   <div class="flex items-center gap-3">
     <HeaderIconButton icon="icon-[uil--bell]" label="Default" />
-    <HeaderIconButton icon="icon-[uil--bell]" label="Active (toggled on)" tone="active" />
+    <HeaderIconButton icon="icon-[uil--users-alt]" label="Active (panel shown)" tone="active" />
     <HeaderIconButton icon="icon-[uil--trash]" label="Danger" tone="danger" />
     <HeaderIconButton icon="icon-[uil--cog]" label="Disabled" disabled />
   </div>
@@ -38,7 +38,7 @@
 
 <Story name="Common pane-header actions" asChild>
   <div class="flex items-center gap-3 rounded-md border border-border bg-surface p-3">
-    <HeaderIconButton icon="icon-[uil--bell]" label="Follow thread" tone="active" />
+    <HeaderIconButton icon="icon-[uil--bell]" label="Unfollow thread" />
     <HeaderIconButton icon="icon-[uil--sign-out-alt]" label="Leave room" />
     <HeaderIconButton icon="icon-[uil--cog]" label="Settings" />
     <HeaderIconButton icon="icon-[uil--times]" label="Close" />
@@ -48,9 +48,9 @@
 <Story name="Call pane actions" asChild>
   <div class="flex items-center gap-3 rounded-md border border-border bg-surface p-3">
     <HeaderIconButton icon="icon-[mdi--arrow-expand-left]" label="Maximize call" />
-    <HeaderIconButton icon="icon-[mdi--arrow-collapse-right]" label="Minimize call" tone="active" />
+    <HeaderIconButton icon="icon-[mdi--arrow-collapse-right]" label="Minimize call" />
     <HeaderIconButton icon="icon-[mdi--monitor-share]" label="Fullscreen call" />
-    <HeaderIconButton icon="icon-[mdi--fullscreen-exit]" label="Exit fullscreen call" tone="active" />
+    <HeaderIconButton icon="icon-[mdi--fullscreen-exit]" label="Exit fullscreen call" />
     <HeaderIconButton icon="icon-[uil--times]" label="Close" iconSize="lg" />
   </div>
 </Story>

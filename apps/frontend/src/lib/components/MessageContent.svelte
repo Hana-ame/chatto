@@ -6,16 +6,16 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
   import { renderMarkdown as renderMd } from '$lib/markdown';
-  import MarkdownHtml from '$lib/ui/MarkdownHtml.svelte';
-  import ContextMenu from '$lib/ui/ContextMenu.svelte';
+  import { MarkdownHtml, ContextMenu } from '$lib/ui';
   import { classifyMessageBodyChatLink } from '$lib/messageLinks';
-  import { wrapValidMentions, type RoomMember } from '$lib/mentions';
+  import { resolveRenderedMentions, type RoomMember } from '$lib/mentions';
   import { formatRelativeMessageTimestamp, wrapMessageTimestamps } from '$lib/messageTimestamps';
   import { parseTrustedMarkdownHtml } from '$lib/security/trustedHtml';
   import { getLocale } from '$lib/i18n/runtime';
   import { m } from '$lib/i18n/messages';
   import { formatDateTime, type TimeFormatSettings } from '$lib/utils/formatTime';
   import { SvelteDate } from 'svelte/reactivity';
+  import Interval from '$lib/lifecycle/Interval.svelte';
 
   const fallbackTimestampSettings: TimeFormatSettings = {
     get effectiveTimezone() {
@@ -65,19 +65,6 @@
       ? formatRelativeMessageTimestamp(activeTimestamp.date, activeTimestampLocale, liveNow)
       : ''
   );
-
-  $effect(() => {
-    if (!activeTimestamp) return;
-
-    liveNow.setTime(Date.now());
-    const interval = window.setInterval(() => {
-      liveNow.setTime(Date.now());
-    }, 1000);
-
-    return () => {
-      window.clearInterval(interval);
-    };
-  });
 
   function injectMessageStateMarkers(
     html: string,
@@ -135,7 +122,7 @@
     return root.innerHTML;
   }
 
-  // Render markdown then wrap valid mentions
+  // Render markdown, then resolve the mention candidates that it marked
   async function render(
     body: string,
     members: RoomMember[],
@@ -146,8 +133,8 @@
     timestampSettings: TimeFormatSettings,
     timestampLocale: string | undefined
   ): Promise<string> {
-    const html = await renderMd(body);
-    const wrapped = wrapValidMentions(html, members, viewerLogin, roleHandles);
+    const html = await renderMd(body, { mentions: true });
+    const wrapped = resolveRenderedMentions(html, members, viewerLogin, roleHandles);
     const withTimestamps = wrapMessageTimestamps(
       wrapped,
       timestampSettings,
@@ -168,6 +155,7 @@
       if (!Number.isSafeInteger(epochSeconds)) return;
       event.preventDefault();
       const rect = timestamp.getBoundingClientRect();
+      liveNow.setTime(Date.now());
       activeTimestamp = {
         epochSeconds,
         date: new Date(epochSeconds * 1000),
@@ -209,16 +197,7 @@
 </script>
 
 <div class="prose max-w-none min-w-0" dir="auto" role="presentation" onclick={handleContentClick}>
-  {#await render(
-    body,
-    members,
-    roleHandles,
-    edited,
-    echoedToChannel,
-    viewerLogin,
-    timestampSettings,
-    timestampLocale
-  )}
+  {#await render(body, members, roleHandles, edited, echoedToChannel, viewerLogin, timestampSettings, timestampLocale)}
     {body}
   {:then html}
     <MarkdownHtml {html} />
@@ -232,6 +211,7 @@
 </div>
 
 {#if activeTimestamp}
+  <Interval milliseconds={1000} ontick={() => liveNow.setTime(Date.now())} />
   <ContextMenu
     anchor={activeTimestamp.anchor}
     role="dialog"
@@ -240,11 +220,11 @@
     onclose={() => (activeTimestamp = null)}
   >
     <section class="menu-section px-3 py-2" data-testid="message-timestamp-details">
-      <header class="mb-2 flex items-center gap-2 text-sm font-medium">
-        <span class="iconify icon-[uil--clock] text-muted"></span>
+      <header class="mb-2 flex items-center gap-2 font-medium">
+        <span aria-hidden="true" class="iconify icon-[uil--clock] text-muted"></span>
         <span>{m('room.message.timestamp.details_title')}</span>
       </header>
-      <dl class="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-xs">
+      <dl class="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1">
         <dt class="text-muted">{m('room.message.timestamp.local_time')}</dt>
         <dd class="min-w-0 text-end break-words text-text">{activeTimestampLocalText}</dd>
 

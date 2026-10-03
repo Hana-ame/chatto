@@ -16,7 +16,6 @@
       "remote_title": "{server} wymaga zalogowania",
       "remote_message": "Ten serwer odrzucił zapisane logowanie. Podłącz go ponownie, aby wznowić aktualizacje i działania na żywo.",
       "remote_action": "Połącz się ponownie",
-      "remote_failed": "Nie udało się rozpocząć ponownego łączenia",
       "sidebar_reauth": "{server} wymaga zalogowania"
     },
     "access_denied": {
@@ -48,7 +47,8 @@
       "complete": "Chatto zostało odbudowane. Wynik końcowy: {count} punktów"
     },
     "pane_header": {
-      "back": "Wróć"
+      "back": "Wróć",
+      "actions": "Działania panelu"
     },
     "sidebar_nav": {
       "back_to_chat": "Powrót do czatu"
@@ -67,7 +67,12 @@
     "image_modal": {
       "previous": "Poprzedni obraz",
       "next": "Następny obraz",
-      "fallback_alt": "Obraz"
+      "fallback_alt": "Obraz",
+      "zoom_in": "Powiększ",
+      "zoom_out": "Pomniejsz",
+      "fit": "Dopasuj",
+      "details": "Szczegóły",
+      "file_type": "Typ pliku"
     },
     "toast": {
       "dismiss": "Odrzuć powiadomienie"
@@ -78,11 +83,9 @@
       "clear": "Wyczyść"
     },
     "expiry": {
-      "label": "Wygasa",
       "24h": "24 godziny",
       "7d": "7 dni",
       "30d": "30 dni",
-      "indefinite": "Brak wygaśnięcia",
       "custom": "Niestandardowe",
       "custom_label": "Niestandardowe wygaśnięcie",
       "error_required": "Wybierz datę ważności.",

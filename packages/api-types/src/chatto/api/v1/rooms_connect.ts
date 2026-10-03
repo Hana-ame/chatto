@@ -3,11 +3,11 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { AddMemberRequest, AddMemberResponse, ArchiveRoomRequest, ArchiveRoomResponse, BanMemberRequest, BanMemberResponse, CreatePinnedMessageRequest, CreatePinnedMessageResponse, CreateRoomRequest, CreateRoomResponse, DeletePinnedMessageRequest, DeletePinnedMessageResponse, JoinRoomGroupRequest, JoinRoomGroupResponse, JoinRoomRequest, JoinRoomResponse, LeaveRoomRequest, LeaveRoomResponse, ListBansRequest, ListBansResponse, ListPinnedMessagesRequest, ListPinnedMessagesResponse, ListRoomAttachmentsRequest, ListRoomAttachmentsResponse, RemoveMemberRequest, RemoveMemberResponse, StartDMRequest, StartDMResponse, UnarchiveRoomRequest, UnarchiveRoomResponse, UnbanMemberRequest, UnbanMemberResponse, UpdateRoomRequest, UpdateRoomResponse, UpdateTypingIndicatorRequest, UpdateTypingIndicatorResponse } from "./rooms_pb.js";
+import { BatchGetRoomReadStatesRequest, BatchGetRoomReadStatesResponse, GetRoomReadStateRequest, GetRoomReadStateResponse, MarkRoomAsReadRequest, MarkRoomAsReadResponse } from "./read_state_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
-import { BatchGetRoomMembersRequest, BatchGetRoomMembersResponse, GetRoomMemberRequest, GetRoomMemberResponse, ListRoomMembersRequest, ListRoomMembersResponse } from "./member_directory_pb.js";
+import { AddMemberRequest, AddMemberResponse, ArchiveRoomRequest, ArchiveRoomResponse, CreatePinnedMessageRequest, CreatePinnedMessageResponse, CreateRoomRequest, CreateRoomResponse, DeletePinnedMessageRequest, DeletePinnedMessageResponse, JoinRoomGroupRequest, JoinRoomGroupResponse, JoinRoomRequest, JoinRoomResponse, LeaveRoomRequest, LeaveRoomResponse, LiftSuspensionRequest, LiftSuspensionResponse, ListPinnedMessagesRequest, ListPinnedMessagesResponse, ListRoomAttachmentsRequest, ListRoomAttachmentsResponse, ListSuspensionsRequest, ListSuspensionsResponse, RefreshTypingIndicatorRequest, RefreshTypingIndicatorResponse, RemoveMemberRequest, RemoveMemberResponse, RemoveUserRequest, RemoveUserResponse, StartDMRequest, StartDMResponse, UnarchiveRoomRequest, UnarchiveRoomResponse, UpdateRoomRequest, UpdateRoomResponse } from "./rooms_pb.js";
+import { BatchGetMembersRequest, BatchGetMembersResponse, GetMemberRequest, GetMemberResponse, ListMembersRequest, ListMembersResponse } from "./member_directory_pb.js";
 import { GetRoomEventsAroundRequest, GetRoomEventsAroundResponse, GetRoomEventsRequest, GetRoomEventsResponse } from "./room_timeline_pb.js";
-import { MarkRoomAsReadRequest, MarkRoomAsReadResponse } from "./read_state_pb.js";
 
 /**
  * Manages room-scoped operations for the current user.
@@ -23,6 +23,31 @@ import { MarkRoomAsReadRequest, MarkRoomAsReadResponse } from "./read_state_pb.j
 export const RoomService = {
   typeName: "chatto.api.v1.RoomService",
   methods: {
+    /**
+     * Reads the current viewer's stored marker without changing it. Requires the
+     * same membership and read access as MarkRoomAsRead. Missing resources
+     * return NOT_FOUND; inaccessible resources return PERMISSION_DENIED.
+     *
+     * @generated from rpc chatto.api.v1.RoomService.GetRoomReadState
+     */
+    getRoomReadState: {
+      name: "GetRoomReadState",
+      I: GetRoomReadStateRequest,
+      O: GetRoomReadStateResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * Reads up to 100 states under the same authorization as GetRoomReadState.
+     * Missing and inaccessible resources are omitted; duplicates use first-seen order.
+     *
+     * @generated from rpc chatto.api.v1.RoomService.BatchGetRoomReadStates
+     */
+    batchGetRoomReadStates: {
+      name: "BatchGetRoomReadStates",
+      I: BatchGetRoomReadStatesRequest,
+      O: BatchGetRoomReadStatesResponse,
+      kind: MethodKind.Unary,
+    },
     /**
      * Creates a new channel room in a room group. The caller must be allowed to
      * create rooms in the target group.
@@ -121,47 +146,50 @@ export const RoomService = {
       kind: MethodKind.Unary,
     },
     /**
-     * Lists effective room members. Existing members and room.manage holders may
+     * Lists effective room member IDs in ascending ID order. Resolve user details
+     * with UserService.BatchGetUsers. Existing members and room.manage holders may
      * list a channel room; other nonmembers need both room.list and room.join.
      *
      * @generated from rpc chatto.api.v1.RoomService.ListMembers
      */
     listMembers: {
       name: "ListMembers",
-      I: ListRoomMembersRequest,
-      O: ListRoomMembersResponse,
+      I: ListMembersRequest,
+      O: ListMembersResponse,
       kind: MethodKind.Unary,
     },
     /**
-     * Gets one explicit member of a room. Existing members and room.manage
-     * holders may read channel-room members; DMs remain membership-only. Returns
-     * NOT_FOUND when the target is unknown or not a room member.
+     * Gets one effective member, including automatic universal membership.
+     * Channel-room members, room.manage holders, and user.manage-accounts holders
+     * may read members. Bot owners and bot.manage holders may read their target
+     * bots only. DMs require caller membership. Returns NOT_FOUND for nonmembers.
      *
      * @generated from rpc chatto.api.v1.RoomService.GetMember
      */
     getMember: {
       name: "GetMember",
-      I: GetRoomMemberRequest,
-      O: GetRoomMemberResponse,
+      I: GetMemberRequest,
+      O: GetMemberResponse,
       kind: MethodKind.Unary,
     },
     /**
-     * Gets explicit room member rows for multiple users. Existing members and
-     * room.manage holders may read channel-room members; DMs remain
-     * membership-only.
+     * Gets effective member rows for the requested accounts. Uses the same
+     * authorization as GetMember; omits unknown accounts and nonmembers.
      *
      * @generated from rpc chatto.api.v1.RoomService.BatchGetMembers
      */
     batchGetMembers: {
       name: "BatchGetMembers",
-      I: BatchGetRoomMembersRequest,
-      O: BatchGetRoomMembersResponse,
+      I: BatchGetMembersRequest,
+      O: BatchGetMembersResponse,
       kind: MethodKind.Unary,
     },
     /**
-     * Adds a user as an explicit member of a channel room. The caller must be
-     * allowed to manage the room. Direct-message and universal rooms cannot be
-     * managed this way.
+     * Adds an account as an explicit channel-room member. room.manage for this
+     * room or user.manage-accounts overrides the target's missing room.join.
+     * Bot owners and bot.manage holders may also add bots, but without either
+     * override the bot needs effective room.join, bounded by its owner's authority.
+     * Preserves permission grants. Suspensions, archived, universal, and DM rooms prevent adding.
      *
      * @generated from rpc chatto.api.v1.RoomService.AddMember
      */
@@ -172,9 +200,10 @@ export const RoomService = {
       kind: MethodKind.Unary,
     },
     /**
-     * Removes a user from a channel room's explicit members. The caller must be
-     * allowed to manage the room. Direct-message and universal rooms cannot be
-     * managed this way.
+     * Removes an explicit channel-room member. Requires room.manage for this room,
+     * user.manage-accounts, ownership of the target bot, or bot.manage.
+     * Removal is allowed after room.join is lost and from archived rooms.
+     * Preserves permission grants. Universal and DM membership cannot be edited.
      *
      * @generated from rpc chatto.api.v1.RoomService.RemoveMember
      */
@@ -185,22 +214,21 @@ export const RoomService = {
       kind: MethodKind.Unary,
     },
     /**
-     * Lists active channel room bans. The caller must be allowed to moderate room
-     * membership bans.
+     * Lists active channel room suspensions. Requires server-scope
+     * room.remove-member.
      *
-     * @generated from rpc chatto.api.v1.RoomService.ListBans
+     * @generated from rpc chatto.api.v1.RoomService.ListSuspensions
      */
-    listBans: {
-      name: "ListBans",
-      I: ListBansRequest,
-      O: ListBansResponse,
+    listSuspensions: {
+      name: "ListSuspensions",
+      I: ListSuspensionsRequest,
+      O: ListSuspensionsResponse,
       kind: MethodKind.Unary,
     },
     /**
      * Lists current message-owned room attachments. Authentication and room
-     * membership are required. Channel-room attachments also require message.read
-     * or a matching thread relationship with message.read-interactions. DM
-     * membership authorizes DM attachments. The server omits attachments from
+     * membership are required. Attachments also require message.read or a
+     * matching thread relationship with message.read-interactions. The server omits attachments from
      * inaccessible threads. Returns PERMISSION_DENIED when the room is
      * inaccessible to the caller.
      *
@@ -254,21 +282,23 @@ export const RoomService = {
     /**
      * Refreshes the current user's live-only typing indicator for a room or
      * thread. Room membership is required; message posting permission is not.
+     * Send at most once every 2 seconds while typing. After posting a message,
+     * the next typing activity can send immediately. Stop sending when typing
+     * stops; receivers clear the indicator after 6 seconds without an event.
      *
-     * @generated from rpc chatto.api.v1.RoomService.UpdateTypingIndicator
+     * @generated from rpc chatto.api.v1.RoomService.RefreshTypingIndicator
      */
-    updateTypingIndicator: {
-      name: "UpdateTypingIndicator",
-      I: UpdateTypingIndicatorRequest,
-      O: UpdateTypingIndicatorResponse,
+    refreshTypingIndicator: {
+      name: "RefreshTypingIndicator",
+      I: RefreshTypingIndicatorRequest,
+      O: RefreshTypingIndicatorResponse,
       kind: MethodKind.Unary,
     },
     /**
      * Returns one page of room timeline events, including related user data
-     * needed to render the page. Room membership is required. Channel-room reads
-     * also require message.read or message.read-interactions. The server returns
-     * only related thread roots for an interaction-scoped caller. DM membership
-     * authorizes DM reads.
+     * needed to render the page. Room membership is required. Reads also require
+     * message.read or message.read-interactions. The server returns only related
+     * thread roots for an interaction-scoped caller.
      *
      * @generated from rpc chatto.api.v1.RoomService.GetRoomEvents
      */
@@ -283,8 +313,7 @@ export const RoomService = {
      * open a permalink, search result, or notification target in context. Returns
      * NOT_FOUND when the anchor event is missing or not visible in the room
      * timeline. Returns PERMISSION_DENIED when room membership or both read modes
-     * are missing, or when the anchor is in an unrelated thread. DM membership
-     * authorizes DM reads.
+     * are missing, or when the anchor is in an unrelated thread.
      *
      * @generated from rpc chatto.api.v1.RoomService.GetRoomEventsAround
      */
@@ -296,8 +325,8 @@ export const RoomService = {
     },
     /**
      * Marks a room timeline as read through the supplied event. Room membership
-     * is required. Channel-room reads also require message.read or
-     * message.read-interactions. DM membership authorizes DM reads. If no event
+     * is required. Reads also require message.read or
+     * message.read-interactions. If no event
      * is supplied, the server marks through the latest root event that the caller
      * can read. Clients
      * usually call this after the user has viewed the latest visible event in the
@@ -312,27 +341,28 @@ export const RoomService = {
       kind: MethodKind.Unary,
     },
     /**
-     * Bans a member from a channel room. Direct-message rooms cannot be moderated
-     * this way, and the target must currently be a room member.
+     * Removes a current channel room member with a required reason. Requires
+     * room.remove-member. Without suspension, ordinary join rules apply afterward.
+     * Universal rooms require a suspension. Direct-message rooms are excluded.
      *
-     * @generated from rpc chatto.api.v1.RoomService.BanMember
+     * @generated from rpc chatto.api.v1.RoomService.RemoveUser
      */
-    banMember: {
-      name: "BanMember",
-      I: BanMemberRequest,
-      O: BanMemberResponse,
+    removeUser: {
+      name: "RemoveUser",
+      I: RemoveUserRequest,
+      O: RemoveUserResponse,
       kind: MethodKind.Unary,
     },
     /**
-     * Removes an active channel room ban. Calling this when no active ban exists
-     * is allowed and still returns success.
+     * Lifts an active channel room suspension. Requires room.remove-member.
+     * Calling this when no active suspension exists succeeds.
      *
-     * @generated from rpc chatto.api.v1.RoomService.UnbanMember
+     * @generated from rpc chatto.api.v1.RoomService.LiftSuspension
      */
-    unbanMember: {
-      name: "UnbanMember",
-      I: UnbanMemberRequest,
-      O: UnbanMemberResponse,
+    liftSuspension: {
+      name: "LiftSuspension",
+      I: LiftSuspensionRequest,
+      O: LiftSuspensionResponse,
       kind: MethodKind.Unary,
     },
   }

@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-22
 
-**Updated:** 2026-08-26
+**Updated:** 2026-09-23
 
 **Status:** Partially superseded
 
@@ -53,7 +53,11 @@ has a 90-day renewal window, configured by the existing `auth.token_ttl` /
 `CHATTO_AUTH_TOKEN_TTL`. A successful refresh in the final quarter advances
 the window to the configured lifetime from that refresh. An inactive session
 expires after one complete window. An access token issued near the end of a
-window is clamped to its remaining lifetime.
+window is clamped to its remaining lifetime. Sessions of the built-in loopback
+OAuth client are the exception: they keep a fixed window of at most 24 hours
+from creation, never advance it, and validation shortens a longer stored
+window. See [ADR-071](ADR-071-cimd-identified-open-oauth-clients.md) and
+[FDR-023](../fdr/FDR-023-authentication-and-sessions.md).
 
 ### Runtime-state representation
 
@@ -66,7 +70,8 @@ window is clamped to its remaining lifetime.
   previous refresh-request verifier and rotation time, and authoritative
   fresh-auth metadata. The verifier is a purpose-separated HMAC of the raw
   recovery nonce. Each revision preserves or advances its explicit expiry and
-  sets its per-message TTL to the remaining lifetime.
+  sets its per-message TTL to the remaining lifetime. A loopback-client
+  revision can instead shorten its expiry to the fixed loopback window.
 - `session.{hmac}` is one short-lived access-token verifier record. It includes
   its fixed expiry, renewable-session ID, access generation, user auth
   generation, and the established typed-credential metadata. Validation
@@ -96,8 +101,7 @@ also invalidates the stable sessions issued to that client.
 Refresh uses the public `/oauth/token` endpoint with
 `grant_type=refresh_token`. The request includes the refresh credential, the
 OAuth `client_id` when the session is delegated, and a client-generated
-`refresh_request_id`. The request ID is a cryptographically random UUID version
-4. It is a show-once recovery nonce, so the server stores only its HMAC verifier.
+`refresh_request_id`. The request ID is a cryptographically random UUID version 4. It is a show-once recovery nonce, so the server stores only its HMAC verifier.
 The endpoint accepts the existing JSON and standard form encodings, returns the
 rotated access and refresh credentials with both remaining lifetimes, and marks
 responses non-cacheable.
@@ -109,7 +113,8 @@ until a valid response has been persisted. The server rotates as follows:
    current window expiry, OAuth-client policy, and user auth generation.
 2. Increment the generation and record the request-ID verifier and rotation
    time by updating the stable key with its exact JetStream KV revision. If the
-   current window is in its final quarter, advance its expiry. Publish the
+   current window is in its final quarter, advance its expiry, except for a
+   loopback-client session. Publish the
    revision with a per-message TTL equal to the remaining explicit lifetime.
 3. Create the deterministic access-token verifier for the committed generation.
 4. Return the deterministic credential pair.
@@ -162,18 +167,23 @@ It refreshes shortly before access expiry, including when access expiry reaches
 the end of the current session window. A successful refresh in the final
 quarter advances that window without user action. The client also retries one
 unary ConnectRPC request after an `Unauthenticated` response when forced
-renewal succeeds. Transient network and server failures keep the credentials
+renewal succeeds. This renewal hook also applies to the initial remote viewer
+read after a tab starts. Transient network and server failures keep the credentials
 and request ID for retry. An `invalid_grant` response is permanent: the
 frontend marks only that server as requiring authentication, keeps the user's
 current route and other connected servers intact, and exposes the existing
 explicit reconnect action. It never starts OAuth automatically.
 
+The token endpoint logs a fixed rejection reason for invalid request IDs,
+missing credentials, reuse, client mismatch, and blocked clients. The reason
+contains no token, client ID, user identity, or request metadata.
+
 Realtime sockets are authenticated for the lifetime of the presented access
 token. At expiry the server cancels authorized work, sends a reconnecting
 `authentication_required` close when possible, and closes the socket. The
 frontend rotates once, reconnects the same per-server event bus with the new
-access token, and supplies its in-memory opaque resume cursor and retained-room
-set. The projection and route are not recreated.
+access token, and supplies its in-memory opaque resume cursor. The projection
+and route are not recreated.
 
 Logout presents the refresh credential when available so the server revokes
 the whole renewable session, rather than only one access-token verifier.

@@ -182,6 +182,30 @@ func TestPublisher_Append_HappyPath(t *testing.T) {
 	}
 }
 
+func TestReader_EventAtReadsNewlyAppendedEvent(t *testing.T) {
+	js, stream := setupTestStream(t)
+	publisher := NewPublisher(js, stream, testLogger())
+	reader, err := NewReader(stream, StreamMessageReaderConfig{})
+	if err != nil {
+		t.Fatalf("NewReader: %v", err)
+	}
+	ctx := testContext(t)
+	event := makeEvent("R1", "U1")
+	subject := RoomAggregate("R1").Subject(EventUserJoinedRoom)
+
+	sequence, err := publisher.Append(ctx, subject, event)
+	if err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	record, err := reader.EventAt(ctx, sequence)
+	if err != nil {
+		t.Fatalf("EventAt: %v", err)
+	}
+	if record.Sequence != sequence || record.Subject != subject || !proto.Equal(record.Event, event) {
+		t.Fatalf("EventAt = %+v, want sequence %d subject %q event %q", record, sequence, subject, event.GetId())
+	}
+}
+
 func TestPublisher_Append_SetsNATSMsgID(t *testing.T) {
 	js, stream := setupTestStream(t)
 	pub := NewPublisher(js, stream, testLogger())
@@ -545,11 +569,6 @@ func newReplayTrackingProjection(subjects []string, replay []string) *replayTrac
 
 func (p *replayTrackingProjection) ReplaySubjects() []string { return p.replay }
 
-type countingSubjectsProjection struct {
-	*trackingProjection
-	subjectCalls int
-}
-
 type minimalProjection struct {
 	mu      sync.Mutex
 	count   int
@@ -665,17 +684,6 @@ func (p *checkpointTrackingProjection) ResetCheckpoint(_ context.Context, reques
 	return p.resetErr
 }
 
-func newCountingSubjectsProjection(subs ...string) *countingSubjectsProjection {
-	return &countingSubjectsProjection{
-		trackingProjection: newTrackingProjection(subs...),
-	}
-}
-
-func (p *countingSubjectsProjection) Subjects() []string {
-	p.subjectCalls++
-	return p.trackingProjection.Subjects()
-}
-
 type blockingProjection struct {
 	*trackingProjection
 	entered chan struct{}
@@ -726,10 +734,6 @@ type identityBoundSnapshotSource struct {
 	request        ProjectionSnapshotLoadRequest
 }
 
-type blockingSnapshotSource struct {
-	canceled chan struct{}
-}
-
 type gatedSnapshotSource struct {
 	started  chan struct{}
 	release  chan struct{}
@@ -757,12 +761,6 @@ func (s *gatedSnapshotSource) LoadProjectionSnapshot(ctx context.Context, reques
 	case <-ctx.Done():
 		return ProjectionSnapshot{}, ctx.Err()
 	}
-}
-
-func (s *blockingSnapshotSource) LoadProjectionSnapshot(ctx context.Context, _ ProjectionSnapshotLoadRequest) (ProjectionSnapshot, error) {
-	<-ctx.Done()
-	close(s.canceled)
-	return ProjectionSnapshot{}, ctx.Err()
 }
 
 func (s *staticSnapshotSource) LoadProjectionSnapshot(_ context.Context, request ProjectionSnapshotLoadRequest) (ProjectionSnapshot, error) {
@@ -2635,6 +2633,24 @@ func TestEventTypeOf_MessageEvents(t *testing.T) {
 			},
 			want: EventBearerTokenRevoked,
 		},
+		{
+			name: "PrivilegedModeActivated",
+			event: &evtv1.Event{
+				Event: &evtv1.Event_PrivilegedModeActivated{
+					PrivilegedModeActivated: &evtv1.PrivilegedModeActivatedEvent{UserId: "U1"},
+				},
+			},
+			want: EventPrivilegedModeActivated,
+		},
+		{
+			name: "PrivilegedModeDeactivated",
+			event: &evtv1.Event{
+				Event: &evtv1.Event_PrivilegedModeDeactivated{
+					PrivilegedModeDeactivated: &evtv1.PrivilegedModeDeactivatedEvent{UserId: "U1"},
+				},
+			},
+			want: EventPrivilegedModeDeactivated,
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -2658,7 +2674,9 @@ func TestEventTypeOf_MessageEvents(t *testing.T) {
 				c.want == EventAuthCodeExchangeSucceeded ||
 				c.want == EventAuthCodeExchangeFailed ||
 				c.want == EventBearerTokenIssued ||
-				c.want == EventBearerTokenRevoked {
+				c.want == EventBearerTokenRevoked ||
+				c.want == EventPrivilegedModeActivated ||
+				c.want == EventPrivilegedModeDeactivated {
 				agg = UserAggregate("U1")
 			}
 			if c.want == EventLoginFailed {

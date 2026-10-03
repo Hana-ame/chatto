@@ -3,6 +3,7 @@
     "cancel": "İptal",
     "close_sidebar": "Kenar çubuğunu kapat",
     "or": "veya",
+    "unknown_user": "Bilinmeyen kullanıcı",
     "loading": "Yükleniyor...",
     "continue": "Devam et",
     "submit": "Gönder",
@@ -35,7 +36,11 @@
     },
     "error": {
       "network": "Ağ hatası. Lütfen tekrar deneyin.",
-      "generic": "Bir şeyler ters gitti"
+      "generic": "Bir şeyler ters gitti",
+      "permission_denied": "Bunu yapma iznin yok.",
+      "not_found": "İstenen öğe bulunamadı.",
+      "unauthenticated": "Oturumunun süresi doldu. Yeniden oturum aç.",
+      "conflict": "Sen düzenlerken bu değişti. Sayfayı yeniden yükle ve tekrar dene."
     },
     "delete": "Sil",
     "save": "Kaydet",

@@ -71,7 +71,9 @@
     },
     "timeline": {
       "beginning": "Bu, bu konuşmanın başlangıcıdır.",
-      "read_denied": "Bu odadaki mesajları okuma izniniz yok."
+      "read_denied": "Bu odadaki mesajları okuma izniniz yok.",
+      "limited_empty": "Henüz okuyabileceğiniz konuşma yok.",
+      "loading": "Mesajlar yükleniyor..."
     },
     "message": {
       "empty": "Henüz mesaj yok",
@@ -87,6 +89,7 @@
         "remove_reaction": "{emoji} öğesini kaldır",
         "add_reaction": "Tepki ekle",
         "more_reactions": "Daha fazla tepki",
+        "reactions": "Tepkiler",
         "reply": "Yanıtla",
         "reply_room": "Odada yanıtla",
         "reply_thread": "Konuda yanıtla",
@@ -96,9 +99,18 @@
         "edit_short": "Düzenle",
         "copy_text": "Metni kopyala",
         "copy_text_failed": "Metin kopyalanamadı",
-        "copy_link": "Bağlantıyı kopyala"
+        "copy_link": "Bağlantıyı kopyala",
+        "copy_message_link": "Mesaj bağlantısını kopyala",
+        "copy_image": "Görseli kopyala",
+        "link_copied": "Bağlantı kopyalandı",
+        "message_link_copied": "Mesaj bağlantısı kopyalandı",
+        "copy_link_failed": "Bağlantı kopyalanamadı",
+        "image_copied": "Görsel kopyalandı",
+        "copy_image_failed": "Görsel kopyalanamadı"
       },
       "meta": {
+        "echo": "Yankı",
+        "edited_short": "Düzenlendi",
         "pinned": "Sabitlenmiş mesaj",
         "thread": "Konu",
         "edited": "Düzenlenmiş ileti",
@@ -142,6 +154,14 @@
       },
       "show_less": "daha az göster"
     },
+    "typing": {
+      "one": "{name} yazıyor",
+      "two": "{first} ve {second} yazıyor",
+      "many_count": {
+        "other": "{names} ve {count} kişi daha yazıyor",
+        "one": "{names} ve {count} kişi daha yazıyor"
+      }
+    },
     "attachment": {
       "delete_title": "Eki Sil",
       "delete_prompt": "Bu eki silmek istediğinizden emin misiniz? Bu geri alınamaz.",
@@ -150,7 +170,27 @@
       "view_label": "{filename}'yi görüntüle",
       "download_label": "{filename}'yi indirin",
       "image_refresh_failed": "Resim bağlantısı yenilenemedi",
-      "download_refresh_failed": "İndirme bağlantısı yenilenemedi"
+      "download_refresh_failed": "İndirme bağlantısı yenilenemedi",
+      "add_description": "Açıklama ekle",
+      "edit_description": "Açıklamayı düzenle",
+      "description_title": "Ek açıklaması",
+      "description_label": "Açıklama (isteğe bağlı)",
+      "description_help": "Eki göremeyen veya duyamayan kişiler için açıklayın.",
+      "description_too_long": "Açıklamalar en fazla {max} karakter içerebilir.",
+      "description_update_failed": "Ek açıklaması güncellenemedi",
+      "html_viewer": {
+        "download": "İndir",
+        "show_preview": "Önizlemeyi göster",
+        "warning": "Bu belge harici web sitelerinden içerik yükleyebilir. Bu web siteleri IP adresini görebilir.",
+        "preview_title": "{filename} önizlemesi",
+        "preview_failed": "Önizleme yüklenemedi. Lütfen tekrar dene.",
+        "document_type": "Belge türü",
+        "html_document": "HTML belgesi",
+        "xhtml_document": "XHTML belgesi",
+        "file_size": "Dosya boyutu",
+        "unavailable": "Kullanılamıyor",
+        "no_preview": "Bu dosya için önizleme yok. Kaydetmek için indir."
+      }
     },
     "link_preview": {
       "delete_title": "Bağlantı Önizlemesini Sil",
@@ -158,6 +198,7 @@
       "delete_failed": "Bağlantı önizlemesi silinemedi"
     },
     "sidebar": {
+      "go_to_message": "Mesaja git",
       "extras": "Oda ekstraları",
       "resize": "Oda ekstraları bölmesini yeniden boyutlandır",
       "hide": "Oda ekstralarını gizle",
@@ -170,24 +211,25 @@
       "clear_member_search": "Üye aramasını temizle",
       "no_members": "Üye bulunamadı.",
       "online": "Çevrimiçi ({count})",
+      "bots": "Bots ({count})",
       "offline": "Çevrimdışı ({count})",
       "no_files": "Bu odada henüz dosya yok.",
       "files": "Dosyalar",
       "pins": "Sabitlenmiş mesajlar",
-      "call": "Ara",
+      "call": "Görüşme",
       "jump_to_file": "{filename}'ye atla",
       "loading_files": "Dosyalar yükleniyor...",
+      "loading_members": "Üyeler yükleniyor...",
       "calls_unavailable": "Bu sunucuda arama yapılamıyor.",
       "view_profile": "{name} profilini görüntüle",
       "in_voice_call": "Sesli aramada",
       "in_video_call": "Video görüşmesinde",
-      "ban_failed": "Üyenin odadan yasaklanması başarısız oldu",
-      "ban_success": "{name} kişinin odaya girişi yasaklandı"
+      "remove_failed": "Kullanıcı odadan çıkarılamadı",
+      "remove_success": "{name} odadan çıkarıldı",
+      "search": "Ara"
     },
     "pins": {
-      "show": "Sabitlenmiş mesajları göster",
       "unseen": "Yeni sabitlenmiş mesajlar",
-      "hide": "Sabitlenmiş mesajları gizle",
       "pin": "Mesajı sabitle",
       "unpin": "Sabitlemeyi kaldır",
       "unpin_prompt": "Bu mesajın sabitlemesini kaldırmak istediğinizden emin misiniz?",

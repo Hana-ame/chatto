@@ -1,9 +1,11 @@
-import type { PermissionAPI, PermissionState } from '$lib/api-client/permissions';
+import { errorMessage } from '$lib/utils/errorMessage';
+import type { PermissionAPI, PermissionState } from '@chatto/client/api/permissions';
 
 export type { PermissionState };
 
 export type MutationScope =
   | { tier: 'server'; roleName: string }
+  | { tier: 'dm'; roleName: string }
   | { tier: 'group'; roleName: string; groupId: string }
   | { tier: 'room'; roleName: string; roomId: string };
 
@@ -22,6 +24,6 @@ export async function setRolePermission(
     });
     return {};
   } catch (error) {
-    return { error: error instanceof Error ? error.message : String(error) };
+    return { error: errorMessage(error) };
   }
 }

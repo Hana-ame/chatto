@@ -1,34 +1,29 @@
 <script lang="ts">
+  import AccountName from '$lib/components/users/AccountName.svelte';
+  import { formatAccountName } from '@chatto/client/timeline/accountName';
   import { onDestroy } from 'svelte';
   import { resolve } from '$app/paths';
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
-  import { createQuery } from '@tanstack/svelte-query';
-  import { createAdminUserManagementAPI } from '$lib/api-client/adminUsers';
+  import { createAdminUserManagementAPI } from '$lib/api/adminUsers';
   import { m } from '$lib/i18n/messages';
   import { serverIdToSegment } from '$lib/navigation';
   import { adminQueryKeys } from '$lib/query/admin';
-  import {
-    registerAdminUserRemovalListener,
-    registerQueryCacheRemovalListener
-  } from '$lib/query/cacheRegistry';
-  import { queryClient } from '$lib/query/client';
+  import { registerAdminUserRemovalListener } from '$lib/query/cacheRegistry';
+  import { createQuery, queryClient, removeAdminUserQueries } from '$lib/query/client';
   import { useServerScope } from '$lib/state/server/scope.svelte';
-  import { Hint, PaneContent, PageTitle } from '$lib/ui';
-  import PaneHeader from '$lib/ui/PaneHeader.svelte';
+  import { createSessionGuard, type SessionSnapshot } from '$lib/state/server/sessionGuard.svelte';
+  import { Hint, PaneContent, PageTitle, LoadingFog, PaneHeader } from '$lib/ui';
   import { toast } from '$lib/ui/toast';
   import MemberDeleteForm from './MemberDeleteForm.svelte';
 
   const serverScope = useServerScope();
-  const activeServerId = $derived(serverScope.serverId);
-  const currentUser = $derived(serverScope.store.currentUser);
+  const activeServerId = serverScope.serverId;
   const userId = $derived(page.params.userId!);
-  const isSelf = $derived(currentUser.user?.id === userId);
+  const isSelf = $derived(serverScope.store.viewerId === userId);
   // The detail page keys its interactive sections on this value; keying the
   // confirmation form here resets input state when the route target changes.
-  const memberTargetKey = $derived(
-    `${activeServerId}:${serverScope.connection.queryScope}:${userId}`
-  );
+  const memberTargetKey = $derived(userId);
 
   // Privacy fence: once a removal of this member is observed (for example by
   // another admin), stop rendering and refetching the deletion flow. The
@@ -43,19 +38,10 @@
     });
     removedMember = { serverId, userId: removedUserId };
   });
+  onDestroy(removeRemovalListener);
   // Authentication or visibility changes purge all admin queries for a
-  // session; fence in-flight reads against that generation the same way the
-  // member detail page does.
-  let privacyGeneration = $state(0);
-  const removeCacheRemovalListener = registerQueryCacheRemovalListener((serverId) => {
-    if (serverId === activeServerId) privacyGeneration += 1;
-  });
-  onDestroy(() => {
-    // Discard in-flight mutation results bound to this component instance.
-    privacyGeneration += 1;
-    removeRemovalListener();
-    removeCacheRemovalListener();
-  });
+  // session. The guard also discards results after this component is destroyed.
+  const session = createSessionGuard(serverScope);
 
   const backHref = $derived(
     resolve('/chat/[serverId]/manage/server/members/[userId]', {
@@ -65,22 +51,19 @@
   );
   // Shares the member-detail page's cache entry, so data is fresh if the
   // viewer came straight from there and stays consistent while they type.
-  const memberQuery = createQuery(
-    () => {
-      const serverId = activeServerId;
-      const connection = serverScope.connection;
-      return {
-        queryKey: adminQueryKeys.member(serverId, connection, userId),
-        queryFn: ({ signal }) =>
-          connection.getAPI(createAdminUserManagementAPI).getMember(userId, { signal }),
-        enabled:
-          !!serverId &&
-          !!userId &&
-          !(removedMember?.serverId === serverId && removedMember.userId === userId)
-      };
-    },
-    () => queryClient
-  );
+  const memberQuery = createQuery(() => {
+    const serverId = activeServerId;
+    const connection = serverScope.connection;
+    return {
+      queryKey: adminQueryKeys.member(serverId, connection, userId),
+      queryFn: ({ signal }) =>
+        connection.getAPI(createAdminUserManagementAPI).getMember(userId, { signal }),
+      enabled:
+        !!serverId &&
+        !!userId &&
+        !(removedMember?.serverId === serverId && removedMember.userId === userId)
+    };
+  });
 
   const details = $derived(memberQuery.data ?? null);
   const member = $derived(details?.member ?? null);
@@ -91,32 +74,16 @@
     !!member && !member.deleted && !member.isBot && !isSelf && member.viewerCanDeleteAccount
   );
 
-  type DeletionTarget = {
-    serverId: string;
-    connection: typeof serverScope.connection;
-    userId: string;
-    privacyGeneration: number;
-  };
+  type DeletionTarget = SessionSnapshot & { userId: string };
 
   function isCurrentTarget(target: DeletionTarget): boolean {
-    return (
-      serverScope.isCurrent() &&
-      target.serverId === activeServerId &&
-      target.connection.queryScope === serverScope.connection.queryScope &&
-      target.userId === userId &&
-      target.privacyGeneration === privacyGeneration
-    );
+    return session.isCurrent(target) && target.userId === userId;
   }
 
   async function handleDelete(): Promise<void> {
     // Bind the request and all completion effects to the route target. SvelteKit
     // can reuse this component when the user or server parameter changes.
-    const target: DeletionTarget = {
-      serverId: activeServerId,
-      connection: serverScope.connection,
-      userId,
-      privacyGeneration
-    };
+    const target: DeletionTarget = { ...session.snapshot(), userId };
 
     await target.connection
       .getAPI(createAdminUserManagementAPI)
@@ -124,9 +91,8 @@
     if (!isCurrentTarget(target)) return;
 
     toast.success(m('admin.member_delete.success'));
-    // The realtime ServerMemberDeletedEvent purge
-    // (removeRegisteredAdminUserQueries) fences other admin caches that embed
-    // this user; here we only refresh the list and drop this page's entry.
+    // Scrub private row caches immediately, even if realtime delivery is delayed.
+    removeAdminUserQueries(target.serverId, target.userId);
     void queryClient.invalidateQueries({
       queryKey: adminQueryKeys.membersRoot(target.serverId, target.connection)
     });
@@ -142,6 +108,14 @@
   }
 </script>
 
+{#snippet memberName()}
+  {#if member}
+    <AccountName name={member.displayName} identity={member} />
+  {:else}
+    <LoadingFog class="h-4 w-28" label={m('admin.members.loading_member')} />
+  {/if}
+{/snippet}
+
 <!-- @component Full-page confirmation for permanently deleting another member's account. Lives outside a modal so consequences and future blockers can be described before confirming. -->
 <PageTitle
   title={m('admin.common.server_admin_page_title', { title: m('admin.member_delete.title') })}
@@ -150,16 +124,16 @@
 <div class="pane-page">
   <PaneHeader
     title={m('admin.member_delete.title')}
-    subtitle={member?.displayName ?? m('common.loading')}
+    subtitle={formatAccountName(member?.displayName ?? m('common.loading'), member)}
+    subtitleContent={memberName}
     {backHref}
     backLabel={m('admin.members.back_to_members')}
-    showMobileNav
   />
 
   <PaneContent>
-    <div class="flex max-w-xl flex-col gap-6">
+    <div class="flex flex-col gap-6">
       {#if loading}
-        <div class="text-muted">{m('admin.members.loading_member')}</div>
+        <LoadingFog class="h-40 w-full" label={m('admin.members.loading_member')} />
       {:else if !details || !member}
         <Hint tone="danger">{m('admin.members.not_found')}</Hint>
       {:else if !deletable}

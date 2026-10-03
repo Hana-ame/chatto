@@ -16,7 +16,6 @@
       "remote_title": "{server} nepieciešama pierakstīšanās",
       "remote_message": "Šis serveris noraidīja saglabāto pierakstīšanos. Atkārtoti pievienojiet to, lai atsāktu tiešraides atjauninājumus un darbības.",
       "remote_action": "Atkārtoti izveidojiet savienojumu",
-      "remote_failed": "Neizdevās atjaunot savienojumu",
       "sidebar_reauth": "{server} nepieciešama pierakstīšanās"
     },
     "access_denied": {
@@ -48,7 +47,8 @@
       "complete": "Chatto tika atjaunots. Gala rezultāts: {count} punkti"
     },
     "pane_header": {
-      "back": "Atpakaļ"
+      "back": "Atpakaļ",
+      "actions": "Paneļa darbības"
     },
     "sidebar_nav": {
       "back_to_chat": "Atpakaļ uz tērzēšanu"
@@ -67,7 +67,12 @@
     "image_modal": {
       "previous": "Iepriekšējais attēls",
       "next": "Nākamais attēls",
-      "fallback_alt": "Attēls"
+      "fallback_alt": "Attēls",
+      "zoom_in": "Tuvināt",
+      "zoom_out": "Tālināt",
+      "fit": "Ietilpināt",
+      "details": "Informācija",
+      "file_type": "Faila tips"
     },
     "toast": {
       "dismiss": "Noraidīt paziņojumu"
@@ -78,11 +83,9 @@
       "clear": "Skaidrs"
     },
     "expiry": {
-      "label": "Beidzas",
       "24h": "24 stundas",
       "7d": "7 dienas",
       "30d": "30 dienas",
-      "indefinite": "Nav derīguma termiņa",
       "custom": "Pielāgots",
       "custom_label": "Pielāgots derīguma termiņš",
       "error_required": "Izvēlieties derīguma termiņu.",

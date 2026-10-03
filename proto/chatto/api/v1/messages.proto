@@ -2,10 +2,24 @@ syntax = "proto3";
 
 package chatto.api.v1;
 
+import "google/protobuf/field_mask.proto";
 import "buf/validate/validate.proto";
 import "chatto/api/v1/link_previews.proto";
 import "chatto/api/v1/message_types.proto";
 import "chatto/api/v1/reactions.proto";
+
+// Description supplied for one attachment in a new message.
+message MessageAttachmentDescriptionInput {
+  // Required. Asset ID included in attachment_asset_ids on the same request.
+  string asset_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_bytes: 15
+  }];
+  // Plain-text description with at most 1,000 Unicode characters. Trim outer
+  // whitespace before sending. Chatto also trims outer whitespace, preserves
+  // internal line breaks, and omits an empty result.
+  string description = 2 [(buf.validate.field).string.max_len = 1000];
+}
 
 // Request to create a message in a room or thread.
 message CreateMessageRequest {
@@ -49,9 +63,14 @@ message CreateMessageRequest {
   // server resolves the token to cached, server-fetched metadata during post.
   string link_preview_token = 10;
   // True to establish the new root message as a thread immediately. Requires
-  // both message.post and message.post-in-thread. Channel rooms only; cannot
-  // be combined with thread_root_event_id.
+  // message.post (which includes thread posting). Cannot be combined with
+  // thread_root_event_id.
   bool create_thread = 11;
+  // Optional descriptions for assets in attachment_asset_ids. Asset IDs must
+  // be unique in this list. At most one description can target each asset.
+  repeated MessageAttachmentDescriptionInput attachment_descriptions = 12 [(buf.validate.field).repeated = {
+    max_items: 10
+  }];
 }
 
 // Result of creating a message.
@@ -70,17 +89,23 @@ message CreateMessageResponse {
   Message message = 1;
 }
 
-// Request to patch a message.
+// Request to patch a message. update_mask selects fields to apply or reset.
+// Fields outside the mask stay unchanged.
 message UpdateMessageRequest {
   // Required. Room containing the message.
   string room_id = 1 [(buf.validate.field).string.min_len = 1];
   // Required. Event ID of the message to edit.
   string event_id = 2 [(buf.validate.field).string.min_len = 1];
-  // New message body text. Omit to preserve the current body.
+  // New message body text. Select body in update_mask to change it.
   optional string body = 3 [(buf.validate.field).string.max_len = 10000];
   // For thread replies, whether a channel echo should exist after saving.
-  // Omit to preserve the current echo state.
+  // Select also_send_to_channel in update_mask to change it.
   optional bool also_send_to_channel = 4;
+  // Editable fields to apply or reset: body, also_send_to_channel.
+  // Omit to infer populated fields; * selects all editable fields. An explicit
+  // empty mask is invalid. Unselected values are ignored. Selected absent values
+  // reset the field to its default, subject to field validation.
+  google.protobuf.FieldMask update_mask = 5;
 }
 
 // Result of editing a message.
@@ -107,8 +132,8 @@ message DeleteMessageRequest {
 
 // Result of retracting a message.
 message DeleteMessageResponse {
-  // True when the delete/retract request was accepted.
-  bool deleted = 1;
+  reserved 1;
+  reserved "deleted";
 }
 
 // Request to remove one attachment from a message.
@@ -123,8 +148,28 @@ message DeleteAttachmentRequest {
 
 // Result of removing one attachment from a message.
 message DeleteAttachmentResponse {
-  // True when the attachment removal was accepted.
-  bool deleted = 1;
+  reserved 1;
+  reserved "deleted";
+}
+
+// Request to set or clear one attachment description.
+message SetAttachmentDescriptionRequest {
+  // Required. Room containing the message.
+  string room_id = 1 [(buf.validate.field).string.min_len = 1];
+  // Required. Message event containing the attachment, or its channel echo.
+  string event_id = 2 [(buf.validate.field).string.min_len = 1];
+  // Required. Attachment asset ID in the current message body.
+  string attachment_id = 3 [(buf.validate.field).string.min_len = 1];
+  // Replacement description with at most 1,000 Unicode characters. Trim outer
+  // whitespace before sending. Chatto also trims outer whitespace and preserves
+  // internal line breaks. An empty result clears the description.
+  string description = 4 [(buf.validate.field).string.max_len = 1000];
+}
+
+// Result of setting or clearing an attachment description.
+message SetAttachmentDescriptionResponse {
+  // Renderable message after the description change.
+  Message message = 1;
 }
 
 // Request to remove the accepted link preview from a message.
@@ -139,8 +184,8 @@ message DeleteLinkPreviewRequest {
 
 // Result of removing a link preview from a message.
 message DeleteLinkPreviewResponse {
-  // True when the link preview removal was accepted.
-  bool deleted = 1;
+  reserved 1;
+  reserved "deleted";
 }
 
 // Request to read one visible message.
@@ -200,55 +245,67 @@ message BatchGetMessagesResponse {
 
 // Creates messages in room and thread timelines.
 service MessageService {
+  // Lists all users with the requested reaction. Requires room membership and
+  // permission to read the message. A missing reaction returns an empty page;
+  // a missing or hidden message returns NOT_FOUND or PERMISSION_DENIED.
+  rpc ListReactionUsers(ListReactionUsersRequest) returns (ListReactionUsersResponse);
+
   // Fetches and caches metadata for a composer URL. Authentication is required
   // to avoid exposing the preview fetcher as an unauthenticated network proxy.
   // Successful responses include a short-lived token accepted by CreateMessage.
   rpc FetchLinkPreview(FetchLinkPreviewRequest) returns (FetchLinkPreviewResponse);
   // Creates a message for the current user. The user must be a room member and
-  // must have message.post for room messages or message.post-in-thread for
-  // thread replies. Echoing a thread reply also requires message.echo and
+  // must have message.post for room messages. Thread replies require read
+  // access and either message.post, message.post-in-thread, or
+  // message.post-in-interactions with an existing interaction relationship.
+  // Echoing a thread reply also requires message.echo and
   // message.post. The room's Threading Mode may automatically establish a root
   // thread or reject a thread placement that the mode does not allow.
   rpc CreateMessage(CreateMessageRequest) returns (CreateMessageResponse);
   // Edits a message body. Authors can edit their own messages within the edit
-  // window. Effective message.manage permits edits at any time. Only the
-  // message author can change channel echo state. Disabled rooms reject
+  // window. Effective message.manage permits edits at any time and removal of
+  // another author's channel echo. Only the author can enable an echo, which
+  // also requires message.echo and message.post. Omit unchanged echo state.
+  // Disabled rooms reject
   // creation of a new channel echo while allowing an existing echo to be
   // removed. Room membership is also required.
-  // Channel-room edits require message.read or a matching thread relationship
-  // with message.read-interactions. DM membership authorizes the DM read.
+  // Edits require message.read or a matching thread relationship with
+  // message.read-interactions.
   rpc UpdateMessage(UpdateMessageRequest) returns (UpdateMessageResponse);
   // Retracts a message. Authors can delete their own messages. Non-authors need
   // message.manage.
   rpc DeleteMessage(DeleteMessageRequest) returns (DeleteMessageResponse);
   // Removes one attachment from the author's own message.
   rpc DeleteAttachment(DeleteAttachmentRequest) returns (DeleteAttachmentResponse);
+  // Sets or clears one attachment description. Authors can change descriptions
+  // within the message edit window. Effective message.manage permits changes
+  // at any time and to other users' messages. Room membership and message read
+  // access are required.
+  rpc SetAttachmentDescription(SetAttachmentDescriptionRequest) returns (SetAttachmentDescriptionResponse);
   // Removes the accepted link preview from the author's own message.
   rpc DeleteLinkPreview(DeleteLinkPreviewRequest) returns (DeleteLinkPreviewResponse);
   // Reads one renderable message, including current body, attachment metadata,
   // link preview, reactions, thread metadata, and pin state. Authentication
-  // and room membership are required. Channel-room reads also require
+  // and room membership are required. Reads also require
   // message.read or a matching thread relationship with
-  // message.read-interactions. DM membership authorizes DM reads. Returns
+  // message.read-interactions. Returns
   // NOT_FOUND when the event does not exist, is not a message, has been
   // retracted, or belongs to a different room.
   rpc GetMessage(GetMessageRequest) returns (GetMessageResponse);
   // Reads many renderable messages and their current pin state in one room.
-  // Authentication and room membership are required. Channel-room reads also
+  // Authentication and room membership are required. Reads also
   // require message.read or a matching thread relationship with
-  // message.read-interactions. DM membership authorizes DM reads. Missing,
+  // message.read-interactions. Missing,
   // retracted, non-message, wrong-room, and inaccessible event IDs are omitted.
   // Results preserve first-seen request order, and repeated event IDs are
   // de-duplicated.
   rpc BatchGetMessages(BatchGetMessagesRequest) returns (BatchGetMessagesResponse);
   // Adds a reaction to a message. The user must be a room member and have
-  // message.react. Channel-room reactions also require message.read or a
-  // matching thread relationship with message.read-interactions. DM membership
-  // authorizes the DM read.
+  // message.react. Reactions also require message.read or a matching thread
+  // relationship with message.read-interactions.
   rpc AddReaction(AddReactionRequest) returns (AddReactionResponse);
   // Removes a reaction from a message. The user must be a room member and have
-  // message.react. Channel-room reactions also require message.read or a
-  // matching thread relationship with message.read-interactions. DM membership
-  // authorizes the DM read.
+  // message.react. Reactions also require message.read or a matching thread
+  // relationship with message.read-interactions.
   rpc RemoveReaction(RemoveReactionRequest) returns (RemoveReactionResponse);
 }

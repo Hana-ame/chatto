@@ -110,11 +110,6 @@ var (
 	// room's per-user posting interval has elapsed.
 	ErrSlowModeActive = errors.New("slow mode is active")
 
-	// ErrDMThreadsUnsupported is returned when a caller tries to create or
-	// extend a thread in a direct-message room. DMs support flat reply
-	// attribution, but thread containment is a channel-room-only capability.
-	ErrDMThreadsUnsupported = errors.New("threads are not supported in direct messages")
-
 	// ErrRoomThreadingPolicy is returned when thread creation or message
 	// placement conflicts with the channel's current threading mode.
 	ErrRoomThreadingPolicy = errors.New("message conflicts with the room threading policy")
@@ -150,10 +145,10 @@ var (
 	// server policy; users can mute them instead.
 	ErrCannotLeaveUniversalRoom = errors.New("cannot leave universal rooms")
 
-	// ErrCannotBanDMRoomMember is returned when a moderator tries to ban
+	// ErrCannotRemoveDMRoomMember is returned when a moderator tries to remove
 	// someone from a DM room. DM membership is the privacy boundary and
 	// cannot be moderated like a channel room.
-	ErrCannotBanDMRoomMember = errors.New("cannot ban members from DM conversations")
+	ErrCannotRemoveDMRoomMember = errors.New("cannot remove users from DM conversations")
 
 	// ErrLoginTooShort is returned when a login is shorter than MinLoginLength.
 	ErrLoginTooShort = errors.New("username must be at least 2 characters")
@@ -165,16 +160,11 @@ var (
 	// outside the allowed set (letters, digits, periods, underscores, hyphens).
 	ErrLoginInvalidCharacter = errors.New("username can only contain letters, numbers, periods, underscores, and hyphens")
 
-	// ErrHumanLoginReservedForBot is returned when a human account attempts to
-	// claim the reserved `_bot` suffix.
-	ErrHumanLoginReservedForBot = errors.New("human usernames cannot end in _bot")
-
-	// ErrBotLoginSuffixRequired is returned when a bot login omits the reserved
-	// `_bot` suffix.
-	ErrBotLoginSuffixRequired = errors.New("bot usernames must end in _bot")
-
 	// ErrHumanAccountRequired is returned when a human-only operation targets a bot.
 	ErrHumanAccountRequired = errors.New("operation requires a human account")
+	// ErrPrivilegedModeUnavailable means the current user has no
+	// elevation-required permission to activate.
+	ErrPrivilegedModeUnavailable = errors.New("privileged mode is not available")
 
 	// ErrBotOwnerPermissionCeiling is returned when a requested bot grant would
 	// exceed its owner's current effective permission.
@@ -365,4 +355,8 @@ const (
 
 	// MaxMessageAttachmentAssetIDLength is the maximum length of a message attachment asset ID in bytes.
 	MaxMessageAttachmentAssetIDLength = 15
+
+	// MaxAttachmentDescriptionLength is the maximum number of Unicode
+	// characters in one attachment description.
+	MaxAttachmentDescriptionLength = 1000
 )

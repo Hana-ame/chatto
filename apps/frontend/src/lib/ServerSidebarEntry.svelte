@@ -1,29 +1,34 @@
 <script lang="ts">
   import { page } from '$app/state';
+  import { serverUi } from '$lib/state/server/serverUi';
   import { goto, pushState } from '$app/navigation';
   import { resolve } from '$app/paths';
   import { serverIdToSegment } from '$lib/navigation';
-  import { serverRegistry } from '$lib/state/server/registry.svelte';
-  import { serverConnectionManager } from '$lib/state/server/serverConnection.svelte';
-  import { notificationTarget } from '$lib/state/server/notifications.svelte';
+  import { serverRegistry, serverConnectionManager } from '$lib/client';
+  import { notificationTarget } from '@chatto/client/server/notifications';
+  import { serverDisplayName } from '@chatto/client/server/state';
+  import { serverHost } from '$lib/serverUrl';
   import { prepareUiForNotificationTarget } from '$lib/notifications/notificationNavigationUi';
   import { getAppUiState } from '$lib/state/appUi.svelte';
   import ServerIcon from './ServerIcon.svelte';
   import { m } from '$lib/i18n/messages';
-  import ContextMenu from '$lib/ui/ContextMenu.svelte';
-  import MenuItem from '$lib/ui/MenuItem.svelte';
-  import MenuSection from '$lib/ui/MenuSection.svelte';
-  import NavigationContextMenu from '$lib/components/menus/NavigationContextMenu.svelte';
   import {
+    ContextMenu,
+    MenuItem,
+    MenuSection,
     contextMenuTrigger,
     type ContextMenuTriggerDetails
-  } from '$lib/ui/contextMenuTrigger.svelte';
+  } from '$lib/ui';
+  import NavigationContextMenu from '$lib/components/menus/NavigationContextMenu.svelte';
   import { markNavigationServerAsRead } from '$lib/navigation/readActions';
-  import { beginOriginReauthentication, startRemoteReauthentication } from '$lib/auth/reauth';
+  import { beginOriginReauthentication } from '$lib/auth/reauth';
+  import { isRemoteSignInPending, startRemoteSignIn } from '$lib/auth/remoteSignIn.svelte';
+  import { hardRedirectAfterSignOut } from '$lib/auth/signOutRedirect';
+  import { clientAccount } from '$lib/state/clientAccount';
   import { toast } from '$lib/ui/toast';
+  import { notificationPath } from '$lib/notificationPath';
 
-  let { serverId, currentUserId: _currentUserId }: { serverId: string; currentUserId?: string } =
-    $props();
+  let { serverId }: { serverId: string } = $props();
 
   const serverSegment = $derived(serverIdToSegment(serverId));
 
@@ -32,32 +37,29 @@
   // svelte-ignore state_referenced_locally - serverId is stable per component lifetime (keyed by server.id)
   const stores = serverRegistry.getStore(serverId);
   const notificationStore = stores.notifications;
-  const roomUnreadStore = stores.roomUnread;
+  const roomUnreadStore = serverUi(stores).roomUnread;
   const appUi = getAppUiState();
   // eslint-disable-next-line svelte/no-unused-svelte-ignore -- Svelte compiler warning, not ESLint
   // svelte-ignore state_referenced_locally - serverId is stable per component lifetime (keyed by server.id)
   const serverConnection = serverConnectionManager.getClient(serverId);
   const registeredServer = $derived(serverRegistry.getServer(serverId));
-  const serverHost = $derived.by(() => {
-    if (!registeredServer) return null;
-    try {
-      return new URL(registeredServer.url).host;
-    } catch {
-      return registeredServer.url;
-    }
-  });
+  const host = $derived(registeredServer ? serverHost(registeredServer.url) : null);
 
   // After the URL collapse (ADR-027), the active context is the deployment-wide
   // server named in the current URL segment.
-  const isActiveServer = $derived(page.params.serverId === serverSegment);
+  // Setup belongs to the origin server, while the client remains multi-server.
+  const setupRequired = $derived(
+    serverRegistry.isOriginServer(serverId) && page.data.serverInfo?.setupRequired === true
+  );
+  const isActiveServer = $derived(
+    page.params.serverId === serverSegment || (setupRequired && page.route.id === '/setup')
+  );
 
   const privateDataLoaded = $derived(stores.projection?.viewer != null);
-  const loaded = $derived(!stores.isAuthenticated || privateDataLoaded);
 
   const iconServer = $derived.by(() => {
-    const refreshedName = stores.serverInfo.name !== 'Chatto' ? stores.serverInfo.name : undefined;
     return {
-      name: refreshedName || registeredServer?.name || stores.serverInfo.name,
+      name: serverDisplayName(stores.serverInfo, registeredServer?.name),
       logoUrl:
         stores.isAuthenticated && privateDataLoaded
           ? stores.serverInfo.iconUrl
@@ -65,41 +67,50 @@
     };
   });
   const needsReauth = $derived(registeredServer?.reauthRequiredAt != null);
-  const needsSignIn = $derived(!stores.isAuthenticated);
-  const signInRequired = $derived(needsSignIn || needsReauth);
+  const needsSignIn = $derived(
+    !setupRequired && !stores.isAuthenticated && (!registeredServer?.token || needsReauth)
+  );
+  const signInRequired = $derived(!setupRequired && (needsSignIn || needsReauth));
   const compatibility = $derived(stores.serverInfo.compatibility);
-  const compatibilityMessage = $derived.by(() => {
-    switch (compatibility.reason) {
-      case 'server-too-old':
-        return m('chat.server_gutter.compatibility_server_too_old');
-      case 'server-version-unknown':
-        return m('chat.server_gutter.compatibility_unknown');
-      case 'unreachable':
-        return m('chat.server_gutter.unreachable');
-      default:
-        return null;
-    }
-  });
-  const compatibilityWarning = $derived(compatibility.status !== 'supported');
   const serverUnavailable = $derived(compatibility.status === 'unreachable');
+
+  /**
+   * Why the client cannot use this server, or null. The gutter icon has two
+   * states: normal, or a warning when this is set. Discovery and connection
+   * attempts in progress are not problems; only a failed attempt is.
+   */
+  const problem = $derived.by((): string | null => {
+    if (signInRequired) return m('ui.auth_status.sidebar_reauth', { server: iconServer.name });
+    if (!stores.serverInfo.loading) {
+      switch (compatibility.reason) {
+        case 'unreachable':
+          return m('chat.server_gutter.unreachable');
+        case 'server-too-old':
+          return m('chat.server_gutter.compatibility_server_too_old');
+        case 'server-version-unknown':
+          return m('chat.server_gutter.compatibility_unknown');
+      }
+    }
+    if (serverConnection.showConnectionLostIcon) {
+      return m('chat.server_gutter.connection_unavailable');
+    }
+    return null;
+  });
+  const iconTitle = $derived.by(() => {
+    if (!problem) return iconServer.name;
+    // The sign-in message already names the server.
+    if (signInRequired) return problem;
+    return `${iconServer.name} — ${problem}`;
+  });
+  const recoveryNeeded = $derived(serverUnavailable || serverRegistry.needsRecovery(serverId));
   const serverActionsAvailable = $derived(
     stores.isAuthenticated &&
       privateDataLoaded &&
       compatibility.status === 'supported' &&
       !serverConnection.showConnectionLostIcon
   );
-  const iconDimmed = $derived(signInRequired || !loaded || serverConnection.showConnectionLostIcon);
-  const iconTitle = $derived(
-    signInRequired
-      ? m('ui.auth_status.sidebar_reauth', { server: iconServer.name })
-      : compatibilityWarning && compatibilityMessage
-        ? `${iconServer.name} — ${compatibilityMessage}`
-        : iconDimmed
-          ? `${iconServer.name} (connection unavailable)`
-          : iconServer.name
-  );
   let contextMenu = $state<ContextMenuTriggerDetails | null>(null);
-  let signingIn = $state(false);
+  let signingOut = $state(false);
   const serverContextMenuTrigger = contextMenuTrigger((details) => {
     contextMenu = details;
   });
@@ -114,7 +125,7 @@
   }
 
   async function handleCopyServerHostname(): Promise<void> {
-    const hostname = serverHost;
+    const hostname = host;
     closeContextMenu();
     if (!hostname) return;
 
@@ -127,6 +138,7 @@
   }
 
   function handleRemoveServer(): void {
+    if (serverRegistry.isOriginServer(serverId)) return;
     closeContextMenu();
     pushState('', {
       modal: {
@@ -137,23 +149,50 @@
     });
   }
 
-  async function handleServerClick(event: MouseEvent): Promise<void> {
-    if (!needsSignIn) return;
-    event.preventDefault();
-    if (signingIn || !registeredServer) return;
-
+  function handleSignIn(): void {
+    const server = registeredServer;
+    if (!server) return;
+    closeContextMenu();
     if (serverRegistry.isOriginServer(serverId)) {
-      beginOriginReauthentication();
+      beginOriginReauthentication(resolve('/chat/[serverId]', { serverId: serverSegment }));
       return;
     }
+    void startRemoteSignIn(server);
+  }
 
-    signingIn = true;
+  async function handleSignOut(): Promise<void> {
+    if (signingOut || !stores.isAuthenticated) return;
+    const wasActive = isActiveServer;
+    closeContextMenu();
+    signingOut = true;
     try {
-      await startRemoteReauthentication(registeredServer);
+      const navigation = await clientAccount.signOutCurrentServer(serverId);
+      if (!navigation) return;
+      if (navigation.kind === 'hard') {
+        const href = wasActive
+          ? navigation.serverId
+            ? resolve('/chat/[serverId]', { serverId: serverIdToSegment(navigation.serverId) })
+            : resolve('/')
+          : window.location.pathname + window.location.search + window.location.hash;
+        hardRedirectAfterSignOut(href);
+      } else if (wasActive) {
+        await goto(
+          navigation.serverId
+            ? resolve('/chat/[serverId]', { serverId: serverIdToSegment(navigation.serverId) })
+            : resolve('/')
+        );
+      }
     } catch {
-      signingIn = false;
-      toast.error(m('add_server.start_failed'));
+      toast.error(m('common.error.network'));
+    } finally {
+      signingOut = false;
     }
+  }
+
+  // Selecting a server with a problem opens it, and the server view explains
+  // the problem. Recovery runs in the background and never opens sign-in.
+  function handleServerClick(): void {
+    if (recoveryNeeded) void serverRegistry.recoverServer(serverId);
   }
 
   // Single dispatcher for icon clicks — kind comes from serverIndicator()
@@ -168,7 +207,8 @@
   // notifications when both are present.
   async function handleServerNotificationClick() {
     const notification =
-      notificationStore.getNonDMNotification() ?? notificationStore.getDMNotification();
+      serverUi(stores).attention.getNonDMNotification() ??
+      serverUi(stores).attention.getDMNotification();
     if (!notification || !notification.targetSupported) {
       await goto(resolve('/chat/notifications'));
       return;
@@ -177,7 +217,7 @@
     const target = notificationTarget(notification);
     prepareUiForNotificationTarget(appUi, serverId, target);
     if (target.eventId && target.roomId) {
-      stores.pendingHighlights.set(
+      serverUi(stores).pendingHighlights.set(
         target.roomId,
         target.threadRootId,
         target.eventId,
@@ -185,7 +225,7 @@
       );
     }
 
-    const path = notificationStore.getCleanPath(serverId, notification);
+    const path = notificationPath(serverId, notification);
     await goto(resolve(path as '/'));
   }
 
@@ -210,18 +250,18 @@
 <!-- One icon per connected server. -->
 <ServerIcon
   server={iconServer}
-  href={resolve('/chat/[serverId]', { serverId: serverSegment })}
+  href={setupRequired
+    ? resolve('/setup')
+    : resolve('/chat/[serverId]', { serverId: serverSegment })}
   selected={isActiveServer}
-  indicator={stores.serverIndicator()}
-  notificationCount={notificationStore.unreadNotificationCount}
-  importantNotificationCount={notificationStore.importantUnreadNotificationCount}
+  indicator={serverUi(stores).serverIndicator()}
+  notificationCount={serverUi(stores).attention.counts.unreadNotificationCount}
+  importantNotificationCount={serverUi(stores).attention.counts.importantUnreadNotificationCount}
   onclick={handleServerClick}
   onIndicatorClick={handleServerIndicatorClick}
   contextMenuTrigger={serverContextMenuTrigger}
   title={iconTitle}
-  dimmed={iconDimmed}
-  {signInRequired}
-  {compatibilityWarning}
+  warning={problem !== null}
 />
 
 {#if contextMenu}
@@ -240,52 +280,81 @@
       <div class="truncate font-medium text-text" data-testid="server-name">
         {iconServer.name}
       </div>
-      {#if serverHost}
+      {#if host}
         <div
           class="mt-0.5 truncate text-muted"
           title={registeredServer?.url}
           data-testid="server-hostname"
         >
-          {serverHost}
+          {host}
         </div>
       {/if}
-      <div class="mt-1 flex items-center gap-1.5 text-muted">
-        {#if serverUnavailable}
-          <span class="iconify icon-[uil--wifi-slash] shrink-0 text-warning" aria-hidden="true"
-          ></span>
-          <span class="text-warning">{m('chat.server_gutter.unreachable')}</span>
-        {:else}
-          <span>
-            {stores.serverInfo.version
-              ? m('chat.server_gutter.version', { version: stores.serverInfo.version })
-              : m('chat.server_gutter.version_unknown')}
-          </span>
-        {/if}
-      </div>
-      {#if compatibilityMessage && !serverUnavailable}
+      {#if stores.serverInfo.version}
+        <div class="mt-1 text-muted">
+          {m('chat.server_gutter.version', { version: stores.serverInfo.version })}
+        </div>
+      {/if}
+      {#if problem}
         <div
-          class={[
-            'mt-1 flex items-start gap-1.5 whitespace-normal',
-            compatibilityWarning ? 'text-warning' : 'text-muted'
-          ]}
-          data-testid="server-compatibility-message"
+          class="mt-1 flex items-start gap-1.5 whitespace-normal text-warning"
+          data-testid="server-problem-message"
         >
-          {#if compatibilityWarning}
-            <span class="iconify mt-0.5 icon-[uil--exclamation-circle] shrink-0" aria-hidden="true"
-            ></span>
-          {/if}
-          <span>{compatibilityMessage}</span>
+          <span class="iconify mt-0.5 icon-[uil--exclamation-circle] shrink-0" aria-hidden="true"
+          ></span>
+          <span>{problem}</span>
         </div>
       {/if}
     </div>
+
+    {#if recoveryNeeded}
+      <MenuItem
+        onclick={() => {
+          closeContextMenu();
+          void serverRegistry.recoverServer(serverId);
+        }}
+      >
+        {m('common.retry')}
+      </MenuItem>
+    {/if}
     <NavigationContextMenu
       kind="server"
       showMarkRead={serverActionsAvailable}
       canMarkRead={roomUnreadStore.hasAnyUnread || notificationStore.unreadNotificationCount > 0}
+      canLeave={false}
       onMarkRead={handleMarkServerRead}
       onLeave={handleRemoveServer}
     />
-    {#if serverHost}
+    <MenuSection>
+      {#if signInRequired || stores.isAuthenticated}
+        {#if signInRequired}
+          <MenuItem
+            icon="icon-[uil--sign-in-alt]"
+            mirrorIconInRtl
+            onclick={handleSignIn}
+            disabled={isRemoteSignInPending(serverId)}
+            dataTestid="server-log-in"
+          >
+            {m('chat.server_gutter.log_in')}
+          </MenuItem>
+        {:else}
+          <MenuItem
+            icon="icon-[uil--sign-out-alt]"
+            mirrorIconInRtl
+            onclick={() => void handleSignOut()}
+            disabled={signingOut}
+            dataTestid="server-sign-out"
+          >
+            {m('chat.server_gutter.sign_out')}
+          </MenuItem>
+        {/if}
+      {/if}
+      {#if !serverRegistry.isOriginServer(serverId)}
+        <MenuItem icon="icon-[uil--minus-circle]" tone="danger" onclick={handleRemoveServer}>
+          {m('room_list.remove_server')}
+        </MenuItem>
+      {/if}
+    </MenuSection>
+    {#if host}
       <MenuSection>
         <MenuItem
           icon="icon-[uil--copy]"

@@ -47,8 +47,6 @@ type RoleWithPermissions struct {
 // Initialization
 // ============================================================================
 
-const rbacDefaultsSentinel = "defaults_initialized"
-
 // initServerRBAC exists for older tests and tools that explicitly ask for the
 // historical bootstrap step. NewChattoCore seeds the default RBAC aggregate
 // directly on fresh servers.
@@ -82,7 +80,7 @@ func (c *ChattoCore) HasServerPermission(ctx context.Context, userID string, per
 // IsServerAdmin checks if a user has the admin role via RBAC.
 // Does NOT check config fallback (owners.emails) - caller should check that separately.
 func (c *ChattoCore) IsServerAdmin(ctx context.Context, userID string) (bool, error) {
-	return c.readContentBool(func() bool {
+	return c.readContentBool(ctx, func(context.Context) bool {
 		return c.rbacModel.hasRole(userID, RoleAdmin)
 	})
 }
@@ -92,7 +90,7 @@ func (c *ChattoCore) IsServerAdmin(ctx context.Context, userID string) (bool, er
 // durable notification-effects worker after email verification, so live and
 // event-time authorization cannot diverge.
 func (c *ChattoCore) IsServerOwner(ctx context.Context, userID string) (bool, error) {
-	return c.readContentBool(func() bool {
+	return c.readContentBool(ctx, func(context.Context) bool {
 		return c.isServerOwner(userID)
 	})
 }
@@ -101,20 +99,20 @@ func (c *ChattoCore) isServerOwner(userID string) bool {
 	return c.rbacModel.hasRole(userID, RoleOwner)
 }
 
-func (c *ChattoCore) readContentBool(read func() bool) (bool, error) {
-	return c.readContentDecision(func() (bool, error) {
-		return read(), nil
+func (c *ChattoCore) readContentBool(ctx context.Context, read func(context.Context) bool) (bool, error) {
+	return c.readContentDecision(ctx, func(readCtx context.Context) (bool, error) {
+		return read(readCtx), nil
 	})
 }
 
-func (c *ChattoCore) readContentDecision(read func() (bool, error)) (bool, error) {
+func (c *ChattoCore) readContentDecision(ctx context.Context, read func(context.Context) (bool, error)) (bool, error) {
 	if c.contentView == nil {
-		return read()
+		return read(ctx)
 	}
 	var result bool
-	err := c.contentView.Read(func(uint64) error {
+	err := c.ReadServerContentView(ctx, func(readCtx context.Context, _ uint64) error {
 		var readErr error
-		result, readErr = read()
+		result, readErr = read(readCtx)
 		return readErr
 	})
 	return result, err
@@ -138,8 +136,8 @@ func (c *ChattoCore) isConfiguredOwner(ctx context.Context, userID string) (bool
 
 // ResolveUserPermission returns the walker's decision (allow / deny / none)
 // for a user-permission pair. Single source of truth for both the bool
-// authorizer and the inspector. Pass roomID="" for server-scope, KindDM
-// to activate the DM boundary deny-list.
+// authorizer and the inspector. Pass roomID="" with KindDM to resolve the
+// singleton direct-message scope before the server scope.
 func (c *ChattoCore) ResolveUserPermission(ctx context.Context, userID string, kind RoomKind, roomID string, perm Permission) (DecisionKind, error) {
 	return c.permissionResolver.Resolve(ctx, userID, kind, roomID, perm)
 }
@@ -169,8 +167,7 @@ func (c *ChattoCore) hasServerPermission(ctx context.Context, userID string, per
 }
 
 // hasKindPermission is the kind-sensitive variant of hasServerPermission.
-// For KindDM the resolver applies the DM boundary deny-list first; for
-// KindChannel it behaves like hasServerPermission.
+// For KindDM, the resolver uses the direct-message scope before Server.
 func (c *ChattoCore) hasKindPermission(ctx context.Context, kind RoomKind, userID string, perm Permission) (bool, error) {
 	return c.permissionResolver.HasSpacePermission(ctx, userID, kind, perm)
 }
@@ -381,6 +378,9 @@ func (c *ChattoCore) RevokeServerRoleFromExistingUser(ctx context.Context, actor
 // GetRoleUsers returns all user IDs explicitly assigned to a role.
 // The implicit `everyone` role returns []; all authenticated users carry it.
 func (c *ChattoCore) GetRoleUsers(ctx context.Context, roleName string) ([]string, error) {
+	if err := c.waitForCurrentRoleState(ctx); err != nil {
+		return nil, err
+	}
 	if roleName == RoleEveryone {
 		return []string{}, nil
 	}
@@ -495,6 +495,9 @@ func (c *ChattoCore) GetUserServerPermissions(ctx context.Context, userID string
 // ListServerRoles returns all roles with their permissions.
 // Note: Admin roles are NOT special-cased - permissions are read from the RBAC projection.
 func (c *ChattoCore) ListServerRoles(ctx context.Context) ([]RoleWithPermissions, error) {
+	if err := c.waitForCurrentRoleState(ctx); err != nil {
+		return nil, err
+	}
 	roles := c.rbacModel.roles()
 	result := make([]RoleWithPermissions, 0, len(roles))
 	for _, role := range roles {
@@ -694,6 +697,9 @@ func (c *ChattoCore) UpdateServerRole(ctx context.Context, actorID, name, displa
 // GetServerRole returns a single role by name.
 // Note: Admin roles are NOT special-cased - permissions are read from the RBAC projection.
 func (c *ChattoCore) GetServerRole(ctx context.Context, name string) (*RoleWithPermissions, error) {
+	if err := c.waitForCurrentRoleState(ctx); err != nil {
+		return nil, err
+	}
 	role, ok := c.rbacModel.role(name)
 	if !ok {
 		return nil, ErrRoleNotFound
@@ -818,6 +824,13 @@ func (c *ChattoCore) GetGroupRolePermissions(ctx context.Context, groupID, roleN
 	return grants, denials, nil
 }
 
+// GetDMRolePermissions returns the direct-message-scope grants and denials for
+// a role.
+func (c *ChattoCore) GetDMRolePermissions(ctx context.Context, roleName string) (grants []Permission, denials []Permission, err error) {
+	grants, denials = c.rbacModel.decisionsFor(ScopeDM, "", roleName)
+	return grants, denials, nil
+}
+
 // GrantGroupPermission writes a group-scope grant for a role on a specific room group.
 func (c *ChattoCore) GrantGroupPermission(ctx context.Context, actorID, groupID, roleName string, perm Permission) error {
 	if !PermissionAppliesAtScope(perm, ScopeGroup) && !PermissionAppliesAtScope(perm, ScopeRoom) {
@@ -869,6 +882,25 @@ func (c *ChattoCore) GetUserEffectiveSpacePermissions(ctx context.Context, kind 
 	}
 
 	return result, nil
+}
+
+// waitForCurrentRoleState makes role reads include facts already committed when
+// the request starts. A realtime update and its follow-up read can use different
+// replicas. Wait for the RBAC stream prefix, not unrelated content or effects.
+func (c *ChattoCore) waitForCurrentRoleState(ctx context.Context) error {
+	// Reads inside a content-view callback must use its already captured
+	// generation. Waiting there would prevent the projector from advancing.
+	if active, ok := ctx.Value(serverContentViewReadContextKey{}).(serverContentViewReadContext); ok && active.view == c.contentView {
+		return nil
+	}
+	position, err := c.EventPublisher.LastSubjectPosition(ctx, evtstream.RBACSubjectFilter())
+	if err != nil {
+		return fmt.Errorf("read role boundary: %w", err)
+	}
+	if err := c.rbacModel.waitFor(ctx, position); err != nil {
+		return fmt.Errorf("wait for role boundary: %w", err)
+	}
+	return nil
 }
 
 // RevokeAllUserRoles removes every role assignment for a user. Post-#330

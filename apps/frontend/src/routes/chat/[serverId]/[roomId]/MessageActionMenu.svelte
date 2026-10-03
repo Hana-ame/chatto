@@ -10,19 +10,30 @@ surface-specific sizing and menu semantics.
 
   import { m } from '$lib/i18n/messages';
   import { getRecentEmojis } from '$lib/state/recentEmojis.svelte';
-  import MenuItem from '$lib/ui/MenuItem.svelte';
-  import MenuSection from '$lib/ui/MenuSection.svelte';
+  import { MenuItem, MenuSection } from '$lib/ui';
+  import { toast } from '$lib/ui/toast';
+  import { copyImageToClipboard } from '$lib/attachments/copyImage';
   import type { MessageActionModel } from './messageActionModel';
 
   let {
     presentation = 'menu',
     action,
+    linkUrl = null,
+    imageUrl = null,
     onOpenEmojiPicker,
+    hasReactions = false,
+    onOpenReactionDetails,
     onClose
   }: {
     presentation?: 'menu' | 'sheet';
     action: MessageActionModel;
+    /** Resolved URL of the message-body link that opened this context menu. */
+    linkUrl?: string | null;
+    /** URL of the image attachment that opened this context menu. */
+    imageUrl?: string | null;
     onOpenEmojiPicker?: () => void;
+    hasReactions?: boolean;
+    onOpenReactionDetails?: () => void;
     onClose: () => void;
   } = $props();
 
@@ -38,6 +49,11 @@ surface-specific sizing and menu semantics.
   function handleReplyInRoom() {
     action.replyInRoom?.();
     onClose();
+  }
+
+  function handleOpenReactionDetails() {
+    onClose();
+    onOpenReactionDetails?.();
   }
 
   function handleReply() {
@@ -65,6 +81,28 @@ surface-specific sizing and menu semantics.
     onClose();
   }
 
+  async function handleCopyTargetLink() {
+    if (!linkUrl) return;
+    try {
+      await navigator.clipboard.writeText(linkUrl);
+      toast.success(m('room.message.actions.link_copied'));
+    } catch {
+      toast.error(m('room.message.actions.copy_link_failed'));
+    }
+    onClose();
+  }
+
+  async function handleCopyImage() {
+    if (!imageUrl) return;
+    try {
+      await copyImageToClipboard(imageUrl);
+      toast.success(m('room.message.actions.image_copied'));
+    } catch {
+      toast.error(m('room.message.actions.copy_image_failed'));
+    }
+    onClose();
+  }
+
   function handleDelete() {
     action.delete();
     onClose();
@@ -83,7 +121,7 @@ surface-specific sizing and menu semantics.
         'flex h-10 w-10 cursor-pointer items-center justify-center',
         isSheet
           ? 'rounded-full text-xl active:bg-surface'
-          : 'rounded text-base transition-[background-color,scale] hover:bg-surface active:scale-[0.96]'
+          : 'rounded text-base transition-[background-color,scale] feedback-quick hover:bg-surface active:scale-[0.96]'
       ]}
       onclick={() => handleReaction(emoji)}
       aria-label={m('room.message.actions.react_with', { emoji })}
@@ -98,7 +136,7 @@ surface-specific sizing and menu semantics.
         'flex h-10 w-10 cursor-pointer items-center justify-center text-muted',
         isSheet
           ? 'rounded-full text-xl active:bg-surface'
-          : 'rounded text-base transition-[background-color,scale] hover:bg-surface active:scale-[0.96]'
+          : 'rounded text-base transition-[background-color,scale] feedback-quick hover:bg-surface active:scale-[0.96]'
       ]}
       onclick={() => {
         onOpenEmojiPicker();
@@ -107,7 +145,7 @@ surface-specific sizing and menu semantics.
       aria-label={m('room.message.actions.more_reactions')}
       role={isSheet ? undefined : 'menuitem'}
     >
-      <span class={['iconify icon-[uil--smile]', !isSheet && 'text-lg']}></span>
+      <span aria-hidden="true" class={['iconify icon-[uil--smile]', !isSheet && 'text-lg']}></span>
     </button>
   {/if}
 {/snippet}
@@ -148,6 +186,10 @@ surface-specific sizing and menu semantics.
     {/if}
   {/if}
 
+  {#if hasReactions && onOpenReactionDetails}
+    {@render actionGroup(reactionDetailsAction)}
+  {/if}
+
   {#if action.replyInRoom || action.replyThread || action.secondaryReplyInRoom || action.canEdit}
     {@render actionGroup(primaryActions)}
   {/if}
@@ -161,6 +203,14 @@ surface-specific sizing and menu semantics.
   {#if action.canDelete}
     {@render actionGroup(deleteAction)}
   {/if}
+{/snippet}
+
+{#snippet reactionDetailsAction()}
+  {@render actionButton(
+    m('room.message.actions.reactions'),
+    'icon-[uil--smile]',
+    handleOpenReactionDetails
+  )}
 {/snippet}
 
 {#snippet pinAction()}
@@ -214,7 +264,25 @@ surface-specific sizing and menu semantics.
       handleCopyText
     )}
   {/if}
-  {@render actionButton(m('room.message.actions.copy_link'), 'icon-[uil--link]', handleCopyLink)}
+  {#if !isSheet && linkUrl}
+    {@render actionButton(
+      m('room.message.actions.copy_link'),
+      'icon-[uil--link]',
+      handleCopyTargetLink
+    )}
+  {/if}
+  {#if !isSheet && imageUrl}
+    {@render actionButton(
+      m('room.message.actions.copy_image'),
+      'icon-[uil--image]',
+      handleCopyImage
+    )}
+  {/if}
+  {@render actionButton(
+    m('room.message.actions.copy_message_link'),
+    'icon-[uil--link]',
+    handleCopyLink
+  )}
 {/snippet}
 
 {#snippet deleteAction()}

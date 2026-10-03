@@ -16,7 +16,6 @@
       "remote_title": "{server} oturum açılması gerekiyor",
       "remote_message": "Bu sunucu, depolanan oturum açma işlemini reddetti. Canlı güncellemeleri ve eylemleri sürdürmek için yeniden bağlayın.",
       "remote_action": "Yeniden bağlan",
-      "remote_failed": "Yeniden bağlanma başlatılamadı",
       "sidebar_reauth": "{server} oturum açılması gerekiyor"
     },
     "access_denied": {
@@ -48,7 +47,8 @@
       "complete": "Chatto yeniden oluşturuldu. Son puan: {count}"
     },
     "pane_header": {
-      "back": "Geri"
+      "back": "Geri",
+      "actions": "Panel işlemleri"
     },
     "sidebar_nav": {
       "back_to_chat": "Sohbete Geri Dön"
@@ -67,7 +67,12 @@
     "image_modal": {
       "previous": "Önceki resim",
       "next": "Sonraki resim",
-      "fallback_alt": "Resim"
+      "fallback_alt": "Resim",
+      "zoom_in": "Yakınlaştır",
+      "zoom_out": "Uzaklaştır",
+      "fit": "Sığdır",
+      "details": "Ayrıntılar",
+      "file_type": "Dosya türü"
     },
     "toast": {
       "dismiss": "Bildirimi reddet"
@@ -78,11 +83,9 @@
       "clear": "Temizle"
     },
     "expiry": {
-      "label": "Süresi doluyor",
       "24h": "24 saat",
       "7d": "7 gün",
       "30d": "30 gün",
-      "indefinite": "Son kullanma tarihi yok",
       "custom": "Özel",
       "custom_label": "Özel son kullanma tarihi",
       "error_required": "Bir son kullanma tarihi seçin.",

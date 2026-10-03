@@ -1,14 +1,17 @@
 <script lang="ts">
+  import { errorMessage } from '$lib/utils/errorMessage';
   import { goto } from '$app/navigation';
   import { resolve } from '$app/paths';
-  import type { PublicAuthProvider } from '$lib/api-client/server';
-  import { browserCookieAuthenticationHeaders } from '$lib/auth/authenticationMode';
+  import { onDestroy } from 'svelte';
+  import { openProviderSignIn, verifyProviderSignIn } from '$lib/auth/providerSignIn';
+  import type { OAuthPopup } from '$lib/oauth/popup';
+  import type { PublicAuthProvider } from '@chatto/client/api/server';
+  import { browserCookieAuthenticationHeaders } from '@chatto/client/auth/authenticationMode';
   import { completeOriginAuthentication } from '$lib/auth/originAuthentication';
   import AuthLayout from '$lib/components/AuthLayout.svelte';
   import { m } from '$lib/i18n/messages';
-  import Divider from '$lib/ui/Divider.svelte';
-  import PageTitle from '$lib/ui/PageTitle.svelte';
-  import { Button, FormError, TextInput, validate, z } from '$lib/ui/form';
+  import { Divider, Hint, PageTitle } from '$lib/ui';
+  import { Button, FormError, TextInput, VerificationCodeInput, validate, z } from '$lib/ui/form';
 
   const { data } = $props();
 
@@ -26,7 +29,7 @@
 
   let step = $state<Step>('email');
   let email = $state('');
-  let codeDigits = $state(['', '', '', '', '', '']);
+  let code = $state('');
   let completionToken = $state('');
   let login = $state('');
   let password = $state('');
@@ -34,7 +37,14 @@
   let error = $state('');
   let isLoading = $state(false);
   let isResending = $state(false);
-  let codeInputs: HTMLInputElement[] = [];
+  let selectedProviderId = $state<string | null>(null);
+  let providerError = $state('');
+  let providerPopup: OAuthPopup | null = null;
+  let active = true;
+  onDestroy(() => {
+    active = false;
+    providerPopup?.close();
+  });
 
   const emailSchema = z.string().email(m('common.validation.email'));
   const loginSchema = z
@@ -48,7 +58,6 @@
 
   const normalizedEmail = $derived(email.trim().toLowerCase());
   const emailError = $derived(email ? validate(emailSchema, email) : undefined);
-  const code = $derived(codeDigits.join(''));
   const codeComplete = $derived(code.length === 6);
   const loginError = $derived(login ? validate(loginSchema, login) : undefined);
   const passwordError = $derived(password ? validate(passwordSchema, password) : undefined);
@@ -87,6 +96,23 @@
     return `${provider.loginUrl}?redirect=${encodeURIComponent('/')}`;
   }
 
+  async function handleProviderClick(event: MouseEvent, provider: PublicAuthProvider) {
+    event.preventDefault();
+    providerError = '';
+    selectedProviderId = provider.id;
+    try {
+      providerPopup = openProviderSignIn(provider.loginUrl);
+      await verifyProviderSignIn(providerPopup);
+      if (!active) return;
+      if (!(await completeOriginAuthentication())) await goto(resolve('/'));
+    } catch (err) {
+      if (active) providerError = errorMessage(err, m('auth.register.failed'));
+    } finally {
+      selectedProviderId = null;
+      providerPopup = null;
+    }
+  }
+
   async function requestRegistrationCode(options: { resend?: boolean } = {}) {
     error = '';
     if (emailError || !normalizedEmail) {
@@ -116,12 +142,11 @@
         return;
       }
 
-      codeDigits = ['', '', '', '', '', ''];
+      code = '';
       completionToken = '';
       step = 'code';
-      queueMicrotask(() => codeInputs[0]?.focus());
     } catch (err) {
-      error = err instanceof Error ? err.message : m('auth.register.failed');
+      error = errorMessage(err, m('auth.register.failed'));
     } finally {
       isLoading = false;
       isResending = false;
@@ -131,40 +156,6 @@
   async function handleEmailSubmit(e: Event) {
     e.preventDefault();
     await requestRegistrationCode();
-  }
-
-  function applyCodeFrom(index: number, value: string) {
-    const digits = value
-      .replace(/\D/g, '')
-      .slice(0, 6 - index)
-      .split('');
-    if (digits.length === 0) {
-      codeDigits[index] = '';
-      return;
-    }
-    for (const [offset, digit] of digits.entries()) {
-      codeDigits[index + offset] = digit;
-    }
-    const nextIndex = Math.min(index + digits.length, codeDigits.length - 1);
-    codeInputs[nextIndex]?.focus();
-  }
-
-  function handleCodeInput(index: number, e: Event) {
-    const input = e.currentTarget as HTMLInputElement;
-    applyCodeFrom(index, input.value);
-  }
-
-  function handleCodePaste(index: number, e: ClipboardEvent) {
-    e.preventDefault();
-    applyCodeFrom(index, e.clipboardData?.getData('text') ?? '');
-  }
-
-  function handleCodeKeydown(index: number, e: KeyboardEvent) {
-    if (e.key === 'Backspace' && codeDigits[index] === '' && index > 0) {
-      e.preventDefault();
-      codeDigits[index - 1] = '';
-      codeInputs[index - 1]?.focus();
-    }
   }
 
   async function handleCodeSubmit(e: Event) {
@@ -191,7 +182,7 @@
       completionToken = body.completionToken;
       step = 'details';
     } catch (err) {
-      error = err instanceof Error ? err.message : m('auth.register.failed');
+      error = errorMessage(err, m('auth.register.failed'));
     } finally {
       isLoading = false;
     }
@@ -233,7 +224,7 @@
         goto(resolve('/'), { replaceState: true });
       }
     } catch (err) {
-      error = err instanceof Error ? err.message : m('auth.register.failed');
+      error = errorMessage(err, m('auth.register.failed'));
     } finally {
       isLoading = false;
     }
@@ -242,17 +233,15 @@
 
 <PageTitle title={m('auth.register.title')} />
 
-<AuthLayout>
-  <h1 class="mb-6 text-center text-2xl font-bold">
-    {step === 'code'
-      ? m('auth.register.code.title')
-      : step === 'details'
-        ? m('auth.register.complete_title')
-        : m('auth.register.title')}
-  </h1>
-
+<AuthLayout
+  title={step === 'code'
+    ? m('auth.register.code.title')
+    : step === 'details'
+      ? m('auth.register.complete_title')
+      : m('auth.register.title')}
+>
   {#if !selfServiceAvailable}
-    <p class="text-center text-muted">{m('auth.register.unavailable')}</p>
+    <Hint>{m('auth.register.unavailable')}</Hint>
   {:else if invitationRequired && !inviteAccepted}
     <div class="flex flex-col gap-4 text-center">
       <p class="text-muted">{m('auth.register.invitation.required')}</p>
@@ -286,7 +275,7 @@
           loadingText={m('auth.forgot_password.sending')}
         >
           {m('common.continue')}
-          <span class="iconify icon-[uil--arrow-right] rtl:-scale-x-100"></span>
+          <span aria-hidden="true" class="iconify icon-[uil--arrow-right] rtl:-scale-x-100"></span>
         </Button>
       </form>
     {/if}
@@ -298,11 +287,21 @@
     {#if registrationProviders.length > 0}
       <div class="flex flex-col gap-3">
         {#each registrationProviders as provider (provider.id)}
-          <Button href={providerLoginHref(provider)} variant="secondary" size="lg" fullWidth>
-            <span class={['iconify', providerIcon(provider.type)]}></span>
+          <Button
+            href={providerLoginHref(provider)}
+            variant="secondary"
+            size="lg"
+            fullWidth
+            disabled={selectedProviderId !== null && selectedProviderId !== provider.id}
+            loading={selectedProviderId === provider.id}
+            loadingText={m('auth.login.connecting_provider', { provider: provider.label })}
+            onclick={(event) => handleProviderClick(event, provider)}
+          >
+            <span aria-hidden="true" class={['iconify', providerIcon(provider.type)]}></span>
             {m('auth.login.continue_with_provider', { provider: provider.label })}
           </Button>
         {/each}
+        <FormError error={providerError} />
       </div>
     {/if}
   {:else if step === 'code'}
@@ -312,25 +311,13 @@
         <p class="mt-1 font-semibold break-words">{normalizedEmail}</p>
       </div>
 
-      <div class="grid grid-cols-6 gap-2" aria-label={m('auth.register.code.aria_label')}>
-        {#each codeDigits as digit, index (index)}
-          <input
-            bind:this={codeInputs[index]}
-            value={digit}
-            type="text"
-            inputmode="numeric"
-            pattern="[0-9]*"
-            maxlength="6"
-            autocomplete={index === 0 ? 'one-time-code' : 'off'}
-            aria-label={m('auth.register.code.digit_label', { number: index + 1 })}
-            disabled={isLoading}
-            oninput={(e) => handleCodeInput(index, e)}
-            onpaste={(e) => handleCodePaste(index, e)}
-            onkeydown={(e) => handleCodeKeydown(index, e)}
-            class="h-14 rounded-lg border border-text/20 bg-input text-center text-xl font-semibold transition-[border-color,box-shadow] outline-none focus:border-action focus:ring-2 focus:ring-action/30 disabled:opacity-60"
-          />
-        {/each}
-      </div>
+      <VerificationCodeInput
+        bind:value={code}
+        autofocus
+        disabled={isLoading}
+        label={m('auth.register.code.aria_label')}
+        digitLabel={(number) => m('auth.register.code.digit_label', { number })}
+      />
 
       <div class="text-center text-sm text-muted">
         {m('auth.register.code.did_not_receive')}
@@ -403,7 +390,7 @@
         loading={isLoading}
         loadingText={m('auth.register.creating')}
       >
-        <span class="iconify icon-[uil--user-plus]"></span>
+        <span aria-hidden="true" class="iconify icon-[uil--user-plus]"></span>
         {m('common.create_account')}
       </Button>
     </form>

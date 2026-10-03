@@ -57,8 +57,7 @@ type MessageSearchResult struct {
 }
 
 // ResolveScope returns only rooms where the actor is currently a member with
-// applicable channel-room message-read authority. DM membership authorizes DM
-// search. Archived rooms remain eligible.
+// applicable message-read authority. Archived rooms remain eligible.
 func (s *MessageSearchReadModel) ResolveScope(ctx context.Context, input MessageSearchScopeInput) (*MessageSearchScope, error) {
 	if err := requireAuthenticatedActor(input.ActorID); err != nil {
 		return nil, err
@@ -160,8 +159,8 @@ func (s *MessageSearchReadModel) HydrateHits(ctx context.Context, actorID string
 		if !ok {
 			continue
 		}
-		body, retracted, bodyKnown := s.core.roomModel.latestBody(hit.MessageID)
-		if !bodyKnown || retracted || body == nil || body.GetBodyEventId() != hit.BodyEventID {
+		body, retracted, bodyKnown := s.core.roomModel.latestBodyReference(hit.MessageID)
+		if !bodyKnown || retracted || body.StreamSeq == 0 || body.BodyEventID != hit.BodyEventID {
 			continue
 		}
 		seen[key] = struct{}{}

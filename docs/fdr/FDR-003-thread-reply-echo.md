@@ -1,24 +1,36 @@
 # FDR-003: Thread Reply Echo
 
 **Status:** Active
-**Last reviewed:** 2026-09-02
+**Last reviewed:** 2026-10-02
 
 ## Overview
 
-When posting a reply inside a thread, the user can optionally "also send to channel" — echoing the reply into the parent room's timeline so people watching the room see it without opening the thread. The echo appears alongside other room messages and links back to its thread.
+When a user posts a reply inside a thread, they can also echo the reply into the
+parent room timeline. The echo appears with other room messages and links back
+to its thread. In a DM, the client labels this action **Also send to
+conversation**.
 
 ## Behavior
 
-- The thread pane composer shows an "Also send to channel" checkbox when the user has the right permission.
-- Ticking the checkbox and sending the reply produces two visible artifacts: the reply inside the thread pane, and a copy of the same message in the room timeline.
+- The thread composer shows an echo checkbox when the user has the required
+  permissions. It says **Also send to conversation** in a DM.
+- Ticking the checkbox and sending the reply produces two visible artifacts: the reply inside the thread pane, and a reference to the same message in the room timeline.
+- The reply and its requested echo commit together. If a permission or room
+  policy change rejects the command on retry, neither is posted. A successful
+  send cannot omit the requested echo.
 - The checkbox resets to unchecked after each successful send.
-- A thread reply with an echo shows a megaphone icon after its text. The icon is not a control. It updates when the echo is added or removed.
+- A thread reply with an echo shows a megaphone icon and an **Echo** link in
+  its metadata row, after **Edited** when present and before reactions. The
+  label uses a direct translation in other languages. Selecting the link
+  opens the parent room, jumps to the echo, and highlights it. The link updates
+  when the echo is added or removed.
 - The echo in the room timeline shows a "Thread" indicator below the body; clicking it opens the thread.
 - If the original reply was attributed to a specific message, the echo shows the same reply-attribution byline. Clicking the byline on the echo opens the thread and highlights the referenced message inside it.
 - Editing or deleting the original reply automatically affects the echo too — edit/delete events target the original reply, and read models apply the change to the linked echo.
 - Deleting the echo itself only hides that room-timeline copy. The original thread reply remains in the thread with its body readable.
 - Reactions shown on the original reply and its channel echo are the same reaction set; reacting in either place targets the original reply.
 - The thread's reply count is not incremented by the echo; the echo represents the same reply, not an additional one.
+- Search returns the original reply once. Echoes do not create separate search matches.
 - Mention notifications fire once for the reply, not twice (the echo doesn't re-notify).
 - The main-room composer never shows the echo checkbox — the action only makes sense from inside a thread.
 - Editing a thread reply shows the same "Also send to channel" checkbox while
@@ -28,14 +40,19 @@ When posting a reply inside a thread, the user can optionally "also send to chan
   echo from the room timeline and keeps the thread reply readable. A Disabled
   room cannot gain a new echo from a historical reply, but an existing echo can
   still be removed.
+- A user with effective `message.manage` can clear the echo checkbox on
+  another author's reply, including a bot's reply. This removes only the echo.
+  Adding an echo remains author-only and requires `message.echo` and
+  `message.post`. The edit composer shows the checkbox only when the user can
+  change the existing placement. It omits unchanged echo state from the update.
 
 ## Design Decisions
 
-### 1. Echo links by event identity, not payload aliases
+### 1. Echoes reference the original reply
 
-**Decision:** The echo and the original thread reply are two different EVT envelopes. The echo carries `echoOfEventId`, which points at the original reply envelope. The message identity itself lives on the envelope (`Event.id`), not inside the `MessagePostedEvent` payload.
-**Why:** Public timeline APIs and EVT now model the same wrapper/payload boundary. Echoes still render the same text, but edits and deletes are propagated through the event-link relationship instead of a shared `messageBodyId` payload crutch.
-**Tradeoff:** Read models have to keep the echo link when applying edit/delete and reaction state.
+**Decision:** An echo stores its own timeline identity and a link to the original thread reply. It does not store a second body, attachment list, preview, mention list, or reply attribution. Reads use the original content. API responses still contain a complete message.
+**Why:** One content source prevents stale copies and makes edits apply in both views without duplicate writes.
+**Tradeoff:** Reads must resolve the link. If the original is unavailable, the echo cannot use a historical copy as a fallback. Historical copies remain subject to normal secure deletion; upgrades do not bulk-delete them.
 
 ### 2. Echo deletion hides the echo artifact
 
@@ -49,11 +66,11 @@ When posting a reply inside a thread, the user can optionally "also send to chan
 **Why:** The echo represents the same contribution in a second timeline context. A single reaction set keeps the room and thread views consistent and avoids users seeing different counts for one reply.
 **Tradeoff:** Reaction reads need the echo link to resolve aliases. Historical echo-keyed reaction facts are canonicalized during projection replay instead of rewriting EVT.
 
-### 4. Mentions copy to the echo, but don't re-notify
+### 4. Echoes resolve mentions without new notifications
 
-**Decision:** The echo carries the same `mentionedUserIds` as the original, but only the original triggers mention notifications.
-**Why:** The mention rendering (highlight, link to profile) needs to work on the echo too, so the field has to be present. But getting two notifications for one mention would be noisy.
-**Tradeoff:** Mention-driven indicators in the UI need to look at both events; the notification system has to know to skip the echo.
+**Decision:** Reads resolve mentions from the original reply. Only the original triggers mention notifications.
+**Why:** Mentions must display in both views, but each recipient must receive only one notification.
+**Tradeoff:** Timeline and realtime responses must resolve the original mention metadata.
 
 ### 5. Echo publish is best-effort
 
@@ -66,21 +83,36 @@ When posting a reply inside a thread, the user can optionally "also send to chan
 **Decision:** `alsoSendToChannel` is only valid when posting inside a thread. Sending a plain room message with the flag is rejected.
 **Why:** The feature exists to bridge thread visibility back to the room. The reverse (a room message that also shows in some thread) doesn't have a well-defined target.
 
-### 7. Echo state follows author edit permission
+### 7. Echo removal follows message management permission
 
 **Decision:** The ConnectRPC `MessageService.UpdateMessage` API can optionally
-reconcile a thread reply's channel echo state when the author can edit the
-message through the shared core message model. Effective `message.manage`
-bypasses the normal author edit window. Omitting the field preserves current
-echo state for clients that do not intend to change it and for edits by other
-users.
+reconcile a thread reply's channel echo state. The author can add or remove an
+echo while they can edit the reply. Effective `message.manage` bypasses the
+normal author edit window and permits removal of another author's echo. It does
+not permit adding another author's echo. Clients omit unchanged echo state.
 **Why:** Users often realize shortly after posting in a thread that the reply should have been visible in the room. Treating the checkbox as edit-time message state keeps the interaction aligned with the composer.
+Moderators can already delete the echo artifact without deleting the reply.
+Removing it through the checkbox must use the same management authority.
 **Tradeoff:** Echo reconciliation is not a new persisted event type; adding an echo appends the existing echo-shaped `MessagePostedEvent`, and removing one appends a normal `MessageRetractedEvent` for the echo artifact.
+
+### 5. Reply and requested echo commit together
+
+**Decision:** Posting a reply with an echo is one atomic command. Each conflict
+repeats the permission and room-policy checks. Success waits until both the room
+timeline and thread views contain the result.
+**Why:** Selecting the checkbox requests both placements. A successful reply
+without its echo would silently lose part of that request.
+**Tradeoff:** Failure to commit the echo rejects the reply too. The command uses
+the existing message facts and content links; it does not add a pending state
+or an asynchronous recovery worker. Historical replies with missing echoes are
+not repaired automatically because their original echo intent was not stored.
 
 ## Permissions
 
-- `message.echo` — granted to `everyone` by default. Gates the "Also send to channel" checkbox at the server-role and per-room scopes.
-- `message.post-in-thread` — required for the thread reply itself. Covers replies with `inReplyTo` attribution as well; there is no separate reply permission.
+- `message.echo` — permits the echo. A DM can override it at the Direct
+  messages scope.
+- `message.post` — permits the new artifact in the main room timeline.
+- `message.post-in-thread` or `message.post-in-interactions` with a relationship — permits the reply itself, with separate read access. The required `message.post` grant already includes both. Reply attribution needs no separate permission.
 
 ## Related
 

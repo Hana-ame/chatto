@@ -759,33 +759,23 @@ test('image lightbox supports keyboard navigation with multiple images', async (
 
   // Wait for all attachment images to appear in the message
   await expect(roomPage.attachmentImage).toHaveCount(5, { timeout: TIMEOUTS.COMPLEX_OPERATION });
-  // 【本地改动 2026-08-30】上游这三处(762/837/840 行)原本用 `\?` 结尾的正则断言附件 URL
-  // 带 query 串,即 per-user 签名 ticket:上游契约要求浏览器侧 URL 形如
-  // /assets/files/{id}/image/960x400/contain?access=<ticket>(cli/AGENTS.md
-  // 「The ticket is the browser capability」)。
-  // 【目的】本 fork 故意反转:URL 形如 /assets/files/{assetID}/image/{w}x{h}/{fit}/{fn.ext}
-  // 或 /assets/files/{assetID}/{fn.ext} —— 无 ticket、无 query 串,assetID 本身就是凭证,
-  // 响应 public, max-age=31536000, immutable(为 CF/CDN 长期缓存)。
-  // 【踩坑】2026-08-30 把 build-release 触发分支从 ci/deploy 改到 main 后,ci.yml 第一次
-  // 在本仓库 main 上跑完整 e2e 矩阵,本用例立刻红:Expected pattern
-  // /\/image\/960x400\/contain\?/ 实际是
-  // "/assets/files/AcxeCo6nYHRv4Zj/image/960x400/contain/brighton.jpg"(无 query)。
-  // fork 的 Public* URL 构造器此前只在 fork 自己的 Go 单元测试里被断言,从未被 ci.yml 覆盖。
-  // 【边界】ticket 版实现保留给旧的无文件名 URL(/assets/files/{id})继续有效;浏览器侧现在
-  // 拿到的是公开版。fork 明确的知情取舍:assetID 泄露即可读取,已缓存内容在成员移除后仍
-  // 有效。完整取舍见 cli/internal/core/attachments.go 的【本地改动 2026-08-18】节,以及
-  // AGENTS.md「已知的 fork / upstream 行为分歧」。
-  // 【合并提醒】合回 upstream 时把下面三处正则的 `\/[^/?]+\.[^/?]+` 改回 `\?`。
   await expect(roomPage.attachmentImage.first()).toHaveAttribute(
     'src',
-    /\/image\/960x400\/contain\/[^/?]+\.[^/?]+/
+    /\/image\/960x400\/contain\?/
   );
 
   const gallery = page.getByTestId('message-image-gallery');
   await expect(gallery).toBeVisible();
-  await expect.poll(() => gallery.evaluate((el) => getComputedStyle(el).columnGap)).toBe('12px');
   const galleryImages = gallery.locator('button[aria-label^="View"]');
   await expect(galleryImages).toHaveCount(5);
+  await expect
+    .poll(() =>
+      galleryImages.evaluateAll(
+        ([first, second]) =>
+          second.getBoundingClientRect().left - first.getBoundingClientRect().right
+      )
+    )
+    .toBe(12);
   await expect.poll(() => gallery.evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(true);
   await gallery.evaluate((el) => {
     el.scrollLeft = 0;
@@ -815,12 +805,12 @@ test('image lightbox supports keyboard navigation with multiple images', async (
     el.scrollLeft = 0;
     el.dispatchEvent(new Event('scroll'));
   });
-  const leftFade = page.getByTestId('message-image-gallery-left-fade');
-  const rightFade = page.getByTestId('message-image-gallery-right-fade');
-  await expect.poll(() => leftFade.evaluate((el) => el.classList.contains('opacity-0'))).toBe(true);
+  const startFade = page.getByTestId('message-image-gallery-start-fade');
+  const endFade = page.getByTestId('message-image-gallery-end-fade');
   await expect
-    .poll(() => rightFade.evaluate((el) => el.classList.contains('opacity-0')))
-    .toBe(false);
+    .poll(() => startFade.evaluate((el) => el.classList.contains('opacity-0')))
+    .toBe(true);
+  await expect.poll(() => endFade.evaluate((el) => el.classList.contains('opacity-0'))).toBe(false);
   const narrowGalleryBoxes = await galleryImages.evaluateAll((buttons) =>
     buttons.map((button) => {
       const rect = button.getBoundingClientRect();
@@ -838,11 +828,9 @@ test('image lightbox supports keyboard navigation with multiple images', async (
     el.dispatchEvent(new Event('scroll'));
   });
   await expect
-    .poll(() => leftFade.evaluate((el) => el.classList.contains('opacity-0')))
+    .poll(() => startFade.evaluate((el) => el.classList.contains('opacity-0')))
     .toBe(false);
-  await expect
-    .poll(() => rightFade.evaluate((el) => el.classList.contains('opacity-0')))
-    .toBe(true);
+  await expect.poll(() => endFade.evaluate((el) => el.classList.contains('opacity-0'))).toBe(true);
 
   // Click the first image to open the lightbox
   await roomPage.attachmentImage.first().click();
@@ -851,15 +839,19 @@ test('image lightbox supports keyboard navigation with multiple images', async (
   const dialog = page.locator('dialog[open]');
   await expect(dialog).toBeVisible();
   await expect(dialog.getByText('1 / 5')).toBeVisible();
-  // 【本地改动 2026-08-30】同上:上游断言 /\/image\/2048x2048\/contain\?/(带 ticket query),
-  // fork 是 /image/2048x2048/contain/{fn.ext}(无 query)。完整取舍见本文件上方
-  // 【本地改动】块。
-  await expect(dialog.locator('img')).toHaveAttribute('src', /\/image\/2048x2048\/contain\/[^/?]+\.[^/?]+/);
-  await expect(dialog.getByRole('link', { name: 'Open original' })).toHaveAttribute(
+  await expect(dialog.locator('img')).toHaveAttribute('src', /\/image\/2048x2048\/contain\?/);
+  await expect(dialog.getByRole('link', { name: 'Download', exact: true })).toHaveAttribute(
     'href',
-    // 同上:上游断言 /\/assets\/files\/[^/?]+\?/,fork 是 /assets/files/{id}/{fn.ext}。
-    /\/assets\/files\/[^/?]+\/[^/?]+\.[^/?]+/
+    /\/assets\/files\/[^/?]+\?/
   );
+
+  const download = dialog.getByRole('link', { name: 'Download', exact: true });
+  await expect(download).toHaveAttribute('href', /[?&]download=1(?:&|$)/);
+  await expect(download).toBeInViewport();
+  await expect(dialog.getByRole('button', { name: 'Close', exact: true })).toBeInViewport();
+  // Wait for the dialog's opening scale animation to finish.
+  await expect.poll(async () => (await dialog.boundingBox())?.width).toBe(390);
+  await expect.poll(async () => (await dialog.boundingBox())?.height).toBe(844);
 
   // Verify the "brighton.jpg" filename is shown
   await expect(dialog.getByText('brighton.jpg')).toBeVisible();
@@ -868,6 +860,7 @@ test('image lightbox supports keyboard navigation with multiple images', async (
   await page.keyboard.press('ArrowRight');
   await expect(dialog.getByText('2 / 5')).toBeVisible();
   await expect(dialog.getByText('brighton2.jpg')).toBeVisible();
+  await expect(download).toHaveAttribute('download', 'brighton2.jpg');
 
   // Press ArrowRight again to go to the third image
   await page.keyboard.press('ArrowRight');
@@ -977,7 +970,7 @@ test.describe('image lightbox back button and tap behavior', () => {
     await expect(dialog).toBeVisible({ timeout: TIMEOUTS.UI_FAST });
 
     // Click the dialog backdrop (top-left corner, outside the image content)
-    await dialog.click({ position: { x: 5, y: 5 } });
+    await page.mouse.click(5, 5);
     await expect(dialog).not.toBeVisible({ timeout: TIMEOUTS.UI_FAST });
   });
 });
@@ -999,14 +992,16 @@ test.describe('Message link rendering', () => {
     await expect(link).toBeVisible({ timeout: TIMEOUTS.UI_STANDARD });
 
     // The link should not overflow its prose container
-    const overflows = await link.evaluate((el) => {
-      const prose = el.closest('.prose');
-      if (!prose) return true;
-      const proseRect = prose.getBoundingClientRect();
-      const linkRect = el.getBoundingClientRect();
-      return linkRect.right > proseRect.right + 1; // 1px tolerance
-    });
-
-    expect(overflows).toBe(false);
+    await expect
+      .poll(async () => {
+        return link.evaluate((el) => {
+          const prose = el.closest('.prose');
+          if (!prose) return true;
+          const proseRect = prose.getBoundingClientRect();
+          const linkRect = el.getBoundingClientRect();
+          return linkRect.right > proseRect.right + 1; // 1px tolerance
+        });
+      })
+      .toBe(false);
   });
 });

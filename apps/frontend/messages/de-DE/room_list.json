@@ -1,9 +1,15 @@
 {
   "room_list": {
+    "show_rooms_in_group": "{count} weitere Räume in {group} anzeigen",
+    "hide_rooms_in_group": "Weitere Räume in {group} ausblenden",
+    "more_rooms": "{count} weitere",
+    "show_less": "Weniger anzeigen",
     "active_call": "Aktiver Anruf",
     "call_participants": "{count} Teilnehmende im Anruf",
     "go_to_notifications": "Zu {count} Benachrichtigungen",
     "notifications": "{count} Benachrichtigungen",
+    "go_to_other_notifications": "Zu {count} weiteren Benachrichtigungen",
+    "other_notifications": "{count} weitere Benachrichtigungen",
     "unread_messages": "ungelesene Nachrichten",
     "go_to_dm_notifications": "Zu {count} Direktnachrichten-Benachrichtigungen",
     "new_direct_messages": "{count} neue Direktnachrichten",
@@ -18,6 +24,7 @@
     "copy_room_id": "Raum-ID kopieren",
     "copy_server_hostname": "Server-Hostnamen kopieren",
     "room_settings": "Raumeinstellungen",
+    "add_to_group": "Zu {group} hinzufügen",
     "group_settings": "Einstellungen für {group}",
     "server_actions": "Aktionen für {server}",
     "room_actions": "Aktionen für #{room}"

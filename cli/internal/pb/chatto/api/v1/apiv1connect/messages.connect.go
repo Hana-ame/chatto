@@ -33,6 +33,9 @@ const (
 // reflection-formatted method names, remove the leading slash and convert the remaining slash to a
 // period.
 const (
+	// MessageServiceListReactionUsersProcedure is the fully-qualified name of the MessageService's
+	// ListReactionUsers RPC.
+	MessageServiceListReactionUsersProcedure = "/chatto.api.v1.MessageService/ListReactionUsers"
 	// MessageServiceFetchLinkPreviewProcedure is the fully-qualified name of the MessageService's
 	// FetchLinkPreview RPC.
 	MessageServiceFetchLinkPreviewProcedure = "/chatto.api.v1.MessageService/FetchLinkPreview"
@@ -48,6 +51,9 @@ const (
 	// MessageServiceDeleteAttachmentProcedure is the fully-qualified name of the MessageService's
 	// DeleteAttachment RPC.
 	MessageServiceDeleteAttachmentProcedure = "/chatto.api.v1.MessageService/DeleteAttachment"
+	// MessageServiceSetAttachmentDescriptionProcedure is the fully-qualified name of the
+	// MessageService's SetAttachmentDescription RPC.
+	MessageServiceSetAttachmentDescriptionProcedure = "/chatto.api.v1.MessageService/SetAttachmentDescription"
 	// MessageServiceDeleteLinkPreviewProcedure is the fully-qualified name of the MessageService's
 	// DeleteLinkPreview RPC.
 	MessageServiceDeleteLinkPreviewProcedure = "/chatto.api.v1.MessageService/DeleteLinkPreview"
@@ -67,56 +73,67 @@ const (
 
 // MessageServiceClient is a client for the chatto.api.v1.MessageService service.
 type MessageServiceClient interface {
+	// Lists all users with the requested reaction. Requires room membership and
+	// permission to read the message. A missing reaction returns an empty page;
+	// a missing or hidden message returns NOT_FOUND or PERMISSION_DENIED.
+	ListReactionUsers(context.Context, *connect.Request[v1.ListReactionUsersRequest]) (*connect.Response[v1.ListReactionUsersResponse], error)
 	// Fetches and caches metadata for a composer URL. Authentication is required
 	// to avoid exposing the preview fetcher as an unauthenticated network proxy.
 	// Successful responses include a short-lived token accepted by CreateMessage.
 	FetchLinkPreview(context.Context, *connect.Request[v1.FetchLinkPreviewRequest]) (*connect.Response[v1.FetchLinkPreviewResponse], error)
 	// Creates a message for the current user. The user must be a room member and
-	// must have message.post for room messages or message.post-in-thread for
-	// thread replies. Echoing a thread reply also requires message.echo and
+	// must have message.post for room messages. Thread replies require read
+	// access and either message.post, message.post-in-thread, or
+	// message.post-in-interactions with an existing interaction relationship.
+	// Echoing a thread reply also requires message.echo and
 	// message.post. The room's Threading Mode may automatically establish a root
 	// thread or reject a thread placement that the mode does not allow.
 	CreateMessage(context.Context, *connect.Request[v1.CreateMessageRequest]) (*connect.Response[v1.CreateMessageResponse], error)
 	// Edits a message body. Authors can edit their own messages within the edit
-	// window. Effective message.manage permits edits at any time. Only the
-	// message author can change channel echo state. Disabled rooms reject
+	// window. Effective message.manage permits edits at any time and removal of
+	// another author's channel echo. Only the author can enable an echo, which
+	// also requires message.echo and message.post. Omit unchanged echo state.
+	// Disabled rooms reject
 	// creation of a new channel echo while allowing an existing echo to be
 	// removed. Room membership is also required.
-	// Channel-room edits require message.read or a matching thread relationship
-	// with message.read-interactions. DM membership authorizes the DM read.
+	// Edits require message.read or a matching thread relationship with
+	// message.read-interactions.
 	UpdateMessage(context.Context, *connect.Request[v1.UpdateMessageRequest]) (*connect.Response[v1.UpdateMessageResponse], error)
 	// Retracts a message. Authors can delete their own messages. Non-authors need
 	// message.manage.
 	DeleteMessage(context.Context, *connect.Request[v1.DeleteMessageRequest]) (*connect.Response[v1.DeleteMessageResponse], error)
 	// Removes one attachment from the author's own message.
 	DeleteAttachment(context.Context, *connect.Request[v1.DeleteAttachmentRequest]) (*connect.Response[v1.DeleteAttachmentResponse], error)
+	// Sets or clears one attachment description. Authors can change descriptions
+	// within the message edit window. Effective message.manage permits changes
+	// at any time and to other users' messages. Room membership and message read
+	// access are required.
+	SetAttachmentDescription(context.Context, *connect.Request[v1.SetAttachmentDescriptionRequest]) (*connect.Response[v1.SetAttachmentDescriptionResponse], error)
 	// Removes the accepted link preview from the author's own message.
 	DeleteLinkPreview(context.Context, *connect.Request[v1.DeleteLinkPreviewRequest]) (*connect.Response[v1.DeleteLinkPreviewResponse], error)
 	// Reads one renderable message, including current body, attachment metadata,
 	// link preview, reactions, thread metadata, and pin state. Authentication
-	// and room membership are required. Channel-room reads also require
+	// and room membership are required. Reads also require
 	// message.read or a matching thread relationship with
-	// message.read-interactions. DM membership authorizes DM reads. Returns
+	// message.read-interactions. Returns
 	// NOT_FOUND when the event does not exist, is not a message, has been
 	// retracted, or belongs to a different room.
 	GetMessage(context.Context, *connect.Request[v1.GetMessageRequest]) (*connect.Response[v1.GetMessageResponse], error)
 	// Reads many renderable messages and their current pin state in one room.
-	// Authentication and room membership are required. Channel-room reads also
+	// Authentication and room membership are required. Reads also
 	// require message.read or a matching thread relationship with
-	// message.read-interactions. DM membership authorizes DM reads. Missing,
+	// message.read-interactions. Missing,
 	// retracted, non-message, wrong-room, and inaccessible event IDs are omitted.
 	// Results preserve first-seen request order, and repeated event IDs are
 	// de-duplicated.
 	BatchGetMessages(context.Context, *connect.Request[v1.BatchGetMessagesRequest]) (*connect.Response[v1.BatchGetMessagesResponse], error)
 	// Adds a reaction to a message. The user must be a room member and have
-	// message.react. Channel-room reactions also require message.read or a
-	// matching thread relationship with message.read-interactions. DM membership
-	// authorizes the DM read.
+	// message.react. Reactions also require message.read or a matching thread
+	// relationship with message.read-interactions.
 	AddReaction(context.Context, *connect.Request[v1.AddReactionRequest]) (*connect.Response[v1.AddReactionResponse], error)
 	// Removes a reaction from a message. The user must be a room member and have
-	// message.react. Channel-room reactions also require message.read or a
-	// matching thread relationship with message.read-interactions. DM membership
-	// authorizes the DM read.
+	// message.react. Reactions also require message.read or a matching thread
+	// relationship with message.read-interactions.
 	RemoveReaction(context.Context, *connect.Request[v1.RemoveReactionRequest]) (*connect.Response[v1.RemoveReactionResponse], error)
 }
 
@@ -131,6 +148,12 @@ func NewMessageServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 	baseURL = strings.TrimRight(baseURL, "/")
 	messageServiceMethods := v1.File_chatto_api_v1_messages_proto.Services().ByName("MessageService").Methods()
 	return &messageServiceClient{
+		listReactionUsers: connect.NewClient[v1.ListReactionUsersRequest, v1.ListReactionUsersResponse](
+			httpClient,
+			baseURL+MessageServiceListReactionUsersProcedure,
+			connect.WithSchema(messageServiceMethods.ByName("ListReactionUsers")),
+			connect.WithClientOptions(opts...),
+		),
 		fetchLinkPreview: connect.NewClient[v1.FetchLinkPreviewRequest, v1.FetchLinkPreviewResponse](
 			httpClient,
 			baseURL+MessageServiceFetchLinkPreviewProcedure,
@@ -159,6 +182,12 @@ func NewMessageServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			httpClient,
 			baseURL+MessageServiceDeleteAttachmentProcedure,
 			connect.WithSchema(messageServiceMethods.ByName("DeleteAttachment")),
+			connect.WithClientOptions(opts...),
+		),
+		setAttachmentDescription: connect.NewClient[v1.SetAttachmentDescriptionRequest, v1.SetAttachmentDescriptionResponse](
+			httpClient,
+			baseURL+MessageServiceSetAttachmentDescriptionProcedure,
+			connect.WithSchema(messageServiceMethods.ByName("SetAttachmentDescription")),
 			connect.WithClientOptions(opts...),
 		),
 		deleteLinkPreview: connect.NewClient[v1.DeleteLinkPreviewRequest, v1.DeleteLinkPreviewResponse](
@@ -196,16 +225,23 @@ func NewMessageServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 
 // messageServiceClient implements MessageServiceClient.
 type messageServiceClient struct {
-	fetchLinkPreview  *connect.Client[v1.FetchLinkPreviewRequest, v1.FetchLinkPreviewResponse]
-	createMessage     *connect.Client[v1.CreateMessageRequest, v1.CreateMessageResponse]
-	updateMessage     *connect.Client[v1.UpdateMessageRequest, v1.UpdateMessageResponse]
-	deleteMessage     *connect.Client[v1.DeleteMessageRequest, v1.DeleteMessageResponse]
-	deleteAttachment  *connect.Client[v1.DeleteAttachmentRequest, v1.DeleteAttachmentResponse]
-	deleteLinkPreview *connect.Client[v1.DeleteLinkPreviewRequest, v1.DeleteLinkPreviewResponse]
-	getMessage        *connect.Client[v1.GetMessageRequest, v1.GetMessageResponse]
-	batchGetMessages  *connect.Client[v1.BatchGetMessagesRequest, v1.BatchGetMessagesResponse]
-	addReaction       *connect.Client[v1.AddReactionRequest, v1.AddReactionResponse]
-	removeReaction    *connect.Client[v1.RemoveReactionRequest, v1.RemoveReactionResponse]
+	listReactionUsers        *connect.Client[v1.ListReactionUsersRequest, v1.ListReactionUsersResponse]
+	fetchLinkPreview         *connect.Client[v1.FetchLinkPreviewRequest, v1.FetchLinkPreviewResponse]
+	createMessage            *connect.Client[v1.CreateMessageRequest, v1.CreateMessageResponse]
+	updateMessage            *connect.Client[v1.UpdateMessageRequest, v1.UpdateMessageResponse]
+	deleteMessage            *connect.Client[v1.DeleteMessageRequest, v1.DeleteMessageResponse]
+	deleteAttachment         *connect.Client[v1.DeleteAttachmentRequest, v1.DeleteAttachmentResponse]
+	setAttachmentDescription *connect.Client[v1.SetAttachmentDescriptionRequest, v1.SetAttachmentDescriptionResponse]
+	deleteLinkPreview        *connect.Client[v1.DeleteLinkPreviewRequest, v1.DeleteLinkPreviewResponse]
+	getMessage               *connect.Client[v1.GetMessageRequest, v1.GetMessageResponse]
+	batchGetMessages         *connect.Client[v1.BatchGetMessagesRequest, v1.BatchGetMessagesResponse]
+	addReaction              *connect.Client[v1.AddReactionRequest, v1.AddReactionResponse]
+	removeReaction           *connect.Client[v1.RemoveReactionRequest, v1.RemoveReactionResponse]
+}
+
+// ListReactionUsers calls chatto.api.v1.MessageService.ListReactionUsers.
+func (c *messageServiceClient) ListReactionUsers(ctx context.Context, req *connect.Request[v1.ListReactionUsersRequest]) (*connect.Response[v1.ListReactionUsersResponse], error) {
+	return c.listReactionUsers.CallUnary(ctx, req)
 }
 
 // FetchLinkPreview calls chatto.api.v1.MessageService.FetchLinkPreview.
@@ -231,6 +267,11 @@ func (c *messageServiceClient) DeleteMessage(ctx context.Context, req *connect.R
 // DeleteAttachment calls chatto.api.v1.MessageService.DeleteAttachment.
 func (c *messageServiceClient) DeleteAttachment(ctx context.Context, req *connect.Request[v1.DeleteAttachmentRequest]) (*connect.Response[v1.DeleteAttachmentResponse], error) {
 	return c.deleteAttachment.CallUnary(ctx, req)
+}
+
+// SetAttachmentDescription calls chatto.api.v1.MessageService.SetAttachmentDescription.
+func (c *messageServiceClient) SetAttachmentDescription(ctx context.Context, req *connect.Request[v1.SetAttachmentDescriptionRequest]) (*connect.Response[v1.SetAttachmentDescriptionResponse], error) {
+	return c.setAttachmentDescription.CallUnary(ctx, req)
 }
 
 // DeleteLinkPreview calls chatto.api.v1.MessageService.DeleteLinkPreview.
@@ -260,56 +301,67 @@ func (c *messageServiceClient) RemoveReaction(ctx context.Context, req *connect.
 
 // MessageServiceHandler is an implementation of the chatto.api.v1.MessageService service.
 type MessageServiceHandler interface {
+	// Lists all users with the requested reaction. Requires room membership and
+	// permission to read the message. A missing reaction returns an empty page;
+	// a missing or hidden message returns NOT_FOUND or PERMISSION_DENIED.
+	ListReactionUsers(context.Context, *connect.Request[v1.ListReactionUsersRequest]) (*connect.Response[v1.ListReactionUsersResponse], error)
 	// Fetches and caches metadata for a composer URL. Authentication is required
 	// to avoid exposing the preview fetcher as an unauthenticated network proxy.
 	// Successful responses include a short-lived token accepted by CreateMessage.
 	FetchLinkPreview(context.Context, *connect.Request[v1.FetchLinkPreviewRequest]) (*connect.Response[v1.FetchLinkPreviewResponse], error)
 	// Creates a message for the current user. The user must be a room member and
-	// must have message.post for room messages or message.post-in-thread for
-	// thread replies. Echoing a thread reply also requires message.echo and
+	// must have message.post for room messages. Thread replies require read
+	// access and either message.post, message.post-in-thread, or
+	// message.post-in-interactions with an existing interaction relationship.
+	// Echoing a thread reply also requires message.echo and
 	// message.post. The room's Threading Mode may automatically establish a root
 	// thread or reject a thread placement that the mode does not allow.
 	CreateMessage(context.Context, *connect.Request[v1.CreateMessageRequest]) (*connect.Response[v1.CreateMessageResponse], error)
 	// Edits a message body. Authors can edit their own messages within the edit
-	// window. Effective message.manage permits edits at any time. Only the
-	// message author can change channel echo state. Disabled rooms reject
+	// window. Effective message.manage permits edits at any time and removal of
+	// another author's channel echo. Only the author can enable an echo, which
+	// also requires message.echo and message.post. Omit unchanged echo state.
+	// Disabled rooms reject
 	// creation of a new channel echo while allowing an existing echo to be
 	// removed. Room membership is also required.
-	// Channel-room edits require message.read or a matching thread relationship
-	// with message.read-interactions. DM membership authorizes the DM read.
+	// Edits require message.read or a matching thread relationship with
+	// message.read-interactions.
 	UpdateMessage(context.Context, *connect.Request[v1.UpdateMessageRequest]) (*connect.Response[v1.UpdateMessageResponse], error)
 	// Retracts a message. Authors can delete their own messages. Non-authors need
 	// message.manage.
 	DeleteMessage(context.Context, *connect.Request[v1.DeleteMessageRequest]) (*connect.Response[v1.DeleteMessageResponse], error)
 	// Removes one attachment from the author's own message.
 	DeleteAttachment(context.Context, *connect.Request[v1.DeleteAttachmentRequest]) (*connect.Response[v1.DeleteAttachmentResponse], error)
+	// Sets or clears one attachment description. Authors can change descriptions
+	// within the message edit window. Effective message.manage permits changes
+	// at any time and to other users' messages. Room membership and message read
+	// access are required.
+	SetAttachmentDescription(context.Context, *connect.Request[v1.SetAttachmentDescriptionRequest]) (*connect.Response[v1.SetAttachmentDescriptionResponse], error)
 	// Removes the accepted link preview from the author's own message.
 	DeleteLinkPreview(context.Context, *connect.Request[v1.DeleteLinkPreviewRequest]) (*connect.Response[v1.DeleteLinkPreviewResponse], error)
 	// Reads one renderable message, including current body, attachment metadata,
 	// link preview, reactions, thread metadata, and pin state. Authentication
-	// and room membership are required. Channel-room reads also require
+	// and room membership are required. Reads also require
 	// message.read or a matching thread relationship with
-	// message.read-interactions. DM membership authorizes DM reads. Returns
+	// message.read-interactions. Returns
 	// NOT_FOUND when the event does not exist, is not a message, has been
 	// retracted, or belongs to a different room.
 	GetMessage(context.Context, *connect.Request[v1.GetMessageRequest]) (*connect.Response[v1.GetMessageResponse], error)
 	// Reads many renderable messages and their current pin state in one room.
-	// Authentication and room membership are required. Channel-room reads also
+	// Authentication and room membership are required. Reads also
 	// require message.read or a matching thread relationship with
-	// message.read-interactions. DM membership authorizes DM reads. Missing,
+	// message.read-interactions. Missing,
 	// retracted, non-message, wrong-room, and inaccessible event IDs are omitted.
 	// Results preserve first-seen request order, and repeated event IDs are
 	// de-duplicated.
 	BatchGetMessages(context.Context, *connect.Request[v1.BatchGetMessagesRequest]) (*connect.Response[v1.BatchGetMessagesResponse], error)
 	// Adds a reaction to a message. The user must be a room member and have
-	// message.react. Channel-room reactions also require message.read or a
-	// matching thread relationship with message.read-interactions. DM membership
-	// authorizes the DM read.
+	// message.react. Reactions also require message.read or a matching thread
+	// relationship with message.read-interactions.
 	AddReaction(context.Context, *connect.Request[v1.AddReactionRequest]) (*connect.Response[v1.AddReactionResponse], error)
 	// Removes a reaction from a message. The user must be a room member and have
-	// message.react. Channel-room reactions also require message.read or a
-	// matching thread relationship with message.read-interactions. DM membership
-	// authorizes the DM read.
+	// message.react. Reactions also require message.read or a matching thread
+	// relationship with message.read-interactions.
 	RemoveReaction(context.Context, *connect.Request[v1.RemoveReactionRequest]) (*connect.Response[v1.RemoveReactionResponse], error)
 }
 
@@ -320,6 +372,12 @@ type MessageServiceHandler interface {
 // and JSON codecs. They also support gzip compression.
 func NewMessageServiceHandler(svc MessageServiceHandler, opts ...connect.HandlerOption) (string, http.Handler) {
 	messageServiceMethods := v1.File_chatto_api_v1_messages_proto.Services().ByName("MessageService").Methods()
+	messageServiceListReactionUsersHandler := connect.NewUnaryHandler(
+		MessageServiceListReactionUsersProcedure,
+		svc.ListReactionUsers,
+		connect.WithSchema(messageServiceMethods.ByName("ListReactionUsers")),
+		connect.WithHandlerOptions(opts...),
+	)
 	messageServiceFetchLinkPreviewHandler := connect.NewUnaryHandler(
 		MessageServiceFetchLinkPreviewProcedure,
 		svc.FetchLinkPreview,
@@ -348,6 +406,12 @@ func NewMessageServiceHandler(svc MessageServiceHandler, opts ...connect.Handler
 		MessageServiceDeleteAttachmentProcedure,
 		svc.DeleteAttachment,
 		connect.WithSchema(messageServiceMethods.ByName("DeleteAttachment")),
+		connect.WithHandlerOptions(opts...),
+	)
+	messageServiceSetAttachmentDescriptionHandler := connect.NewUnaryHandler(
+		MessageServiceSetAttachmentDescriptionProcedure,
+		svc.SetAttachmentDescription,
+		connect.WithSchema(messageServiceMethods.ByName("SetAttachmentDescription")),
 		connect.WithHandlerOptions(opts...),
 	)
 	messageServiceDeleteLinkPreviewHandler := connect.NewUnaryHandler(
@@ -382,6 +446,8 @@ func NewMessageServiceHandler(svc MessageServiceHandler, opts ...connect.Handler
 	)
 	return "/chatto.api.v1.MessageService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case MessageServiceListReactionUsersProcedure:
+			messageServiceListReactionUsersHandler.ServeHTTP(w, r)
 		case MessageServiceFetchLinkPreviewProcedure:
 			messageServiceFetchLinkPreviewHandler.ServeHTTP(w, r)
 		case MessageServiceCreateMessageProcedure:
@@ -392,6 +458,8 @@ func NewMessageServiceHandler(svc MessageServiceHandler, opts ...connect.Handler
 			messageServiceDeleteMessageHandler.ServeHTTP(w, r)
 		case MessageServiceDeleteAttachmentProcedure:
 			messageServiceDeleteAttachmentHandler.ServeHTTP(w, r)
+		case MessageServiceSetAttachmentDescriptionProcedure:
+			messageServiceSetAttachmentDescriptionHandler.ServeHTTP(w, r)
 		case MessageServiceDeleteLinkPreviewProcedure:
 			messageServiceDeleteLinkPreviewHandler.ServeHTTP(w, r)
 		case MessageServiceGetMessageProcedure:
@@ -411,6 +479,10 @@ func NewMessageServiceHandler(svc MessageServiceHandler, opts ...connect.Handler
 // UnimplementedMessageServiceHandler returns CodeUnimplemented from all methods.
 type UnimplementedMessageServiceHandler struct{}
 
+func (UnimplementedMessageServiceHandler) ListReactionUsers(context.Context, *connect.Request[v1.ListReactionUsersRequest]) (*connect.Response[v1.ListReactionUsersResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("chatto.api.v1.MessageService.ListReactionUsers is not implemented"))
+}
+
 func (UnimplementedMessageServiceHandler) FetchLinkPreview(context.Context, *connect.Request[v1.FetchLinkPreviewRequest]) (*connect.Response[v1.FetchLinkPreviewResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("chatto.api.v1.MessageService.FetchLinkPreview is not implemented"))
 }
@@ -429,6 +501,10 @@ func (UnimplementedMessageServiceHandler) DeleteMessage(context.Context, *connec
 
 func (UnimplementedMessageServiceHandler) DeleteAttachment(context.Context, *connect.Request[v1.DeleteAttachmentRequest]) (*connect.Response[v1.DeleteAttachmentResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("chatto.api.v1.MessageService.DeleteAttachment is not implemented"))
+}
+
+func (UnimplementedMessageServiceHandler) SetAttachmentDescription(context.Context, *connect.Request[v1.SetAttachmentDescriptionRequest]) (*connect.Response[v1.SetAttachmentDescriptionResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("chatto.api.v1.MessageService.SetAttachmentDescription is not implemented"))
 }
 
 func (UnimplementedMessageServiceHandler) DeleteLinkPreview(context.Context, *connect.Request[v1.DeleteLinkPreviewRequest]) (*connect.Response[v1.DeleteLinkPreviewResponse], error) {

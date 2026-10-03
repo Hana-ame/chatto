@@ -15,18 +15,23 @@ const legacyRawReferencePath = path.join(
   repoRoot,
   'apps/docs-website/src/generated/connectrpc-api/index.raw.mdx'
 );
-const staleRawReferencePaths = [
-  legacyRawReferencePath
-];
+const staleRawReferencePaths = [legacyRawReferencePath];
 const outputDir = path.join(
   repoRoot,
   'apps/docs-website/src/content/docs/reference/connectrpc-api'
 );
+const realtimeProtoDir = path.join(repoRoot, 'proto/chatto/realtime/v1');
 
 const categories = [
   {
     title: 'chatto.auth.v1',
     services: [
+      {
+        name: 'ServerSetupService',
+        slug: 'server-setup',
+        title: 'Server Setup',
+        description: 'Public first-run server setup and initial owner creation.'
+      },
       {
         name: 'ExternalIdentityAuthService',
         slug: 'external-identity-auth',
@@ -68,6 +73,12 @@ const categories = [
         description: 'Chunked room-scoped attachment upload RPCs.'
       },
       {
+        name: 'PermissionService',
+        slug: 'permissions',
+        title: 'Effective Permissions',
+        description: 'Read-only effective permissions for bot and human accounts.'
+      },
+      {
         name: 'BotService',
         slug: 'bots',
         title: 'Bots',
@@ -77,7 +88,8 @@ const categories = [
         name: 'MessageService',
         slug: 'messages',
         title: 'Messages',
-        description: 'Message creation, editing, deletion, composer link-preview, reaction, and attachment RPCs.'
+        description:
+          'Message creation, editing, deletion, composer link-preview, reaction, and attachment RPCs.'
       },
       {
         name: 'MessageSearchService',
@@ -89,14 +101,14 @@ const categories = [
         name: 'MyAccountService',
         slug: 'account',
         title: 'My Account',
-        description: 'Self-service account, profile, presence, status, external identity, and settings RPCs for the authenticated user.'
+        description:
+          'Self-service account, profile, presence, status, external identity, and settings RPCs for the authenticated user.'
       },
       {
         name: 'NotificationService',
         slug: 'notifications',
         title: 'Notifications',
-        description:
-          'Exact notification occurrence listing, read, deletion, and legacy server/room policy RPCs.'
+        description: 'Exact notification occurrence listing, read, and deletion RPCs.'
       },
       {
         name: 'NotificationPolicyService',
@@ -127,7 +139,8 @@ const categories = [
         name: 'RoomService',
         slug: 'rooms',
         title: 'Rooms',
-        description: 'Room lifecycle, timeline, read-state, membership, direct-message, typing indicator, and moderation RPCs.'
+        description:
+          'Room lifecycle, timeline, read-state, membership, direct-message, typing indicator, and moderation RPCs.'
       },
       {
         name: 'ServerService',
@@ -301,8 +314,25 @@ function dedupeInlineMethodTypes(content) {
   return output;
 }
 
-function isRealtimeType(name) {
-  return name.startsWith('Realtime');
+function isRealtimeType(section) {
+  return section.anchor.startsWith('chatto-realtime-v1-');
+}
+
+async function collectRealtimeEventTypeNames() {
+  const names = new Set(['RealtimeEvent']);
+  const entries = await readdir(realtimeProtoDir, { withFileTypes: true });
+  const eventFiles = entries.filter(
+    (entry) => entry.isFile() && /(?:^|_)events\.proto$/.test(entry.name)
+  );
+
+  for (const entry of eventFiles) {
+    const source = await readFile(path.join(realtimeProtoDir, entry.name), 'utf8');
+    for (const match of source.matchAll(/^(?:message|enum)\s+([A-Za-z][A-Za-z0-9_]*)\s*\{/gm)) {
+      names.add(match[1]);
+    }
+  }
+
+  return names;
 }
 
 function renderPage(title, description, body) {
@@ -332,6 +362,12 @@ function renderLanding() {
     '```',
     '',
     '`chatto.discovery.v1` server discovery is unauthenticated. Most other documented ConnectRPC services require an `Authorization: Bearer <token>` header or a browser session when called by the bundled web client.',
+    '',
+    '## Resource Updates',
+    '',
+    'Resource `Update*` methods use `update_mask` to select editable fields. Unselected fields stay unchanged. A selected field without a value resets to its default or absence, subject to validation. Selected lists replace the previous list, including with an empty list.',
+    '',
+    'In JSON, use a comma-separated camelCase string: `{"updateMask":"timezone,shareTimezone","timezone":null,"shareTimezone":false}`. Generated clients use snake_case paths in `FieldMask.paths`. An omitted mask selects populated fields; an explicit empty mask is invalid. Prefer explicit paths to `*`, which selects all editable fields. See the [update migration guide](/guides/integrations/api-compatibility/#resource-updates-in-05) for reset rules and command renames.',
     '',
     '## Authentication And Permissions',
     '',
@@ -374,7 +410,7 @@ function renderLanding() {
     '**`chatto.realtime.v1`**',
     '',
     '- **Transport:** WebSocket protobuf frames at `/api/realtime`.',
-    '- **Covers:** Live event delivery and realtime client synchronization.',
+    '- **Covers:** Realtime event delivery and client synchronization.',
     '- **Contract:** Public realtime wire protocol. It is documented separately because it is not a ConnectRPC service.',
     '',
     'This split makes it clear which calls are for ordinary client behavior, which calls are administrative, and which protocol handles live updates.',
@@ -484,7 +520,24 @@ function renderLanding() {
     '',
     '## Responses And Errors',
     '',
+    'Commands that only acknowledge success return a named empty response (`{}` in JSON). Use RPC completion to detect success. Fields that report an actual change, state, or count remain part of the response.',
+    '',
     'Successful unary JSON calls return the protobuf response message as JSON. Field names use protobuf JSON casing, such as `publicProfile` and `directRegistrationEnabled`.',
+    '',
+    'Use the [ProtoJSON mapping](https://protobuf.dev/programming-guides/json/) when you read or write JSON directly:',
+    '',
+    '| Protobuf type | JSON representation |',
+    '| --- | --- |',
+    '| 64-bit integer | Decimal string, such as `"123"`. |',
+    '| 32-bit integer | Number, such as `123`. |',
+    '| `google.protobuf.Timestamp` | RFC 3339 string, such as `"2026-09-10T12:00:00Z"`. |',
+    '| Enum | Symbolic protobuf name; unknown numeric values can appear as numbers. |',
+    '| `bytes` | Base64 string. |',
+    '| `google.protobuf.FieldMask` | Comma-separated paths in lower camel case, such as `"displayName,avatarAssetId"`. |',
+    '',
+    'For example, `PageInfo.total_count` appears as `"totalCount": "123"`. Do not convert arbitrary 64-bit values to JavaScript `Number`; use `BigInt` or keep the decimal string to preserve precision.',
+    '',
+    'Default values without explicit presence are normally omitted. A present `optional` field can contain its default value, including `false`. JSON `null` means unset on input; it does not by itself request a stored-field reset. Update endpoints use `updateMask` to select fields to set or reset. Follow the endpoint documentation for reset behavior.',
     '',
     'ProtoJSON integrations that need to tolerate future additive oneof variants must configure their decoder to ignore unknown fields. In particular, Notifications 2.0 may add new `NotificationSignal` variants; strict generated JSON clients must be regenerated before receiving such a variant. Binary protobuf is recommended when forward-compatible unknown-field retention is required.',
     '',
@@ -495,7 +548,8 @@ function renderLanding() {
     '- `unauthenticated` - the call needs a signed-in user or bearer token.',
     '- `permission_denied` - the user is authenticated but lacks the required permission.',
     '- `not_found` - a singular lookup target does not exist.',
-    '- `invalid_argument` - the request message failed validation.',
+    '- `invalid_argument` - the request message failed validation, including an unknown permission identifier.',
+    '- `failed_precondition` - the operation is blocked by current state, such as the username-change cooldown.',
     '- `unimplemented` - the serving version does not understand a requested resource variant.',
     '',
     'Generated clients expose those codes through their Connect client error helpers. Plain HTTP tools receive a Connect error response with an HTTP status mapped from the Connect code.',
@@ -519,20 +573,19 @@ function renderLanding() {
     ...categories.flatMap((category) => [
       `### ${category.title}`,
       '',
-      ...category.services.map((service) => `- [${service.name}](/reference/connectrpc-api/${service.slug}/) - ${service.description}`),
+      ...category.services.map(
+        (service) =>
+          `- [${service.name}](/reference/connectrpc-api/${service.slug}/) - ${service.description}`
+      ),
       ''
     ]),
     '',
     '## Shared References',
     '',
     '- [Shared Types And Enums](/reference/connectrpc-api/types/) - common message and enum definitions used by service responses.',
-    '- [Realtime WebSocket Protocol](/reference/connectrpc-api/realtime/) - `chatto.realtime.v1` binary protobuf frames exchanged at `/api/realtime`.'
+    '- [Realtime WebSocket Protocol](/reference/connectrpc-api/realtime/) - `chatto.realtime.v1` binary protobuf frames and public event variants exchanged at `/api/realtime`.'
   ];
-  return renderPage(
-    'API Overview',
-    "Overview of Chatto's public protobuf API.",
-    lines.join('\n')
-  );
+  return renderPage('API Overview', "Overview of Chatto's public protobuf API.", lines.join('\n'));
 }
 
 function renderServicePage(service, serviceSections) {
@@ -551,10 +604,10 @@ function renderServicePage(service, serviceSections) {
 
 function renderTypesPage(typeSections, enumSections) {
   const normalTypes = [...typeSections.entries()]
-    .filter(([, section]) => !isRealtimeType(section.name))
+    .filter(([, section]) => !isRealtimeType(section))
     .map(([, section]) => section.content);
   const normalEnums = [...enumSections.entries()]
-    .filter(([, section]) => !isRealtimeType(section.name))
+    .filter(([, section]) => !isRealtimeType(section))
     .map(([, section]) => section.content);
 
   const body = [
@@ -576,33 +629,52 @@ function renderTypesPage(typeSections, enumSections) {
   );
 }
 
-function renderRealtimePage(typeSections, enumSections) {
-  const realtimeTypes = [...typeSections.entries()]
-    .filter(([, section]) => isRealtimeType(section.name))
-    .map(([, section]) => rewriteRealtimeExternalLinks(section.content));
-  const realtimeEnums = [...enumSections.entries()]
-    .filter(([, section]) => isRealtimeType(section.name))
-    .map(([, section]) => rewriteRealtimeExternalLinks(section.content));
+function renderRealtimePage(typeSections, enumSections, eventTypeNames) {
+  const realtimeTypes = [...typeSections.values()].filter(isRealtimeType);
+  const realtimeEnums = [...enumSections.values()].filter(isRealtimeType);
+  const eventTypes = realtimeTypes.filter((section) => eventTypeNames.has(section.name));
+  const eventEnums = realtimeEnums.filter((section) => eventTypeNames.has(section.name));
+  const protocolTypes = realtimeTypes.filter((section) => !eventTypeNames.has(section.name));
+  const protocolEnums = realtimeEnums.filter((section) => !eventTypeNames.has(section.name));
+
+  eventTypes.sort((left, right) => {
+    if (left.name === 'RealtimeEvent') return -1;
+    if (right.name === 'RealtimeEvent') return 1;
+    return 0;
+  });
+
+  const renderSections = (sections) =>
+    sections.map((section) => rewriteRealtimeExternalLinks(section.content));
 
   const body = [
     'Chatto exposes realtime updates at `GET /api/realtime` using binary protobuf frames from `chatto.realtime.v1`.',
     '',
-    'Read the [Realtime Protocol Overview](/guides/integrations/realtime-protocol/) before you implement the connection lifecycle, projection reducer, room hydration, or reconnect behavior. Follow [Use Realtime From TypeScript](/guides/integrations/realtime-typescript/) for a complete browser example.',
+    'Read the [Realtime Protocol Overview](/guides/integrations/realtime-protocol/) before you implement the connection lifecycle, snapshot processing, event processing, targeted cursor-bounded reads, or reconnect behavior. Follow [Use Realtime From TypeScript](/guides/integrations/realtime-protocol/#use-realtime-from-typescript) for a complete browser example.',
     '',
-    'This page is the field-level reference. Realtime frames are documented separately from ConnectRPC services because they are exchanged over a long-lived WebSocket session rather than `/api/connect` RPC methods.',
+    'This page separates protocol frames from the public event catalogue. The [`RealtimeEvent`](#chatto-realtime-v1-RealtimeEvent) section lists every public event variant.',
     '',
-    '## Protocol Types',
+    'Realtime frames are documented separately from ConnectRPC services because they are exchanged over a long-lived WebSocket session rather than `/api/connect` RPC methods.',
     '',
-    ...realtimeTypes,
+    '## Protocol Frames',
     '',
-    '## Protocol Enums',
+    'These messages and enums control the WebSocket lifecycle, snapshots, recovery, liveness, errors, and closure.',
     '',
-    ...realtimeEnums
+    ...renderSections(protocolTypes),
+    '',
+    ...renderSections(protocolEnums),
+    '',
+    '## Event Catalogue',
+    '',
+    'These messages and enums define the authorized semantic events that the server can deliver. An event can contain a resume cursor when the server can replay it. Other events are cursorless.',
+    '',
+    ...renderSections(eventTypes),
+    '',
+    ...renderSections(eventEnums)
   ];
 
   return renderPage(
     'Realtime WebSocket Protocol',
-    'Generated protobuf frame reference for the Chatto realtime WebSocket API.',
+    'Generated protobuf frame and event reference for the Chatto realtime WebSocket API.',
     body.join('\n\n')
   );
 }
@@ -689,7 +761,9 @@ for (const rawReferencePath of rawReferencePaths) {
   const supportingStart = raw.indexOf('\n## Supporting Types\n');
   const enumsStart = raw.indexOf('\n## Enums\n');
   if (enumsStart !== -1 && supportingStart !== -1 && enumsStart < supportingStart) {
-    throw new Error(`Generated Enums section appears before Supporting Types in ${rawReferencePath}.`);
+    throw new Error(
+      `Generated Enums section appears before Supporting Types in ${rawReferencePath}.`
+    );
   }
 
   const serviceEnd =
@@ -730,7 +804,11 @@ for (const service of servicePages) {
   generatedPages.set(`${service.slug}.mdx`, renderServicePage(service, serviceSections));
 }
 generatedPages.set('types.mdx', renderTypesPage(typeSections, enumSections));
-generatedPages.set('realtime.mdx', renderRealtimePage(typeSections, enumSections));
+const realtimeEventTypeNames = await collectRealtimeEventTypeNames();
+generatedPages.set(
+  'realtime.mdx',
+  renderRealtimePage(typeSections, enumSections, realtimeEventTypeNames)
+);
 
 validateGeneratedPages(generatedPages);
 

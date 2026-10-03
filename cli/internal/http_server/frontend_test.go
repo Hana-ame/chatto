@@ -20,6 +20,7 @@ import (
 	"hmans.de/chatto/internal/core"
 	evtv1 "hmans.de/chatto/internal/pb/chatto/core/evt/v1"
 	"hmans.de/chatto/internal/testutil"
+	"hmans.de/chatto/pkg/signedurl"
 )
 
 func TestExtractImmutableETag(t *testing.T) {
@@ -614,24 +615,16 @@ func TestBrowserIconRoutes(t *testing.T) {
 		return server
 	}
 
-	t.Run("redirects to the original server logo", func(t *testing.T) {
+	t.Run("redirects to distinct same-origin server logo transforms", func(t *testing.T) {
 		chattoCore := setupFrontendTestCoreWithLogo(t)
-		chattoCore.AssetBaseURL = "https://assets.example.com"
 		server := newServer(t, chattoCore)
 
-		// 【本地改动 2026-09-13】fork 取消服务端资产衍生图:logo/头像/banner/链接
-		// 预览在上传时就缩放到上限并压缩(assets.processServerAssetImage),请求期
-		// 不再缩放,所以 favicon(32) 与 apple-touch-icon(180) 请求的尺寸被丢弃,
-		// 两个路由都 307 到**同一条**原档 URL。上游原本是两个不同尺寸的
-		// transform,这里改为断言它们相等——浏览器自己降采样 512x512 的 logo。
-		//
-		// 发现背景:上游断言 Location 以 /assets/server/logo-asset/t/ 开头并用
-		// ParseSignedTransformPath 解出尺寸;URL 生成层 override 成原档链接后
-		// 签名段不存在,原断言必然红。
-		// 回归提示:若 fork 将来恢复请求期缩放,必须把本断言改回「两个不同尺寸
-		// 的签名 transform」。
+		expectedSizes := map[string]int{
+			"/favicon":          32,
+			"/apple-touch-icon": 180,
+		}
 		locations := make(map[string]string)
-		for _, iconPath := range []string{"/favicon", "/apple-touch-icon"} {
+		for iconPath, expectedSize := range expectedSizes {
 			req := httptest.NewRequest(http.MethodGet, iconPath, nil)
 			w := httptest.NewRecorder()
 			server.router.ServeHTTP(w, req)
@@ -639,13 +632,24 @@ func TestBrowserIconRoutes(t *testing.T) {
 			assert.Equal(t, http.StatusTemporaryRedirect, w.Code)
 			assert.Equal(t, cacheControlNoCache, w.Header().Get("Cache-Control"))
 			location := w.Header().Get("Location")
-			assert.True(t, strings.HasPrefix(location, "/assets/server/logo-asset"), "location = %q", location)
-			assert.NotContains(t, location, "assets.example.com")
-			assert.NotContains(t, location, "/t/", "fork issues no server asset transform URL: %q", location)
+			assert.True(t, strings.HasPrefix(location, "/assets/server/logo-asset/t/"))
+
+			signedPath := strings.TrimPrefix(location, "/assets/server/logo-asset/t/")
+			params, err := signedurl.ParseSignedTransformPath(
+				"test-signing-secret",
+				core.ServerAssetSignResource,
+				"logo-asset",
+				signedPath,
+			)
+			if err != nil {
+				t.Fatalf("parse transform for %s: %v", iconPath, err)
+			}
+			assert.Equal(t, expectedSize, params.Width)
+			assert.Equal(t, expectedSize, params.Height)
+			assert.Equal(t, "cover", params.Fit)
 			locations[iconPath] = location
 		}
-		assert.Equal(t, locations["/apple-touch-icon"], locations["/favicon"],
-			"fork discards the requested icon size, so both routes point at the original logo")
+		assert.NotEqual(t, locations["/favicon"], locations["/apple-touch-icon"])
 	})
 
 	t.Run("redirects to embedded icons when no server logo exists", func(t *testing.T) {
@@ -681,7 +685,6 @@ func TestServePWAWebManifestUsesServerLogoWhenAvailable(t *testing.T) {
 	}
 	chattoCore := setupFrontendTestCoreWithLogo(t)
 	setTestServerName(t, context.Background(), chattoCore, "Engineering")
-	chattoCore.AssetBaseURL = "https://assets.example.com"
 	server := &HTTPServer{
 		config: config.ChattoConfig{Webserver: config.WebserverConfig{URL: "https://example.com"}},
 		core:   chattoCore,
@@ -705,12 +708,7 @@ func TestServePWAWebManifestUsesServerLogoWhenAvailable(t *testing.T) {
 	assert.Equal(t, "Engineering", manifest["name"])
 	assert.Equal(t, "Engineering", manifest["short_name"])
 	icons := manifest["icons"].([]any)
-	// 【本地改动 2026-09-13】fork 取消服务端资产衍生图:manifest 的 192x192 与
-	// 512x512 图标 URL 都指向同一条原档 logo 链接(尺寸被丢弃,不含 /t/),
-	// 浏览器自己降采样。上游原本是两个不同尺寸的签名 transform。
-	assert.True(t, strings.HasPrefix(icons[0].(map[string]any)["src"].(string), "/assets/server/logo-asset"))
-	assert.NotContains(t, icons[0].(map[string]any)["src"], "/t/", "fork issues no server asset transform URL")
-	assert.NotContains(t, icons[0].(map[string]any)["src"], "assets.example.com")
+	assert.True(t, strings.HasPrefix(icons[0].(map[string]any)["src"].(string), "/assets/server/logo-asset/t/"))
 	assert.Equal(t, "192x192", icons[0].(map[string]any)["sizes"])
 	assert.Equal(t, "image/png", icons[0].(map[string]any)["type"])
 	assert.Equal(t, "maskable", icons[2].(map[string]any)["purpose"])
@@ -734,6 +732,7 @@ func TestFrontendFallbackDoesNotServeReservedBackendPrefixes(t *testing.T) {
 		"/api/unknown",
 		"/auth/unknown",
 		"/assets/unknown",
+		"/.well-known/resource-that-should-not-exist-whose-status-code-should-not-be-200",
 	}
 	for _, path := range tests {
 		t.Run(path, func(t *testing.T) {
@@ -777,6 +776,27 @@ func setupFrontendTestCoreWithLogo(t *testing.T) *core.ChattoCore {
 	return chattoCore
 }
 
+func TestOpenGraphImageUsesCanonicalOrigin(t *testing.T) {
+	chattoCore := setupFrontendTestCoreWithLogo(t)
+	banner := &evtv1.AssetRecord{
+		Id:          "banner-asset",
+		Filename:    "banner.webp",
+		ContentType: "image/webp",
+		Storage:     &evtv1.AssetRecord_Nats{Nats: &evtv1.NATSAsset{Key: "banner-asset"}},
+	}
+	if err := chattoCore.SetServerBanner(context.Background(), core.SystemActorID, banner); err != nil {
+		t.Fatalf("SetServerBanner: %v", err)
+	}
+	server := &HTTPServer{
+		config: config.ChattoConfig{Webserver: config.WebserverConfig{URL: "https://example.com/"}},
+		core:   chattoCore,
+	}
+
+	// Crawlers require an absolute og:image URL.
+	meta := server.getOpenGraphMeta(context.Background(), "/")
+	assert.True(t, strings.HasPrefix(meta.Image, "https://example.com/assets/server/banner-asset/t/"), "og:image = %q", meta.Image)
+}
+
 func TestFrontendFallbackAllowsRoutesWithReservedPrefixNames(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -794,6 +814,7 @@ func TestFrontendFallbackAllowsRoutesWithReservedPrefixNames(t *testing.T) {
 		"/apiary",
 		"/author",
 		"/assets-gallery",
+		"/.well-knownish",
 	}
 	for _, path := range tests {
 		t.Run(path, func(t *testing.T) {

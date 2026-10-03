@@ -75,7 +75,9 @@
     },
     "timeline": {
       "beginning": "هذه هي بداية هذه المحادثة.",
-      "read_denied": "ليس لديك إذن لقراءة الرسائل في هذه الغرفة."
+      "read_denied": "ليس لديك إذن لقراءة الرسائل في هذه الغرفة.",
+      "limited_empty": "لا توجد محادثات يمكنك قراءتها بعد.",
+      "loading": "جارٍ تحميل الرسائل..."
     },
     "message": {
       "empty": "لا توجد رسائل حتى الآن",
@@ -91,6 +93,7 @@
         "remove_reaction": "قم بإزالة {emoji}",
         "add_reaction": "إضافة رد فعل",
         "more_reactions": "المزيد من التفاعلات",
+        "reactions": "التفاعلات",
         "reply": "رد",
         "reply_room": "الرد في الغرفة",
         "reply_thread": "الرد في الموضوع",
@@ -100,9 +103,18 @@
         "edit_short": "تعديل",
         "copy_text": "نسخ النص",
         "copy_text_failed": "فشل في نسخ النص",
-        "copy_link": "انسخ الرابط"
+        "copy_link": "انسخ الرابط",
+        "copy_message_link": "نسخ رابط الرسالة",
+        "copy_image": "نسخ الصورة",
+        "link_copied": "تم نسخ الرابط",
+        "message_link_copied": "تم نسخ رابط الرسالة",
+        "copy_link_failed": "تعذر نسخ الرابط",
+        "image_copied": "تم نسخ الصورة",
+        "copy_image_failed": "تعذر نسخ الصورة"
       },
       "meta": {
+        "echo": "صدى",
+        "edited_short": "معدّلة",
         "pinned": "رسالة مثبّتة",
         "thread": "الموضوع",
         "edited": "تم تعديل الرسالة",
@@ -158,6 +170,14 @@
       },
       "show_less": "عرض أقل"
     },
+    "typing": {
+      "one": "{name} يكتب",
+      "two": "{first} و{second} يكتبان",
+      "many_count": {
+        "other": "{names} و{count} آخرون يكتبون",
+        "one": "{names} و{count} آخر يكتبون"
+      }
+    },
     "attachment": {
       "delete_title": "حذف المرفق",
       "delete_prompt": "هل أنت متأكد أنك تريد حذف هذا المرفق؟ لا يمكن التراجع عن هذا.",
@@ -166,7 +186,27 @@
       "view_label": "عرض {filename}",
       "download_label": "تنزيل {filename}",
       "image_refresh_failed": "تعذر تحديث رابط الصورة",
-      "download_refresh_failed": "تعذر تحديث رابط التنزيل"
+      "download_refresh_failed": "تعذر تحديث رابط التنزيل",
+      "add_description": "إضافة وصف",
+      "edit_description": "تعديل الوصف",
+      "description_title": "وصف المرفق",
+      "description_label": "الوصف (اختياري)",
+      "description_help": "صِف المرفق للأشخاص الذين لا يستطيعون رؤيته أو سماعه.",
+      "description_too_long": "يمكن أن يحتوي الوصف على {max} حرفًا كحد أقصى.",
+      "description_update_failed": "تعذر تحديث وصف المرفق",
+      "html_viewer": {
+        "download": "تنزيل",
+        "show_preview": "إظهار المعاينة",
+        "warning": "قد يحمّل هذا المستند محتوى من مواقع ويب خارجية. يمكن لهذه المواقع رؤية عنوان IP الخاص بك.",
+        "preview_title": "معاينة {filename}",
+        "preview_failed": "تعذّر تحميل المعاينة. حاول مرة أخرى.",
+        "document_type": "نوع المستند",
+        "html_document": "مستند HTML",
+        "xhtml_document": "مستند XHTML",
+        "file_size": "حجم الملف",
+        "unavailable": "غير متاح",
+        "no_preview": "لا تتوفر معاينة لهذا الملف. يمكنك تنزيله لحفظه."
+      }
     },
     "link_preview": {
       "delete_title": "حذف معاينة الرابط",
@@ -174,6 +214,7 @@
       "delete_failed": "فشل في حذف معاينة الرابط"
     },
     "sidebar": {
+      "go_to_message": "انتقل إلى الرسالة",
       "extras": "إضافات الغرفة",
       "resize": "تغيير حجم جزء إضافات الغرفة",
       "hide": "إخفاء إضافات الغرفة",
@@ -186,24 +227,25 @@
       "clear_member_search": "مسح البحث عن الأعضاء",
       "no_members": "لم يتم العثور على أعضاء.",
       "online": "عبر الإنترنت ({count})",
+      "bots": "الروبوتات ({count})",
       "offline": "غير متصل ({count})",
       "no_files": "لا توجد ملفات في هذه الغرفة بعد.",
       "files": "الملفات",
       "pins": "الرسائل المثبّتة",
-      "call": "اتصل",
+      "call": "مكالمة",
       "jump_to_file": "انتقل إلى {filename}",
       "loading_files": "جارٍ تحميل الملفات...",
+      "loading_members": "جارٍ تحميل الأعضاء...",
       "calls_unavailable": "المكالمات غير متاحة على هذا الخادم.",
       "view_profile": "عرض الملف الشخصي لـ {name}",
       "in_voice_call": "في مكالمة صوتية",
       "in_video_call": "في مكالمة فيديو",
-      "ban_failed": "فشل في حظر العضو من الغرفة",
-      "ban_success": "تم حظر {name} من الغرفة"
+      "remove_failed": "تعذرت إزالة المستخدم من الغرفة",
+      "remove_success": "تمت إزالة {name} من الغرفة",
+      "search": "بحث"
     },
     "pins": {
-      "show": "عرض الرسائل المثبّتة",
       "unseen": "رسائل مثبّتة جديدة",
-      "hide": "إخفاء الرسائل المثبّتة",
       "pin": "تثبيت الرسالة",
       "unpin": "إلغاء تثبيت الرسالة",
       "unpin_prompt": "هل أنت متأكد من إزالة تثبيت هذه الرسالة؟",

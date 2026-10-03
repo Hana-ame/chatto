@@ -26,6 +26,73 @@ room read state, attachments, and live typing. Resource-specific services
 should still be preferred when an operation is not naturally room-scoped or
 when the resource needs an independent CRUD/batch surface.
 
+<a id="chatto-api-v1-RoomService-GetRoomReadState"></a>
+
+### GetRoomReadState
+
+Reads the current viewer's stored marker without changing it. Requires the
+same membership and read access as MarkRoomAsRead. Missing resources
+return NOT_FOUND; inaccessible resources return PERMISSION_DENIED.
+
+```http
+POST /api/connect/chatto.api.v1.RoomService/GetRoomReadState
+```
+
+<a id="chatto-api-v1-GetRoomReadStateRequest"></a>
+
+#### Input: GetRoomReadStateRequest
+
+Request current room read state without changing it.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `room_id` | `string` | Room ID. |
+
+
+<a id="chatto-api-v1-GetRoomReadStateResponse"></a>
+
+#### Result: GetRoomReadStateResponse
+
+Current room read state, including an absent marker when none is stored.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `state` | [`RoomReadState`](/reference/connectrpc-api/types/#chatto-api-v1-RoomReadState) | State for the requested room and viewer. |
+
+
+<a id="chatto-api-v1-RoomService-BatchGetRoomReadStates"></a>
+
+### BatchGetRoomReadStates
+
+Reads up to 100 states under the same authorization as GetRoomReadState.
+Missing and inaccessible resources are omitted; duplicates use first-seen order.
+
+```http
+POST /api/connect/chatto.api.v1.RoomService/BatchGetRoomReadStates
+```
+
+<a id="chatto-api-v1-BatchGetRoomReadStatesRequest"></a>
+
+#### Input: BatchGetRoomReadStatesRequest
+
+Request room read states. Duplicates are removed in first-seen order.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `room_ids` | `repeated string` | Up to 100 room IDs. Missing or inaccessible rooms are omitted. |
+
+
+<a id="chatto-api-v1-BatchGetRoomReadStatesResponse"></a>
+
+#### Result: BatchGetRoomReadStatesResponse
+
+Accessible room read states in first-seen request order.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `states` | repeated [`RoomReadState`](/reference/connectrpc-api/types/#chatto-api-v1-RoomReadState) | States for the current viewer. An absent marker does not omit the state. |
+
+
 <a id="chatto-api-v1-RoomService-CreateRoom"></a>
 
 ### CreateRoom
@@ -79,6 +146,8 @@ POST /api/connect/chatto.api.v1.RoomService/UpdateRoom
 #### Input: UpdateRoomRequest
 
 Request to update a room's editable metadata.
+update_mask selects editable fields to apply or reset. Fields outside the
+mask stay unchanged.
 
 | Field | Type | Description |
 | --- | --- | --- |
@@ -88,6 +157,7 @@ Request to update a room's editable metadata.
 | `universal` | `optional bool` | New universal membership state, when changing it. Direct-message rooms cannot be universal. |
 | `slow_mode_seconds` | `optional uint32` | New per-user posting interval in seconds. Zero disables slow mode. The maximum supported interval is six hours. Direct-message rooms cannot use slow mode. |
 | `threading_mode` | optional [`RoomThreadingMode`](/reference/connectrpc-api/types/#chatto-api-v1-RoomThreadingMode) | New threading policy. Direct-message rooms cannot set this field, and an explicitly supplied UNSPECIFIED or unknown value is rejected. |
+| `update_mask` | `google.protobuf.FieldMask` | Editable fields to apply or reset: name, description, universal, slow_mode_seconds, threading_mode. Omit to infer populated fields; * selects all editable fields. An explicit empty mask is invalid. Unselected values are ignored. Selected absent values reset the field to its default, subject to field validation. |
 
 
 <a id="chatto-api-v1-UpdateRoomResponse"></a>
@@ -298,25 +368,22 @@ Request to leave a room as the current user.
 
 Result of leaving a room.
 
-| Field | Type | Description |
-| --- | --- | --- |
-| `left` | `bool` | True when the current user is no longer an explicit member after the call. |
-
 
 <a id="chatto-api-v1-RoomService-ListMembers"></a>
 
 ### ListMembers
 
-Lists effective room members. Existing members and room.manage holders may
+Lists effective room member IDs in ascending ID order. Resolve user details
+with UserService.BatchGetUsers. Existing members and room.manage holders may
 list a channel room; other nonmembers need both room.list and room.join.
 
 ```http
 POST /api/connect/chatto.api.v1.RoomService/ListMembers
 ```
 
-<a id="chatto-api-v1-ListRoomMembersRequest"></a>
+<a id="chatto-api-v1-ListMembersRequest"></a>
 
-#### Input: ListRoomMembersRequest
+#### Input: ListMembersRequest
 
 Request for members of one room.
 
@@ -324,36 +391,40 @@ Request for members of one room.
 | --- | --- | --- |
 | `room_id` | `string` | Required. Room whose effective members should be listed. Existing members and room.manage holders may list a channel room; other nonmembers need both room.list and room.join. |
 | `search` | `string` | Optional case-insensitive search against login and display name. |
-| `page` | [`PageRequest`](/reference/connectrpc-api/types/#chatto-api-v1-PageRequest) | Page request. Defaults to 250 results when absent or limit is zero. |
+| `page` | [`PageRequest`](/reference/connectrpc-api/types/#chatto-api-v1-PageRequest) | Defaults to 250 results when absent or limit is zero. Maximum: 500. |
+| `presence_statuses` | repeated [`PresenceStatus`](/reference/connectrpc-api/types/#chatto-api-v1-PresenceStatus) | Optional status filter applied before pagination. Empty means all statuses. Select ONLINE, AWAY, and DO_NOT_DISTURB for all connected members. Presence can change between pages; use realtime updates to keep it current. |
 
 
-<a id="chatto-api-v1-ListRoomMembersResponse"></a>
+<a id="chatto-api-v1-ListMembersResponse"></a>
 
-#### Result: ListRoomMembersResponse
+#### Result: ListMembersResponse
 
-Room member page.
+Room membership IDs. Resolve profiles with UserService.BatchGetUsers.
+Empty searches do not read user profiles. Search results require profile
+reads to match names. Both paths use ascending user ID order.
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `members` | repeated [`DirectoryMember`](/reference/connectrpc-api/types/#chatto-api-v1-DirectoryMember) | Members in the requested page. |
-| `page` | [`PageInfo`](/reference/connectrpc-api/types/#chatto-api-v1-PageInfo) | Page metadata. |
+| `user_ids` | `repeated string` | Current member IDs in ascending order. Missing or deleted users are omitted. |
+| `page` | [`PageInfo`](/reference/connectrpc-api/types/#chatto-api-v1-PageInfo) | Page metadata for the members that match both filters. |
 
 
 <a id="chatto-api-v1-RoomService-GetMember"></a>
 
 ### GetMember
 
-Gets one explicit member of a room. Existing members and room.manage
-holders may read channel-room members; DMs remain membership-only. Returns
-NOT_FOUND when the target is unknown or not a room member.
+Gets one effective member, including automatic universal membership.
+Channel-room members, room.manage holders, and user.manage-accounts holders
+may read members. Bot owners and bot.manage holders may read their target
+bots only. DMs require caller membership. Returns NOT_FOUND for nonmembers.
 
 ```http
 POST /api/connect/chatto.api.v1.RoomService/GetMember
 ```
 
-<a id="chatto-api-v1-GetRoomMemberRequest"></a>
+<a id="chatto-api-v1-GetMemberRequest"></a>
 
-#### Input: GetRoomMemberRequest
+#### Input: GetMemberRequest
 
 Request one member of one room by stable user ID.
 
@@ -363,9 +434,9 @@ Request one member of one room by stable user ID.
 | `user_id` | `string` | Required target user ID. |
 
 
-<a id="chatto-api-v1-GetRoomMemberResponse"></a>
+<a id="chatto-api-v1-GetMemberResponse"></a>
 
-#### Result: GetRoomMemberResponse
+#### Result: GetMemberResponse
 
 Room member response.
 
@@ -378,17 +449,16 @@ Room member response.
 
 ### BatchGetMembers
 
-Gets explicit room member rows for multiple users. Existing members and
-room.manage holders may read channel-room members; DMs remain
-membership-only.
+Gets effective member rows for the requested accounts. Uses the same
+authorization as GetMember; omits unknown accounts and nonmembers.
 
 ```http
 POST /api/connect/chatto.api.v1.RoomService/BatchGetMembers
 ```
 
-<a id="chatto-api-v1-BatchGetRoomMembersRequest"></a>
+<a id="chatto-api-v1-BatchGetMembersRequest"></a>
 
-#### Input: BatchGetRoomMembersRequest
+#### Input: BatchGetMembersRequest
 
 Request room member rows for a set of stable user IDs.
 
@@ -398,9 +468,9 @@ Request room member rows for a set of stable user IDs.
 | `user_ids` | `repeated string` | Required target user IDs. Unknown IDs and users that are not members of the room are omitted from the response. |
 
 
-<a id="chatto-api-v1-BatchGetRoomMembersResponse"></a>
+<a id="chatto-api-v1-BatchGetMembersResponse"></a>
 
-#### Result: BatchGetRoomMembersResponse
+#### Result: BatchGetMembersResponse
 
 Batch room member response.
 
@@ -413,9 +483,11 @@ Batch room member response.
 
 ### AddMember
 
-Adds a user as an explicit member of a channel room. The caller must be
-allowed to manage the room. Direct-message and universal rooms cannot be
-managed this way.
+Adds an account as an explicit channel-room member. room.manage for this
+room or user.manage-accounts overrides the target's missing room.join.
+Bot owners and bot.manage holders may also add bots, but without either
+override the bot needs effective room.join, bounded by its owner's authority.
+Preserves permission grants. Suspensions, archived, universal, and DM rooms prevent adding.
 
 ```http
 POST /api/connect/chatto.api.v1.RoomService/AddMember
@@ -448,9 +520,10 @@ Result of adding a user to a room.
 
 ### RemoveMember
 
-Removes a user from a channel room's explicit members. The caller must be
-allowed to manage the room. Direct-message and universal rooms cannot be
-managed this way.
+Removes an explicit channel-room member. Requires room.manage for this room,
+user.manage-accounts, ownership of the target bot, or bot.manage.
+Removal is allowed after room.join is lost and from archived rooms.
+Preserves permission grants. Universal and DM membership cannot be edited.
 
 ```http
 POST /api/connect/chatto.api.v1.RoomService/RemoveMember
@@ -479,38 +552,38 @@ Result of removing a user from a room.
 | `removed` | `bool` | True when an explicit room membership was removed by this call. |
 
 
-<a id="chatto-api-v1-RoomService-ListBans"></a>
+<a id="chatto-api-v1-RoomService-ListSuspensions"></a>
 
-### ListBans
+### ListSuspensions
 
-Lists active channel room bans. The caller must be allowed to moderate room
-membership bans.
+Lists active channel room suspensions. Requires server-scope
+room.remove-member.
 
 ```http
-POST /api/connect/chatto.api.v1.RoomService/ListBans
+POST /api/connect/chatto.api.v1.RoomService/ListSuspensions
 ```
 
-<a id="chatto-api-v1-ListBansRequest"></a>
+<a id="chatto-api-v1-ListSuspensionsRequest"></a>
 
-#### Input: ListBansRequest
+#### Input: ListSuspensionsRequest
 
-Request to list active room bans.
-
-| Field | Type | Description |
-| --- | --- | --- |
-| `room_id` | `string` | Optional channel room filter. Empty lists active bans across all rooms. |
-| `page` | [`PageRequest`](/reference/connectrpc-api/types/#chatto-api-v1-PageRequest) | Page request. Defaults are applied when absent or limit is zero. |
-
-
-<a id="chatto-api-v1-ListBansResponse"></a>
-
-#### Result: ListBansResponse
-
-Active room bans visible to the current moderator.
+Request to list active room suspensions.
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `bans` | repeated [`RoomBan`](/reference/connectrpc-api/types/#chatto-api-v1-RoomBan) | Active bans, newest first. |
+| `room_id` | `string` | Optional channel room filter. Empty lists active suspensions across all rooms. |
+| `page` | [`PageRequest`](/reference/connectrpc-api/types/#chatto-api-v1-PageRequest) | Defaults to 50 results when absent or limit is zero. Maximum: 100. |
+
+
+<a id="chatto-api-v1-ListSuspensionsResponse"></a>
+
+#### Result: ListSuspensionsResponse
+
+Active room suspensions visible to the current moderator.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `suspensions` | repeated [`RoomSuspension`](/reference/connectrpc-api/types/#chatto-api-v1-RoomSuspension) | Active suspensions by creation time, newest first; equal times use event ID in ascending order. |
 | `page` | [`PageInfo`](/reference/connectrpc-api/types/#chatto-api-v1-PageInfo) | Page metadata. |
 
 
@@ -519,9 +592,8 @@ Active room bans visible to the current moderator.
 ### ListRoomAttachments
 
 Lists current message-owned room attachments. Authentication and room
-membership are required. Channel-room attachments also require message.read
-or a matching thread relationship with message.read-interactions. DM
-membership authorizes DM attachments. The server omits attachments from
+membership are required. Attachments also require message.read or a
+matching thread relationship with message.read-interactions. The server omits attachments from
 inaccessible threads. Returns PERMISSION_DENIED when the room is
 inaccessible to the caller.
 
@@ -539,7 +611,7 @@ Request for room-scoped attachment list pages.
 | --- | --- | --- |
 | `room_id` | `string` | Required room ID. |
 | `thumbnail` | [`ImageTransformOptions`](/reference/connectrpc-api/types/#chatto-api-v1-ImageTransformOptions) | Thumbnail URL options. Defaults are applied when absent. |
-| `page` | [`PageRequest`](/reference/connectrpc-api/types/#chatto-api-v1-PageRequest) | Page request. Defaults are applied when absent or limit is zero. |
+| `page` | [`PageRequest`](/reference/connectrpc-api/types/#chatto-api-v1-PageRequest) | Defaults to 50 results when absent or limit is zero. Maximum: 100. |
 
 
 <a id="chatto-api-v1-ListRoomAttachmentsResponse"></a>
@@ -576,7 +648,7 @@ Request to list a channel room's current pinned messages.
 | Field | Type | Description |
 | --- | --- | --- |
 | `room_id` | `string` | Required channel room ID. |
-| `page` | [`PageRequest`](/reference/connectrpc-api/types/#chatto-api-v1-PageRequest) | Page request. Defaults are applied when absent or limit is zero. |
+| `page` | [`PageRequest`](/reference/connectrpc-api/types/#chatto-api-v1-PageRequest) | Defaults to 50 results when absent or limit is zero. Maximum: 100. |
 
 
 <a id="chatto-api-v1-ListPinnedMessagesResponse"></a>
@@ -661,20 +733,23 @@ Result of unpinning a message.
 | `deleted` | `bool` | True when the message is not pinned after this call. |
 
 
-<a id="chatto-api-v1-RoomService-UpdateTypingIndicator"></a>
+<a id="chatto-api-v1-RoomService-RefreshTypingIndicator"></a>
 
-### UpdateTypingIndicator
+### RefreshTypingIndicator
 
 Refreshes the current user's live-only typing indicator for a room or
 thread. Room membership is required; message posting permission is not.
+Send at most once every 2 seconds while typing. After posting a message,
+the next typing activity can send immediately. Stop sending when typing
+stops; receivers clear the indicator after 6 seconds without an event.
 
 ```http
-POST /api/connect/chatto.api.v1.RoomService/UpdateTypingIndicator
+POST /api/connect/chatto.api.v1.RoomService/RefreshTypingIndicator
 ```
 
-<a id="chatto-api-v1-UpdateTypingIndicatorRequest"></a>
+<a id="chatto-api-v1-RefreshTypingIndicatorRequest"></a>
 
-#### Input: UpdateTypingIndicatorRequest
+#### Input: RefreshTypingIndicatorRequest
 
 Request to refresh the current user's live-only typing indicator.
 
@@ -684,15 +759,11 @@ Request to refresh the current user's live-only typing indicator.
 | `thread_root_event_id` | `string` | Event ID of the thread root when typing inside a thread. |
 
 
-<a id="chatto-api-v1-UpdateTypingIndicatorResponse"></a>
+<a id="chatto-api-v1-RefreshTypingIndicatorResponse"></a>
 
-#### Result: UpdateTypingIndicatorResponse
+#### Result: RefreshTypingIndicatorResponse
 
 Result of refreshing a typing indicator.
-
-| Field | Type | Description |
-| --- | --- | --- |
-| `updated` | `bool` | True when the typing indicator was accepted for publish. |
 
 
 <a id="chatto-api-v1-RoomService-GetRoomEvents"></a>
@@ -700,10 +771,9 @@ Result of refreshing a typing indicator.
 ### GetRoomEvents
 
 Returns one page of room timeline events, including related user data
-needed to render the page. Room membership is required. Channel-room reads
-also require message.read or message.read-interactions. The server returns
-only related thread roots for an interaction-scoped caller. DM membership
-authorizes DM reads.
+needed to render the page. Room membership is required. Reads also require
+message.read or message.read-interactions. The server returns only related
+thread roots for an interaction-scoped caller.
 
 ```http
 POST /api/connect/chatto.api.v1.RoomService/GetRoomEvents
@@ -722,7 +792,7 @@ end_cursor to page toward newer events.
 | Field | Type | Description |
 | --- | --- | --- |
 | `room_id` | `string` | Required. Room whose timeline should be loaded. |
-| `limit` | `int32` | Maximum number of events to return. The server may clamp very large limits. |
+| `limit` | `int32` | Maximum events. Values at or below zero use 50; values above 500 use 500. |
 | `cursor.before` | `string` | Return events older than this opaque cursor. |
 | `cursor.after` | `string` | Return events newer than this opaque cursor. |
 
@@ -746,8 +816,7 @@ Returns a room timeline window centered around a specific event. Use this to
 open a permalink, search result, or notification target in context. Returns
 NOT_FOUND when the anchor event is missing or not visible in the room
 timeline. Returns PERMISSION_DENIED when room membership or both read modes
-are missing, or when the anchor is in an unrelated thread. DM membership
-authorizes DM reads.
+are missing, or when the anchor is in an unrelated thread.
 
 ```http
 POST /api/connect/chatto.api.v1.RoomService/GetRoomEventsAround
@@ -766,7 +835,7 @@ context around it.
 | --- | --- | --- |
 | `room_id` | `string` | Required. Room whose timeline should be loaded. |
 | `event_id` | `string` | Required. Anchor event ID that should appear in the returned page. |
-| `limit` | `int32` | Maximum number of events to return around the anchor. |
+| `limit` | `int32` | Maximum events around the anchor. Values at or below zero use 50; values above 500 use 500. |
 
 
 <a id="chatto-api-v1-GetRoomEventsAroundResponse"></a>
@@ -786,8 +855,8 @@ Response containing a room timeline window around a specific event.
 ### MarkRoomAsRead
 
 Marks a room timeline as read through the supplied event. Room membership
-is required. Channel-room reads also require message.read or
-message.read-interactions. DM membership authorizes DM reads. If no event
+is required. Reads also require message.read or
+message.read-interactions. If no event
 is supplied, the server marks through the latest root event that the caller
 can read. Clients
 usually call this after the user has viewed the latest visible event in the
@@ -824,72 +893,66 @@ separator. Notification policy controls room Badge attention separately.
 | `previous_last_read_at` | `google.protobuf.Timestamp` | Previous room read timestamp, when one existed. |
 
 
-<a id="chatto-api-v1-RoomService-BanMember"></a>
+<a id="chatto-api-v1-RoomService-RemoveUser"></a>
 
-### BanMember
+### RemoveUser
 
-Bans a member from a channel room. Direct-message rooms cannot be moderated
-this way, and the target must currently be a room member.
+Removes a current channel room member with a required reason. Requires
+room.remove-member. Without suspension, ordinary join rules apply afterward.
+Universal rooms require a suspension. Direct-message rooms are excluded.
 
 ```http
-POST /api/connect/chatto.api.v1.RoomService/BanMember
+POST /api/connect/chatto.api.v1.RoomService/RemoveUser
 ```
 
-<a id="chatto-api-v1-BanMemberRequest"></a>
+<a id="chatto-api-v1-RemoveUserRequest"></a>
 
-#### Input: BanMemberRequest
+#### Input: RemoveUserRequest
 
-Request to ban a member from a channel room.
+Request to remove a user from a channel room for moderation.
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `room_id` | `string` | Required. Channel room to ban the user from. |
-| `user_id` | `string` | Required. User to ban from the room. |
+| `room_id` | `string` | Required. Channel room to remove the user from. |
+| `user_id` | `string` | Required. Current room member to remove. |
 | `reason` | `string` | Required moderator-entered reason stored for audit. |
-| `expires_at` | `google.protobuf.Timestamp` | Optional future time when the ban expires. |
+| `suspension.suspension_expires_at` | `google.protobuf.Timestamp` | Future time after which the user may rejoin. |
+| `suspension.suspend_indefinitely` | `bool` | Must be true. The user cannot rejoin until the suspension is lifted. |
 
 
-<a id="chatto-api-v1-BanMemberResponse"></a>
+<a id="chatto-api-v1-RemoveUserResponse"></a>
 
-#### Result: BanMemberResponse
+#### Result: RemoveUserResponse
 
-Result of banning a room member.
-
-| Field | Type | Description |
-| --- | --- | --- |
-| `banned` | `bool` | True when the ban operation completed. |
+Result of a moderated room removal.
 
 
-<a id="chatto-api-v1-RoomService-UnbanMember"></a>
+<a id="chatto-api-v1-RoomService-LiftSuspension"></a>
 
-### UnbanMember
+### LiftSuspension
 
-Removes an active channel room ban. Calling this when no active ban exists
-is allowed and still returns success.
+Lifts an active channel room suspension. Requires room.remove-member.
+Calling this when no active suspension exists succeeds.
 
 ```http
-POST /api/connect/chatto.api.v1.RoomService/UnbanMember
+POST /api/connect/chatto.api.v1.RoomService/LiftSuspension
 ```
 
-<a id="chatto-api-v1-UnbanMemberRequest"></a>
+<a id="chatto-api-v1-LiftSuspensionRequest"></a>
 
-#### Input: UnbanMemberRequest
+#### Input: LiftSuspensionRequest
 
-Request to remove a channel room ban.
+Request to lift a channel room suspension.
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `room_id` | `string` | Required. Channel room to unban the user from. |
-| `user_id` | `string` | Required. User to unban. |
+| `room_id` | `string` | Required. Channel room containing the suspension. |
+| `user_id` | `string` | Required. Suspended user. |
 | `reason` | `string` | Required moderator-entered reason stored for audit. |
 
 
-<a id="chatto-api-v1-UnbanMemberResponse"></a>
+<a id="chatto-api-v1-LiftSuspensionResponse"></a>
 
-#### Result: UnbanMemberResponse
+#### Result: LiftSuspensionResponse
 
-Result of removing a room ban.
-
-| Field | Type | Description |
-| --- | --- | --- |
-| `unbanned` | `bool` | True when the unban operation completed. |
+Result of lifting a room suspension.

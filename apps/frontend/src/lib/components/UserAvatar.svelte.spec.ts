@@ -75,20 +75,96 @@ describe('UserAvatar', () => {
     );
   });
 
+  it('keeps the offline presence dot for a person', () => {
+    const { container } = render(UserAvatarTestHarness, {
+      size: 'sm',
+      showPresence: true,
+      presenceStatus: PresenceStatus.OFFLINE
+    });
+
+    expect(q(container, '[aria-label="Offline"] [data-testid="presence-dot"]')).toBeTruthy();
+  });
+
+  it.each([PresenceStatus.OFFLINE, PresenceStatus.UNSPECIFIED])(
+    'hides the presence dot for a bot without available presence (%s)',
+    (presenceStatus) => {
+      const { container } = render(UserAvatarTestHarness, {
+        size: 'sm',
+        showPresence: true,
+        isBot: true,
+        presenceStatus
+      });
+
+      expect(q(container, '[data-testid="presence-dot"]')).toBeFalsy();
+    }
+  );
+
+  it.each([
+    [PresenceStatus.ONLINE, 'Online'],
+    [PresenceStatus.AWAY, 'Away'],
+    [PresenceStatus.DO_NOT_DISTURB, 'Do not disturb']
+  ] as const)('shows a bot presence dot for %s', (presenceStatus, label) => {
+    const { container } = render(UserAvatarTestHarness, {
+      size: 'sm',
+      showPresence: true,
+      isBot: true,
+      presenceStatus
+    });
+
+    expect(q(container, `[aria-label="${label}"] [data-testid="presence-dot"]`)).toBeTruthy();
+  });
+
+  it('shows the current presence instead of the presence in the user profile', () => {
+    const { container } = render(UserAvatarTestHarness, {
+      size: 'sm',
+      showPresence: true,
+      presenceStatus: PresenceStatus.ONLINE,
+      presence: PresenceStatus.DO_NOT_DISTURB
+    });
+
+    expect(q(container, '[aria-label="Do not disturb"] [data-testid="presence-dot"]')).toBeTruthy();
+    expect(q(container, '[aria-label="Online"]')).toBeFalsy();
+  });
+
+  it('updates when the current presence changes', async () => {
+    const view = render(UserAvatarTestHarness, {
+      size: 'sm',
+      showPresence: true,
+      presenceStatus: PresenceStatus.ONLINE,
+      presence: PresenceStatus.AWAY
+    });
+    expect(q(view.container, '[aria-label="Away"]')).toBeTruthy();
+
+    await view.rerender({ presence: PresenceStatus.OFFLINE });
+
+    expect(q(view.container, '[aria-label="Offline"]')).toBeTruthy();
+    expect(q(view.container, '[aria-label="Away"]')).toBeFalsy();
+  });
+
   it('keeps extra-small avatars free of presence overlays', () => {
     const { container } = render(UserAvatarTestHarness, { size: 'xs', showPresence: true });
 
     expect(q(container, '[aria-label="Online"]')).toBeFalsy();
   });
 
-  it('marks bot accounts with a robot badge', () => {
-    const { container } = render(UserAvatarTestHarness, {
-      size: 'md',
-      isBot: true
-    });
+  it('keeps extra-small bot avatars free of robot badges', () => {
+    const { container } = render(UserAvatarTestHarness, { size: 'xs', isBot: true });
 
-    expect(q(container, '[data-testid="bot-badge"][aria-label="bot"]')).toBeTruthy();
+    expect(q(container, '[aria-label="alice"]')).toBeTruthy();
+    expect(q(container, '[data-testid="bot-badge"]')).toBeFalsy();
   });
+
+  it.each(['sm', 'md', 'message', 'lg', 'xl'] as const)(
+    'keeps %s bot avatars free of robot badges',
+    (size) => {
+      const { container } = render(UserAvatarTestHarness, {
+        size,
+        isBot: true
+      });
+
+      expect(q(container, '[data-testid="bot-badge"]')).toBeFalsy();
+    }
+  );
 
   it('renders static directory identities without app-level live caches', () => {
     const { container } = render(UserAvatar, {
@@ -107,6 +183,26 @@ describe('UserAvatar', () => {
       }
     });
 
-    expect(q(container, '[data-testid="bot-badge"]')).toBeTruthy();
+    expect(q(container, '[data-testid="bot-badge"]')).toBeFalsy();
+  });
+
+  it('uses initials when an avatar image fails', async () => {
+    const view = render(UserAvatar, {
+      props: {
+        user: {
+          id: 'user-1',
+          login: 'alice',
+          displayName: 'Alice',
+          avatarUrl: '/missing-avatar.png',
+          presenceStatus: PresenceStatus.OFFLINE
+        },
+        useLiveProfile: false
+      }
+    });
+
+    const image = q(view.container, 'img[alt="alice"]');
+    expect(view.container.querySelector('.skeleton')).toBeNull();
+    image?.dispatchEvent(new Event('error'));
+    await expect.element(view.getByRole('img', { name: 'alice' })).toHaveTextContent('A');
   });
 });

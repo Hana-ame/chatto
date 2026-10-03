@@ -5,7 +5,8 @@ Inline server-sidebar control for creating a room group without leaving chat.
 The compact form expands in place and submits with Enter.
 -->
 <script lang="ts">
-  import { createAdminRoomLayoutAPI } from '$lib/api-client/adminRoomLayout';
+  import { errorMessage } from '$lib/utils/errorMessage';
+  import { createAdminRoomLayoutAPI } from '$lib/api/adminRoomLayout';
   import { m } from '$lib/i18n/messages';
   import { useServerScope } from '$lib/state/server/scope.svelte';
   import { TextInput } from '$lib/ui/form';
@@ -43,7 +44,7 @@ The compact form expands in place and submits with Enter.
     } catch (error) {
       toast.error(
         m('admin.rooms_admin.create_group_failed', {
-          error: error instanceof Error ? error.message : String(error)
+          error: errorMessage(error)
         })
       );
     } finally {

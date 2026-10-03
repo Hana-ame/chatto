@@ -9,15 +9,14 @@ context-menu, and touch surfaces. Thread navigation and tooltip state remain
 local to the footer.
 -->
 <script lang="ts">
+  import AccountName from '$lib/components/users/AccountName.svelte';
   import { resolve } from '$app/paths';
   import { on } from 'svelte/events';
-  import type { MessagePostedPayload } from '$lib/render/timelineEvents';
+  import type { MessagePostedPayload } from '@chatto/client/timeline/timelineEvents';
   import UserAvatar from '$lib/components/UserAvatar.svelte';
-  import UnreadDot from '$lib/ui/UnreadDot.svelte';
-  import FloatingPopover from '$lib/ui/FloatingPopover.svelte';
+  import { UnreadDot, FloatingPopover, ConfirmDialog } from '$lib/ui';
   import { getEmojiByName, getEmojiDisplayName } from '$lib/emoji';
   import { m } from '$lib/i18n/messages';
-  import { ConfirmDialog } from '$lib/ui';
   import type { MessageActionModel } from './messageActionModel';
 
   // Extract the MessagePostedEvent type from the union
@@ -33,6 +32,8 @@ local to the footer.
     serverSegment,
     threadRootEventId,
     reactions,
+    edited = false,
+    channelEchoEventId,
     action,
     replyCount = 0,
     threadExists = false,
@@ -50,6 +51,10 @@ local to the footer.
     serverSegment: string;
     threadRootEventId?: string | null;
     reactions: ReactionSummary[];
+    /** Show the edited status before reactions. */
+    edited?: boolean;
+    /** Room echo to open through the message jump and highlight route. */
+    channelEchoEventId?: string | null;
     action?: MessageActionModel;
     replyCount?: number;
     threadExists?: boolean;
@@ -79,15 +84,13 @@ local to the footer.
   let unpinning = $state(false);
   const REACTION_TOOLTIP_USER_LIMIT = 5;
   function reactionTooltipUsers(reaction: ReactionSummary): {
-    names: string[];
+    users: ReactionSummary['users'];
     remaining: number;
   } {
-    const names = reaction.users
-      .slice(0, REACTION_TOOLTIP_USER_LIMIT)
-      .map((user) => user.displayName);
+    const users = reaction.users.slice(0, REACTION_TOOLTIP_USER_LIMIT);
     return {
-      names,
-      remaining: Math.max(0, reaction.count - names.length)
+      users,
+      remaining: Math.max(0, reaction.count - users.length)
     };
   }
 
@@ -174,7 +177,7 @@ local to the footer.
       onclick={openThreadFromLink}
       {@attach threadLinkGestureBoundary}
     >
-      <span class="iconify icon-[uil--corner-up-right] rtl:-scale-x-100"></span>
+      <span aria-hidden="true" class="iconify icon-[uil--corner-up-right] rtl:-scale-x-100"></span>
       <span>{m('room.message.meta.thread')}</span>
     </a>
   {/if}
@@ -191,7 +194,7 @@ local to the footer.
       onclick={openThreadFromLink}
       {@attach threadLinkGestureBoundary}
     >
-      <span class="iconify icon-[uil--comment-alt-lines]"></span>
+      <span aria-hidden="true" class="iconify icon-[uil--comment-alt-lines]"></span>
       {#if replyCount > 0 && threadParticipants && threadParticipants.length > 0}
         <div class="flex -space-x-1.5">
           {#each threadParticipants.slice(0, 3) as participant, i (i)}
@@ -221,6 +224,8 @@ local to the footer.
         ]}
         onclick={onToggleThreadFollow}
         disabled={isThreadFollowPending}
+        aria-label={m('room.message.meta.follow_thread')}
+        aria-pressed={isFollowingThread}
         title={isFollowingThread
           ? m('room.message.meta.unfollow_thread')
           : m('room.message.meta.follow_thread')}
@@ -230,6 +235,7 @@ local to the footer.
             'iconify text-base',
             isFollowingThread ? 'icon-[uil--bell]' : 'icon-[uil--bell-slash]'
           ]}
+          aria-hidden="true"
         ></span>
       </button>
     {/if}
@@ -257,6 +263,31 @@ local to the footer.
     {/if}
   {/if}
 
+  {#if edited}
+    <span
+      class="meta-badge h-[25px] gap-2 border-transparent px-2 text-xs whitespace-nowrap text-muted"
+    >
+      <span class="iconify icon-[uil--pen]" aria-hidden="true"></span>
+      <span>{m('room.message.meta.edited_short')}</span>
+    </span>
+  {/if}
+
+  {#if channelEchoEventId}
+    <a
+      href={resolve('/chat/[serverId]/[roomId]/m/[messageId]', {
+        serverId: serverSegment,
+        roomId,
+        messageId: channelEchoEventId
+      })}
+      class="{baseButtonClass} gap-2 border-transparent px-2 text-xs whitespace-nowrap"
+      title={m('room.message.meta.echoed_to_channel')}
+      {@attach threadLinkGestureBoundary}
+    >
+      <span class="iconify icon-[uil--megaphone]" aria-hidden="true"></span>
+      <span>{m('room.message.meta.echo')}</span>
+    </a>
+  {/if}
+
   <!-- Reaction pills -->
   {#each reactions as reaction (reaction.emoji)}
     <span
@@ -267,8 +298,7 @@ local to the footer.
       <button
         class={[
           baseButtonClass,
-          'gap-1 px-2 text-sm',
-          action?.canReact ? '' : '!cursor-default opacity-60',
+          'gap-1 px-2 text-sm disabled:cursor-default disabled:opacity-60',
           reaction.hasReacted ? 'border-action/50' : 'border-transparent'
         ]}
         onclick={() => action?.canReact && toggleReaction(reaction)}
@@ -300,7 +330,7 @@ local to the footer.
       onclick={(e) => onOpenEmojiPicker(e)}
       aria-label={m('room.message.actions.add_reaction')}
     >
-      <span class="iconify icon-[uil--smile] text-base"></span>
+      <span aria-hidden="true" class="iconify icon-[uil--smile] text-base"></span>
     </button>
   {/if}
 </div>
@@ -332,11 +362,13 @@ local to the footer.
     <div class="flex min-w-0 flex-col gap-1 menu-section px-3 py-2 text-xs">
       <strong class="font-semibold">{getEmojiDisplayName(tooltipReaction.emoji)}</strong>
       <span class="flex min-w-0 flex-col gap-0.5 text-muted">
-        {#each tooltipUsers.names as name (name)}
-          <span class="break-words" data-testid="reaction-tooltip-user">{name}</span>
+        {#each tooltipUsers.users as user (user.id)}
+          <span class="break-words" data-testid="reaction-tooltip-user"
+            ><AccountName name={user.displayName} identity={user} /></span
+          >
         {/each}
         {#if tooltipUsers.remaining > 0}
-          <span class="text-muted/80">
+          <span class="text-muted">
             {m('room.message.meta.reaction_users_more', { count: tooltipUsers.remaining })}
           </span>
         {/if}

@@ -1,164 +1,115 @@
-type ServerCacheRemover = (serverId: string) => void;
-type AdminUserCacheRemover = (serverId: string, userId: string) => void;
-type AdminUserRemovalListener = (serverId: string, userId: string) => void;
-type QueryCacheRemovalListener = (serverId: string) => void;
-type AdminRoomQueryReconciler = (serverId: string, roomId: string, removed: boolean) => void;
-type AdminRoomGroupQueryReconciler = (serverId: string, visibleGroupIds: readonly string[]) => void;
-type FollowedThreadViewerState = {
-  hasUnreadReplies?: boolean;
+/**
+ * Late-bound access to the TanStack Query caches.
+ *
+ * Server stores cross privacy and realtime boundaries on every route, but the
+ * query modules load only with the pages that use them. `connectQueryCaches`
+ * subscribes to each store's boundary events and calls the cache operations
+ * that the query modules register here when they load. A cache that has not
+ * loaded holds no data, so a missing registration is a no-op.
+ *
+ * Measured on 2026-09-28: importing `query/queryClient`, `query/threads`, and
+ * `query/roomMembers` at startup adds about 9.7 KiB gzip to every route and
+ * fails the login and overview budgets. Keep this indirection unless those
+ * modules become part of the initial bundles anyway.
+ */
+import { runResetHandlers } from '@chatto/client/server/resetHandlers';
+import type { RealtimeProjectionUpdate } from '@chatto/client/realtime/eventBus';
+import type { ServerStateStore } from '@chatto/client/server/store';
+
+/** Snapshot-query operations registered by `query/queryClient`. */
+export type ServerQueryCache = {
+  /** Remove every cached read of a server. */
+  remove(serverId: string): void;
+  /** Reauthorize active snapshots in place and discard inactive private data. */
+  refresh(serverId: string): Promise<void>;
+  /** Remove cached admin reads. */
+  removeAdmin(serverId: string): void;
+  /** Refetch mounted admin reads without discarding their render geometry. */
+  refreshAdmin(serverId: string): void;
+  /** Refresh role displays without invalidating the private-data generation. */
+  refreshRoles(serverId: string): void;
+  /** Remove admin snapshots that can retain a removed user's private data. */
+  removeAdminUser(serverId: string, userId: string): void;
+  /** Reconcile cached room groups with the visible groups of the projection. */
+  reconcileAdminRoomGroups(serverId: string, visibleGroupIds: readonly string[]): void;
 };
-type FollowedThreadSummary = {
-  roomId: string;
-  threadRootEventId: string;
-  replyCount: number;
-  lastReplyAt: string | null;
-  hasUnreadReplies?: boolean;
-};
-type FollowedThreadCache = {
+
+/** Followed-thread feed operations registered by `query/threads`. */
+export type FollowedThreadCache = {
+  /** Drop the cached feed and refetch it. */
   reset(serverId: string): void;
+  /** Refetch the feed after activity changes a latest reply. */
   refresh(serverId: string): void;
-  reconcile(serverId: string, states: ReadonlyMap<string, FollowedThreadViewerState>): void;
+  /**
+   * Drop the feed when a cached or pending page can show a retracted message;
+   * otherwise refetch it in place.
+   */
+  retractMessage(serverId: string, roomId: string, eventId: string): void;
+  /** Remove threads of a room that the viewer can no longer read. */
   scrubRoom(serverId: string, roomId: string): void;
-  scrubMessage(serverId: string, roomId: string, eventId: string): void;
-  scrubUser(serverId: string): void;
-  updateSummary(serverId: string, summary: FollowedThreadSummary): void;
 };
-type RoomMemberQueryCache = {
-  invalidateRoom(serverId: string, roomId: string): void;
+
+/** Room-member snapshot operations registered by `query/roomMembers`. */
+export type RoomMemberQueryCache = {
+  /** Remove every session's member snapshots of a room the viewer lost. */
   purgeRoom(serverId: string, roomId: string): void;
+  /** Remove a deleted user from every cached member and eligible-user list. */
   scrubUser(serverId: string, userId: string): void;
 };
 
-let removeServerCache: ServerCacheRemover | undefined;
-let removeAdminCache: ServerCacheRemover | undefined;
-let refreshAdminCache: ServerCacheRemover | undefined;
-let removeAdminUserCache: AdminUserCacheRemover | undefined;
-let reconcileAdminRoomCache: AdminRoomQueryReconciler | undefined;
-let reconcileAdminRoomGroupCache: AdminRoomGroupQueryReconciler | undefined;
-let followedThreadCache: FollowedThreadCache | undefined;
-let roomMemberQueryCache: RoomMemberQueryCache | undefined;
+/** The registered caches. Each query module sets its entry when it loads. */
+export const queryCaches: {
+  server?: ServerQueryCache;
+  followedThreads?: FollowedThreadCache;
+  roomMembers?: RoomMemberQueryCache;
+} = {};
+
+type ServerListener = (serverId: string) => void;
+type AdminUserRemovalListener = (serverId: string, userId: string) => void;
+
 const adminUserRemovalListeners = new Set<AdminUserRemovalListener>();
-const queryCacheRemovalListeners = new Set<QueryCacheRemovalListener>();
-const serverQueryCacheRemovalListeners = new Set<QueryCacheRemovalListener>();
+const queryCacheRemovalListeners = new Set<ServerListener>();
+const serverQueryCacheRemovalListeners = new Set<ServerListener>();
 
-/** Register the snapshot-query cache without loading it into every route bundle. */
-export function registerServerQueryCache(removers: {
-  server: ServerCacheRemover;
-  admin: ServerCacheRemover;
-  refreshAdmin: ServerCacheRemover;
-  adminUser: AdminUserCacheRemover;
-  adminRoom: AdminRoomQueryReconciler;
-  adminRoomGroups: AdminRoomGroupQueryReconciler;
-}): void {
-  removeServerCache = removers.server;
-  removeAdminCache = removers.admin;
-  refreshAdminCache = removers.refreshAdmin;
-  removeAdminUserCache = removers.adminUser;
-  reconcileAdminRoomCache = removers.adminRoom;
-  reconcileAdminRoomGroupCache = removers.adminRoomGroups;
+/** Reset handlers that notify each listener of a server. */
+function notify(listeners: Iterable<ServerListener>, serverId: string): (() => void)[] {
+  return [...listeners].map((listener) => () => listener(serverId));
 }
 
-/** Register the followed-thread snapshot cache without loading it into the server store bundle. */
-export function registerFollowedThreadQueryCache(cache: FollowedThreadCache): void {
-  followedThreadCache = cache;
+/** Purge private reads and fence mutations at session or protocol recovery boundaries. */
+export function removeRegisteredServerQueries(serverId: string): boolean {
+  const listenersCleared = runResetHandlers(
+    notify([...queryCacheRemovalListeners, ...serverQueryCacheRemovalListeners], serverId)
+  );
+  const cacheCleared = runResetHandlers([() => queryCaches.server?.remove(serverId)]);
+  return listenersCleared && cacheCleared;
 }
 
-/** Register room-member snapshots without loading TanStack Query into the server-store bundle. */
-export function registerRoomMemberQueryCache(cache: RoomMemberQueryCache): void {
-  roomMemberQueryCache = cache;
-}
-
-export function purgeRegisteredRoomMemberQueries(serverId: string, roomId: string): void {
-  roomMemberQueryCache?.purgeRoom(serverId, roomId);
-}
-
-export function invalidateRegisteredRoomMemberQueries(serverId: string, roomId: string): void {
-  roomMemberQueryCache?.invalidateRoom(serverId, roomId);
-}
-
-export function scrubRegisteredRoomMemberUser(serverId: string, userId: string): void {
-  roomMemberQueryCache?.scrubUser(serverId, userId);
-}
-
-export function resetRegisteredFollowedThreadQueries(serverId: string): void {
-  followedThreadCache?.reset(serverId);
-}
-
-/** Refresh followed-thread feed data after activity changes its latest reply. */
-export function refreshRegisteredFollowedThreadQueries(serverId: string): void {
-  followedThreadCache?.refresh(serverId);
-}
-
-export function reconcileRegisteredFollowedThreadQueries(
-  serverId: string,
-  states: ReadonlyMap<string, FollowedThreadViewerState>
-): void {
-  followedThreadCache?.reconcile(serverId, states);
-}
-
-export function scrubRegisteredFollowedThreadRoom(serverId: string, roomId: string): void {
-  followedThreadCache?.scrubRoom(serverId, roomId);
-}
-
-export function scrubRegisteredFollowedThreadMessage(
-  serverId: string,
-  roomId: string,
-  eventId: string
-): void {
-  followedThreadCache?.scrubMessage(serverId, roomId, eventId);
-}
-
-export function scrubRegisteredFollowedThreadUser(serverId: string): void {
-  followedThreadCache?.scrubUser(serverId);
-}
-
-export function updateRegisteredFollowedThreadSummary(
-  serverId: string,
-  summary: FollowedThreadSummary
-): void {
-  followedThreadCache?.updateSummary(serverId, summary);
-}
-
-/** Purge cached private reads when a server session is disposed. */
-export function removeRegisteredServerQueries(serverId: string): void {
-  for (const listener of queryCacheRemovalListeners) listener(serverId);
-  for (const listener of serverQueryCacheRemovalListeners) listener(serverId);
-  removeServerCache?.(serverId);
+/** Fence optimistic results, then reauthorize each snapshot without replacing its observer. */
+export async function refreshRegisteredServerQueries(serverId: string): Promise<void> {
+  const fenced = runResetHandlers(
+    notify([...queryCacheRemovalListeners, ...serverQueryCacheRemovalListeners], serverId)
+  );
+  await queryCaches.server?.refresh(serverId);
+  if (!fenced) throw new Error('Permission refresh could not fence every mutation');
 }
 
 /** Purge cached admin reads as soon as their authorization may have changed. */
 export function removeRegisteredAdminQueries(serverId: string): void {
   for (const listener of queryCacheRemovalListeners) listener(serverId);
-  removeAdminCache?.(serverId);
+  queryCaches.server?.removeAdmin(serverId);
 }
 
 /** Refetch mounted admin reads without discarding their stable render geometry. */
 export function refreshRegisteredAdminQueries(serverId: string): void {
-  for (const listener of queryCacheRemovalListeners) listener(serverId);
-  refreshAdminCache?.(serverId);
+  runResetHandlers(notify(queryCacheRemovalListeners, serverId));
+  queryCaches.server?.refreshAdmin(serverId);
 }
 
 /** Purge admin snapshots that can retain a removed user's private data. */
 export function removeRegisteredAdminUserQueries(serverId: string, userId: string): void {
   for (const listener of adminUserRemovalListeners) listener(serverId, userId);
-  removeAdminUserCache?.(serverId, userId);
-}
-
-/** Reconcile cached room-management snapshots from the process-wide projection owner. */
-export function reconcileRegisteredAdminRoomQueries(
-  serverId: string,
-  roomId: string,
-  removed = false
-): void {
-  reconcileAdminRoomCache?.(serverId, roomId, removed);
-}
-
-/** Reconcile cached room-group snapshots from the authoritative visible group replacement. */
-export function reconcileRegisteredAdminRoomGroupQueries(
-  serverId: string,
-  visibleGroupIds: readonly string[]
-): void {
-  reconcileAdminRoomGroupCache?.(serverId, visibleGroupIds);
+  queryCaches.server?.removeAdminUser(serverId, userId);
 }
 
 /** Observe privacy-driven admin-user removal while a detail owner is mounted. */
@@ -168,15 +119,98 @@ export function registerAdminUserRemovalListener(listener: AdminUserRemovalListe
 }
 
 /** Fence late mutations when authentication or admin snapshots are invalidated. */
-export function registerQueryCacheRemovalListener(listener: QueryCacheRemovalListener): () => void {
+export function registerQueryCacheRemovalListener(listener: ServerListener): () => void {
   queryCacheRemovalListeners.add(listener);
   return () => queryCacheRemovalListeners.delete(listener);
 }
 
 /** Fence account mutations only when the complete server session is being disposed. */
-export function registerServerQueryCacheRemovalListener(
-  listener: QueryCacheRemovalListener
-): () => void {
+export function registerServerQueryCacheRemovalListener(listener: ServerListener): () => void {
   serverQueryCacheRemovalListeners.add(listener);
   return () => serverQueryCacheRemovalListeners.delete(listener);
+}
+
+/**
+ * Keep the cached reads of one server store within its privacy and
+ * authorization boundaries, and refresh them after realtime changes. The
+ * store's own events end at its disposal; the returned function stops earlier.
+ */
+export function connectQueryCaches(store: ServerStateStore): () => void {
+  const serverId = store.serverId;
+  const stops = [
+    store.onReset(({ privacy, retainView }) => {
+      if (privacy && !removeRegisteredServerQueries(serverId)) {
+        throw new Error('Query cleanup incomplete');
+      }
+      if (retainView) return;
+      queryCaches.followedThreads?.reset(serverId);
+      refreshRegisteredAdminQueries(serverId);
+    }),
+    store.onSessionEnded(() => {
+      if (!removeRegisteredServerQueries(serverId)) throw new Error('Query cleanup incomplete');
+    }),
+    store.onRoomAccessLost(({ roomId, removed }) => {
+      queryCaches.followedThreads?.scrubRoom(serverId, roomId);
+      if (removed) queryCaches.roomMembers?.purgeRoom(serverId, roomId);
+    }),
+    store.onUserDeleted((userId) => {
+      queryCaches.followedThreads?.reset(serverId);
+      queryCaches.roomMembers?.scrubUser(serverId, userId);
+      removeRegisteredAdminUserQueries(serverId, userId);
+    }),
+    store.onAuthorityChanged(({ lost }) => {
+      if (lost) removeRegisteredAdminQueries(serverId);
+      else refreshRegisteredAdminQueries(serverId);
+    }),
+    store.onPermissionsChanged(() => refreshRegisteredServerQueries(serverId)),
+    store.onUpdate((update) => refreshAfterUpdate(serverId, update)),
+    store.onDispose(() => {
+      removeRegisteredServerQueries(serverId);
+    })
+  ];
+  return () => {
+    for (const stop of stops) stop();
+  };
+}
+
+/** Refresh the cached reads that a realtime change can make stale. */
+function refreshAfterUpdate(serverId: string, update: RealtimeProjectionUpdate): void {
+  if (update.resource?.case === 'roomGroups') {
+    queryCaches.server?.reconcileAdminRoomGroups(
+      serverId,
+      update.resource.value.groups.map((group) => group.id)
+    );
+  }
+  const payload = update.event?.event;
+  switch (payload?.case) {
+    case 'roleAssigned':
+    case 'roleRevoked':
+    case 'roleDeleted':
+    case 'roleCreated':
+    case 'roleUpdated':
+    case 'rolesReordered':
+    case 'rolePermissionsChanged':
+      queryCaches.server?.refreshRoles(serverId);
+      return;
+    case 'userProfileChanged':
+    case 'userAccountCreated':
+      // Admin rows have a separate private cache; public profile hydration
+      // cannot update its email, permission, or search snapshots.
+      queryCaches.server?.refreshAdmin(serverId);
+      return;
+    case 'messagePosted':
+      if (payload.value.threadRootEventId) queryCaches.followedThreads?.refresh(serverId);
+      return;
+    case 'messageEdited':
+    case 'threadViewerStateChanged':
+      queryCaches.followedThreads?.refresh(serverId);
+      return;
+    case 'messageRetracted':
+      queryCaches.followedThreads?.retractMessage(
+        serverId,
+        payload.value.roomId,
+        payload.value.messageEventId
+      );
+      return;
+  }
 }

@@ -35,13 +35,19 @@ type OAuthClient struct {
 	RedirectURIs []string
 	// Native permits the RFC 8252 variable-port exception for literal
 	// loopback IP callbacks. Web clients always require an exact callback.
-	Native  bool
-	BuiltIn bool
+	Native bool
+	// AnyLoopbackOrigin permits each registered callback on every HTTP or HTTPS
+	// loopback origin, with any port. The path and query must stay exact. Only
+	// the built-in loopback client sets it.
+	AnyLoopbackOrigin bool
+	BuiltIn           bool
 }
 
 func (c OAuthClient) allowsRedirectURI(candidate string) bool {
 	for _, redirectURI := range c.RedirectURIs {
-		if redirectURI == candidate || (c.Native && matchesLoopbackIPRedirectURI(redirectURI, candidate)) {
+		if redirectURI == candidate ||
+			(c.Native && matchesLoopbackIPRedirectURI(redirectURI, candidate)) ||
+			(c.AnyLoopbackOrigin && matchesAnyLoopbackOriginRedirectURI(redirectURI, candidate)) {
 			return true
 		}
 	}
@@ -62,6 +68,30 @@ func matchesLoopbackIPRedirectURI(registered, candidate string) bool {
 	}
 	return strings.EqualFold(registeredURL.Hostname(), candidateURL.Hostname()) &&
 		registeredURL.EscapedPath() == candidateURL.EscapedPath() &&
+		registeredURL.RawQuery == candidateURL.RawQuery &&
+		registeredURL.ForceQuery == candidateURL.ForceQuery
+}
+
+// matchesAnyLoopbackOriginRedirectURI accepts candidate when it has the
+// registered path and query on an HTTP or HTTPS loopback origin. The loopback
+// host can be a literal loopback IP, localhost, or a valid .localhost name.
+func matchesAnyLoopbackOriginRedirectURI(registered, candidate string) bool {
+	registeredURL, err := url.Parse(registered)
+	if err != nil {
+		return false
+	}
+	candidateURL, err := url.Parse(candidate)
+	if err != nil || (candidateURL.Scheme != "http" && candidateURL.Scheme != "https") || candidateURL.Host == "" ||
+		candidateURL.User != nil || candidateURL.Fragment != "" || candidateURL.Opaque != "" ||
+		!isLoopbackOAuthRedirectHost(candidateURL.Hostname()) {
+		return false
+	}
+	if port := candidateURL.Port(); port != "" {
+		if number, err := strconv.Atoi(port); err != nil || number < 1 || number > 65535 {
+			return false
+		}
+	}
+	return registeredURL.EscapedPath() == candidateURL.EscapedPath() &&
 		registeredURL.RawQuery == candidateURL.RawQuery &&
 		registeredURL.ForceQuery == candidateURL.ForceQuery
 }
@@ -342,7 +372,6 @@ func oauthClientCacheAge(header string) (time.Duration, bool) {
 }
 
 func oauthClientMetadataTransport(allowLoopback bool) *http.Transport {
-	dialer := &net.Dialer{Timeout: 3 * time.Second, KeepAlive: 30 * time.Second}
 	return &http.Transport{
 		Proxy: nil,
 		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
@@ -354,11 +383,33 @@ func oauthClientMetadataTransport(allowLoopback bool) *http.Transport {
 			if err != nil {
 				return nil, err
 			}
-			return dialer.DialContext(ctx, network, net.JoinHostPort(addresses[0].String(), port))
+			return dialOAuthClientAddresses(ctx, network, port, addresses)
 		},
 		ForceAttemptHTTP2: true, MaxIdleConns: 16, MaxIdleConnsPerHost: 2,
 		IdleConnTimeout: 30 * time.Second, TLSHandshakeTimeout: 3 * time.Second, ResponseHeaderTimeout: 3 * time.Second,
 	}
+}
+
+// dialOAuthClientAddresses tries the already-validated addresses in resolver order.
+// Dial numeric addresses only: a second DNS lookup could bypass the destination
+// checks. A refused IPv6 connection must not hide an available IPv4 frontend.
+func dialOAuthClientAddresses(ctx context.Context, network, port string, addresses []netip.Addr) (net.Conn, error) {
+	dialer := &net.Dialer{Timeout: 3 * time.Second, KeepAlive: 30 * time.Second}
+	var lastErr error
+	for _, address := range addresses {
+		conn, err := dialer.DialContext(ctx, network, net.JoinHostPort(address.String(), port))
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("no validated CIMD destination addresses")
+	}
+	return nil, lastErr
 }
 
 func resolveOAuthClientAddresses(ctx context.Context, host string, allowLoopback bool) ([]netip.Addr, error) {
@@ -418,10 +469,22 @@ func (s *HTTPServer) resolveOAuthClient(ctx context.Context, clientID string) (O
 			return client, err
 		}
 	}
+	if clientID == config.ChattoMobileClientID {
+		return OAuthClient{
+			ClientID: clientID, ClientName: "Chatto Mobile", ClientURI: "https://chatto.run",
+			RedirectURIs: []string{config.ChattoMobileOAuthCallback}, BuiltIn: true,
+		}, nil
+	}
 	if clientID == config.ChattoDesktopOrigin {
 		return OAuthClient{
 			ClientID: clientID, ClientName: "Chatto Desktop", ClientURI: config.ChattoDesktopOrigin,
 			RedirectURIs: []string{config.ChattoDesktopOrigin + config.ChattoDesktopOAuthCallbackPath + "?mode=popup"}, BuiltIn: true,
+		}, nil
+	}
+	if clientID == config.ChattoLoopbackClientID {
+		return OAuthClient{
+			ClientID: clientID, ClientName: config.ChattoLoopbackClientName,
+			RedirectURIs: []string{config.ChattoLoopbackOAuthCallback}, AnyLoopbackOrigin: true, BuiltIn: true,
 		}, nil
 	}
 	if s.oauthClientResolver == nil {

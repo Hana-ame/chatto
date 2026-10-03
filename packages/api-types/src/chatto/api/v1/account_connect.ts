@@ -3,16 +3,16 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { DeleteMyAccountRequest, DeleteMyAccountResponse, RequestAccountDeletionRequest, RequestAccountDeletionResponse, UpdatePasswordRequest, UpdatePasswordResponse, UpdateProfileRequest, UpdateProfileResponse, UpdateSettingsRequest, UpdateSettingsResponse } from "./account_pb.js";
+import { ChangePasswordRequest, ChangePasswordResponse, ConfirmEmailVerificationRequest, ConfirmEmailVerificationResponse, DeleteMyAccountRequest, DeleteMyAccountResponse, GetSettingsRequest, GetSettingsResponse, ListVerifiedEmailsRequest, ListVerifiedEmailsResponse, RequestAccountDeletionRequest, RequestAccountDeletionResponse, RequestEmailVerificationRequest, RequestEmailVerificationResponse, SetPrimaryEmailRequest, SetPrimaryEmailResponse, UpdateSettingsRequest, UpdateSettingsResponse } from "./account_pb.js";
 import { MethodIdempotency, MethodKind } from "@bufbuild/protobuf";
 import { DisconnectExternalIdentityRequest, DisconnectExternalIdentityResponse, ListExternalIdentitiesRequest, ListExternalIdentitiesResponse, StartExternalIdentityLinkRequest, StartExternalIdentityLinkResponse } from "./external_identities_pb.js";
-import { UpdatePresenceRequest, UpdatePresenceResponse } from "./presence_pb.js";
-import { DeleteCustomStatusRequest, DeleteCustomStatusResponse, UpdateCustomStatusRequest, UpdateCustomStatusResponse } from "./user_status_pb.js";
+import { GetPresencePreferenceRequest, GetPresencePreferenceResponse, RefreshPresenceRequest, RefreshPresenceResponse, SetPresencePreferenceRequest, SetPresencePreferenceResponse, SetPresenceRequest, SetPresenceResponse } from "./presence_pb.js";
+import { DeleteCustomStatusRequest, DeleteCustomStatusResponse, SetCustomStatusRequest, SetCustomStatusResponse } from "./user_status_pb.js";
 
 /**
- * Self-service account, profile, display preference, presence,
- * custom-status, external identity, and account lifecycle commands for the
- * authenticated user.
+ * Self-service account, display preference, presence, custom-status,
+ * external identity, and account lifecycle commands for the authenticated
+ * user. Public profile and avatar changes use UserService.
  *
  * @generated from service chatto.api.v1.MyAccountService
  */
@@ -20,25 +20,86 @@ export const MyAccountService = {
   typeName: "chatto.api.v1.MyAccountService",
   methods: {
     /**
-     * Updates the authenticated user's login, display name, and/or bio.
+     * Updates or adds the authenticated user's password.
      *
-     * @generated from rpc chatto.api.v1.MyAccountService.UpdateProfile
+     * @generated from rpc chatto.api.v1.MyAccountService.ChangePassword
      */
-    updateProfile: {
-      name: "UpdateProfile",
-      I: UpdateProfileRequest,
-      O: UpdateProfileResponse,
+    changePassword: {
+      name: "ChangePassword",
+      I: ChangePasswordRequest,
+      O: ChangePasswordResponse,
       kind: MethodKind.Unary,
     },
     /**
-     * Updates or adds the authenticated user's password.
+     * Lists the authenticated user's verified email addresses and primary choice.
+     * Returns FAILED_PRECONDITION when the authenticated account does not match
+     * expected_user_id.
      *
-     * @generated from rpc chatto.api.v1.MyAccountService.UpdatePassword
+     * @generated from rpc chatto.api.v1.MyAccountService.ListVerifiedEmails
      */
-    updatePassword: {
-      name: "UpdatePassword",
-      I: UpdatePasswordRequest,
-      O: UpdatePasswordResponse,
+    listVerifiedEmails: {
+      name: "ListVerifiedEmails",
+      I: ListVerifiedEmailsRequest,
+      O: ListVerifiedEmailsResponse,
+      kind: MethodKind.Unary,
+      idempotency: MethodIdempotency.NoSideEffects,
+    },
+    /**
+     * Sends a six-digit code to an email address that the authenticated user
+     * wants to add. The code expires after the server-configured email OTP
+     * lifetime. The client can request a new code after expiry. The server must
+     * have transactional email enabled. Returns ALREADY_EXISTS when the address
+     * is already verified for the user, RESOURCE_EXHAUSTED after too many code
+     * requests or attempts, and UNAVAILABLE when email delivery is disabled or
+     * fails. Returns FAILED_PRECONDITION when the authenticated account does not
+     * match expected_user_id.
+     *
+     * @generated from rpc chatto.api.v1.MyAccountService.RequestEmailVerification
+     */
+    requestEmailVerification: {
+      name: "RequestEmailVerification",
+      I: RequestEmailVerificationRequest,
+      O: RequestEmailVerificationResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * Confirms a verification code and adds the address to the account. Returns
+     * INVALID_ARGUMENT when the code is invalid or expired, and ALREADY_EXISTS
+     * when another user already controls the address. Returns FAILED_PRECONDITION
+     * when the authenticated account does not match expected_user_id.
+     *
+     * @generated from rpc chatto.api.v1.MyAccountService.ConfirmEmailVerification
+     */
+    confirmEmailVerification: {
+      name: "ConfirmEmailVerification",
+      I: ConfirmEmailVerificationRequest,
+      O: ConfirmEmailVerificationResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * Selects one verified address for future account-directed email. Returns
+     * NOT_FOUND when the address is not verified for the authenticated user, and
+     * FAILED_PRECONDITION when the authenticated account does not match
+     * expected_user_id.
+     *
+     * @generated from rpc chatto.api.v1.MyAccountService.SetPrimaryEmail
+     */
+    setPrimaryEmail: {
+      name: "SetPrimaryEmail",
+      I: SetPrimaryEmailRequest,
+      O: SetPrimaryEmailResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * Reads the authenticated user's display preferences without changing them.
+     * Returns default settings when none have been saved.
+     *
+     * @generated from rpc chatto.api.v1.MyAccountService.GetSettings
+     */
+    getSettings: {
+      name: "GetSettings",
+      I: GetSettingsRequest,
+      O: GetSettingsResponse,
       kind: MethodKind.Unary,
     },
     /**
@@ -89,28 +150,65 @@ export const MyAccountService = {
       kind: MethodKind.Unary,
     },
     /**
-     * Updates the current user's live presence status. This state is transient:
-     * clients should refresh it periodically while visible, and should stop
-     * calling this RPC when the user chooses to appear offline.
+     * Legacy live presence report, expiring after 60 seconds without refresh.
+     * A saved private choice overrides this report, including user_selected.
+     * New clients use SetPresencePreference for choices and RefreshPresence
+     * every 30 seconds for liveness.
      *
-     * @generated from rpc chatto.api.v1.MyAccountService.UpdatePresence
+     * @generated from rpc chatto.api.v1.MyAccountService.SetPresence
      */
-    updatePresence: {
-      name: "UpdatePresence",
-      I: UpdatePresenceRequest,
-      O: UpdatePresenceResponse,
+    setPresence: {
+      name: "SetPresence",
+      I: SetPresenceRequest,
+      O: SetPresenceResponse,
       kind: MethodKind.Unary,
     },
     /**
-     * Updates or replaces the current user's custom status. Emoji and text are
-     * required, and expires_at must be omitted or in the future.
+     * Reads the authenticated account's private saved availability choice.
      *
-     * @generated from rpc chatto.api.v1.MyAccountService.UpdateCustomStatus
+     * @generated from rpc chatto.api.v1.MyAccountService.GetPresencePreference
      */
-    updateCustomStatus: {
-      name: "UpdateCustomStatus",
-      I: UpdateCustomStatusRequest,
-      O: UpdateCustomStatusResponse,
+    getPresencePreference: {
+      name: "GetPresencePreference",
+      I: GetPresencePreferenceRequest,
+      O: GetPresencePreferenceResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * Saves a choice for all devices on this server. A stale revision returns ABORTED.
+     * OFFLINE suppresses public presence and typing; the choice survives disconnects.
+     *
+     * @generated from rpc chatto.api.v1.MyAccountService.SetPresencePreference
+     */
+    setPresencePreference: {
+      name: "SetPresencePreference",
+      I: SetPresencePreferenceRequest,
+      O: SetPresencePreferenceResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * Refreshes connection liveness without changing the saved choice. Clients call
+     * every 30 seconds; liveness expires after 60 seconds without a refresh.
+     * Accounts with a saved OFFLINE choice may refresh without public presence signals.
+     *
+     * @generated from rpc chatto.api.v1.MyAccountService.RefreshPresence
+     */
+    refreshPresence: {
+      name: "RefreshPresence",
+      I: RefreshPresenceRequest,
+      O: RefreshPresenceResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * Sets the current user's complete custom status. Emoji and text are required.
+     * Omit expires_at for no expiry, or supply a future time.
+     *
+     * @generated from rpc chatto.api.v1.MyAccountService.SetCustomStatus
+     */
+    setCustomStatus: {
+      name: "SetCustomStatus",
+      I: SetCustomStatusRequest,
+      O: SetCustomStatusResponse,
       kind: MethodKind.Unary,
     },
     /**

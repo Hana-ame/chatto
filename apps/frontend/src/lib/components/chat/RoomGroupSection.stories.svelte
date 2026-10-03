@@ -23,6 +23,10 @@
   ];
 </script>
 
+<script lang="ts">
+  let discoveryExpanded = $state(false);
+</script>
+
 {#snippet room(room: (typeof rooms)[number])}
   <button type="button" class={['sidebar-item text-start', room.highlighted && 'bg-surface']}>
     {#if room.universal}
@@ -79,5 +83,62 @@
       item={room}
       persistKey="storybook:room-group-section:empty"
     />
+  </div>
+</Story>
+
+<Story name="Room discovery footer" asChild>
+  <div class="w-72 bg-background">
+    <RoomGroupSection
+      label="Projects"
+      items={discoveryExpanded ? rooms : rooms.slice(0, 1)}
+      item={room}
+      persistKey="storybook:room-group-section:discovery"
+    >
+      {#snippet footer()}
+        <button
+          type="button"
+          class="mini-icon-action w-full items-center gap-2 px-1 py-1 text-start text-xs"
+          aria-expanded={discoveryExpanded}
+          aria-label={discoveryExpanded ? 'Hide unjoined rooms' : 'Show 2 unjoined rooms'}
+          onclick={() => {
+            discoveryExpanded = !discoveryExpanded;
+          }}
+        >
+          <span class="sidebar-icon" aria-hidden="true">{discoveryExpanded ? '−' : '+'}</span>
+          <span>{discoveryExpanded ? 'Show less' : '2 more'}</span>
+        </button>
+      {/snippet}
+    </RoomGroupSection>
+  </div>
+</Story>
+
+<Story name="Collapsible content" asChild>
+  <div class="w-72 bg-background">
+    <RoomGroupSection
+      label="What it can do"
+      items={[{ id: 'permissions' }]}
+      persistKey="storybook:room-group-section:content"
+      separated
+    >
+      {#snippet item()}
+        <div class="space-y-3 px-2 py-2">
+          <p class="font-medium">Rooms it has joined</p>
+          <ul class="list-disc space-y-1 ps-5">
+            <li>Read all messages</li>
+            <li>Reply in threads</li>
+          </ul>
+        </div>
+      {/snippet}
+    </RoomGroupSection>
+  </div>
+</Story>
+
+<Story name="Profile content" asChild>
+  <div class="w-64 bg-background">
+    <RoomGroupSection label="Bio" items={[]} persistKey="storybook:profile-bio" separated>
+      {#snippet content()}
+        <p class="px-1 py-2">I build chat software and help with development.</p>
+      {/snippet}
+    </RoomGroupSection>
   </div>
 </Story>

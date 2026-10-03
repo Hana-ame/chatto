@@ -30,16 +30,18 @@ var authProviderDefaultLabels = map[string]string{
 // a stable local issuer namespace for OAuth-only providers and must not be
 // changed after users link identities through it.
 type AuthProviderConfig struct {
-	ID              string            `toml:"id" comment:"Stable provider ID used in callback URLs and external identity links. Do not change after users link accounts."`
-	Type            string            `toml:"type" comment:"Provider type: oidc, github, gitlab, google, or discord."`
-	Label           string            `toml:"label,commented" comment:"Button label shown on the login page. Defaults to the provider type's display name."`
-	ClientID        string            `toml:"client_id" comment:"OAuth/OIDC client ID."`
-	ClientSecret    string            `toml:"client_secret,commented" comment:"OAuth/OIDC client secret. NEVER SHARE THIS! Optional only for public OIDC clients."`
-	IssuerURL       string            `toml:"issuer_url,commented" comment:"OIDC issuer URL. Required when type = 'oidc'."`
-	Scopes          []string          `toml:"scopes,commented" comment:"Optional OAuth scopes. Defaults are provider-specific."`
-	RequestEmail    *bool             `toml:"request_email,commented" comment:"Whether to request email scopes for providers that support it. Default: false. Chatto still matches by provider subject without an email claim."`
-	AutoProvision   *bool             `toml:"auto_provision,commented" comment:"Whether unlinked external identities may create a new passwordless account after explicit confirmation. Default: false. The linked provider identity counts as a verified sign-in factor."`
-	ProviderOptions map[string]string `toml:"provider_options,commented" comment:"Provider-specific options reserved for future use."`
+	// TokenEndpointAuthMethod overrides OIDC discovery for the token exchange.
+	TokenEndpointAuthMethod string            `toml:"token_endpoint_auth_method,commented" comment:"OIDC token authentication: client_secret_basic, client_secret_post, or none. Omit to select from discovery."`
+	ID                      string            `toml:"id" comment:"Stable provider ID used in callback URLs and external identity links. Do not change after users link accounts."`
+	Type                    string            `toml:"type" comment:"Provider type: oidc, github, gitlab, google, or discord."`
+	Label                   string            `toml:"label,commented" comment:"Button label shown on the login page. Defaults to the provider type's display name."`
+	ClientID                string            `toml:"client_id" comment:"OAuth/OIDC client ID."`
+	ClientSecret            string            `toml:"client_secret,commented" comment:"OAuth/OIDC client secret. NEVER SHARE THIS! Optional only for public OIDC clients."`
+	IssuerURL               string            `toml:"issuer_url,commented" comment:"OIDC issuer URL. Required when type = 'oidc'."`
+	Scopes                  []string          `toml:"scopes,commented" comment:"Optional OAuth scopes. Defaults are provider-specific."`
+	RequestEmail            *bool             `toml:"request_email,commented" comment:"Whether to request email scopes for providers that support it. Default: false. Chatto still matches by provider subject without an email claim."`
+	AutoProvision           *bool             `toml:"auto_provision,commented" comment:"Whether unlinked external identities may create a new passwordless account after explicit confirmation. Default: false. The linked provider identity counts as a verified sign-in factor."`
+	ProviderOptions         map[string]string `toml:"provider_options,commented" comment:"Provider-specific options reserved for future use."`
 }
 
 // LabelOrDefault returns the configured label, or a provider-specific default.
@@ -78,6 +80,7 @@ type AuthConfig struct {
 	AccountCreationPolicy string               `toml:"account_creation_policy,commented" env:"CHATTO_AUTH_ACCOUNT_CREATION_POLICY" comment:"Account admission policy: open or invite_only. Default: open. Upgrade every serving replica before enabling invite_only."`
 	TokenTTL              Duration             `toml:"token_ttl,commented" env:"CHATTO_AUTH_TOKEN_TTL" comment:"Renewal window for active human sessions and lifetime of each same-origin cookie credential. Supports human-readable durations like '90d', '2160h'. Default: 90d."`
 	AccessTokenTTL        Duration             `toml:"access_token_ttl,commented" env:"CHATTO_AUTH_ACCESS_TOKEN_TTL" comment:"Lifetime for renewable bearer access tokens. Supports human-readable durations like '15m'. Default: 15m."`
+	LoopbackClientEnabled bool                 `toml:"loopback_client_enabled,commented" env:"CHATTO_AUTH_LOOPBACK_CLIENT_ENABLED" comment:"Let a Chatto web client that runs on a local address of the user's device, such as a development server on localhost, sign in to this server. Its sessions end at most 24 hours after sign-in. Disabling this setting also ends existing sessions of that client. Upgrade every serving replica before enabling, and use the same value on every replica; sign-ins made while replicas differ can end. Default: false."`
 	EmailOTP              EmailOTPConfig       `toml:"email_otp,commented" comment:"Email OTP guardrails for registration and email verification."`
 	Providers             []AuthProviderConfig `toml:"providers" comment:"External login providers. Configure as repeated [[auth.providers]] tables."`
 }

@@ -48,7 +48,7 @@ interface LeaveCallResponse {
   left?: boolean;
 }
 
-interface GetCallTokenResponse {
+interface CreateCallTokenResponse {
   token?: string;
   e2eeKey?: string;
   callId?: string;
@@ -90,10 +90,17 @@ async function leaveCallViaConnect(page: Page, roomId: string): Promise<boolean>
   return data.left ?? false;
 }
 
-async function getCallTokenViaConnect(page: Page, roomId: string): Promise<GetCallTokenResponse> {
-  return connectPost<GetCallTokenResponse>(page, 'chatto.api.v1.VoiceCallService/GetCallToken', {
-    roomId
-  });
+async function createCallTokenViaConnect(
+  page: Page,
+  roomId: string
+): Promise<CreateCallTokenResponse> {
+  return connectPost<CreateCallTokenResponse>(
+    page,
+    'chatto.api.v1.VoiceCallService/CreateCallToken',
+    {
+      roomId
+    }
+  );
 }
 
 async function listActiveCallRoomIdsViaConnect(page: Page): Promise<string[]> {
@@ -117,7 +124,10 @@ async function listCallParticipantsViaConnect(
 }
 
 async function openCallTab(page: Page) {
-  await page.locator('[data-testid="room-sidebar-toggle"]:visible').getByLabel('Show call').click();
+  await page
+    .locator('[data-testid="room-sidebar-toggle"]:visible')
+    .getByLabel('Call', { exact: true })
+    .click();
 }
 
 test.describe('Voice calls', () => {
@@ -128,7 +138,7 @@ test.describe('Voice calls', () => {
 
     const callTab = page
       .locator('[data-testid="room-sidebar-toggle"]:visible')
-      .getByLabel('Show call');
+      .getByLabel('Call', { exact: true });
     await expect(callTab).toBeVisible({ timeout: TIMEOUTS.UI_STANDARD });
   });
 
@@ -144,7 +154,7 @@ test.describe('Voice calls', () => {
       // Call tab should be visible in the DM room sidebar toggle
       const callTab = page
         .locator('[data-testid="room-sidebar-toggle"]:visible')
-        .getByLabel('Show call');
+        .getByLabel('Call', { exact: true });
       await expect(callTab).toBeVisible({ timeout: TIMEOUTS.UI_STANDARD });
     });
   });
@@ -157,7 +167,7 @@ test.describe('Voice calls', () => {
 
     await expect(joinCallViaConnect(page, roomId)).resolves.toBe(true);
 
-    const token = await getCallTokenViaConnect(page, roomId);
+    const token = await createCallTokenViaConnect(page, roomId);
     expect(token.token).toBeTruthy();
     expect(token.e2eeKey).toBeTruthy();
     expect(token.callId).toBeTruthy();
@@ -182,7 +192,7 @@ test.describe('Voice calls', () => {
     await withServerUser(browser!, serverURL, async ({ page: page2 }) => {
       const response = await connectPostResponse(
         page2,
-        'chatto.api.v1.VoiceCallService/GetCallToken',
+        'chatto.api.v1.VoiceCallService/CreateCallToken',
         { roomId }
       );
       expect(response.ok()).toBe(false);
@@ -366,14 +376,14 @@ test.describe('Voice calls', () => {
       await expect(page.getByTestId('call-join-button')).toBeVisible();
 
       // User A should see User B's display name in the participant list
-      await expect(observerPanel.getByTitle(userB.displayName)).toBeVisible();
+      await expect(observerPanel.getByTitle(userB.displayName, { exact: true })).toBeVisible();
 
       // Simulate User B leaving — the open call tab falls back to its idle start-call state
       await page.request.post('/webhooks/test/call-leave', {
         data: { spaceId, roomId, userId: userB.id }
       });
 
-      await expect(observerPanel.getByTitle(userB.displayName)).not.toBeVisible({
+      await expect(observerPanel.getByTitle(userB.displayName, { exact: true })).not.toBeVisible({
         timeout: TIMEOUTS.REALTIME_EVENT
       });
       await expect(page.getByTestId('call-join-button')).toHaveText('Start call');
@@ -414,7 +424,7 @@ test.describe('Voice calls', () => {
         const observerPanel = page.getByTestId('call-observer-panel');
 
         await expect(observerPanel).toBeVisible({ timeout: TIMEOUTS.REALTIME_EVENT });
-        await expect(observerPanel.getByTitle(userB.displayName)).toBeVisible();
+        await expect(observerPanel.getByTitle(userB.displayName, { exact: true })).toBeVisible();
 
         // User C joins the call
         await page.request.post('/webhooks/test/call-join', {
@@ -428,20 +438,20 @@ test.describe('Voice calls', () => {
         });
 
         // Both participants should be visible
-        await expect(observerPanel.getByTitle(userC.displayName)).toBeVisible({
+        await expect(observerPanel.getByTitle(userC.displayName, { exact: true })).toBeVisible({
           timeout: TIMEOUTS.REALTIME_EVENT
         });
-        await expect(observerPanel.getByTitle(userB.displayName)).toBeVisible();
+        await expect(observerPanel.getByTitle(userB.displayName, { exact: true })).toBeVisible();
 
         // User B leaves — User C should still be visible, panel still showing
         await page.request.post('/webhooks/test/call-leave', {
           data: { spaceId, roomId, userId: userB.id }
         });
 
-        await expect(observerPanel.getByTitle(userB.displayName)).not.toBeVisible({
+        await expect(observerPanel.getByTitle(userB.displayName, { exact: true })).not.toBeVisible({
           timeout: TIMEOUTS.REALTIME_EVENT
         });
-        await expect(observerPanel.getByTitle(userC.displayName)).toBeVisible();
+        await expect(observerPanel.getByTitle(userC.displayName, { exact: true })).toBeVisible();
         await expect(observerPanel).toBeVisible();
 
         // User C leaves — the open call tab falls back to its idle start-call state
@@ -449,7 +459,7 @@ test.describe('Voice calls', () => {
           data: { spaceId, roomId, userId: userC.id }
         });
 
-        await expect(observerPanel.getByTitle(userC.displayName)).not.toBeVisible({
+        await expect(observerPanel.getByTitle(userC.displayName, { exact: true })).not.toBeVisible({
           timeout: TIMEOUTS.REALTIME_EVENT
         });
         await expect(page.getByTestId('call-join-button')).toHaveText('Start call');
@@ -535,7 +545,7 @@ test.describe('Voice calls', () => {
       await chatPage2.enterRoom(roomName);
       const callTab = page2
         .locator('[data-testid="room-sidebar-toggle"]:visible')
-        .getByLabel('Show call');
+        .getByLabel('Call', { exact: true });
       await expect(callTab.getByTestId('active-call-pulse-icon')).toBeVisible({
         timeout: TIMEOUTS.REALTIME_EVENT
       });
@@ -543,7 +553,7 @@ test.describe('Voice calls', () => {
 
       const observerPanel = page2.getByTestId('call-observer-panel');
       await expect(observerPanel).toBeVisible({ timeout: TIMEOUTS.REALTIME_EVENT });
-      await expect(observerPanel.getByTitle(alice.displayName)).toBeVisible();
+      await expect(observerPanel.getByTitle(alice.displayName, { exact: true })).toBeVisible();
       await expect(page2.getByTestId('call-join-button')).toHaveText('Join call');
     });
   });

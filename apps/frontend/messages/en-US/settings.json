@@ -6,6 +6,19 @@
           "vacation": "Vacation"
         }
       }
+    },
+    "preferences": {
+      "customization": {
+        "title": "Theme customization"
+      },
+      "accent": {
+        "title": "Accent color",
+        "grey": "Gray"
+      },
+      "tone": {
+        "title": "Background color",
+        "gray": "Gray"
+      }
     }
   }
 }

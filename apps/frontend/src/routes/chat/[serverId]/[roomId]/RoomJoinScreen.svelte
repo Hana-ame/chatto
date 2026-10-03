@@ -1,12 +1,13 @@
 <script lang="ts">
   import { resolve } from '$app/paths';
+  import { serverUi } from '$lib/state/server/serverUi';
   import { m } from '$lib/i18n/messages';
   import { useServerScope } from '$lib/state/server/scope.svelte';
   import { Button } from '$lib/ui/form';
   import { toast } from '$lib/ui/toast';
-  import PageTitle from '$lib/ui/PageTitle.svelte';
+  import { PageTitle, LoadingFog } from '$lib/ui';
   import UserAvatar from '$lib/components/UserAvatar.svelte';
-  import type { RoomsListItem } from '$lib/state/server/rooms.svelte';
+  import type { RoomsListItem } from '$lib/state/server/navigation';
 
   let {
     room,
@@ -17,12 +18,13 @@
   } = $props();
 
   const serverScope = useServerScope();
-  const stores = $derived(serverScope.store);
+  const stores = serverScope.store;
   const overviewPath = $derived(resolve('/chat/[serverId]', { serverId: serverSegment }));
   const title = $derived(`#${room.name}`);
   let joining = $state(false);
   const groupName = $derived(
-    stores.navigation.roomGroups.find((group) => group.roomIds.includes(room.id))?.name ?? null
+    serverUi(stores).navigation.roomGroups.find((group) => group.roomIds.includes(room.id))?.name ??
+      null
   );
   const description = $derived(room.description?.trim() || null);
 
@@ -31,7 +33,7 @@
 
     joining = true;
     try {
-      const result = await stores.roomDirectory.joinRoom(room.id);
+      const result = await serverUi(stores).roomDirectory.joinRoom(room.id);
       if (!serverScope.isCurrent()) return;
 
       if (!result.ok) {
@@ -76,20 +78,8 @@
         <p class="mt-4 text-base leading-7 text-pretty text-text">{description}</p>
       {/if}
 
-      {#await stores.roomDirectory.loadJoinPreview(room.id)}
-        <div
-          class="mt-6 flex min-h-20 w-full flex-col items-center justify-center surface-box rounded-lg px-4 py-4"
-          aria-label={m('room.join.member_preview_label')}
-        >
-          <div class="flex flex-col items-center gap-3" aria-hidden="true">
-            <div class="skeleton h-4 w-24 rounded"></div>
-            <div class="flex -space-x-2">
-              <div class="skeleton h-8 w-8 rounded-full ring-2 ring-surface"></div>
-              <div class="skeleton h-8 w-8 rounded-full ring-2 ring-surface"></div>
-              <div class="skeleton h-8 w-8 rounded-full ring-2 ring-surface"></div>
-            </div>
-          </div>
-        </div>
+      {#await serverUi(stores).roomDirectory.loadJoinPreview(room.id)}
+        <LoadingFog class="mt-6 h-20 w-full" label={m('room.join.member_preview_label')} />
       {:then preview}
         {#if preview}
           <div
@@ -116,7 +106,7 @@
 
       <div class="mt-6 flex flex-wrap justify-center gap-2">
         <Button loading={joining} onclick={() => void joinRoom()}>
-          <span class="iconify icon-[uil--plus]"></span>
+          <span aria-hidden="true" class="iconify icon-[uil--plus]"></span>
           {m('room.join.action')}
         </Button>
       </div>
@@ -127,7 +117,7 @@
         class="mb-5 flex h-12 w-12 items-center justify-center rounded-full border border-border bg-surface text-muted"
         aria-hidden="true"
       >
-        <span class="iconify icon-[uil--lock] text-2xl"></span>
+        <span aria-hidden="true" class="iconify icon-[uil--lock] text-2xl"></span>
       </div>
 
       <h1 class="text-2xl font-semibold text-text">
@@ -139,8 +129,8 @@
 
       <div class="mt-6 flex flex-wrap justify-center gap-2">
         <Button href={overviewPath} variant="secondary">
-      <span class="iconify icon-[uil--arrow-left] rtl:-scale-x-100"></span>
-      {m('ui.access_denied.back_to_server')}
+          <span aria-hidden="true" class="iconify icon-[uil--arrow-left] rtl:-scale-x-100"></span>
+          {m('ui.access_denied.back_to_server')}
         </Button>
       </div>
     </div>

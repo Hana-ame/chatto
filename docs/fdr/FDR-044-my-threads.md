@@ -1,13 +1,13 @@
 # FDR-044: My Threads
 
 **Status:** Active
-**Last reviewed:** 2026-08-30
+**Last reviewed:** 2026-10-02
 
 ## Overview
 
-My Threads is a conversation inbox for channel-room threads that the current
-user follows. It helps the user return to active conversations and find replies
-that they have not read.
+My Threads is a conversation inbox for channel-room and DM threads that the
+current user follows. It helps the user return to active conversations and
+find replies that they have not read.
 
 ## Behavior
 
@@ -15,8 +15,18 @@ that they have not read.
   them by activity date.
 - Each row shows the room, root message, latest visible reply when one exists,
   last activity, reply count, and a participant preview.
+- A DM row uses participant names and avatars instead of a channel name. It
+  does not show a `#` channel prefix.
 - The Unread filter includes only threads with replies after the user's thread
-  read cursor.
+  read cursor. The server applies this filter before pagination, so the first
+  page shows unread threads or confirms that none exist.
+- When server search is enabled, a search input filters followed threads by
+  their root messages and all replies, including replies outside the current
+  list preview. Each matching thread appears once in activity order.
+- Search uses the message-search syntax, including `from:username`. Plain words
+  search message text. All/Unread still applies to
+  the matching threads. Clearing the input restores the ordinary list.
+- The search input receives focus when My Threads opens.
 - A row with a matching unread notification uses notification orange for
   Important attention and a neutral marker for Ambient attention. The client
   reads this decoration from its current Notifications view.
@@ -53,6 +63,23 @@ have read. Notification policy remains an independent way to prioritize work.
 **Tradeoff:** A thread with important attention can appear only in All after
 its replies are read.
 
+### 2a. The server filters unread threads
+
+**Decision:** `ListFollowedThreads` accepts `unread_only`. The server reads
+the cursors of all followed threads, keeps the unread threads, and then
+paginates. The page total counts only unread threads. The client also hides a
+thread that becomes read while the list shows it. For search results and for
+servers without this field, the client filters loaded pages and continues to
+load pages until it finds a match or reaches the end. It shows the normal
+loading state during this work.
+**Why:** A client-side filter over pages of all followed threads needs many
+requests to show an empty Unread view. The server already loads every followed
+thread to sort it, so one more cursor read for each thread is small.
+**Tradeoff:** Unread pages use offsets over a set that becomes smaller when
+the user reads a thread. The client counts only loaded threads that are still
+unread to calculate the next offset. A read in a different client can still
+move the offset until the list loads again.
+
 ### 3. The activity-list presentation makes the order clear
 
 **Decision:** My Threads uses flat activity rows and date sections. Each row
@@ -64,16 +91,25 @@ sections distinguish this newest-first activity list from a room timeline,
 where newer messages appear at the bottom.
 **Tradeoff:** My Threads and room timelines use different reading directions.
 The list response must also hydrate more message and user data. API clients
-must restart offset pagination after activity changes the live order.
+must restart pagination after activity changes the live order. The ordinary
+list uses offsets. Search uses opaque cursors through the shared search API;
+each search page counts distinct threads.
 
 ### 4. The navigation indicator covers followed threads
 
-**Decision:** The My Threads navigation indicator summarizes unread replies
-and loaded unread notifications only for followed threads. Important
-notification attention takes visual priority over the neutral indicator.
-**Why:** The indicator must lead to a row that the user can find in My Threads.
+**Decision:** The My Threads navigation indicator counts loaded unread
+notifications for followed threads. The badge uses notification orange when
+one notification has Important attention, and the neutral badge color when all
+have Ambient attention. Unread replies without an unread notification do not
+show a navigation indicator.
+**Why:** One notification source keeps the navigation badge and thread-row
+notification markers consistent. The navigation indicator does not depend on
+unread flags in cached room timelines.
 **Tradeoff:** A notification for an unfollowed thread can still appear in
-Notifications without lighting the My Threads indicator.
+Notifications without lighting the My Threads indicator. The badge counts only
+the notifications that the client has loaded. Unread replies without a
+notification, including Badge and Off activity, remain available through the
+Unread filter.
 
 ### 5. Chatto 0.5 uses the explicit viewer-state contract
 
@@ -88,7 +124,11 @@ persisted follow, read, and notification data still upgrades without changes.
 
 ## Permissions
 
-- `message.read` — read channel-room and thread messages.
+Search requires the optional message-search provider. If the provider is not
+ready, the page shows its status and a retry control. The ordinary thread list
+remains available after the search input is cleared.
+
+- `message.read` — read room and thread messages.
 - `message.read-interactions` — read an accessible interaction thread when the
   user does not have the general message-read permission.
 

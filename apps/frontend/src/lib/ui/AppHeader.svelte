@@ -1,9 +1,9 @@
 <script lang="ts">
-  import { pushState, goto } from '$app/navigation';
+  import { pushState } from '$app/navigation';
+  import { serverUi } from '$lib/state/server/serverUi';
   import { resolve } from '$app/paths';
-  import { page } from '$app/state';
-  import { serverRegistry } from '$lib/state/server/registry.svelte';
-  import { serverConnectionManager } from '$lib/state/server/serverConnection.svelte';
+  import { serverRegistry, serverConnectionManager } from '$lib/client';
+  import { firstAuthenticatedServerId } from '$lib/serverCatalogue';
   import { getActiveServer } from '$lib/state/activeServer.svelte';
   import { serverIdToSegment } from '$lib/navigation';
   import { version } from '$app/environment';
@@ -18,19 +18,24 @@
   const motd = $derived(serverRegistry.tryGetStore(getActiveServer())?.serverInfo.motd);
   const originStore = $derived(serverRegistry.tryGetStore(serverRegistry.originServer?.id ?? ''));
 
+  /** A server's notification counts without viewed ones; zero without a store. */
+  function attentionCounts(serverId: string) {
+    const store = serverRegistry.tryGetStore(serverId);
+    return store
+      ? serverUi(store).attention.counts
+      : { unreadNotificationCount: 0, importantUnreadNotificationCount: 0 };
+  }
+
   // Aggregate exact notification counts across all servers.
   const totalNotificationCount = $derived(
     serverRegistry.servers.reduce(
-      (sum, instance) =>
-        sum + (serverRegistry.tryGetStore(instance.id)?.notifications.unreadNotificationCount ?? 0),
+      (sum, instance) => sum + attentionCounts(instance.id).unreadNotificationCount,
       0
     )
   );
   const totalImportantNotificationCount = $derived(
     serverRegistry.servers.reduce(
-      (sum, instance) =>
-        sum +
-        (serverRegistry.tryGetStore(instance.id)?.notifications.importantUnreadNotificationCount ?? 0),
+      (sum, instance) => sum + attentionCounts(instance.id).importantUnreadNotificationCount,
       0
     )
   );
@@ -40,7 +45,7 @@
   const preferencesServerId = $derived.by(() => {
     const activeServerId = getActiveServer();
     if (activeServerId && serverRegistry.isAuthenticated(activeServerId)) return activeServerId;
-    return serverRegistry.firstAuthenticatedServerId();
+    return firstAuthenticatedServerId();
   });
   function handleSignOut() {
     pushState('', { modal: { type: 'logout' } });
@@ -49,46 +54,30 @@
   function showAboutChatto() {
     pushState('', { modal: { type: 'aboutChatto' } });
   }
-
-  // 【本地改动 2026-09-01】修复移动端「通知页/无服务器页点 hamburger 房间列表
-  // 不出现」：hamburger 调 sidebarNav.toggle()，但房间列表侧栏（ServerSidebar
-  // + RoomList）只由 Chrome 在 [serverId] 路由下挂载；通知页 /chat/notifications
-  // 不在 [serverId] 下，toggle 后 DOM 里根本没有房间列表面板可滑出，用户只见
-  // 服务器图标列，误以为坏了。
-  // 思路：移动端 + 当前路由不含 [serverId]（即无可 toggle 的房间列表侧栏）时，
-  // hamburger 先打开侧栏（sidebarNav.isOpen=true），再导航到默认已认证服务器的
-  // 房间列表页；进入 [serverId] 页后 ServerSidebar 挂载且 isOpen 为真，房间列表
-  // 直接滑出可见。有 [serverId] 的页面（房间、admin、设置）保持原 toggle 行为。
-  // 边界：仅影响移动端（sidebarNav.isMobile）；桌面端 hamburger 行为不变；
-  // 目标服务器复用 preferencesServerId（active 或 firstAuthenticated），与
-  // 设置页入口一致。踩坑：仅 goto 不打开侧栏的话，[serverId] 页移动端默认
-  // isOpen=false，导航后房间列表仍不可见，等于没修（2026-09-01 自查发现）。
-  function handleHamburger() {
-    if (sidebarNav.isMobile && !page.route.id?.includes('[serverId]')) {
-      const serverId = preferencesServerId;
-      if (serverId) {
-        if (!sidebarNav.isOpen) sidebarNav.toggle();
-        void goto(resolve('/chat/[serverId]', { serverId: serverIdToSegment(serverId) }));
-      }
-      return;
-    }
-    sidebarNav.toggle();
-  }
 </script>
 
-<header class="app-header flex items-center justify-between gap-2 p-2 text-muted md:text-sm">
+<!-- WebKit extends the solid background of a sticky header into its top system bar. -->
+<header
+  class="app-header sticky top-0 flex keyboard-hide-mobile h-[var(--app-header-height)] shrink-0 items-center justify-between gap-2 bg-surface p-2 text-muted desktop-presentation:text-sm"
+>
   <!-- Leading: global navigation, notifications, and client-wide actions -->
   <div class="flex items-center gap-3">
-    <!-- Hamburger - 44px tap target for mobile accessibility. 打开房间列表侧栏。 -->
+    <!-- Sidebar toggle - 44px tap target for mobile accessibility -->
     <button
       type="button"
       class="app-header-icon"
-      onclick={handleHamburger}
+      onclick={() => sidebarNav.toggle()}
       aria-label={m('ui.toggle_sidebar')}
       aria-expanded={sidebarNav.isOpen}
       title={m('ui.toggle_sidebar')}
     >
-      <span class="iconify icon-[uil--bars] text-xl"></span>
+      <span
+        aria-hidden="true"
+        class={[
+          'iconify text-xl rtl:-scale-x-100',
+          sidebarNav.isOpen ? 'icon-[lucide--panel-left-close]' : 'icon-[lucide--panel-left-open]'
+        ]}
+      ></span>
     </button>
 
     {#if hasInstances}
@@ -97,9 +86,9 @@
         href={resolve('/chat/notifications')}
         aria-label={m('ui.notifications')}
         title={m('ui.notifications')}
-        class="relative app-header-icon"
+        class="app-header-icon relative"
       >
-        <span class="iconify icon-[uil--bell] text-lg"></span>
+        <span aria-hidden="true" class="iconify icon-[uil--bell] text-lg"></span>
         {#if totalNotificationCount > 0}
           <UnreadDot
             color={totalImportantNotificationCount > 0 ? 'warning' : 'ambient'}
@@ -119,7 +108,7 @@
         aria-label={m('ui.open_quick_switcher')}
         title={m('ui.quick_switcher_shortcut')}
       >
-        <span class="iconify icon-[uil--apps] text-lg"></span>
+        <span aria-hidden="true" class="iconify icon-[uil--apps] text-lg"></span>
       </button>
     {/if}
 
@@ -146,6 +135,8 @@
             ? 'text-warning'
             : 'animate-pulse'
         ]}
+        role="img"
+        aria-label={m('ui.realtime_paused')}
         title={m('ui.realtime_paused')}
       ></span>
     {/if}
@@ -153,40 +144,55 @@
 
   <!-- MOTD -->
   {#if motd}
-    <MotdContent {motd} />
+    <MotdContent {motd} onclick={() => pushState('', { modal: { type: 'motd', motd } })} />
   {:else}
     <span class="flex-1"></span>
   {/if}
 
-  <!-- Actions: Version + Logout -->
-  <div class="flex items-center gap-3">
+  <!-- Actions: About + Logout -->
+  <div class="flex shrink-0 items-center gap-3">
     {#if version}
+      <!-- Wide viewports have room to show the client version next to the About action. -->
+      <span class="hidden text-xs tabular-nums md:inline" data-testid="app-header-version"
+        >v{version}</span
+      >
       <button
         type="button"
-        class="min-h-10 cursor-pointer rounded px-2 text-muted transition-colors hover:bg-surface-emphasized hover:text-text focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-action"
+        class="app-header-icon"
         onclick={showAboutChatto}
         title={m('ui.tooltip.about', { subject: 'Chatto' })}
         aria-label={m('ui.tooltip.about', { subject: 'Chatto' })}
       >
-        v{version}
+        <span class="iconify icon-[uil--info-circle] text-lg" aria-hidden="true"></span>
       </button>
     {/if}
 
     {#if hasInstances}
       <button
         type="button"
-        class="iconify icon-[uil--signout] cursor-pointer hover:text-text"
+        class="app-header-icon"
         onclick={handleSignOut}
         title={m('ui.sign_out')}
+        aria-label={m('ui.sign_out')}
       >
+        <span class="iconify icon-[uil--signout] text-lg rtl:-scale-x-100" aria-hidden="true"
+        ></span>
       </button>
     {/if}
   </div>
 </header>
 
 <style>
-  /* Tauri window dragging - header is draggable, interactive elements are not */
+  /* Keep the surface full-width while content stays clear of native window buttons.
+     Overlay coordinates use the viewport, not the padded shell width.
+     The custom properties also let stories model the host-provided safe area. */
   .app-header {
+    padding-left: calc(0.5rem + var(--app-header-titlebar-x, env(titlebar-area-x, 0px)));
+    padding-right: calc(
+      0.5rem + 100vw - var(--app-header-titlebar-x, env(titlebar-area-x, 0px)) -
+        var(--app-header-titlebar-width, env(titlebar-area-width, 100vw))
+    );
+    /* Electron window dragging excludes the interactive elements below. */
     -webkit-app-region: drag;
   }
   .app-header :global(a),

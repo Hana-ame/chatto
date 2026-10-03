@@ -9,6 +9,7 @@ import (
 	"connectrpc.com/validate"
 	"hmans.de/chatto/internal/config"
 	"hmans.de/chatto/internal/core"
+	"hmans.de/chatto/internal/email"
 	"hmans.de/chatto/internal/pb/chatto/admin/v1/adminv1connect"
 	"hmans.de/chatto/internal/pb/chatto/api/v1/apiv1connect"
 	"hmans.de/chatto/internal/pb/chatto/auth/v1/authv1connect"
@@ -50,6 +51,7 @@ type API struct {
 	config         config.ChattoConfig
 	version        string
 	searchProvider MessageSearchProviderClient
+	emailSender    email.Sender
 }
 
 // MessageSearchProviderClient calls the trusted provider contract used behind
@@ -66,6 +68,11 @@ type APIOption func(*API)
 // the trusted NATS provider boundary.
 func WithMessageSearchProviderClient(client MessageSearchProviderClient) APIOption {
 	return func(api *API) { api.searchProvider = client }
+}
+
+// WithEmailSender supplies transactional email delivery to account methods.
+func WithEmailSender(sender email.Sender) APIOption {
+	return func(api *API) { api.emailSender = sender }
 }
 
 func New(core *core.ChattoCore, config config.ChattoConfig, version string, options ...APIOption) *API {
@@ -103,22 +110,25 @@ func handlerOptionsWithReadMax(readMaxBytes int, webserver config.WebserverConfi
 		connect.WithCompressMinBytes(compressionMinBytes),
 		connect.WithInterceptors(
 			internalErrorLoggingInterceptor(),
+			errorMappingInterceptor(),
 			dekRequestCacheInterceptor(),
+			updateMaskInterceptor(),
 			validate.NewInterceptor(),
 		),
 	}
 }
 
 func (a *API) Handlers() []Handler {
-	options := HandlerOptionsForWebserver(a.config.Webserver)
+	options := a.publicHandlerOptions(MaxRequestMessageBytes)
 	uploadOptions := options
 	assetUploadOptions := options
 	if a.core != nil {
-		uploadOptions = handlerOptionsWithReadMax(uploadRequestMaxBytes(a.core.AssetsConfig().MaxUploadSize), a.config.Webserver)
-		assetUploadOptions = handlerOptionsWithReadMax(assetUploadRequestMaxBytes(), a.config.Webserver)
+		uploadOptions = a.publicHandlerOptions(uploadRequestMaxBytes(a.core.AssetsConfig().MaxUploadSize))
+		assetUploadOptions = a.publicHandlerOptions(assetUploadRequestMaxBytes())
 	}
 
 	accountPath, accountHandler := apiv1connect.NewMyAccountServiceHandler(&accountService{api: a}, uploadOptions...)
+	effectivePermissionPath, effectivePermissionHandler := apiv1connect.NewPermissionServiceHandler(&effectivePermissionService{api: a}, options...)
 	botPath, botHandler := apiv1connect.NewBotServiceHandler(&botService{api: a}, options...)
 	assetPath, assetHandler := apiv1connect.NewAssetServiceHandler(&assetService{api: a}, options...)
 	assetUploadPath, assetUploadHandler := apiv1connect.NewAssetUploadServiceHandler(&assetUploadService{api: a}, assetUploadOptions...)
@@ -128,9 +138,21 @@ func (a *API) Handlers() []Handler {
 	adminOAuthClientPath, adminOAuthClientHandler := adminv1connect.NewAdminOAuthClientServiceHandler(&adminOAuthClientService{api: a}, options...)
 	adminMemberPath, adminMemberHandler := adminv1connect.NewAdminUserServiceHandler(&adminUserManagementService{api: a}, options...)
 	adminServerPath, adminServerHandler := adminv1connect.NewAdminServerServiceHandler(&serverService{api: a}, uploadOptions...)
+	setupPath, setupHandler := authv1connect.NewServerSetupServiceHandler(&serverSetupService{api: a}, options...)
 	serverDiscoveryPath, serverDiscoveryHandler := discoveryv1connect.NewServerDiscoveryServiceHandler(&serverDiscoveryService{api: a}, options...)
 	serverPath, serverHandler := apiv1connect.NewServerServiceHandler(&serverService{api: a}, options...)
-	userPath, userHandler := apiv1connect.NewUserServiceHandler(&userService{api: a}, options...)
+	userService := &userService{api: a}
+	userPath, standardUserHandler := apiv1connect.NewUserServiceHandler(userService, options...)
+	_, userUploadHandler := apiv1connect.NewUserServiceHandler(userService, uploadOptions...)
+	// Only UploadAvatar needs the configured image upload limit. Keep the other
+	// user methods at the standard request limit.
+	userHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == apiv1connect.UserServiceUploadAvatarProcedure {
+			userUploadHandler.ServeHTTP(w, r)
+			return
+		}
+		standardUserHandler.ServeHTTP(w, r)
+	})
 	viewerPath, viewerHandler := apiv1connect.NewViewerServiceHandler(&viewerService{api: a}, options...)
 	externalAuthPath, externalAuthHandler := authv1connect.NewExternalIdentityAuthServiceHandler(&externalIdentityAuthService{api: a}, options...)
 	pushCleanupPath, pushCleanupHandler := authv1connect.NewPushSubscriptionCleanupServiceHandler(&pushSubscriptionCleanupService{api: a}, options...)
@@ -148,8 +170,10 @@ func (a *API) Handlers() []Handler {
 	threadPath, threadHandler := apiv1connect.NewThreadServiceHandler(&threadService{api: a}, options...)
 	voicePath, voiceHandler := apiv1connect.NewVoiceCallServiceHandler(&voiceCallService{api: a}, options...)
 	handlers := []Handler{
+		{ServicePath: setupPath, Handler: setupHandler, AuthPolicy: AuthPolicyPublic},
 		{ServicePath: accountPath, Handler: accountHandler, AuthPolicy: AuthPolicyAuthenticatedUser},
 		{ServicePath: botPath, Handler: botHandler, AuthPolicy: AuthPolicyAuthenticatedUser},
+		{ServicePath: effectivePermissionPath, Handler: effectivePermissionHandler, AuthPolicy: AuthPolicyAuthenticatedUser},
 		{ServicePath: assetPath, Handler: assetHandler, AuthPolicy: AuthPolicyAuthenticatedUser},
 		{ServicePath: assetUploadPath, Handler: assetUploadHandler, AuthPolicy: AuthPolicyAuthenticatedUser},
 		{ServicePath: adminDiagnosticsPath, Handler: adminDiagnosticsHandler, AuthPolicy: AuthPolicyAuthenticatedUser},
@@ -181,14 +205,30 @@ func (a *API) Handlers() []Handler {
 	return append(handlers, reflectionHandlers(options)...)
 }
 
+func (a *API) publicHandlerOptions(readMaxBytes int) []connect.HandlerOption {
+	options := handlerOptionsWithReadMax(readMaxBytes, a.config.Webserver)
+	if a.core == nil {
+		return options
+	}
+	return append(options, connect.WithInterceptors(a.realtimeConsistencyInterceptor()))
+}
+
 // OperatorHandlers returns the local, root-equivalent operator API surface.
 // These handlers must only be mounted on the operator Unix socket.
 func (a *API) OperatorHandlers() []Handler {
 	options := HandlerOptionsForWebserver(a.config.Webserver)
+	assetOptions := handlerOptionsWithReadMax(assetUploadRequestMaxBytes(), a.config.Webserver)
 	userPath, userHandler := operatorv1connect.NewOperatorUserServiceHandler(&operatorUserService{api: a}, options...)
-	return []Handler{
+	roomPath, roomHandler := operatorv1connect.NewOperatorRoomServiceHandler(&operatorRoomService{api: a}, options...)
+	assetPath, assetHandler := operatorv1connect.NewOperatorAssetServiceHandler(&operatorAssetService{api: a}, assetOptions...)
+	messagePath, messageHandler := operatorv1connect.NewOperatorMessageServiceHandler(&operatorMessageService{api: a}, options...)
+	handlers := []Handler{
 		{ServicePath: userPath, Handler: userHandler, AuthPolicy: AuthPolicyPublic},
+		{ServicePath: roomPath, Handler: roomHandler, AuthPolicy: AuthPolicyPublic},
+		{ServicePath: assetPath, Handler: assetHandler, AuthPolicy: AuthPolicyPublic},
+		{ServicePath: messagePath, Handler: messageHandler, AuthPolicy: AuthPolicyPublic},
 	}
+	return append(handlers, a.operatorSeedHandlers(options)...)
 }
 
 func uploadRequestMaxBytes(maxUploadSize int64) int {
@@ -205,9 +245,5 @@ func uploadRequestMaxBytes(maxUploadSize int64) int {
 
 func assetUploadRequestMaxBytes() int {
 	const protobufOverhead = 64 * 1024
-	return defaultAssetUploadChunkSizeForConnect() + protobufOverhead
-}
-
-func defaultAssetUploadChunkSizeForConnect() int {
-	return 512 * 1024
+	return core.DefaultAssetUploadChunkSize + protobufOverhead
 }

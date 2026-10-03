@@ -1,4 +1,4 @@
-import type { RoomsListItem } from '$lib/state/server/rooms.svelte';
+import type { RoomsListItem } from '$lib/state/server/navigation';
 
 export type RoomRouteAccess =
   | {
@@ -17,7 +17,7 @@ export interface RoomLinkAccessOptions {
 export function roomRouteAccess(options: RoomLinkAccessOptions): RoomRouteAccess {
   const room = options.rooms.find((candidate) => candidate.id === options.roomId);
 
-  if (!room) {
+  if (!room || room.viewerIsMember === null) {
     return { kind: 'unknown' };
   }
 

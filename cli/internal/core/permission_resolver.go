@@ -3,13 +3,18 @@ package core
 import (
 	"context"
 	"fmt"
+	"time"
+
+	"hmans.de/chatto/internal/authctx"
 )
 
 // PermissionResolver handles permission resolution using a deliberately small
 // model:
 //
-//  1. Effective owners are allowed every known RBAC permission.
-//  2. For everyone else, DM boundary denies win for category/privacy mismatches.
+//  1. Effective owners are entitled to every known RBAC permission. The
+//     override is effective only where privileged mode allows it; otherwise
+//     owners resolve through the same rules as everyone else.
+//  2. For everyone else, permissions outside the DM scope are denied in DMs.
 //  3. Each direct-user or explicitly assigned role contributes its nearest
 //     decision (room, then group, then server). Across those decisions, any
 //     deny wins; otherwise any allow grants the permission.
@@ -42,6 +47,7 @@ const (
 	LevelServer PermissionLevel = "server"
 	LevelGroup  PermissionLevel = "group"
 	LevelRoom   PermissionLevel = "room"
+	LevelDM     PermissionLevel = "dm"
 )
 
 // DecisionKind is the kind of decision a role contributed.
@@ -70,59 +76,149 @@ type TraceEntry struct {
 //
 // Order of operations:
 //
-//  1. Effective-owner override.
-//  2. DM boundary deny-list (for kind == KindDM only) — permissions in
-//     dmBoundaryDeniedPermissions are unconditionally denied regardless of
-//     grants for non-owners. This is the privacy/category-mismatch floor.
+//  1. Effective-owner override, when privileged mode allows it.
+//  2. Permissions that do not apply at the direct-message scope are denied for
+//     direct-message checks.
 //  3. Resolve the nearest decision for the user and each named role. Any deny
 //     beats any allow across those subjects.
 //  4. Apply the implicit everyone baseline. A named allow beats an everyone
 //     deny only when it is at least as specific; named denies always win.
 //  5. Apply explicit permission inclusion to effective allows.
 func (r *PermissionResolver) Resolve(ctx context.Context, userID string, kind RoomKind, roomID string, perm Permission) (DecisionKind, error) {
-	return r.resolveInContentView(func() (DecisionKind, error) {
-		return r.resolveWithGroup(ctx, userID, kind, roomID, "", perm)
+	return r.resolveInContentView(ctx, func(readCtx context.Context) (DecisionKind, error) {
+		return r.resolveWithGroup(readCtx, userID, kind, roomID, "", perm)
 	})
 }
 
 // ResolveGroup is like Resolve but for group-scope checks (no room context).
 // Used by CanCreateRoom and other group-scoped capability gates.
 func (r *PermissionResolver) ResolveGroup(ctx context.Context, userID string, kind RoomKind, groupID string, perm Permission) (DecisionKind, error) {
-	return r.resolveInContentView(func() (DecisionKind, error) {
-		return r.resolveWithGroup(ctx, userID, kind, "", groupID, perm)
+	return r.resolveInContentView(ctx, func(readCtx context.Context) (DecisionKind, error) {
+		return r.resolveWithGroup(readCtx, userID, kind, "", groupID, perm)
 	})
 }
 
-func (r *PermissionResolver) resolveInContentView(resolve func() (DecisionKind, error)) (DecisionKind, error) {
+func (r *PermissionResolver) resolveInContentView(ctx context.Context, resolve func(context.Context) (DecisionKind, error)) (DecisionKind, error) {
 	if r.core.contentView == nil {
-		return resolve()
+		return resolve(ctx)
 	}
 	decision := DecisionNone
-	err := r.core.contentView.Read(func(uint64) error {
+	err := r.core.ReadServerContentView(ctx, func(readCtx context.Context, _ uint64) error {
 		var resolveErr error
-		decision, resolveErr = resolve()
+		decision, resolveErr = resolve(readCtx)
 		return resolveErr
 	})
 	return decision, err
 }
 
+// resolveWithGroup resolves effective authorization. For humans, privileged
+// mode gates both elevation-required permissions and the effective-owner
+// override. An owner without active privileged mode resolves through direct
+// grants, named roles, and the everyone baseline like any other human.
 func (r *PermissionResolver) resolveWithGroup(ctx context.Context, userID string, kind RoomKind, roomID, explicitGroupID string, perm Permission) (DecisionKind, error) {
+	// A bot subject has no human session to arm, including during inspection.
+	if isBot, ownerUserID, exists := r.core.userModel.isBotAndOwner(userID); exists && isBot {
+		return r.resolveBotWithGroup(ctx, userID, ownerUserID, kind, roomID, explicitGroupID, perm)
+	}
+	privileged := privilegedModeAllows(ctx, userID, time.Now())
+	decision, err := r.resolveHumanWithGroup(ctx, userID, kind, roomID, explicitGroupID, perm, privileged)
+	if err != nil || decision != DecisionAllow {
+		return decision, err
+	}
+	metadata, known := GetPermissionMetadata(perm)
+	if !known || !metadata.RequiresPrivilegedMode {
+		return decision, nil
+	}
+	if !privileged {
+		return DecisionDeny, nil
+	}
+	return decision, nil
+}
+
+// privilegedModeEvaluationKey carries a fixed privileged-mode state for work
+// that is not bound to one request credential.
+type privilegedModeEvaluationKey struct{}
+
+// privilegedModeEvaluation is the fixed privileged-mode state of one human.
+// Checks for any other user resolve as inactive.
+type privilegedModeEvaluation struct {
+	userID string
+	active bool
+}
+
+// withPrivilegedModeEvaluation fixes the privileged-mode state that effective
+// authorization uses for userID. Realtime fan-out uses it to evaluate one
+// class of sessions with the same state as their request credentials. It
+// takes precedence over a request credential in ctx.
+func withPrivilegedModeEvaluation(ctx context.Context, userID string, active bool) context.Context {
+	return context.WithValue(ctx, privilegedModeEvaluationKey{}, privilegedModeEvaluation{userID: userID, active: active})
+}
+
+// PrivilegedModeDeadline returns the end of the active privileged mode of the
+// human credential in ctx when it authenticates userID. It returns zero when
+// the mode is inactive, ctx has no human credential, or the credential belongs
+// to another user. Work that outlives the request, such as a call connection,
+// stores this deadline to keep the same state.
+func PrivilegedModeDeadline(ctx context.Context, userID string) time.Time {
+	credential, ok := authctx.CredentialForContext(ctx)
+	if !ok || credential.Kind == authctx.RuntimeCredentialKindBotAPIKey || credential.UserID != userID || !time.Now().Before(credential.PrivilegedModeExpiresAt) {
+		return time.Time{}
+	}
+	return credential.PrivilegedModeExpiresAt
+}
+
+// privilegedModeAllows reports whether privileged mode is active for userID.
+// A fixed evaluation state wins. Otherwise, internal work without a credential
+// keeps entitlement semantics. An authenticated request resolves checks for a
+// different user as inactive. A human request uses its credential's
+// activation deadline; bot API keys do not use privileged mode.
+func privilegedModeAllows(ctx context.Context, userID string, now time.Time) bool {
+	if evaluation, ok := ctx.Value(privilegedModeEvaluationKey{}).(privilegedModeEvaluation); ok {
+		return evaluation.active && evaluation.userID == userID
+	}
+	credential, authenticated := authctx.CredentialForContext(ctx)
+	if !authenticated {
+		return true
+	}
+	if credential.UserID != userID {
+		return false
+	}
+	if credential.Kind == authctx.RuntimeCredentialKindBotAPIKey {
+		return true
+	}
+	return now.Before(credential.PrivilegedModeExpiresAt)
+}
+
+// resolveEntitlement reads assigned authority in a consistent content view,
+// without applying the inspecting human's session activation state.
+func (r *PermissionResolver) resolveEntitlement(ctx context.Context, userID string, kind RoomKind, roomID, groupID string, perm Permission) (DecisionKind, error) {
+	return r.resolveInContentView(ctx, func(readCtx context.Context) (DecisionKind, error) {
+		return r.resolveEntitlementWithGroup(readCtx, userID, kind, roomID, groupID, perm)
+	})
+}
+
+// resolveEntitlementWithGroup resolves durable RBAC entitlement without the
+// human-session privileged-mode gate. Use it only for permission discovery,
+// delegation ceilings, and other checks that must describe assigned authority.
+func (r *PermissionResolver) resolveEntitlementWithGroup(ctx context.Context, userID string, kind RoomKind, roomID, explicitGroupID string, perm Permission) (DecisionKind, error) {
 	isBot, ownerUserID, accountExists := r.core.userModel.isBotAndOwner(userID)
 	if accountExists && isBot {
 		return r.resolveBotWithGroup(ctx, userID, ownerUserID, kind, roomID, explicitGroupID, perm)
 	}
-	return r.resolveHumanWithGroup(ctx, userID, kind, roomID, explicitGroupID, perm)
+	return r.resolveHumanWithGroup(ctx, userID, kind, roomID, explicitGroupID, perm, true)
 }
 
-func (r *PermissionResolver) resolveHumanWithGroup(ctx context.Context, userID string, kind RoomKind, roomID, explicitGroupID string, perm Permission) (DecisionKind, error) {
+// resolveHumanWithGroup resolves a human's decision. ownerOverride selects
+// whether an effective owner is allowed every known permission or resolves
+// through ordinary RBAC decisions.
+func (r *PermissionResolver) resolveHumanWithGroup(ctx context.Context, userID string, kind RoomKind, roomID, explicitGroupID string, perm Permission, ownerOverride bool) (DecisionKind, error) {
 	if _, known := GetPermissionMetadata(perm); known {
-		if r.core.isServerOwner(userID) {
+		if kind == KindDM && !PermissionAppliesAtScope(perm, ScopeDM) {
+			return DecisionDeny, nil
+		}
+		if ownerOverride && r.core.isServerOwner(userID) {
 			return DecisionAllow, nil
 		}
-	}
-
-	if kind == KindDM && dmBoundaryDenies(perm) {
-		return DecisionDeny, nil
 	}
 
 	// For channel rooms with a room-scope permission, look up the room's group
@@ -140,9 +236,6 @@ func (r *PermissionResolver) resolveHumanWithGroup(ctx context.Context, userID s
 			return DecisionNone, err
 		}
 		result, _, _ := resolveApplicablePermissionDecisions(decisions)
-		if result == DecisionNone && kind == KindDM && dmDefaultAllows(candidate) {
-			result = DecisionAllow
-		}
 		return result, nil
 	})
 }
@@ -151,7 +244,7 @@ func (r *PermissionResolver) resolveBotWithGroup(ctx context.Context, botUserID,
 	if perm == PermBotCreate || perm == PermBotManage {
 		return DecisionDeny, nil
 	}
-	if kind == KindDM && dmBoundaryDenies(perm) {
+	if kind == KindDM && !PermissionAppliesAtScope(perm, ScopeDM) {
 		return DecisionDeny, nil
 	}
 	ownerIsBot, _, ownerExists := r.core.userModel.isBotAndOwner(ownerUserID)
@@ -169,7 +262,7 @@ func (r *PermissionResolver) resolveBotWithGroup(ctx context.Context, botUserID,
 	if delegated != DecisionAllow {
 		return DecisionDeny, nil
 	}
-	ownerDecision, err := r.resolveWithGroup(ctx, ownerUserID, kind, roomID, groupID, perm)
+	ownerDecision, err := r.resolveEntitlementWithGroup(ctx, ownerUserID, kind, roomID, groupID, perm)
 	if err != nil {
 		return DecisionNone, err
 	}
@@ -227,11 +320,11 @@ func (r *PermissionResolver) HasServerPermission(ctx context.Context, userID str
 	return decision == DecisionAllow, err
 }
 
-// HasSpacePermission is a kind-aware server-scope check. KindDM triggers the
-// boundary deny-list; otherwise behaves like HasServerPermission.
+// HasSpacePermission is a kind-aware singleton-scope check. KindDM resolves
+// the direct-message scope before the inherited server scope.
 func (r *PermissionResolver) HasSpacePermission(ctx context.Context, userID string, kind RoomKind, perm Permission) (bool, error) {
 	if meta, known := GetPermissionMetadata(perm); known {
-		if !permissionMetadataHasScope(meta, ScopeServer) {
+		if kind != KindDM && !permissionMetadataHasScope(meta, ScopeServer) {
 			return false, fmt.Errorf("permission %s does not apply at server scope", perm)
 		}
 	}
@@ -239,11 +332,10 @@ func (r *PermissionResolver) HasSpacePermission(ctx context.Context, userID stri
 	return decision == DecisionAllow, err
 }
 
-// HasRoomPermission checks a permission with a room context. Room-scoped
-// grants/denials, group decisions, and server decisions contribute according
-// to subject specificity and the everyone fallback rules above.
+// HasRoomPermission checks a permission with a room context. The room kind
+// selects either the direct-message chain or the channel room and group chain.
 func (r *PermissionResolver) HasRoomPermission(ctx context.Context, userID string, kind RoomKind, roomID string, perm Permission) (bool, error) {
-	if !PermissionAppliesAtScope(perm, ScopeRoom) && !PermissionAppliesAtScope(perm, ScopeGroup) && !PermissionAppliesAtScope(perm, ScopeServer) {
+	if !PermissionAppliesAtScope(perm, ScopeRoom) && !PermissionAppliesAtScope(perm, ScopeGroup) && !PermissionAppliesAtScope(perm, ScopeDM) && !PermissionAppliesAtScope(perm, ScopeServer) {
 		return false, fmt.Errorf("permission %s does not apply at room scope", perm)
 	}
 	decision, err := r.Resolve(ctx, userID, kind, roomID, perm)
@@ -375,6 +467,8 @@ func permissionLevelSpecificity(level PermissionLevel) int {
 	switch level {
 	case LevelRoom:
 		return 3
+	case LevelDM:
+		return 2
 	case LevelGroup:
 		return 2
 	case LevelServer:
@@ -386,7 +480,9 @@ func permissionLevelSpecificity(level PermissionLevel) int {
 
 func (r *PermissionResolver) applicableScopeTargets(kind RoomKind, roomID, groupID string, perm Permission) []permissionScopeTarget {
 	var targets []permissionScopeTarget
-	if roomID != "" && PermissionAppliesAtScope(perm, ScopeRoom) {
+	if kind == KindDM && PermissionAppliesAtScope(perm, ScopeDM) {
+		targets = append(targets, permissionScopeTarget{scope: ScopeDM, level: LevelDM})
+	} else if roomID != "" && PermissionAppliesAtScope(perm, ScopeRoom) {
 		targets = append(targets, permissionScopeTarget{scope: ScopeRoom, level: LevelRoom, id: roomID})
 	}
 	if kind == KindChannel && groupID != "" && PermissionAppliesAtScope(perm, ScopeGroup) {
@@ -403,43 +499,6 @@ func (t permissionScopeTarget) objectID() string {
 		return ObjectIdAny
 	}
 	return t.id
-}
-
-// dmBoundaryDeniedPermissions are capabilities that DM rooms forbid for
-// non-owners, regardless of any role grants. Two reasons appear in this set:
-//
-//   - **Privacy**: operators cannot moderate DM contents.
-//   - **Category mismatch**: capabilities that semantically don't apply to
-//     DMs (DMs have their own listing/creation/membership APIs).
-//
-// Everything else resolves through the standard deny-wins resolver. Access to
-// DM content is gated by participation at the API boundary; message.read does
-// not apply to DMs. This set only governs *what* a participant can do once
-// inside, and *what* DM rooms refuse to answer for channel-style operations.
-var dmBoundaryDeniedPermissions = map[Permission]bool{
-	// Privacy boundary.
-	PermRoomManage:    true,
-	PermRoomMemberBan: true,
-	PermMessageManage: true,
-	PermMessageEcho:   true,
-	// DMs have their own creation / membership APIs and do not support threads.
-	PermRoomCreate:          true,
-	PermMessagePostInThread: true,
-}
-
-func dmBoundaryDenies(perm Permission) bool {
-	return dmBoundaryDeniedPermissions[perm]
-}
-
-var dmDefaultAllowedPermissions = map[Permission]bool{
-	PermRoomJoin:      true,
-	PermMessagePost:   true,
-	PermMessageAttach: true,
-	PermMessageReact:  true,
-}
-
-func dmDefaultAllows(perm Permission) bool {
-	return dmDefaultAllowedPermissions[perm]
 }
 
 // ============================================================================

@@ -5,6 +5,7 @@
     "send": "傳送訊息",
     "send_label": "傳送",
     "also_send_to_channel": "同時傳送至頻道",
+    "also_send_to_conversation": "同時傳送至對話",
     "post_as_thread": "發佈為討論串",
     "thread_label": "討論串",
     "echo_label": "回音",
@@ -33,12 +34,16 @@
     "post_as_new_message": "發佈為新訊息",
     "continue_in_thread": "在討論串中繼續",
     "edit_failed": "訊息編輯失敗",
+    "edit_empty": "訊息不能為空",
     "upload": {
       "preparing": "準備中…",
       "uploading": "已上傳 {percentage}%",
       "uploaded": "已上傳",
       "failed": "上傳失敗",
-      "remove": "移除 {filename}"
+      "remove": "移除 {filename}",
+      "video_disabled": "此伺服器已停用影片上傳。",
+      "prepare_failed": "無法準備附件",
+      "too_large": "{filename} 太大（{size}）。上限為 {limit}。"
     },
     "format": {
       "bold": "粗體",

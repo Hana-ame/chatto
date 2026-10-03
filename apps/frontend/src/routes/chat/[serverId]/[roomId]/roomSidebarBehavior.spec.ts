@@ -36,8 +36,9 @@ describe('room sidebar behavior', () => {
     expect(roomSidebarPanelForRoom(false, null)).toBeNull();
   });
 
-  it('treats the members default as closed for DM rooms', () => {
-    expect(roomSidebarPanelForRoom(true, 'members')).toBeNull();
+  it('allows a profile to return to Members in a DM without adding a toolbar entry', () => {
+    expect(roomSidebarPanelForRoom(true, 'members')).toBe('members');
+    expect(DM_ROOM_SIDEBAR_PANELS).not.toContain('members');
     expect(roomSidebarPanelForRoom(true, null)).toBeNull();
   });
 
@@ -84,16 +85,6 @@ describe('room sidebar behavior', () => {
       'search',
       'files',
       'pins',
-      'call'
-    ]);
-  });
-
-  it('hides pinned messages when the server feature is unavailable', () => {
-    expect(roomSidebarPanelForRoom(false, 'pins', true, true, false)).toBeNull();
-    expect(roomSidebarPanelsForRoom(false, true, true, false)).toEqual([
-      'members',
-      'search',
-      'files',
       'call'
     ]);
   });

@@ -3,14 +3,15 @@
 </script>
 
 <script lang="ts">
-  import { createMessageAPI } from '$lib/api-client/messages';
-  import { createLinkPreviewAPI } from '$lib/api-client/linkPreviews';
+  import { createMessageAPI } from '@chatto/client/api/messages';
+  import { serverUi } from '$lib/state/server/serverUi';
+  import { createLinkPreviewAPI } from '@chatto/client/api/linkPreviews';
   import { m } from '$lib/i18n/messages';
   import { useServerScope } from '$lib/state/server/scope.svelte';
-  import { ConfirmDialog, Dialog } from '$lib/ui';
-  import { Button } from '$lib/ui/form';
+  import { ConfirmDialog, Dialog, FormDialog, CompactActionButton } from '$lib/ui';
+  import { Button, TextArea } from '$lib/ui/form';
   import { toast } from '$lib/ui/toast';
-  import { getRoomMembers, getRoomMembersStore, getComposerContext } from '$lib/state/room';
+  import { useRoomMembersStore, getComposerContext } from '$lib/state/room';
   import { shouldAutoFocus } from '$lib/utils/shouldAutoFocus';
   import { timeFormatSettingsFor } from '$lib/utils/formatTime';
   import { getLocale } from '$lib/i18n/runtime';
@@ -19,7 +20,7 @@
     formatSlowModeInterval,
     slowModeRemainingSeconds as remainingSlowModeSeconds
   } from '$lib/slowMode';
-  import { Code, ConnectError } from '$lib/api-client/connect';
+  import { Code, ConnectError } from '@chatto/client/api/connect';
   import { SvelteDate } from 'svelte/reactivity';
   import type { Component } from 'svelte';
   import EmojiAutocomplete from './EmojiAutocomplete.svelte';
@@ -43,15 +44,12 @@
   const serverScope = useServerScope();
   const stores = serverScope.store;
   const serverInfo = stores.serverInfo;
-  const roomUnreadStore = stores.roomUnread;
+  const roomUnreadStore = serverUi(stores).roomUnread;
   const mentionRolesStore = stores.mentionRoles;
 
   let {
     roomId,
     inThread,
-    inReplyTo,
-    replyDisplayName,
-    replyExcerpt,
     placeholder,
     canPost = true,
     canAttach = true,
@@ -62,16 +60,16 @@
     onReady,
     onTyping,
     onMessageSent,
-    onThreadCreated,
     onThreadMessageSent,
-    onCancelReply,
     onEscape,
     showAlsoSendToChannel = false,
+    echoToConversation = false,
     showCreateThread = false,
     createThreadRequired = false,
     createThreadDefault = false,
     getRecentThreadRootCandidate = () => null,
-    threadsEncouraged = false
+    threadsEncouraged = false,
+    mentionPriorityUserIds
   }: MessageComposerProps = $props();
 
   const clock = new SvelteDate();
@@ -99,6 +97,26 @@
   const editorModule = $derived(editorLoaders[userPreferences.composerEditor]());
   const composerId = $props.id();
   const formattingToolbarId = `${composerId}-formatting-toolbar`;
+  let descriptionAttachmentIndex = $state<number | null>(null);
+  let attachmentDescription = $state('');
+  const attachmentDescriptionLength = $derived(Array.from(attachmentDescription.trim()).length);
+  const attachmentDescriptionTooLong = $derived(attachmentDescriptionLength > 1000);
+
+  function openAttachmentDescription(index: number) {
+    descriptionAttachmentIndex = index;
+    attachmentDescription = composer.attachments.filesWithUrls[index]?.description ?? '';
+  }
+
+  function closeAttachmentDescription() {
+    descriptionAttachmentIndex = null;
+    attachmentDescription = '';
+  }
+
+  function saveAttachmentDescription() {
+    if (descriptionAttachmentIndex === null || attachmentDescriptionTooLong) return;
+    composer.attachments.setDescription(descriptionAttachmentIndex, attachmentDescription);
+    closeAttachmentDescription();
+  }
 
   $effect(() => {
     const deadline = slowModeDeadline;
@@ -112,10 +130,11 @@
 
   const userSettings = $derived(timeFormatSettingsFor(stores.currentUser.user?.settings));
   const composerContext = getComposerContext();
+  const replyState = composerContext.replyState;
+  const membersStore = useRoomMembersStore();
   const composer = new MessageComposerState({
     getRoomId: () => roomId,
     getThreadRootEventId: () => inThread,
-    getReplyEventId: () => inReplyTo,
     getCanPost: () => canPost,
     getCanAttach: () => canAttach,
     getSlowModeBlocked: () => slowModeBlocked,
@@ -134,9 +153,7 @@
         if (event) optimisticPost = { roomId, createdAt: Date.parse(event.createdAt) };
         onMessageSent?.(event);
       },
-      onThreadCreated,
       onThreadMessageSent,
-      onCancelReply,
       onEscape
     }),
     onPostError: (error) => {
@@ -146,21 +163,58 @@
       return true;
     },
     context: composerContext,
-    getMembers: getRoomMembers,
-    membersStore: getRoomMembersStore(),
+    getMembers: () => membersStore().members,
+    getMentionPriorityUserIds: () => mentionPriorityUserIds,
+    get membersStore() {
+      return membersStore();
+    },
     mentionRolesStore,
     serverInfo,
     roomUnreadStore,
     getMessageAPI: () => serverScope.connection.getAPI(createMessageAPI),
-    getLinkPreviewAPI: () => serverScope.connection.getAPI(createLinkPreviewAPI),
-    isConnectionLost: () => serverScope.connection.showConnectionLostBanner
+    getLinkPreviewAPI: () => serverScope.connection.getAPI(createLinkPreviewAPI)
   });
+
+  let expandedDraft = $state(false);
+  const emptyDraft = $derived(composer.message.length === 0);
+
+  /** Keep an expanded draft stable when the extra text width removes a wrap. */
+  function observeEditorHeight(node: HTMLDivElement) {
+    // Reset when the draft is cleared, its destination changes, or edit mode changes.
+    void roomId;
+    void inThread;
+    void composer.isEditing;
+    const empty = emptyDraft;
+    expandedDraft = false;
+    let frame = 0;
+    const observer = new ResizeObserver(() => {
+      const editor = node.querySelector<HTMLElement>('[contenteditable]');
+      if (empty || !editor) return;
+      const style = getComputedStyle(editor);
+      const lineHeight = Number.parseFloat(style.lineHeight);
+      const padding = Number.parseFloat(style.paddingTop) + Number.parseFloat(style.paddingBottom);
+      if (editor.getBoundingClientRect().height > lineHeight * 1.5 + padding) {
+        // Change layout outside ResizeObserver delivery to avoid resize loops.
+        cancelAnimationFrame(frame);
+        frame = requestAnimationFrame(() => {
+          observer.disconnect();
+          expandedDraft = true;
+        });
+      }
+    });
+    observer.observe(node);
+    return () => {
+      observer.disconnect();
+      cancelAnimationFrame(frame);
+    };
+  }
 </script>
 
+<!-- Pointer convenience that focuses the editor from the padding. The editor itself is keyboard-focusable. -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
-  {@attach composer.observeResize}
-  class="flex flex-col gap-2 p-2"
+  data-testid="message-composer"
+  class="@container/composer flex min-w-0 flex-col gap-1 p-2"
   onpointerdown={(event) => {
     const target = event.target;
     // Keep this on pointerdown: a release-time click after selecting into the
@@ -170,6 +224,8 @@
       target instanceof Element &&
       !target.closest('button, a, input, label, select, [data-composer-editor]')
     ) {
+      // The padding click must not move focus or selection after we restore the caret.
+      event.preventDefault();
       composer.editorApi?.focus();
     }
   }}
@@ -180,6 +236,7 @@
     disabled={composer.submission.loading}
     getSubmissionStatus={(file) => composer.submission.attachmentStatus(file)}
     onremove={(index) => composer.attachments.removeFile(index)}
+    ondescription={openAttachmentDescription}
   />
 
   {#if slowModeSeconds > 0}
@@ -196,7 +253,7 @@
     </p>
   {/if}
 
-  {#if threadsEncouraged && inReplyTo && !inThread}
+  {#if threadsEncouraged && replyState.messageEventId && !inThread}
     <p class="px-0.5 text-xs text-muted" data-testid="threads-encouraged-hint">
       {m('composer.threads_encouraged')}
     </p>
@@ -222,103 +279,122 @@
     />
   {/if}
 
-	<div
-		data-testid="composer-input-surface"
-		class="composer-surface @container relative flex min-h-12 min-w-0 items-end gap-1 px-2.5 py-1.5"
-		class:opacity-50={composer.inputDisabled}
-	>
-    {#if composer.autocomplete.emoji}
-      <EmojiAutocomplete
-        bind:this={composer.autocomplete.emojiRef}
-        query={composer.autocomplete.emoji.query}
-        onSelect={(emoji) => composer.autocomplete.selectEmoji(emoji)}
-        onClose={() => composer.autocomplete.closeEmoji()}
-      />
-    {/if}
-
-    {#if composer.autocomplete.mention}
-      <MentionAutocomplete
-        bind:this={composer.autocomplete.mentionRef}
-        query={composer.autocomplete.mention.query}
-        members={composer.mentionCandidates}
-        roles={composer.mentionRoles}
-        onSelect={(login, viaTab) => composer.autocomplete.selectMention(login, viaTab)}
-        onClose={() => composer.autocomplete.closeMention()}
-      />
-    {/if}
-
-    <button
-      type="button"
-      onpointerdown={(event) => event.preventDefault()}
-      onclick={() =>
-        (userPreferences.composerFormattingToolbarVisible =
-          !userPreferences.composerFormattingToolbarVisible)}
-      aria-label={m('composer.formatting_options')}
-      aria-controls={formattingToolbarId}
-      aria-expanded={userPreferences.composerFormattingToolbarVisible}
-      aria-pressed={userPreferences.composerFormattingToolbarVisible}
-      title={m('composer.formatting_options')}
+  <div
+    data-testid="composer-input-surface"
+    class="relative chat-input-surface min-w-0 px-2.5 py-1.5"
+    class:opacity-50={composer.inputDisabled}
+  >
+    <ComposerModeIndicators
+      inReplyTo={replyState.messageEventId ?? undefined}
+      replyDisplayName={replyState.actorDisplayName || undefined}
+      replyIdentity={replyState.actorIdentity}
+      replyExcerpt={replyState.excerpt || undefined}
+      isEditing={composer.isEditing}
+      {expandedDraft}
+      oncancelreply={() => replyState.cancelReply()}
+      oncanceledit={() => composer.cancelEdit()}
+    />
+    <div
       class={[
-        'mb-1.5 flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded text-sm font-semibold transition-[background-color,color,scale] duration-100 active:scale-[0.96]',
-        userPreferences.composerFormattingToolbarVisible
-          ? 'bg-surface-emphasized text-text'
-          : 'text-muted hover:bg-surface-emphasized hover:text-text'
+        'grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-start gap-1',
+        !expandedDraft &&
+          '@min-[560px]/composer:flex @min-[560px]/composer:items-end @min-[560px]/composer:mobile-presentation:items-center'
       ]}
     >
-      <span aria-hidden="true">Aa</span>
-    </button>
-
-    <div
-      class="min-h-9 min-w-0 flex-1 px-0.5 py-0.5"
-      data-testid="composer-editor-row"
-    >
-      {#await editorModule}
-        <div class="min-h-8 min-w-0" aria-hidden="true"></div>
-      {:then { default: Editor }}
-        <Editor
-          placeholder={composer.currentPlaceholder}
-          editable={!composer.inputDisabled}
-          autofocus={autoFocus && shouldAutoFocus()}
-          testid={composer.testid}
-          onUpdate={(text) => composer.handleEditorUpdate(text)}
-          onKeyDown={(event) => composer.handleEditorKeyDown(event)}
-          onPaste={(event) => composer.handlePaste(event)}
-          onFormattingStateChange={(formatting) => (composer.formattingState = { ...formatting })}
-          onIndentStateChange={(state) => (composer.indentState = { ...state })}
-          onReady={(api) => composer.handleEditorReady(api)}
-          onDestroy={(api) => composer.handleEditorDestroyed(api)}
+      {#if composer.autocomplete.emoji}
+        <EmojiAutocomplete
+          bind:this={composer.autocomplete.emojiRef}
+          query={composer.autocomplete.emoji.query}
+          onSelect={(emoji) => composer.autocomplete.selectEmoji(emoji)}
+          onClose={() => composer.autocomplete.closeEmoji()}
         />
-      {/await}
+      {/if}
+
+      {#if composer.autocomplete.mention}
+        <MentionAutocomplete
+          bind:this={composer.autocomplete.mentionRef}
+          query={composer.autocomplete.mention.query}
+          members={composer.mentionCandidates}
+          roles={composer.mentionRoles}
+          prioritizedUserIds={composer.mentionPriorityUserIds}
+          onSelect={(login, viaTab) => composer.autocomplete.selectMention(login, viaTab)}
+          onClose={() => composer.autocomplete.closeMention()}
+        />
+      {/if}
+
+      <CompactActionButton
+        wrapperClass={[
+          'mobile-presentation:pill-button-group-touch',
+          !expandedDraft && '@min-[560px]/composer:desktop-presentation:mb-1'
+        ]}
+        label={m('composer.formatting_options')}
+        type="button"
+        onpointerdown={(event) => event.preventDefault()}
+        onclick={() =>
+          (userPreferences.composerFormattingToolbarVisible =
+            !userPreferences.composerFormattingToolbarVisible)}
+        aria-controls={formattingToolbarId}
+        aria-expanded={userPreferences.composerFormattingToolbarVisible}
+        aria-pressed={userPreferences.composerFormattingToolbarVisible}
+        title={m('composer.formatting_options')}
+        class={[
+          'text-sm font-semibold',
+          userPreferences.composerFormattingToolbarVisible
+            ? 'bg-surface-emphasized text-text'
+            : 'text-muted hover:bg-surface-emphasized hover:text-text'
+        ]}
+      >
+        <span aria-hidden="true">Aa</span>
+      </CompactActionButton>
+
+      <div
+        {@attach observeEditorHeight}
+        class={[
+          '-order-1 col-span-2 min-h-9 min-w-0 flex-1 px-0.5 py-0.5',
+          !expandedDraft && '@min-[560px]/composer:order-none'
+        ]}
+        data-testid="composer-editor-row"
+      >
+        {#await editorModule}
+          <div class="min-h-8 min-w-0" aria-hidden="true"></div>
+        {:then { default: Editor }}
+          <Editor
+            placeholder={composer.currentPlaceholder}
+            editable={!composer.inputDisabled}
+            autofocus={autoFocus && shouldAutoFocus()}
+            testid={composer.testid}
+            onUpdate={(text) => composer.handleEditorUpdate(text)}
+            onKeyDown={(event) => composer.handleEditorKeyDown(event)}
+            onPaste={(event) => composer.handlePaste(event)}
+            onFormattingStateChange={(formatting) => (composer.formattingState = { ...formatting })}
+            onIndentStateChange={(state) => (composer.indentState = { ...state })}
+            onReady={(api) => composer.handleEditorReady(api)}
+            onDestroy={(api) => composer.handleEditorDestroyed(api)}
+          />
+        {/await}
+      </div>
+
+      <ComposerToolbar
+        editorApi={composer.editorApi}
+        inputDisabled={composer.inputDisabled}
+        {canAttach}
+        isEditing={composer.isEditing}
+        canSubmit={composer.canSubmit}
+        fileInputElement={composer.fileInputElement}
+        effectiveTimezone={userSettings.effectiveTimezone}
+        showCreateThread={showCreateThread && !composer.isEditing && !inThread}
+        createThread={createThreadRequired || composer.createThread}
+        {createThreadRequired}
+        onToggleCreateThread={() => (composer.createThread = !composer.createThread)}
+        showAlsoSendToChannel={(showAlsoSendToChannel && !composer.isEditing) ||
+          composer.showEditEchoToggle}
+        {echoToConversation}
+        alsoSendToChannel={composer.alsoSendToChannel}
+        onToggleAlsoSendToChannel={() => (composer.alsoSendToChannel = !composer.alsoSendToChannel)}
+        onsubmit={() => composer.submit()}
+      />
     </div>
-
-    <ComposerToolbar
-      editorApi={composer.editorApi}
-      inputDisabled={composer.inputDisabled}
-      {canAttach}
-      isEditing={composer.isEditing}
-      canSubmit={composer.canSubmit}
-      fileInputElement={composer.fileInputElement}
-      effectiveTimezone={userSettings.effectiveTimezone}
-      showCreateThread={showCreateThread && !composer.isEditing && !inThread}
-      createThread={createThreadRequired || composer.createThread}
-      {createThreadRequired}
-      onToggleCreateThread={() => (composer.createThread = !composer.createThread)}
-      showAlsoSendToChannel={(showAlsoSendToChannel && !composer.isEditing) ||
-        composer.showEditEchoToggle}
-      alsoSendToChannel={composer.alsoSendToChannel}
-      onToggleAlsoSendToChannel={() => (composer.alsoSendToChannel = !composer.alsoSendToChannel)}
-      onsubmit={() => composer.submit()}
-    />
   </div>
-
-  <ComposerModeIndicators
-    {inReplyTo}
-    {replyDisplayName}
-    {replyExcerpt}
-    isEditing={composer.isEditing}
-    oncancelreply={() => onCancelReply?.()}
-    oncanceledit={() => composer.cancelEdit()}
-  />
 </div>
 
 {#if composer.submission.pendingRoleMentionConfirmation}
@@ -335,6 +411,27 @@
   </ConfirmDialog>
 {/if}
 
+{#if descriptionAttachmentIndex !== null}
+  <FormDialog
+    visible
+    title={m('room.attachment.description_title')}
+    disabled={attachmentDescriptionTooLong}
+    onsubmit={saveAttachmentDescription}
+    onclose={closeAttachmentDescription}
+  >
+    <TextArea
+      id={`${composerId}-attachment-description`}
+      label={m('room.attachment.description_label')}
+      description={m('room.attachment.description_help')}
+      rows={5}
+      bind:value={attachmentDescription}
+      error={attachmentDescriptionTooLong
+        ? m('room.attachment.description_too_long', { max: 1000 })
+        : undefined}
+    />
+  </FormDialog>
+{/if}
+
 {#if composer.pendingThreadDestinationConfirmation}
   <Dialog
     visible
@@ -344,15 +441,19 @@
   >
     <p class="text-muted">{m('composer.recent_thread_confirm_body')}</p>
 
-    {#snippet footer()}
+    {#snippet dismissAction()}
       <Button variant="secondary" onclick={() => composer.cancelThreadDestinationConfirmation()}>
         {m('common.cancel')}
       </Button>
+    {/snippet}
+    {#snippet secondaryActions()}
       <Button variant="secondary" onclick={() => composer.postAsNewRoot()}>
         {m('composer.post_as_new_message')}
       </Button>
+    {/snippet}
+    {#snippet primaryAction()}
       <Button defaultAction variant="action" onclick={() => composer.postInRecentThread()}>
-        <span class="iconify icon-[uil--comment-alt-lines]"></span>
+        <span aria-hidden="true" class="iconify icon-[uil--comment-alt-lines]"></span>
         {m('composer.continue_in_thread')}
       </Button>
     {/snippet}

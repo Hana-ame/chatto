@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
@@ -12,6 +11,7 @@ import (
 	"hmans.de/chatto/internal/config"
 	"hmans.de/chatto/internal/evtstream"
 	"hmans.de/chatto/internal/notificationstream"
+	"hmans.de/chatto/pkg/events"
 )
 
 const projectionSnapshotObjectStoreName = "PROJECTION_SNAPSHOTS"
@@ -27,10 +27,12 @@ type storage struct {
 
 	serverAssets       jetstream.ObjectStore // SERVER_ASSETS - all NATS-backed asset binaries
 	serverEvtStream    jetstream.Stream      // EVT - authoritative domain event log (ADR-033/034).
+	logStream          jetstream.Stream      // LOG - retained operational diagnostics; excluded from backups.
 	notificationStream jetstream.Stream      // NOTIFICATIONS - bounded notification lifecycle event log.
 
-	memoryCacheKV   jetstream.KeyValue    // MEMORY_CACHE - volatile, memory-backed runtime cache state
-	imageCacheStore jetstream.ObjectStore // Optional: cached resized images (nil if disabled)
+	memoryCacheKV      jetstream.KeyValue    // MEMORY_CACHE - volatile, memory-backed runtime cache state
+	imageCacheStore    jetstream.ObjectStore // Optional: cached resized images (nil if disabled)
+	neighborhoodImages jetstream.ObjectStore // NEIGHBORHOOD_IMAGES - expiring copies of discovered server images
 }
 
 // newStorage initializes current JetStream resources.
@@ -90,6 +92,13 @@ func newStorage(js jetstream.JetStream, ctx context.Context, cfg config.CoreConf
 		if err != nil {
 			return nil, fmt.Errorf("failed to create ASSET_CACHE object store: %w", err)
 		}
+	}
+
+	neighborhoodImages, err := createJetStreamResourceWithRetry(ctx, func(ctx context.Context) (jetstream.ObjectStore, error) {
+		return js.CreateOrUpdateObjectStore(ctx, neighborhoodImagesConfig(cfg))
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create %s object store: %w", neighborhoodImagesBucket, err)
 	}
 
 	serverAssets, err := createJetStreamResourceWithRetry(ctx, func(ctx context.Context) (jetstream.ObjectStore, error) {
@@ -197,7 +206,20 @@ func newStorage(js jetstream.JetStream, ctx context.Context, cfg config.CoreConf
 		}
 	}
 
+	logStream, err := createJetStreamResourceWithRetry(ctx, func(ctx context.Context) (jetstream.Stream, error) {
+		return js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+			Name: "LOG", Description: "Retained operational diagnostics", Subjects: []string{"log.>"},
+			Storage: jetstream.FileStorage, Compression: jetstream.S2Compression, Replicas: cfg.Replicas,
+			Retention: jetstream.LimitsPolicy, MaxAge: cfg.Log.RetentionOrDefault(),
+			Duplicates: min(2*time.Minute, cfg.Log.RetentionOrDefault()),
+		})
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create LOG stream: %w", err)
+	}
+
 	return &storage{
+		logStream:          logStream,
 		encryptionKV:       encryptionKV,
 		runtimeStateKV:     runtimeStateKV,
 		serverAssets:       serverAssets,
@@ -205,6 +227,7 @@ func newStorage(js jetstream.JetStream, ctx context.Context, cfg config.CoreConf
 		notificationStream: notificationStream,
 		memoryCacheKV:      memoryCacheKV,
 		imageCacheStore:    imageCacheStore,
+		neighborhoodImages: neighborhoodImages,
 	}, nil
 }
 
@@ -236,6 +259,19 @@ func prepareNotificationStreamMetadata(ctx context.Context, js jetstream.JetStre
 	}
 	metadata[notificationstream.IdentityMetadataKey] = identity
 	return metadata, nil
+}
+
+// neighborhoodImagesConfig keeps each image for a fixed period after its
+// latest write. Neighborhood discovery rewrites the images that it still
+// uses, so unused images expire without a cleanup pass.
+func neighborhoodImagesConfig(cfg config.CoreConfig) jetstream.ObjectStoreConfig {
+	return jetstream.ObjectStoreConfig{
+		Bucket:      neighborhoodImagesBucket,
+		Description: "Expiring copies of Neighborhood server images",
+		Storage:     jetstream.FileStorage,
+		TTL:         neighborhoodImageTTL,
+		Replicas:    cfg.Replicas,
+	}
 }
 
 func memoryCacheConfig(cfg config.CoreConfig) jetstream.KeyValueConfig {
@@ -282,97 +318,11 @@ func prepareEVTStreamMetadata(ctx context.Context, js jetstream.JetStream) (map[
 	return metadata, nil
 }
 
+// createJetStreamResourceWithRetry applies Chatto's startup retry budget to the
+// shared provisioning mechanics. The callback retains ownership of configuration.
 func createJetStreamResourceWithRetry[T any](ctx context.Context, create func(context.Context) (T, error)) (T, error) {
-	const maxAttempts = 3
-
-	var zero T
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		resource, err := create(ctx)
-		if err == nil {
-			return resource, nil
-		}
-		if attempt == maxAttempts || !isTransientJetStreamStoreCreateError(err) {
-			return zero, err
-		}
-
-		timer := time.NewTimer(time.Duration(attempt) * 25 * time.Millisecond)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return zero, ctx.Err()
-		case <-timer.C:
-		}
-	}
-
-	return zero, nil
-}
-
-func isTransientJetStreamStoreCreateError(err error) bool {
-	type apiErrorProvider interface {
-		APIError() *jetstream.APIError
-	}
-
-	var provider apiErrorProvider
-	if !errors.As(err, &provider) {
-		return false
-	}
-	apiErr := provider.APIError()
-	if apiErr == nil {
-		return false
-	}
-	return (apiErr.ErrorCode == 10049 && strings.Contains(apiErr.Description, "error creating store for stream")) ||
-		(apiErr.ErrorCode == 10058 && strings.Contains(apiErr.Description, "stream name already in use"))
-}
-
-// ============================================================================
-// KV Key Helpers
-// ============================================================================
-
-// These helper functions format keys for NATS KV bucket entries. They stay in
-// the core package since they're only used here and are integral to how core
-// interacts with storage.
-
-// userKey returns the KV key for a user record.
-func userKey(userID string) string {
-	return fmt.Sprintf("user.%s", userID)
-}
-
-// userByLoginKey returns the KV key for a login-to-userID index entry.
-// Login names are lowercase to ensure case-insensitive lookups.
-func userByLoginKey(login string) string {
-	return fmt.Sprintf("user_by_login.%s", strings.ToLower(login))
-}
-
-// userAuthPasswordKey returns the KV key for a user's password hash.
-// This follows the pattern auth.{userId}.{method}.{field} for future extensibility.
-func userAuthPasswordKey(userID string) string {
-	return fmt.Sprintf("auth.%s.password", userID)
-}
-
-// userAvatarKey returns the KV key for a user's avatar asset reference.
-// Avatar assets are stored separately from user profile to avoid overwriting
-// the entire user record when the avatar changes.
-func userAvatarKey(userID string) string {
-	return fmt.Sprintf("user.%s.avatar", userID)
-}
-
-// roomKey returns the KV key for a room record in a space bucket.
-// Pattern: `room.{kind}.{roomID}` where kind is "channel" or "dm".
-func roomKey(kind RoomKind, roomID string) string {
-	return fmt.Sprintf("room.%s.%s", kind, roomID)
-}
-
-// roomKeyPrefix returns the key prefix for listing all rooms of a given
-// kind in a CONFIG bucket. Pattern: `room.{kind}.*`.
-func roomKeyPrefix(kind RoomKind) string {
-	return fmt.Sprintf("room.%s.*", kind)
-}
-
-// roomNameIndexKey returns the KV key that claims a room name within a space.
-// Names are lowercased and trimmed so the claim is case-insensitive. The value
-// stored at this key is the room ID, which lets us recover from partial failures
-// (a stale claim whose room never got written can be reclaimed by the same room
-// trying again).
-func roomNameIndexKey(name string) string {
-	return fmt.Sprintf("room_name_index.%s", strings.ToLower(strings.TrimSpace(name)))
+	return events.CreateJetStreamResourceWithRetry(ctx, events.JetStreamResourceRetryPolicy{
+		MaxAttempts: 3,
+		RetryDelay:  25 * time.Millisecond,
+	}, create)
 }

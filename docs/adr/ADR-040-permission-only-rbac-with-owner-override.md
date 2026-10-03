@@ -18,6 +18,10 @@
 > replaces the authorization fence with stable request-time authorization and
 > aggregate OCC. The RBAC resolution rules in this record remain current.
 >
+> **Amended 2026-09-25:** [ADR-105](ADR-105-privileged-mode-gates-owner-override.md)
+> makes the effective-owner override effective only while the owner's session
+> has active privileged mode. Owners stay entitled to all permissions.
+>
 > **Partially superseded by [ADR-052](ADR-052-subject-specific-rbac-with-everyone-baseline.md).**
 > The effective-owner override, permission-only gates, and non-ranking role
 > positions remain active. ADR-052 replaces the literal all-subject,
@@ -59,7 +63,8 @@ Use a permission-only RBAC model for everyone except effective owners.
   existing role events. It is not an authorization rank.
 - Targeted operations are gated by concrete permissions only: for example
   `role.assign` gates role assignment, `user.manage-accounts` gates account
-  lifecycle and recovery actions, `room.ban-member` gates room bans, and
+  lifecycle and recovery actions, `room.remove-member` gates moderated room
+  removal and suspension, and
   `user.manage-permissions` gates direct per-user permission overrides.
 - Authorization-sensitive writes normally evaluate permission checks inside
   their target aggregate's OCC retry. RBAC, relevant user lifecycle, and

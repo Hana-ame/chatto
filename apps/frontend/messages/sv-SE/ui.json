@@ -16,7 +16,6 @@
       "remote_title": "{server} behöver logga in",
       "remote_message": "Den här servern avvisade den lagrade inloggningen. Återanslut den för att återuppta liveuppdateringar och åtgärder.",
       "remote_action": "Återanslut",
-      "remote_failed": "Det gick inte att starta återanslutningen",
       "sidebar_reauth": "{server} behöver logga in"
     },
     "access_denied": {
@@ -48,7 +47,8 @@
       "complete": "Chatto har byggts upp igen. Slutpoäng: {count} poäng"
     },
     "pane_header": {
-      "back": "Tillbaka"
+      "back": "Tillbaka",
+      "actions": "Panelåtgärder"
     },
     "sidebar_nav": {
       "back_to_chat": "Tillbaka till chatten"
@@ -67,7 +67,12 @@
     "image_modal": {
       "previous": "Föregående bild",
       "next": "Nästa bild",
-      "fallback_alt": "Bild"
+      "fallback_alt": "Bild",
+      "zoom_in": "Zooma in",
+      "zoom_out": "Zooma ut",
+      "fit": "Anpassa",
+      "details": "Detaljer",
+      "file_type": "Filtyp"
     },
     "toast": {
       "dismiss": "Avvisa meddelande"
@@ -78,11 +83,9 @@
       "clear": "Rensa"
     },
     "expiry": {
-      "label": "Upphör att gälla",
       "24h": "24 timmar",
       "7d": "7 dagar",
       "30d": "30 dagar",
-      "indefinite": "Inget utgångsdatum",
       "custom": "Anpassad",
       "custom_label": "Anpassat utgångsdatum",
       "error_required": "Välj ett utgångsdatum.",

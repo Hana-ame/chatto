@@ -1,124 +1,118 @@
 <script lang="ts">
-  import { tick, untrack } from 'svelte';
+  import { onDestroy, tick, untrack } from 'svelte';
+  import {
+    clearTimelineViewport,
+    isLoadingOlder,
+    loadOlder,
+    recoveryViewport,
+    setTimelineViewport
+  } from '$lib/state/room/timelineViewport';
+  import { serverUi } from '$lib/state/server/serverUi';
   import { SvelteSet } from 'svelte/reactivity';
   import { fade } from 'svelte/transition';
   import { Virtualizer, type VirtualizerHandle } from 'virtua/svelte';
   import { m } from '$lib/i18n/messages';
   import { getLocale } from '$lib/i18n/runtime';
-  import { isMessagePostedEvent, type TimelineEventView } from '$lib/render/timelineEvents';
+  import {
+    isMessagePostedEvent,
+    type TimelineEventView
+  } from '@chatto/client/timeline/timelineEvents';
   import type { MessagesStore, RoomMember } from '$lib/state/room';
-  import { getComposerContext, getRoomPermissions } from '$lib/state/room';
+  import { getComposerContext, getRoomMembers, getRoomPermissions } from '$lib/state/room';
+  import type { UserAvatarUserView } from '@chatto/client/timeline/users';
   import RoomEvent from './RoomEvent.svelte';
+  import MessageUserOverlays from './MessageUserOverlays.svelte';
+  import { MessageUserInteractionState } from './messageUserInteractions.svelte';
   import SystemEventGroup from './SystemEventGroup.svelte';
   import DaySeparator from '$lib/components/DaySeparator.svelte';
   import UnreadSeparator from './UnreadSeparator.svelte';
   import TypingIndicator from './TypingIndicator.svelte';
   import { computeEventMetadata } from './messageGrouping';
   import { buildVirtualItems, type VirtualItem } from './virtualItems';
+  import {
+    keptIndexes,
+    selectionEndpointKeys,
+    TIMELINE_ITEM_KEY_ATTRIBUTE,
+    type TimelineSelectionKeys
+  } from './timelineSelection';
   import { findLastEditableMessage } from './lastEditableMessage';
-  import { ScrollFader } from '$lib/ui';
+  import { LoadingDots, ScrollFader } from '$lib/ui';
   import { useServerScope } from '$lib/state/server/scope.svelte';
-  import { INITIAL_ROOM_MESSAGE_BACKFILL_TARGET } from '$lib/state/room/messages/queries';
+  import { INITIAL_ROOM_MESSAGE_BACKFILL_TARGET } from '@chatto/client/room/messages/MessagesStore';
   import { formatDayLabel, timeFormatSettingsFor } from '$lib/utils/formatTime';
   import { useTabResumeCallback } from '$lib/hooks/useTabResumeCallback.svelte';
   import type { OpenThreadHandler, ThreadOpenOptions } from './threadOpenOptions';
   import { convergeAtBottom } from './bottomScrollConvergence';
+  import { anchorBottomOnResize } from '$lib/dom/anchorBottomOnResize';
   import { visibleTombstoneEvents, visibleUnreadMarkerEventId } from './tombstoneVisibility';
   import { TimelineViewportController } from './TimelineViewportController.svelte';
-  import { RoomThreadingMode } from '$lib/roomThreading';
+  import { RoomThreadingMode } from '@chatto/client/util/roomThreading';
+  import { appState } from '$lib/state/globals.svelte';
+  import type { TimelineReadPosition } from './readThroughTracker';
 
   let {
     roomId,
     permalinkThreadRootEventId = null,
     messageStore,
     events,
-    // Scroll behavior
-    alwaysScrollToBottom = false,
-    showNewMessagesIndicator = true,
-    // Pagination
-    enablePagination = false,
-    isLoadingMore = false,
-    hasReachedStart = false,
     showStartMarker = true,
-    onLoadMore,
-    // Event updates
-    updateCounter = 0,
     // Threading - only root messages can open threads
     onOpenThread,
     onOpenCall,
     onOpenProfile,
     // Filtering - whether to filter out thread replies (false for thread pane)
     filterThreadReplies = true,
-    // Up-arrow-to-edit
-    enableLastEditableFinder = false,
-    // Loading states
-    isLoading = false,
     emptyMessage = m('room.message.empty'),
     // Event ID of the first unread message (for showing the unread separator)
     unreadAfterEventId = null,
     // Typing indicator
     typingUserIds = [],
     typingMembers = [],
-    // Jump to message
-    scrollToEventId = null,
     onScrollToEventComplete,
-    isJumpedMode = false,
-    isLoadingNewer = false,
-    hasReachedEnd = false,
-    onLoadNewer,
-    onJumpToPresent,
-    onReachedPresent,
     onReachedBottom,
+    onReadPosition,
     pendingHighlightId = null,
     threadingMode = RoomThreadingMode.ENABLED
   }: {
     roomId: string;
     permalinkThreadRootEventId?: string | null;
+    /** Owns loading, pagination, and jump requests for this timeline. */
     messageStore: MessagesStore;
     events: TimelineEventView[];
-    // Scroll behavior
-    alwaysScrollToBottom?: boolean;
-    showNewMessagesIndicator?: boolean;
-    // Pagination
-    enablePagination?: boolean;
-    isLoadingMore?: boolean;
-    hasReachedStart?: boolean;
     showStartMarker?: boolean;
-    onLoadMore?: () => Promise<void>;
-    // Event updates
-    updateCounter?: number;
     // Threading
     onOpenThread?: OpenThreadHandler;
     onOpenCall?: () => void;
     onOpenProfile?: (userId: string) => void;
     // Filtering
     filterThreadReplies?: boolean;
-    // Up-arrow-to-edit
-    enableLastEditableFinder?: boolean;
-    // Loading states
-    isLoading?: boolean;
     emptyMessage?: string;
-    // Event ID of the first unread message (for showing the unread separator)
+    // Event ID of the first unread message (for showing the unread separator).
+    // The timeline lands on it once per entry unless the user moves first.
     unreadAfterEventId?: string | null;
     // Typing indicator
     typingUserIds?: string[];
     typingMembers?: RoomMember[];
-    // Jump to message
-    scrollToEventId?: string | null;
+    /** Reports whether a jump-to-message request found and highlighted its target. */
     onScrollToEventComplete?: (landed: boolean) => void;
-    isJumpedMode?: boolean;
-    isLoadingNewer?: boolean;
-    hasReachedEnd?: boolean;
-    onLoadNewer?: () => Promise<void>;
-    onJumpToPresent?: () => Promise<boolean>;
-    onReachedPresent?: () => void;
     onReachedBottom?: () => void;
-    // Suppress auto-scroll while a highlight is pending (used by ThreadPane)
+    /**
+     * Reports the newest position that the viewer can see when it changes.
+     * The conversation reads up to this position, so a jump to an older
+     * message leaves newer activity unread until the viewer scrolls to it.
+     */
+    onReadPosition?: (position: TimelineReadPosition) => void;
+    // Suppress auto-scroll while a highlight is pending
     pendingHighlightId?: string | null;
     threadingMode?: RoomThreadingMode;
   } = $props();
 
   const viewport = new TimelineViewportController();
+  let destroyed = false;
+  onDestroy(() => {
+    destroyed = true;
+    viewport.cancelBottomScroll();
+  });
   const expandedSystemEventIds = new SvelteSet<string>();
 
   function isSystemGroupExpanded(groupEvents: TimelineEventView[]): boolean {
@@ -135,13 +129,39 @@
     }
   }
 
-  // Get composer context (scrollState may be null - ThreadPane doesn't provide it)
+  // The room and thread panes each provide their own composer context. Its jump
+  // state and the message store together drive loading and jump-to-message.
   const composerContext = getComposerContext();
   const scrollState = composerContext.scrollState;
+  const jumpState = composerContext.jumpState;
+  const isLoading = $derived(messageStore.isInitialLoading);
+  // Stays true one frame after a page, so virtua's `shift` keeps the position.
+  const isLoadingMore = $derived(isLoadingOlder(messageStore));
+  const hasReachedStart = $derived(messageStore.hasReachedStart);
+  const isJumpedMode = $derived(jumpState.isJumpedMode);
+  const isLoadingNewer = $derived(jumpState.isLoadingNewer);
+  const hasReachedEnd = $derived(jumpState.hasReachedEnd);
+  const scrollToEventId = $derived(jumpState.scrollToEventId);
   const serverScope = useServerScope();
-  const stores = $derived(serverScope.store);
+  const stores = serverScope.store;
   const currentUser = $derived(stores.currentUser);
   const serverInfo = $derived(stores.serverInfo);
+  const roomMembers = $derived(getRoomMembers());
+  const userInteractions = new MessageUserInteractionState(() => roomMembers);
+  const isUniversal = $derived(stores.projection?.rooms?.get(roomId)?.room?.universal ?? false);
+  const canStartDMs = $derived(stores.permissions?.canStartDMs ?? false);
+  let overlayScope = untrack(() => `${serverScope.serverId}:${roomId}`);
+  $effect(() => {
+    const nextScope = `${serverScope.serverId}:${roomId}`;
+    if (nextScope !== overlayScope) {
+      userInteractions.close();
+      overlayScope = nextScope;
+    }
+  });
+
+  function openUserMenu(user: UserAvatarUserView | RoomMember, anchorRect: DOMRect | null) {
+    userInteractions.showUser(user, anchorRect);
+  }
   const userSettings = $derived(timeFormatSettingsFor(currentUser.user?.settings));
   const activeLocale = $derived(getLocale());
   const firstVisibleDate = $derived(
@@ -149,7 +169,6 @@
       ? formatDayLabel(viewport.firstVisibleAt, userSettings, activeLocale)
       : null
   );
-  const reloadsTimelineOnReturn = $derived(isJumpedMode && !!onJumpToPresent);
 
   // First apply structural timeline filtering. Context-free tombstones are a
   // separate stage so row removal cannot be mistaken for a newly arrived message.
@@ -190,12 +209,10 @@
   const roomPermissions = $derived(getRoomPermissions());
 
   $effect(() => {
-    if (!enableLastEditableFinder) return;
-
-    lastEditableMessageCtx?.setFinder(() => {
+    lastEditableMessageCtx.setFinder(() => {
       return findLastEditableMessage({
         events: filteredEvents,
-        currentUserId: currentUser.user?.id,
+        currentUserId: stores.viewerId,
         roomPermissions,
         messageEditWindowSeconds: serverInfo.messageEditWindowSeconds,
         nowMs: Date.now()
@@ -205,21 +222,85 @@
 
   // Feed projection/component inputs into the controller in one ordered
   // transition. DOM and virtualizer state are deliberately excluded.
+  // A thread pane keeps this component when the user opens another thread.
+  const timelineKey = $derived(
+    permalinkThreadRootEventId ? `${roomId}:${permalinkThreadRootEventId}` : roomId
+  );
+
   $effect(() => {
-    const currentRoomId = roomId;
+    const currentTimelineKey = timelineKey;
     const jumped = isJumpedMode;
     const newestId = timelineEvents.at(-1)?.id ?? null;
-    const newestOptions = {
-      showNewMessagesIndicator,
-      alwaysScrollToBottom
-    };
     untrack(() => {
-      if (viewport.enterRoom(currentRoomId)) expandedSystemEventIds.clear();
+      if (viewport.enterRoom(currentTimelineKey)) {
+        expandedSystemEventIds.clear();
+        lastReadPosition = null;
+      }
       viewport.observeJumpedMode(jumped);
       // Comparing the newest ID rather than the count keeps prepended
       // pagination rows from looking like newly arrived messages.
-      viewport.observeNewestEvent(newestId, newestOptions);
+      viewport.observeNewestEvent(newestId);
     });
+  });
+
+  let lastReadPosition: TimelineReadPosition | null = null;
+
+  /**
+   * The newest position that the viewer can see. While the timeline follows
+   * the present bottom, this is the newest loaded message. Otherwise it is the
+   * newest message that reaches into the viewport. Only messages of this
+   * timeline that are not echoes qualify, because the server anchors a read
+   * only on them.
+   */
+  function currentReadPosition(): TimelineReadPosition | null {
+    if (virtualItems.length === 0) return null;
+    const latest = !isJumpedMode && viewport.shouldScrollToBottom;
+    let index = virtualItems.length - 1;
+    if (!latest) {
+      if (!virtualizerHandle) return null;
+      const bottomEdge =
+        virtualizerHandle.getScrollOffset() + virtualizerHandle.getViewportSize() - 1;
+      index = Math.min(virtualizerHandle.findItemIndex(bottomEdge), index);
+    }
+    for (let i = index; i >= 0; i--) {
+      const item = virtualItems[i];
+      if (item.type !== 'event') continue;
+      const payload = item.event.event;
+      if (!isMessagePostedEvent(payload) || payload.echoOfEventId != null) continue;
+      if (filterThreadReplies && payload.threadRootEventId !== null) continue;
+      return { eventId: item.event.id, createdAtMs: Date.parse(item.event.createdAt), latest };
+    }
+    return null;
+  }
+
+  function reportReadPosition() {
+    if (!onReadPosition) return;
+    // A loading or recovering window is not what the viewer sees yet.
+    if (isLoading || stores.realtimeSync.isRecoveringSnapshot || recoveryViewport(messageStore)) {
+      return;
+    }
+    const position = currentReadPosition();
+    if (!position) return;
+    if (
+      lastReadPosition?.eventId === position.eventId &&
+      lastReadPosition.latest === position.latest
+    ) {
+      return;
+    }
+    lastReadPosition = position;
+    onReadPosition(position);
+  }
+
+  // New events and changes between the present and history move the read
+  // position without a scroll event, for example in a short timeline.
+  $effect(() => {
+    void virtualItems;
+    void isJumpedMode;
+    void viewport.shouldScrollToBottom;
+    void isLoading;
+    void stores.realtimeSync.isRecoveringSnapshot;
+    void recoveryViewport(messageStore);
+    untrack(reportReadPosition);
   });
 
   // Watch for scroll-to-bottom requests from MessageComposer (after posting a message).
@@ -229,10 +310,9 @@
   // been scrolled up — unmeasured items at the bottom have only estimated heights,
   // causing scrollToIndex to undershoot.
   $effect(() => {
-    if (!scrollState || alwaysScrollToBottom) return;
     const counter = scrollState.scrollRequestCounter;
     if (counter > 0) {
-      viewport.requestComposerBottom();
+      viewport.requestBottom();
       tick().then(() => {
         if (scrollContainer && viewport.shouldScrollToBottom) {
           void requestBottomScroll();
@@ -278,11 +358,14 @@
         const distance = distanceFromBottom();
         if (distance === null) return;
         viewport.settleJump(distance);
+        reportReadPosition();
         onScrollToEventComplete?.(true);
         return;
       }
 
-      if (!cancelled) onScrollToEventComplete?.(false);
+      if (cancelled) return;
+      reportReadPosition();
+      onScrollToEventComplete?.(false);
     });
 
     return () => {
@@ -290,9 +373,123 @@
     };
   });
 
+  async function landOnUnreadSeparator(requestedTimelineKey: string) {
+    const current = () =>
+      !destroyed && timelineKey === requestedTimelineKey && viewport.isUnreadEntryLandingRunning;
+
+    await tick();
+    // Virtua measures estimated rows after each scroll. Repeat until the
+    // offset is stable so the separator ends up at the top of the viewport.
+    let previousOffset: number | null = null;
+    for (let attempt = 0; attempt < 10; attempt++) {
+      if (!current()) return;
+      const index = virtualItems.findIndex((item) => item.type === 'unread-separator');
+      if (index === -1) break;
+      safeScrollToIndex(index, { align: 'start' });
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      const offset = virtualizerHandle?.getScrollOffset() ?? null;
+      if (offset === null || offset === previousOffset) break;
+      previousOffset = offset;
+    }
+    if (!current()) return;
+
+    // If all unread messages fit on screen, the scroll clamps to the bottom
+    // and the timeline keeps following new messages.
+    viewport.finishUnreadEntryLanding(distanceFromBottom());
+  }
+
   // Scroll container and virtualizer handle
   let scrollContainer = $state<HTMLDivElement>();
   let virtualizerHandle = $state<VirtualizerHandle>();
+
+  // The items at the ends of the document selection. The virtualizer keeps every item
+  // between them mounted, because a copy contains only mounted DOM.
+  let selectionKeys = $state<TimelineSelectionKeys | null>(null);
+  const keepMounted = $derived(
+    selectionKeys ? keptIndexes(virtualItems, selectionKeys) : undefined
+  );
+
+  // Record the ends while the anchor item is still mounted. After this, a scroll during
+  // the selection cannot unmount the anchor and break the selection.
+  function trackSelection() {
+    const next = scrollContainer
+      ? selectionEndpointKeys(document.getSelection(), scrollContainer)
+      : null;
+    if (next?.anchor === selectionKeys?.anchor && next?.focus === selectionKeys?.focus) return;
+    selectionKeys = next;
+  }
+
+  // Build a DOM command only after fresh authority and the virtualizer are ready.
+  const recoveryTarget = $derived.by(() => {
+    const position = recoveryViewport(messageStore);
+    if (!position || isLoading || stores.realtimeSync.isRecoveringSnapshot) return null;
+    const items = virtualItems;
+    if (items.length > 0 && !virtualizerHandle) return null;
+    const index = items.findIndex((item) =>
+      item.type === 'event'
+        ? item.event.id === position.eventId
+        : item.type === 'system-group' && item.events.some((event) => event.id === position.eventId)
+    );
+    return { position, index, store: messageStore };
+  });
+
+  // Land on the unread separator once per room or thread entry. The marker resolves
+  // after the entry read request, so the initial bottom scroll may already
+  // have run; any explicit viewport action before then wins (see
+  // TimelineViewportController.beginUnreadEntryLanding). An entry that
+  // targets a specific message skips the landing. A separator that appears
+  // while the viewer is away waits for the viewer to return, so the landing
+  // shows the first message that arrived while away.
+  const unreadEntryLanding = $derived.by(() => {
+    if (scrollToEventId || pendingHighlightId) return { timelineKey, skip: true };
+    if (!effectiveUnreadAfterEventId || isJumpedMode) return null;
+    if (!appState.isPresent) return null;
+    if (!virtualizerHandle || virtualItems.length === 0) return null;
+    if (recoveryViewport(messageStore) || stores.realtimeSync.isRecoveringSnapshot) return null;
+    return { timelineKey, skip: false };
+  });
+
+  /** Apply the derived landing request; the controller makes it one-shot. */
+  function landOnUnreadEntry(request: typeof unreadEntryLanding) {
+    return () =>
+      untrack(() => {
+        if (!request) return;
+        if (request.skip) viewport.skipUnreadEntryLanding(request.timelineKey);
+        else if (viewport.beginUnreadEntryLanding(request.timelineKey)) {
+          void landOnUnreadSeparator(request.timelineKey);
+        }
+      });
+  }
+
+  /** Coordinates belong to this mounted timeline, not to its cached store. */
+  function ownViewport(store: MessagesStore) {
+    return () => () => clearTimelineViewport(store);
+  }
+
+  /** Apply the derived scroll command after layout; detach cancels pending work. */
+  function restoreViewport(target: typeof recoveryTarget) {
+    return () => {
+      if (!target) return;
+      const frame = requestAnimationFrame(() => {
+        const { position, index, store } = target;
+        if (index >= 0) {
+          viewport.beginJump();
+          // Requests for the discarded window cannot release this flag.
+          jumpState.isLoadingNewer = false;
+          jumpState.isJumpedMode = position.hasNewer ?? false;
+          jumpState.hasReachedEnd = !position.hasNewer;
+          safeScrollToIndex(index, { align: 'start', offset: position.offset });
+          store.completeRecovery();
+        } else {
+          clearTimelineViewport(store);
+          jumpState.reset();
+          viewport.followBottom();
+          void requestBottomScroll();
+        }
+      });
+      return () => cancelAnimationFrame(frame);
+    };
+  }
   let scrollFader = $state<{ refresh: () => void }>();
 
   // Safely call scrollToIndex on the virtualizer. After a {#key roomId} transition,
@@ -309,12 +506,18 @@
   }
 
   function requestBottomScroll(): Promise<boolean> | undefined {
+    if (stores.realtimeSync.isRecoveringSnapshot || recoveryViewport(messageStore))
+      return undefined;
     if (!scrollContainer || !virtualizerHandle || virtualItems.length === 0) return undefined;
 
     const token = viewport.beginBottomScroll(roomId);
     return convergeAtBottom({
       continueWhile: () =>
-        viewport.canContinueBottomScroll(token, roomId, isJumpedMode, alwaysScrollToBottom) &&
+        // Check lifetime before reading derived props from the old room.
+        !destroyed &&
+        !stores.realtimeSync.isRecoveringSnapshot &&
+        !recoveryViewport(messageStore) &&
+        viewport.canContinueBottomScroll(token, roomId, isJumpedMode) &&
         Boolean(scrollContainer && virtualizerHandle),
       waitForFrame: async () => {
         await tick();
@@ -343,19 +546,15 @@
     });
   }
 
-  // Register the scroll container with ScrollState so sibling components
-  // (MessageComposer, TypingIndicator) can synchronously scroll without waiting
-  // for ResizeObserver callbacks.
-  $effect(() => {
-    if (scrollState && scrollContainer) {
-      scrollState.setContainer(scrollContainer);
-      return () => scrollState.setContainer(null);
-    }
-  });
-
-  // Keep ScrollState's shouldScroll flag in sync with our local state
-  $effect(() => {
-    scrollState?.setShouldScroll(alwaysScrollToBottom || viewport.shouldScrollToBottom);
+  // The virtual keyboard and a growing composer shrink the timeline. Keep the
+  // newest visible messages in view. Restores, jumps, and unread landings own
+  // the position while they run.
+  const anchorTimelineBottom = anchorBottomOnResize({
+    followsBottom: () => viewport.shouldScrollToBottom,
+    isPaused: () =>
+      Boolean(scrollToEventId) ||
+      viewport.isUnreadEntryLandingRunning ||
+      Boolean(recoveryViewport(messageStore))
   });
 
   // Auto-scroll to bottom when new events arrive or existing events update.
@@ -365,13 +564,13 @@
   // Suppressed when pendingHighlightId is set — a highlight scroll is pending and
   // auto-scroll would race with it, scrolling to bottom before the highlight can fire.
   $effect(() => {
-    void updateCounter;
+    void events.length;
 
     if (isJumpedMode) return;
     if (pendingHighlightId) return;
 
     if (virtualItems.length > 0 && virtualizerHandle) {
-      const shouldScroll = untrack(() => alwaysScrollToBottom || viewport.shouldScrollToBottom);
+      const shouldScroll = untrack(() => viewport.shouldScrollToBottom);
       if (shouldScroll) {
         void requestBottomScroll();
       }
@@ -380,7 +579,7 @@
 
   // Scroll to bottom when clicking the new messages indicator
   function scrollToBottom() {
-    viewport.followBottom();
+    viewport.requestBottom();
     onReachedBottom?.();
     void requestBottomScroll();
   }
@@ -393,7 +592,7 @@
     onReachedBottom?.();
     const requestedRoomId = roomId;
     const intentRevision = viewport.captureIntentRevision();
-    if (!(await onJumpToPresent?.())) return;
+    if (!(await jumpState.returnToLatest(messageStore))) return;
     await tick();
     if (roomId !== requestedRoomId || !viewport.hasIntentRevision(intentRevision)) return;
     void requestBottomScroll();
@@ -446,14 +645,14 @@
       virtualizerHandle.getScrollSize() -
       virtualizerHandle.getScrollOffset() -
       virtualizerHandle.getViewportSize();
-    viewport.reconcileAfterTabResume(dist, alwaysScrollToBottom);
+    viewport.reconcileAfterTabResume(dist);
   });
 
   let forwardLoadInFlight = false;
   let underfilledBackfillInFlight = false;
 
   function exitJumpedModeAtPresent(bottomDistance: number): boolean {
-    if (!isJumpedMode || !hasReachedEnd || bottomDistance >= 50 || !onReachedPresent) return false;
+    if (!isJumpedMode || !hasReachedEnd || bottomDistance >= 50) return false;
 
     viewport.followBottom();
     onReachedBottom?.();
@@ -462,16 +661,16 @@
       bottomDistance,
       itemCount: virtualItems.length
     });
-    onReachedPresent();
+    jumpState.reset();
     return true;
   }
 
   async function loadNewerAndMaybeExitAtPresent(): Promise<void> {
-    if (!onLoadNewer || forwardLoadInFlight) return;
+    if (forwardLoadInFlight) return;
 
     forwardLoadInFlight = true;
     try {
-      await onLoadNewer();
+      await jumpState.loadNewer(messageStore);
       await tick();
       await new Promise((resolve) => requestAnimationFrame(resolve));
 
@@ -485,9 +684,8 @@
   }
 
   async function loadOlderIfTimelineNeedsBackfill(): Promise<void> {
+    if (stores.realtimeSync.isRecoveringSnapshot || recoveryViewport(messageStore)) return;
     if (
-      !enablePagination ||
-      !onLoadMore ||
       isLoading ||
       isLoadingMore ||
       hasReachedStart ||
@@ -503,7 +701,7 @@
       // Virtualizer in that state, but pagination still needs to walk backward
       // until it finds visible history or reaches the beginning.
       if (timelineEvents.length > 0 && filteredEvents.length === 0) {
-        await onLoadMore();
+        await loadOlder(messageStore);
         return;
       }
 
@@ -527,7 +725,7 @@
         timelineEvents.length > 0 &&
         messageEventCount < INITIAL_ROOM_MESSAGE_BACKFILL_TARGET;
       if (scrollSize <= viewportSize + 50 || lacksInitialRoomMessages) {
-        await onLoadMore();
+        await loadOlder(messageStore);
       }
     } finally {
       underfilledBackfillInFlight = false;
@@ -539,7 +737,6 @@
     void timelineEvents.length;
     void filteredEvents.length;
     void messageEventCount;
-    void enablePagination;
     void isLoading;
     void isLoadingMore;
     void hasReachedStart;
@@ -553,7 +750,13 @@
   // virtua's shift=true handles scroll restoration during pagination automatically,
   // eliminating the need for manual scrollHeight capture/restore and overflow-anchor toggling.
   function handleVirtuaScroll(offset: number) {
-    if (!virtualizerHandle) return;
+    if (
+      !virtualizerHandle ||
+      isLoading ||
+      stores.realtimeSync.isRecoveringSnapshot ||
+      recoveryViewport(messageStore)
+    )
+      return;
 
     const scrollSize = virtualizerHandle.getScrollSize();
     const viewportSize = virtualizerHandle.getViewportSize();
@@ -571,30 +774,48 @@
       scrollSize,
       viewportSize,
       firstVisibleAt,
-      alwaysScrollToBottom,
       now: Date.now()
     });
     const { distanceFromBottom } = scrollResult;
+    // A separator can be the first visible item. Anchor to the next event so
+    // dates and unread markers do not discard the reading position.
+    let anchorIndex = idx;
+    while (
+      anchorIndex < virtualItems.length &&
+      virtualItems[anchorIndex].type !== 'event' &&
+      virtualItems[anchorIndex].type !== 'system-group'
+    )
+      anchorIndex++;
+    const anchor = virtualItems[anchorIndex];
+    const anchorEvent =
+      anchor?.type === 'event'
+        ? anchor.event
+        : anchor?.type === 'system-group'
+          ? anchor.events[0]
+          : undefined;
+    setTimelineViewport(
+      messageStore,
+      !viewport.shouldScrollToBottom && anchorEvent
+        ? { eventId: anchorEvent.id, offset: offset - virtualizerHandle.getItemOffset(anchorIndex) }
+        : null
+    );
     if (scrollResult.reachedBottom) onReachedBottom?.();
 
     // Trigger pagination when scrolled near the top.
     // Guard: only when content actually overflows the viewport (avoids firing in short rooms).
     if (
-      enablePagination &&
-      onLoadMore &&
       offset < viewportSize * 3 &&
       scrollSize > viewportSize + 50 &&
       !isLoadingMore &&
       !hasReachedStart
     ) {
       // No manual scroll restoration needed — virtua's shift=true handles it
-      onLoadMore();
+      void loadOlder(messageStore);
     }
 
     // Forward pagination when near bottom in jumped mode
     if (
       isJumpedMode &&
-      onLoadNewer &&
       distanceFromBottom < viewportSize * 3 &&
       !isLoadingNewer &&
       !forwardLoadInFlight &&
@@ -604,9 +825,9 @@
     }
 
     // Exit jumped mode when user has scrolled to bottom and all content is loaded
-    if (hasReachedEnd && exitJumpedModeAtPresent(distanceFromBottom)) {
-      return;
-    }
+    if (hasReachedEnd) exitJumpedModeAtPresent(distanceFromBottom);
+
+    reportReadPosition();
   }
 
   // Determine if a message can open a thread
@@ -634,8 +855,9 @@
 </script>
 
 <svelte:window onkeydown={markKeyboardScrollIntent} />
+<svelte:document onselectionchange={trackSelection} />
 
-<div class="relative flex min-h-0 min-w-0 flex-1 flex-col pb-2">
+<div class="relative flex min-h-0 min-w-0 flex-1 flex-col pb-2" {@attach ownViewport(messageStore)}>
   <ScrollFader
     top
     bottom
@@ -646,13 +868,21 @@
     onwheel={markUserScrollIntent}
     ontouchmove={markUserScrollIntent}
     onpointerdown={markUserScrollIntent}
+    {@attach anchorTimelineBottom}
   >
-    <div class="mt-auto">
-      {#if !isLoading && virtualItems.length === 0}
+    <div
+      class="mt-auto mobile-presentation:px-1"
+      {@attach restoreViewport(recoveryTarget)}
+      {@attach landOnUnreadEntry(unreadEntryLanding)}
+    >
+      {#if isLoading}
+        <!-- Sits at the bottom, where the newest messages will appear. -->
+        <LoadingDots class="py-4" label={m('room.timeline.loading')} />
+      {:else if virtualItems.length === 0}
         <div class="flex flex-1 items-center justify-center">
           <div class="py-4 text-sm text-muted">{emptyMessage}</div>
         </div>
-      {:else if !isLoading}
+      {:else}
         <Virtualizer
           bind:this={virtualizerHandle}
           data={virtualItems}
@@ -660,6 +890,8 @@
           scrollRef={scrollContainer}
           shift={isLoadingMore}
           itemSize={60}
+          {keepMounted}
+          itemProps={({ item }) => ({ [TIMELINE_ITEM_KEY_ATTRIBUTE]: item?.key })}
           onscroll={handleVirtuaScroll}
         >
           {#snippet children(item: VirtualItem)}
@@ -703,9 +935,9 @@
                   {permalinkThreadRootEventId}
                   {messageStore}
                   onOpenThread={getOpenThreadHandler(eventData)}
-                  activeCallId={stores.activeCallRooms.getCallId(roomId)}
+                  activeCallId={serverUi(stores).activeCallRooms.getCallId(roomId)}
                   {onOpenCall}
-                  {onOpenProfile}
+                  onOpenUser={openUserMenu}
                   {threadingMode}
                 />
               {/if}
@@ -716,12 +948,12 @@
     </div>
   </ScrollFader>
 
-  <TypingIndicator {typingUserIds} members={typingMembers} />
+  <TypingIndicator {typingUserIds} members={typingMembers} profiles={stores.projection.users} />
 
-  {#if !viewport.shouldScrollToBottom && (reloadsTimelineOnReturn || !alwaysScrollToBottom)}
+  {#if !viewport.shouldScrollToBottom}
     <button
       transition:fade={{ duration: 150 }}
-      onclick={reloadsTimelineOnReturn ? handleJumpToPresentClick : scrollToBottom}
+      onclick={isJumpedMode ? handleJumpToPresentClick : scrollToBottom}
       data-testid="jump-to-present"
       class="absolute bottom-4 left-1/2 z-40 -translate-x-1/2 cursor-pointer menu whitespace-nowrap"
     >
@@ -731,12 +963,25 @@
           <span class="text-muted/40">|</span>
         {/if}
         <span>
-          {!reloadsTimelineOnReturn && viewport.hasNewMessages
+          {!isJumpedMode && viewport.hasNewMessages
             ? m('room.unread_separator')
             : m('room.jump_to_present')}
         </span>
-        <span class="iconify icon-[uil--arrow-down]"></span>
+        <span aria-hidden="true" class="iconify icon-[uil--arrow-down]"></span>
       </div>
     </button>
   {/if}
+
+  {#key `${serverScope.serverId}:${roomId}`}
+    <MessageUserOverlays
+      interactions={userInteractions}
+      serverId={serverScope.serverId}
+      {roomId}
+      currentUserId={stores.viewerId ?? undefined}
+      {canStartDMs}
+      canBanRoomMembers={roomPermissions.canBanRoomMembers}
+      {isUniversal}
+      {onOpenProfile}
+    />
+  {/key}
 </div>

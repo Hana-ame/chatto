@@ -71,7 +71,9 @@
     },
     "timeline": {
       "beginning": "Toto je začátek tohoto rozhovoru.",
-      "read_denied": "Nemáte oprávnění číst zprávy v této místnosti."
+      "read_denied": "Nemáte oprávnění číst zprávy v této místnosti.",
+      "limited_empty": "Zatím žádné konverzace, které můžete číst.",
+      "loading": "Načítání zpráv..."
     },
     "message": {
       "empty": "Zatím žádné zprávy",
@@ -87,6 +89,7 @@
         "remove_reaction": "Odebrat {emoji}",
         "add_reaction": "Přidejte reakci",
         "more_reactions": "Více reakcí",
+        "reactions": "Reakce",
         "reply": "Odpovědět",
         "reply_room": "Odpovědět v místnosti",
         "reply_thread": "Odpověď ve vláknu",
@@ -96,9 +99,18 @@
         "edit_short": "Upravit",
         "copy_text": "Zkopírujte text",
         "copy_text_failed": "Text se nepodařilo zkopírovat",
-        "copy_link": "Zkopírujte odkaz"
+        "copy_link": "Zkopírujte odkaz",
+        "copy_message_link": "Zkopírovat odkaz na zprávu",
+        "copy_image": "Zkopírovat obrázek",
+        "link_copied": "Odkaz zkopírován",
+        "message_link_copied": "Odkaz na zprávu zkopírován",
+        "copy_link_failed": "Odkaz se nepodařilo zkopírovat",
+        "image_copied": "Obrázek zkopírován",
+        "copy_image_failed": "Obrázek se nepodařilo zkopírovat"
       },
       "meta": {
+        "echo": "Ozvěna",
+        "edited_short": "Upraveno",
         "pinned": "Připnutá zpráva",
         "thread": "Závit",
         "edited": "Zpráva upravena",
@@ -142,6 +154,14 @@
       },
       "show_less": "ukázat méně"
     },
+    "typing": {
+      "one": "{name} píše",
+      "two": "{first} a {second} píšou",
+      "many_count": {
+        "other": "{names} a {count} dalších píše",
+        "one": "{names} a {count} další píšou"
+      }
+    },
     "attachment": {
       "delete_title": "Smazat přílohu",
       "delete_prompt": "Opravdu chcete smazat tuto přílohu? Toto nelze vrátit zpět.",
@@ -150,7 +170,27 @@
       "view_label": "Zobrazit {filename}",
       "download_label": "Stáhnout {filename}",
       "image_refresh_failed": "Odkaz na obrázek nelze obnovit",
-      "download_refresh_failed": "Odkaz ke stažení nelze obnovit"
+      "download_refresh_failed": "Odkaz ke stažení nelze obnovit",
+      "add_description": "Přidat popis",
+      "edit_description": "Upravit popis",
+      "description_title": "Popis přílohy",
+      "description_label": "Popis (volitelný)",
+      "description_help": "Popište přílohu lidem, kteří ji nemohou vidět ani slyšet.",
+      "description_too_long": "Popis může obsahovat nejvýše {max} znaků.",
+      "description_update_failed": "Popis přílohy se nepodařilo aktualizovat",
+      "html_viewer": {
+        "download": "Stáhnout",
+        "show_preview": "Zobrazit náhled",
+        "warning": "Tento dokument může načítat obsah z externích webových stránek. Tyto stránky mohou vidět tvou IP adresu.",
+        "preview_title": "Náhled souboru {filename}",
+        "preview_failed": "Náhled se nepodařilo načíst. Zkus to znovu.",
+        "document_type": "Typ dokumentu",
+        "html_document": "Dokument HTML",
+        "xhtml_document": "Dokument XHTML",
+        "file_size": "Velikost souboru",
+        "unavailable": "Nedostupné",
+        "no_preview": "Náhled tohoto souboru není k dispozici. Stáhni si ho a ulož."
+      }
     },
     "link_preview": {
       "delete_title": "Smazat náhled odkazu",
@@ -158,6 +198,7 @@
       "delete_failed": "Náhled odkazu se nepodařilo smazat"
     },
     "sidebar": {
+      "go_to_message": "Přejít na zprávu",
       "extras": "Pokoj navíc",
       "resize": "Změnit velikost podokna doplňků místnosti",
       "hide": "Skrýt doplňky pokoje",
@@ -170,24 +211,25 @@
       "clear_member_search": "Vymazat vyhledávání členů",
       "no_members": "Nebyli nalezeni žádní členové.",
       "online": "Online ({count})",
+      "bots": "Bots ({count})",
       "offline": "Offline ({count})",
       "no_files": "V této místnosti zatím nejsou žádné soubory.",
       "files": "Soubory",
       "pins": "Připnuté zprávy",
-      "call": "Zavolejte",
+      "call": "Hovor",
       "jump_to_file": "Přejít na {filename}",
       "loading_files": "Načítání souborů...",
+      "loading_members": "Načítání členů...",
       "calls_unavailable": "Na tomto serveru nejsou hovory dostupné.",
       "view_profile": "Zobrazit profil uživatele {name}",
       "in_voice_call": "V hlasovém hovoru",
       "in_video_call": "Ve videohovoru",
-      "ban_failed": "Členovi se nepodařilo zakázat přístup do místnosti",
-      "ban_success": "{name} zakázán přístup do místnosti"
+      "remove_failed": "Uživatele se nepodařilo odebrat z místnosti",
+      "remove_success": "{name} byl odebrán z místnosti",
+      "search": "Hledat"
     },
     "pins": {
-      "show": "Zobrazit připnuté zprávy",
       "unseen": "Nové připnuté zprávy",
-      "hide": "Skrýt připnuté zprávy",
       "pin": "Připnout zprávu",
       "unpin": "Odepnout zprávu",
       "unpin_prompt": "Opravdu chcete tuto zprávu odepnout?",

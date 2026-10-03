@@ -9,13 +9,20 @@ The [`authling` command](../../cmd/authling/main.go) exposes `help`, `version`,
 and `run`. `run` loads the standalone configuration, opens Authling's NATS
 storage, starts every required projection and the browser-session inventory,
 waits for startup replay, starts the HTTP listener, and then runs until its
-process context is cancelled.
+process context is cancelled. A required task failure cancels startup readiness
+waits and is returned to the CLI with its original error chain. A missing
+JetStream tier error also includes an account-quota hint.
 
 The HTTP surface contains server-rendered signup, login, password-reset,
-signed-in password-change, verified email-change, consent, account, and logout
-pages plus embedded browser assets. It also exposes OpenID Connect discovery,
+signed-in password-change, verified email-change, account deletion, consent,
+account, and logout pages plus embedded browser assets. It also exposes OpenID Connect discovery,
 authorization, token, UserInfo, and JWKS endpoints. Authling exposes no public
 account-management, application-data, document, or synchronization API.
+
+`web.Handler` composes feature-specific route registration functions for login,
+signup, recovery, consent, account management, profile, password change, email
+change, and deletion. It retains the shared assets and home routes, OIDC
+fallback, and outer security and origin middleware.
 
 ## Configuration
 
@@ -28,8 +35,13 @@ override TOML values. Unknown TOML fields fail decoding.
 `http.public_url` declares Authling's externally visible origin and controls
 browser cookie transport policy. An `http://` origin is valid only when both
 the origin and listener are loopback; every other deployment must configure an
-`https://` origin. `AUTHLING_HTTP_PUBLIC_URL` provides the equivalent override.
-Requests with another `Host` are rejected, and unsafe browser requests must
+`https://` origin. For this rule and for plain-HTTP redirect URIs, a loopback
+host is a loopback IP address, `localhost`, or a name beneath `.localhost`, such
+as `authling.feature.localhost`. RFC 6761 reserves these names for loopback.
+`AUTHLING_HTTP_PUBLIC_URL` provides the equivalent override.
+Requests at another host, port, or scheme receive a temporary redirect (307)
+to the configured public origin, with their path and query preserved. Redirects
+run before application handlers and are not cached. Unsafe browser requests must
 carry a matching `Origin`; Fetch Metadata is an additional cross-site signal.
 The listener itself is plain HTTP, so production deployments terminate HTTPS
 at a reverse proxy. An explicit configuration switch lets canonical-origin
@@ -46,17 +58,27 @@ equivalent environment override; the 1,024-byte maximum remains fixed.
 The `smtp` section configures transactional email. When enabled, `host`,
 `port`, and `from` are required. TLS defaults to mandatory STARTTLS (or
 implicit TLS on port 465); `opportunistic` is an explicit local-development
-fallback. Fields have corresponding `AUTHLING_SMTP_*` environment overrides.
+fallback. The runtime logs a startup warning when SMTP is enabled with
+`opportunistic` TLS or `tls_skip_verify`. Mailer errors do not contain email
+addresses or SMTP server replies. Fields have corresponding `AUTHLING_SMTP_*`
+environment overrides.
 
 Each `[[oidc.clients]]` table declares a conventional OIDC client with `id`,
 `name`, and one or more exact `redirect_uris`. An omitted `secret` creates a
 public client; a secret of at least 32 characters enables
-`client_secret_basic`. URL client IDs are reserved for CIMD and need no local
-configuration. HTTPS redirects are mandatory outside loopback development.
+`client_secret_basic` or `client_secret_post`. The optional `require_pkce` field defaults to true;
+only clients with a secret may set it to false. URL client IDs are reserved for
+CIMD. Admission of unregistered clients requires `oidc.allow_unregistered_clients = true` or
+`AUTHLING_OIDC_ALLOW_UNREGISTERED_CLIENTS=true`; the default is false. The runtime constructs
+no CIMD resolver when disabled, rejects unregistered URL clients without DNS
+or metadata requests, and advertises the capability as false in discovery.
+Configured clients are independent of this setting. HTTPS redirects are mandatory outside loopback development.
 `oidc.cimd_trusted_private_hosts` and `oidc.cimd_trusted_loopback_hosts` are
 separate, exact-host development exceptions. They permit named CIMD hosts to
 resolve only to private or loopback addresses respectively; neither permits
-other special-use destinations.
+other special-use destinations. An issuer with a loopback hostname also permits
+loopback CIMD destinations without an explicit trusted-host entry. CIMD URLs
+still require HTTPS.
 
 Operators must select exactly one NATS mode:
 
@@ -81,13 +103,15 @@ storage-path, logging, and deployment policy.
 | `AUTHLING_RUNTIME_STATE` | KV bucket | File, history 1 | Opaque HMAC-derived keys | Encrypted signup, password-reset, email-change, session, OIDC request, code, and access-token state, plus bounded delivery and login-attempt counters |
 | `AUTHLING_KEYS` | KV bucket | File, history 1 | Opaque key references | Workflow, OIDC signing, user, and wrapped credential data keys |
 
-`AUTHLING_EVT` enables JetStream atomic publication for future multi-event
+`AUTHLING_EVT` enables JetStream atomic publication for multi-event
 commands. The key bucket is a separate, exceptionally sensitive backup and
 restore boundary.
 
 Credential provisioning writes an opaque operation record before creating its
 user and data keys, then removes the marker after the referencing event
-commits. Normal command failures compensate immediately. Crash orphans remain
+is acknowledged. Failures before publication and definite OCC rejections permit
+immediate cleanup. An unknown publication outcome retains both keys and the
+operation marker, even if the request reports failure. Crash orphans remain
 discoverable by their durable marker; Authling does not use time alone as
 authority to delete keys that an in-flight replica could still reference.
 
@@ -109,8 +133,11 @@ token-safe vocabulary.
 | `EmailChangedEvent` | `authling.evt.account.{accountId}` | Account | Opaque account, credential-key, request, and prior-credential references plus the replacement encrypted email |
 | `ProfileUpdatedEvent` | `authling.evt.account.{accountId}` | Account | Opaque account and credential-key references plus replacement encrypted preferred-username and full-name fields |
 | `EmailClaimedEvent` | `authling.evt.account-registry` | Account registry | Opaque account and optional staged credential-event IDs |
-| `OIDCGrantAuthorizedEvent` | `authling.evt.account.{accountId}` | Account | Opaque account, grant, and prior-authorization IDs; keyed exact-client digest; client display snapshot; granted scopes |
+| `OIDCGrantAuthorizedEvent` | `authling.evt.account.{accountId}` | Account | Opaque account, grant, and prior-authorization IDs; keyed exact-client digest; encrypted client display snapshot and account key references; granted scopes; consent disclosure version |
 | `OIDCGrantRevokedEvent` | `authling.evt.account.{accountId}` | Account | Opaque account, grant, and active authorization-event IDs |
+| `AccountErasureRequestedEvent` | `authling.evt.account.{accountId}` | Account | Current credential and key references; permanent access denial |
+| `EmailReleasedEvent` | `authling.evt.account-registry` | Account registry | Opaque account and erasure-request correlation; atomic email release |
+| `AccountErasedEvent` | `authling.evt.account.{accountId}` | Account | Opaque account and request correlation; live key purge completion |
 | `IssuerEstablishedEvent` | `authling.evt.issuer` | Issuer singleton | Immutable issuer URL and opaque signing-key reference and ID |
 | `OIDCSigningKeyRotationRequestedEvent` | `authling.evt.issuer` | Issuer singleton | Opaque future signing-key reference |
 | `OIDCSigningKeyPreparedEvent` | `authling.evt.issuer` | Issuer singleton | Opaque signing-key reference, public fingerprint ID, and activation time |
@@ -129,8 +156,8 @@ replicas without a durable email-derived index.
 
 The account model consumes `authling.evt.account.*` and
 `authling.evt.account-registry`. It maps opaque account IDs to creation times.
-During replay it resolves and decrypts local credentials and rebuilds a keyed
-digest index of normalized emails. It retains encrypted verifier fields and
+During replay it resolves and decrypts active local credentials and rebuilds a
+keyed digest index of normalized emails. It retains encrypted verifier fields and
 opaque key references, but neither plaintext email nor plaintext password
 verifiers. It retains encrypted profile fields and decrypts them only at the
 account-service read boundary. The model retains bounded password-reset request correlations so
@@ -150,6 +177,9 @@ share distributed attempt limits and bounded Argon2 capacity. They resolve and
 decrypt a verifier only for one bounded Argon2id comparison; absent login
 accounts resolve a persistent synthetic key hierarchy and encrypted dummy
 verifier through the same storage path.
+After a successful password check, login waits for both account and registry
+projection boundaries and reads the generation only if the exact verified
+credential remains active. Audit events do not change that credential proof.
 
 The runtime does not become ready until the projections have replayed their
 captured startup history. A decode or apply failure fails the projection and
@@ -167,8 +197,11 @@ revocation, retains ended grant IDs to prevent generation reuse, and serves
 only after startup replay. Grant commands synchronize to the account tail,
 publish with account-subject OCC, retry from refreshed state after conflicts,
 and wait for their committed position. The projection is cold-replay-only and
-contains client metadata and scopes but no account PII, tokens, codes, redirect
-URIs, or browser data.
+retains scopes and encrypted client display metadata. The service decrypts
+metadata for display and authenticates it before consent reuse. Metadata keys
+must match the account creation event. Only encrypted grant records are
+supported. See [FDR-010](../fdr/FDR-010-oidc-authorization-grants.md) for the
+encryption and disclosure-version rules.
 
 The browser-session inventory is a process-wide in-memory model over one
 filtered `session.*` watcher on `AUTHLING_RUNTIME_STATE`. It decrypts the latest
@@ -183,9 +216,10 @@ revision when this model is running.
 The issuer projection consumes the singleton `authling.evt.issuer` subject.
 On first initialization, its service creates or resolves the RS256 signing key
 and establishes the issuer with subject-level OCC. It then materializes one
-active key, at most one pre-published successor, and at most one unexpired
-predecessor. The in-process reconciler automatically requests rotation when
-the active key reaches its configured age, creates event-owned key material,
+active key and at most one pre-published successor or unexpired predecessor.
+A new rotation waits for the preceding retirement to complete. The in-process
+reconciler automatically requests rotation when the active key reaches its
+configured age, creates event-owned key material,
 activates it after ten minutes of JWKS publication, and retires the predecessor
 after a 15-minute overlap. Every transition uses issuer-subject OCC and waits
 for its projected position. Restart resumes incomplete creation or destruction
@@ -200,14 +234,35 @@ Sans, and Iconify glyphs during the build; the resulting assets are embedded
 in the Go executable and served below `/assets/`. The runtime has no Node.js or
 third-party asset-host dependency.
 
+The server computes one content hash from the embedded asset names and bytes.
+Pages use `/assets/<hash>/` URLs, which have a one-year immutable public cache
+lifetime. Relative font URLs in CSS use the same version. The shared page layout
+preloads the Latin IBM Plex Sans font so the browser can reuse it on each page.
+Unversioned asset URLs require cache revalidation with an ETag. Missing files and
+unknown versions are not cached. HTML and authentication responses retain
+`Cache-Control: no-store`.
+
+The `site` configuration supplies a public name and optional description through
+TOML or environment variables. The name defaults to the configured public
+hostname, never a request header. Each HTTP handler attaches its resolved display
+settings to request context for the shared page layout. Transactional email
+workflows receive the same resolved name. Display text does not change issuer or
+client identity. Forms use a compact layout; account settings use a wider layout
+with separate profile, security, connected-app, session, and deletion sections.
+See [FDR-014](../fdr/FDR-014-site-identity.md).
+
 The initial Content Security Policy prohibits scripts and third-party content.
 All essential future authentication interactions must continue to work through
 ordinary server-rendered links and forms.
 
 `GET /signup` renders the email form. Three POST endpoints start a flow, verify
 its code, and complete account creation with a password. Unsafe requests reject
-cross-origin browser submissions. The browser carries a random opaque flow
-token in hidden fields; raw email addresses, OTPs, and passwords never enter
+cross-origin browser submissions. Signup from an OIDC login carries the
+validated pending request ID through its forms and resumes consent after
+session creation. A silent OIDC request returns
+an authorization code or a protocol error without rendering login or consent;
+its encrypted `silent` flag survives restart.
+The browser carries a random opaque flow token in hidden fields; raw email addresses, OTPs, and passwords never enter
 URLs.
 
 `GET /login` renders local credential login. `POST /login` applies a shared,
@@ -218,13 +273,26 @@ The host-only browser cookie carries only a random opaque bearer and is
 `HttpOnly`, `SameSite=Lax`, scoped to `/`, non-persistent, and secure outside
 the explicit loopback development mode.
 
+The `internal/runtimejson` codec encodes version-1 encrypted JSON envelopes
+for signup, password reset, email change, sessions, and OIDC runtime state.
+It preserves the capitalized workflow fields and lowercase session/OIDC fields.
+Callers supply the existing key and associated data, including the storage key.
+They retain expiry, revision checks, storage access, and domain validation.
+The codec clears temporary plaintext buffers before returning. Existing records
+remain readable, and old readers can read new records without migration.
+
 Session records are authenticated-encrypted in runtime state beneath
 HMAC-derived keys. They have a 24-hour absolute lifetime and a one-hour
 inactivity limit. Activity updates use OCC and never extend the absolute
 deadline. Each session records the account authentication version current at
 issuance. Password reset, signed-in password change, and verified email change
 advance that durable version, invalidating every older session across replicas
-and restarts. Logout deletes the server record before clearing the cookie.
+and restarts. Login, signup, and recovery bind session creation to the exact
+authentication generation that authorized the operation. A later mutation
+cannot upgrade an earlier proof to the new generation. The event and session
+storage formats are unchanged; all replicas must run the fix to close the old
+session-creation path. Logout deletes the server record before clearing the
+cookie.
 
 `GET /account` also reads the current account's active sessions from the
 process-wide inventory. It renders lifecycle timestamps and identifies the
@@ -239,8 +307,9 @@ local watcher before redirecting.
 `GET /password-reset` starts verified-email recovery. Three POST endpoints
 create an expiring flow, verify its six-digit code, and commit a new password.
 Claimed and unclaimed valid addresses follow the same email-delivery and
-browser path. After delivery limits accept an existing account's request, a
-PII-free `PasswordResetRequestedEvent` must commit before flow creation or SMTP
+browser path. After non-refundable admission and delivery limits accept an
+existing account's request, a PII-free `PasswordResetRequestedEvent` must commit
+before flow creation or SMTP
 delivery; absent accounts have no aggregate on which to record one. Encrypted
 flow state is bound to that audit event and the credential event current at
 start. Account-subject OCC prevents concurrent stale flows from overwriting a
@@ -280,16 +349,48 @@ projection boundaries, then appends a `PasswordChangedEvent` bound to the exact
 reauthenticated credential. It advances the authentication version, invalidates
 older browser sessions, and creates a replacement session at that exact
 generation. The account ID, verified email, and OIDC `sub` remain unchanged.
+Both password commands use one private replacement method in `accounts` for
+password hashing, verifier encryption, event publication, and projection waits.
+Each command retains its input checks and ceremony kind. Recovery also retains
+its request event reference. A confirmed conflict triggers a fresh credential
+check; retries reuse the same event and encrypted verifier. Other publication
+errors return without retry because the commit outcome can be unknown.
+
+`GET` and `HEAD /.well-known/change-password` return a temporary, non-cacheable
+redirect to this page. A signed-out request carries only this fixed internal
+return target through login. Other submitted return targets are ignored.
 
 OpenID Connect mounts discovery at `/.well-known/openid-configuration` and its
 protocol endpoints below `/oauth/`. Authorization accepts only code flow,
-requires exactly the `openid` scope and S256 PKCE.
+requires `openid`, and accepts optional `profile` and `email` scopes. S256 PKCE is mandatory except for
+configured confidential clients with `require_pkce = false`. Supplied PKCE
+challenges always require matching verifiers; unexpected verifiers are rejected.
 Signed-out requests resume through an opaque server-side request ID after
-login. `GET /oidc/consent` reuses a durable exact-client authorization grant
-when it covers the requested scopes, except when `prompt=consent` requires an
-explicit decision. Same-origin `POST /oidc/consent` records explicit approval
+login. Encrypted session state carries a separate authentication timestamp;
+email-change session replacement preserves it. Encrypted OIDC request state
+stores `max_age` and forced-login constraints. Both grant reuse and approval
+check these constraints, return stale sessions to login, and copy the actual
+authentication time into the ID token's `auth_time` claim.
+`GET /oidc/consent` reuses a durable exact-client authorization grant
+when it covers the requested scopes and current disclosure version, except
+when `prompt=consent` requires an explicit decision. The page lists the account
+ID plus names and verified email only for the requested scopes, and discloses
+later changes. Same-origin `POST /oidc/consent`
+requires the current form disclosure version to record explicit approval
 before authorizing the expiring request or returns a denial to the validated
 client redirect.
+
+Disclosure version 2 is required for approval and reuse. The event decoder and
+metadata decryption retain version-1 support, but older binaries cannot replay
+new grants. Upgrade all replicas together; do not roll back after writing a
+version-2 grant. Explicit approval replaces scopes; subset reuse does not
+expand them.
+
+The provider's account dependencies check active status for every claim
+response and hydrate profile or current verified email only for authorized
+scopes. ID tokens retain authorized UserInfo claims. UserInfo uses the scopes
+stored in encrypted access-token state, never scopes from the HTTP request.
+Plaintext email is not added to events, projections, or token records.
 
 `GET /account` lists active OIDC grants separately from Authling browser
 sessions. Same-origin `POST /account/authorizations/revoke` authorizes the
@@ -297,11 +398,21 @@ opaque grant ID under the current account and commits revocation. Revocation
 forces future authorization to ask again but does not terminate already issued
 five-minute tokens or relying-party sessions.
 
-Conventional clients resolve from configuration. Unconfigured HTTPS URL client
-IDs resolve through the bounded CIMD fetcher, which disables redirects and
+Conventional clients resolve from configuration. With CIMD explicitly enabled,
+unconfigured HTTPS URL client IDs resolve through the bounded CIMD fetcher, which disables redirects and
 proxies, validates DNS destinations before fetch and dial, and caps fetch time,
-body size, concurrency, and cache lifetime. Pending requests, code mappings,
+body size, concurrency, and cache lifetime. Each process admits at most eight
+cache-miss lookups without a waiting queue, before DNS work starts. One
+five-second lookup deadline includes DNS and body reads. Its cache holds at
+most 256 clients, removes expired entries on access, and evicts the entry with
+the earliest expiry when full. Pending requests, code mappings,
 and opaque access-token records are encrypted and expire in runtime state.
+New authorization requests first consume a shared OCC admission counter in
+`AUTHLING_RUNTIME_STATE`. It permits 1,000 admissions and expires ten minutes
+after the last admission. Failed work does not refund it. Recovery uses separate
+global and keyed per-address admission counters with a 15-minute quiet window,
+so failed SMTP delivery cannot bypass the bound on permanent recovery events.
+These counters contain no identifiers or secrets and share no event subjects.
 Authorization-code claim uses KV OCC so concurrent exchange has at most one
 winner. ID tokens use the active RS256 key; JWKS publishes its public key plus
 any prepared successor and unexpired predecessor. JWKS responses have a
@@ -315,9 +426,67 @@ password reset, signed-in password change, and email change also cap request
 bodies. OTP flows globally limit delivery and bound concurrent SMTP and
 completion work per process.
 
+Signup, password reset, and email change use `storage.DeliveryBudget` for
+refundable delivery counters. Each workflow keeps its existing global key,
+HMAC-derived recipient keys, limits, and 15-minute quiet window. The budget
+reserves global capacity before recipient capacity. Failed work refunds
+confirmed reservations on a best-effort basis. Counter mutations retry only
+confirmed revision conflicts. An uncertain write acknowledgement stops the
+operation and can leave capacity consumed until expiry. Rollback attempts both
+counters even if one fails. Non-refundable request admission remains separate.
+
+## Account deletion and erasure
+
+`GET /account/delete` renders the effects and limits from
+[FDR-013](../fdr/FDR-013-account-deletion.md). Its same-origin, body-limited POST
+requires an active session, explicit confirmation, and a fresh throttled password
+proof at the current authentication version. Account and registry OCC commit
+`AccountErasureRequestedEvent` and `EmailReleasedEvent` as one atomic batch.
+Commands wait through both relevant subject boundaries and reject staged email
+changes. The request removes the account, email index, credentials, profile,
+recovery requests, and grants from active projections. Session checks cross the
+durable account tail; storage errors deny access without deleting valid sessions.
+Protected profile reads also cross that boundary, which denies code exchange and
+UserInfo after deletion. In-flight operations must pass their account boundary;
+OCC prevents an identity mutation from committing after the request.
+
+A separate key-free erasure projection starts before the account projector. It
+records account key ownership, request and release positions, and completion.
+It retains ownership history to reject key reuse and substitution. Account replay
+skips protected email decryption only with durable erasure evidence; it still
+validates structural account history. A failed key read repeats the erasure
+barrier to cover another replica's concurrent purge. Missing active keys remain
+a fatal replay error. No active email index entry is built from erased history.
+
+The named durable consumer `authling-account-erasure` filters
+`authling.evt.account.*`, uses explicit acknowledgements, a one-minute ack wait,
+and one pending message. The worker retries failures after one second. It waits
+for account and grant projections to validate the decision, purges the user key
+then its wrapped data key from `AUTHLING_KEYS`, and appends `AccountErasedEvent`
+with account OCC. Repeated purges and repeated completion attempts are safe.
+The request remains the retry authority if a reply is lost or the process stops.
+Workers on multiple replicas may share the consumer; the consumer cursor is not
+the correctness boundary. Worker errors do not include protected data.
+
+The account key vault does not cache unwrapped keys. Historical ciphertext and
+PII-free structure remain in the event stream. Workflow-key-encrypted email
+change records can retain both addresses until their original 15-minute expiry;
+other verification flows have the same independent maximum lifetime. Session
+and OIDC records retain their existing expiry policies but cannot authorize the
+deleted account. Key erasure does not retract SMTP already in progress or data
+already returned to a relying party.
+
+A completion event proves purges from the live key API, not secure removal of
+filesystem remnants, snapshots, backups, external key exports, or other apps'
+data. An operator must retire key backups under a separate retention policy.
+Restoring a snapshot from before deletion can restore the identity and keys;
+do not serve that restore as current state without reconciling later deletions.
+New event variants require all replicas to use this release before deletion.
+There is no migration or mixed-version fallback for this undeployed product.
+
 ## Deliberately absent
 
-The runtime does not yet contain MFA recovery, account erasure, browser-device
+The runtime does not yet contain MFA recovery, browser-device
 or location tracking, durable login history, OIDC refresh tokens, emergency
 manual signing-key rotation, diagnostic endpoints, or backup tooling.
 Application data, documents, and generic synchronization are deliberately

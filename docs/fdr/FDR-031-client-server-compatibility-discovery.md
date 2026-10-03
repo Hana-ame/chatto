@@ -1,14 +1,14 @@
 # FDR-031: Client–Server Compatibility Discovery
 
 **Status:** Experimental
-**Last reviewed:** 2026-08-29
+**Last reviewed:** 2026-09-29
 
 ## Overview
 
 The multi-server client compares each registered Chatto server's software
-version with the releases that introduced the features it uses, shows the
-server's current version, and warns when the client and server cannot provide
-the expected experience. This gives people useful upgrade guidance while
+version with the oldest release that the client supports, shows the server's
+current version, and warns when the client and server cannot provide the
+expected experience. This gives people useful upgrade guidance while
 Chatto's pre-1.0 API remains experimental.
 
 ## Behavior
@@ -19,32 +19,53 @@ Chatto's pre-1.0 API remains experimental.
   and provides a final action that copies that exact host, including a
   non-default port, to the clipboard.
 - A warning marker appears when the server predates the oldest version
-  supported by the current client. The 0.5 client classifies pre-0.5 servers as
-  unsupported because they do not provide the required server-projection
-  stream.
+  supported by the current client. The 0.5 client supports `0.5.0-beta.9` and
+  newer. It classifies older servers as unsupported and does not open their
+  realtime stream.
 - Servers with non-standard or unparseable versions remain explicitly unknown.
 - An unreachable server remains registered and is reported as unreachable
   rather than being assigned a healthy or compatible state.
+- A server icon in the gutter has two states: normal and warning. The warning
+  appears when a problem prevents the client from using the server: a required
+  sign-in, an unreachable server, an unsupported or unknown server version, or
+  a failed connection. The icon is not dimmed.
+- Only the result of an attempt changes the state. A failed attempt shows the
+  warning, and only a successful attempt removes it. A new attempt, an
+  immediate retry after a dropped connection, or a credential renewal does not
+  change the state. Tab wake and network recovery start again from the normal
+  state, because results from before the wake are out of date.
+- The server context menu and touch sheet explain the problem. When more than
+  one problem applies, they show the first problem in the order above.
+- When discovery finds an unsupported or unknown server version, or cannot
+  reach the server, the server route shows an explanation screen instead of
+  the server sidebar and its pages. The screen names the server and its host,
+  explains the problem, shows the server version and the required version
+  when they apply, and has a Check Again action. Check Again runs discovery
+  again. When the result is a supported version, the server opens normally.
+  The screen stays visible while a new attempt runs. For a remote server, the
+  screen also offers **Remove server**, with the same confirmation as the
+  gutter menu. The origin server cannot be removed.
 - Third-party clients own and test their own minimum supported server release.
-- The bundled client shows relative sidebar drag handles only when the server
-  version supports relative room-group and sidebar-item moves. Other sidebar
-  management actions continue to use the older management API when available.
-- The `chatto.realtime.v1` protobuf namespace implements only behavioural
-  protocol version 2 in 0.5. Servers reject version 0, version 1, and unknown
+- The `chatto.realtime.v1` protobuf namespace uses behavioral protocol version
+  4 for the public event stream. The alpha server rejects older and unknown
   handshakes.
 
 ## Design Decisions
 
-### 1. The bundled client records minimum server versions per feature
+### 1. The bundled client has one minimum server version
 
-**Decision:** Features that vary across releases use one internal table mapping
-the feature to the first server version that supports it.
-**Why:** The 0.5 release is a clean compatibility baseline, and exposing
-implementation-level protocol flags would turn internal rollout details into a
-public contract. An explicit table keeps version knowledge in one place.
-**Tradeoff:** Forks and builds with non-standard version strings cannot declare
-support independently; the client treats them conservatively as unknown or
-unsupported for gated features.
+**Decision:** The bundled client records one minimum supported server release.
+Every feature that the client uses exists in that release, so the client does
+not gate individual features by server version. When the client starts to use
+a feature of a newer server, the minimum increases.
+**Why:** Per-feature version gates make each screen keep a second code path for
+servers that are already unsupported. Exposing implementation-level protocol
+flags would also turn internal rollout details into a public contract. One
+minimum keeps version knowledge in one place.
+**Tradeoff:** A client cannot use a newer feature on new servers while it still
+supports older servers. Forks and builds with non-standard version strings
+cannot declare support independently; the client treats them as unknown and
+does not open their realtime stream.
 
 ### 2. The client owns compatibility policy
 
@@ -54,7 +75,7 @@ with the discovered version before connecting.
 **Why:** Future clients know which older server contracts they still implement;
 the server cannot predict the requirements of clients that do not exist yet.
 This also avoids turning client release policy into public server metadata.
-**Tradeoff:** A client update must keep its minimum-version table accurate and
+**Tradeoff:** A client update must keep its minimum version accurate and
 cannot rely on a server to reject it on the client's behalf.
 
 ### 3. Registration data does not cache compatibility conclusions
@@ -70,7 +91,7 @@ client starts.
 
 ### 4. Pre-1.0 compatibility remains advisory
 
-**Decision:** Compatibility discovery informs feature gating and warnings but
+**Decision:** Compatibility discovery informs connection decisions and warnings but
 does not turn the experimental `v1` packages into a stability guarantee.
 **Why:** Chatto still needs room to reshape its public API in response to early
 feedback. ADR-045 requires intentional review and migration guidance for
@@ -79,5 +100,5 @@ breaks without prematurely freezing the API.
 
 ## Related
 
-- **ADRs:** ADR-025 (multi-instance client architecture), ADR-042 (protobuf-first public API), ADR-045 (public API stability tiers), ADR-051 (server-scoped resumable client projection), ADR-067 (Electron desktop packaging)
-- **FDRs:** FDR-017 (Room Groups & Sidebar Layout), FDR-023 (Authentication & Sessions), FDR-027 (PWA & Service Worker), FDR-034 (Chatto Desktop)
+- **ADRs:** ADR-025 (multi-instance client architecture), ADR-042 (protobuf-first public API), ADR-045 (public API stability tiers), ADR-067 (Electron desktop packaging), ADR-091 (semantic realtime events)
+- **FDRs:** FDR-017 (Room Groups & Sidebar Layout), FDR-023 (Authentication & Sessions), FDR-027 (PWA & Service Worker), FDR-034 (Chatto Desktop), FDR-045 (Realtime Event Stream)

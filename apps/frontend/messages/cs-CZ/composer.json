@@ -5,6 +5,7 @@
     "send": "Odeslat zprávu",
     "send_label": "Odeslat",
     "also_send_to_channel": "Také odeslat na kanál",
+    "also_send_to_conversation": "Také odeslat do konverzace",
     "post_as_thread": "Publikovat jako vlákno",
     "thread_label": "Vlákno",
     "echo_label": "Echo",
@@ -33,12 +34,16 @@
     "post_as_new_message": "Poslat jako novou zprávu",
     "continue_in_thread": "Pokračovat ve vlákně",
     "edit_failed": "Zprávu se nepodařilo upravit",
+    "edit_empty": "Zpráva nemůže být prázdná",
     "upload": {
       "preparing": "Příprava…",
       "uploading": "Nahráno {percentage}%",
       "uploaded": "Nahráno",
       "failed": "Nahrání se nezdařilo",
-      "remove": "Odebrat {filename}"
+      "remove": "Odebrat {filename}",
+      "video_disabled": "Nahrávání videí je na tomto serveru zakázáno.",
+      "prepare_failed": "Přílohu se nepodařilo připravit",
+      "too_large": "Soubor {filename} je příliš velký ({size}). Maximum je {limit}."
     },
     "format": {
       "bold": "Tučné",

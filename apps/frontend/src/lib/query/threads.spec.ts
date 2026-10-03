@@ -1,17 +1,11 @@
 import { InfiniteQueryObserver } from '@tanstack/svelte-query';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { FollowedThread, FollowedThreadsPage } from '$lib/api-client/threads';
-import {
-  reconcileRegisteredFollowedThreadQueries,
-  scrubRegisteredFollowedThreadMessage,
-  scrubRegisteredFollowedThreadRoom,
-  scrubRegisteredFollowedThreadUser
-} from './cacheRegistry';
-import { queryClient } from './client';
+import type { FollowedThread, FollowedThreadsPage } from '@chatto/client/api/threads';
+import { queryCaches } from './cacheRegistry';
+import { queryClient } from './queryClient';
 import {
   flattenFollowedThreads,
-  followedThreadKey,
-  reconcileFollowedThreadViewerStates,
+  nextUnreadFollowedThreadOffset,
   threadQueryKeys,
   updateFollowedThreadSummary,
   type FollowedThreadsData
@@ -24,6 +18,8 @@ function thread(
   return {
     roomId: 'room-1',
     roomName: 'general',
+    isDirectMessage: false,
+    directMessageParticipants: [],
     threadRootEventId,
     rootMessage: null,
     latestReply: null,
@@ -59,49 +55,6 @@ describe('followed thread query helpers', () => {
         )
       )
     ).toEqual([first, second]);
-  });
-
-  it('scrubs unfollowed threads and reconciles unread state from the projection', () => {
-    const current = data({
-      threads: [thread('removed'), thread('retained')],
-      totalCount: 2,
-      hasMore: false
-    });
-    const states = new Map([[followedThreadKey('room-1', 'retained'), { hasUnreadReplies: true }]]);
-
-    const reconciled = reconcileFollowedThreadViewerStates(current, states);
-
-    expect(flattenFollowedThreads(reconciled.data)).toEqual([
-      thread('retained', { hasUnreadReplies: true })
-    ]);
-    expect(reconciled.data?.pages[0]).toMatchObject({
-      totalCount: 1,
-      hasMore: false,
-      nextOffset: 2
-    });
-    expect(reconciled.hasUnknownThreads).toBe(false);
-  });
-
-  it('reports projection threads that are missing from the cached snapshot', () => {
-    const current = data({ threads: [thread('root-1')], totalCount: 2, hasMore: false });
-    const states = new Map([
-      [followedThreadKey('room-1', 'root-1'), { hasUnreadReplies: false }],
-      [followedThreadKey('room-1', 'root-2'), { hasUnreadReplies: true }]
-    ]);
-
-    expect(reconcileFollowedThreadViewerStates(current, states).hasUnknownThreads).toBe(true);
-  });
-
-  it('does not refetch merely because projected threads belong to unloaded pages', () => {
-    const current = data({ threads: [thread('root-1')], totalCount: 2, hasMore: true });
-    const states = new Map([
-      [followedThreadKey('room-1', 'root-1'), { hasUnreadReplies: false }],
-      [followedThreadKey('room-1', 'root-2'), { hasUnreadReplies: true }]
-    ]);
-
-    const reconciled = reconcileFollowedThreadViewerStates(current, states);
-    expect(reconciled.hasUnknownThreads).toBe(false);
-    expect(reconciled.data?.pages[0]?.hasMore).toBe(true);
   });
 
   it('updates both the list summary and renderable root message', () => {
@@ -148,74 +101,109 @@ describe('followed thread query helpers', () => {
     });
   });
 
-  it('reconciles every cached session from the process-wide projection owner', () => {
-    const firstKey = threadQueryKeys.followed('origin', { queryScope: 'session-1' });
-    const secondKey = threadQueryKeys.followed('origin', { queryScope: 'session-2' });
-    const current = data({
-      threads: [thread('removed'), thread('retained')],
-      totalCount: 2,
-      hasMore: false
-    });
-    queryClient.setQueryData(firstKey, current);
-    queryClient.setQueryData(secondKey, current);
+  it('does not advance the unread offset for loaded threads that became read', () => {
+    const pages = data(
+      {
+        threads: [
+          thread('read-1'),
+          thread('unread-1', { hasUnreadReplies: true }),
+          thread('read-2')
+        ],
+        totalCount: 5,
+        hasMore: true
+      },
+      {
+        threads: [
+          thread('unread-1', { hasUnreadReplies: true }),
+          thread('unread-2', { hasUnreadReplies: true })
+        ],
+        totalCount: 5,
+        hasMore: true
+      }
+    ).pages;
 
-    reconcileRegisteredFollowedThreadQueries(
-      'origin',
-      new Map([[followedThreadKey('room-1', 'retained'), { hasUnreadReplies: true }]])
-    );
-
-    for (const key of [firstKey, secondKey]) {
-      expect(flattenFollowedThreads(queryClient.getQueryData(key))).toEqual([
-        thread('retained', { hasUnreadReplies: true })
-      ]);
-    }
+    // The server no longer returns read-1 and read-2 in its unread feed, and
+    // the duplicate unread-1 counts once.
+    expect(nextUnreadFollowedThreadOffset(pages)).toBe(2);
   });
 
-  it('scrubs room, message, and user privacy boundaries from retained caches', () => {
+  it('keeps complete, unread, and search feeds in separate cache entries', () => {
+    const connection = { queryScope: 'session-1' };
+    const keys = [
+      threadQueryKeys.followed('origin', connection),
+      threadQueryKeys.followed('origin', connection, { unreadOnly: true }),
+      threadQueryKeys.followed('origin', connection, { query: 'unread' })
+    ].map((key) => JSON.stringify(key));
+    expect(new Set(keys).size).toBe(3);
+  });
+
+  it('drops the feed when a retracted message is shown in a cached thread', () => {
     const queryKey = threadQueryKeys.followed('origin', { queryScope: 'session-1' });
-    const rootMessage = {
-      id: 'root-2',
-      createdAt: '2026-08-01T09:00:00.000Z',
-      event: {
-        kind: 'messagePosted' as const,
-        roomId: 'room-2',
-        body: 'Private root',
-        attachments: [],
-        reactions: [],
-        replyCount: 1,
-        threadParticipants: []
-      }
-    };
-    const latestReply = {
-      ...rootMessage,
-      id: 'reply-2',
-      event: { ...rootMessage.event, body: 'Private latest reply' }
-    };
+    const latestReply = { id: 'reply-2' } as FollowedThread['latestReply'];
     queryClient.setQueryData(
       queryKey,
       data({
-        threads: [
-          thread('root-1'),
-          thread('root-2', { roomId: 'room-2', rootMessage, latestReply })
-        ],
+        threads: [thread('root-1'), thread('root-2', { roomId: 'room-2', latestReply })],
         totalCount: 2,
         hasMore: false
       })
     );
 
-    scrubRegisteredFollowedThreadMessage('origin', 'room-2', 'root-2');
-    expect(flattenFollowedThreads(queryClient.getQueryData(queryKey))[1]?.rootMessage).toBeNull();
-    expect(flattenFollowedThreads(queryClient.getQueryData(queryKey))[1]?.latestReply).toEqual(
-      latestReply
+    queryCaches.followedThreads!.retractMessage('origin', 'room-2', 'reply-2');
+
+    expect(flattenFollowedThreads(queryClient.getQueryData(queryKey))).toEqual([]);
+  });
+
+  it('keeps loaded pages for a retraction that no cached thread shows', () => {
+    const queryKey = threadQueryKeys.followed('origin', { queryScope: 'session-1' });
+    queryClient.setQueryData(
+      queryKey,
+      data({ threads: [thread('root-1'), thread('root-2')], totalCount: 2, hasMore: false })
     );
 
-    scrubRegisteredFollowedThreadMessage('origin', 'room-2', 'reply-2');
-    expect(flattenFollowedThreads(queryClient.getQueryData(queryKey))[1]?.latestReply).toBeNull();
+    queryCaches.followedThreads!.retractMessage('origin', 'room-1', 'older-reply');
 
-    scrubRegisteredFollowedThreadRoom('origin', 'room-1');
+    expect(flattenFollowedThreads(queryClient.getQueryData(queryKey))).toHaveLength(2);
+    expect(queryClient.getQueryState(queryKey)?.isInvalidated).toBe(true);
+  });
+
+  it('drops the feed for any retraction while a feed read is pending', async () => {
+    const queryKey = threadQueryKeys.followed('origin', { queryScope: 'session-1' });
+    queryClient.setQueryData(
+      queryKey,
+      data({ threads: [thread('root-1')], totalCount: 1, hasMore: false })
+    );
+    let resolveRead!: (page: FollowedThreadsPage) => void;
+    const pending = queryClient.fetchInfiniteQuery({
+      queryKey,
+      queryFn: () => new Promise<FollowedThreadsPage>((resolve) => (resolveRead = resolve)),
+      initialPageParam: 0,
+      staleTime: 0
+    });
+    expect(queryClient.getQueryState(queryKey)?.fetchStatus).toBe('fetching');
+
+    queryCaches.followedThreads!.retractMessage('origin', 'room-9', 'unknown');
+
+    expect(flattenFollowedThreads(queryClient.getQueryData(queryKey))).toEqual([]);
+    resolveRead({ threads: [], totalCount: 0, hasMore: false });
+    await pending.catch(() => undefined);
+  });
+
+  it('scrubs room and reset privacy boundaries from retained caches', () => {
+    const queryKey = threadQueryKeys.followed('origin', { queryScope: 'session-1' });
+    queryClient.setQueryData(
+      queryKey,
+      data({
+        threads: [thread('root-1'), thread('root-2', { roomId: 'room-2' })],
+        totalCount: 2,
+        hasMore: false
+      })
+    );
+
+    queryCaches.followedThreads!.scrubRoom('origin', 'room-1');
     expect(flattenFollowedThreads(queryClient.getQueryData(queryKey))).toHaveLength(1);
 
-    scrubRegisteredFollowedThreadUser('origin');
+    queryCaches.followedThreads!.reset('origin');
     expect(flattenFollowedThreads(queryClient.getQueryData(queryKey))).toEqual([]);
   });
 
@@ -242,65 +230,13 @@ describe('followed thread query helpers', () => {
       observed = result.data;
     });
 
-    scrubRegisteredFollowedThreadUser('origin');
+    queryCaches.followedThreads!.reset('origin');
 
     expect(flattenFollowedThreads(observed)).toEqual([]);
     await vi.waitFor(() => expect(queryFn).toHaveBeenCalled());
     await vi.waitFor(() =>
       expect(flattenFollowedThreads(observer.getCurrentResult().data)[0]?.threadRootEventId).toBe(
         'replacement'
-      )
-    );
-    unsubscribe();
-  });
-
-  it('does not interrupt a query for an unrelated message deletion', async () => {
-    const queryKey = threadQueryKeys.followed('origin', { queryScope: 'session-1' });
-    queryClient.setQueryData(
-      queryKey,
-      data({ threads: [thread('root-1')], totalCount: 1, hasMore: false })
-    );
-    const cancel = vi.spyOn(queryClient, 'cancelQueries');
-
-    scrubRegisteredFollowedThreadMessage('origin', 'room-2', 'unrelated');
-
-    expect(cancel).not.toHaveBeenCalled();
-  });
-
-  it('restarts hydration when a message is deleted during an active fetch', async () => {
-    const queryKey = threadQueryKeys.followed('origin', { queryScope: 'session-1' });
-    let firstSignal: AbortSignal | undefined;
-    const queryFn = vi
-      .fn()
-      .mockImplementationOnce(
-        ({ signal }: { signal: AbortSignal }) =>
-          new Promise<never>((_resolve, reject) => {
-            firstSignal = signal;
-            signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
-          })
-      )
-      .mockResolvedValue({
-        threads: [thread('safe-root', { rootMessage: null })],
-        totalCount: 1,
-        hasMore: false,
-        nextOffset: 1
-      });
-    const observer = new InfiniteQueryObserver(queryClient, {
-      queryKey,
-      queryFn,
-      initialPageParam: 0,
-      getNextPageParam: (lastPage) => (lastPage.hasMore ? lastPage.nextOffset : undefined)
-    });
-    const unsubscribe = observer.subscribe(() => undefined);
-    await vi.waitFor(() => expect(queryFn).toHaveBeenCalledTimes(1));
-
-    scrubRegisteredFollowedThreadMessage('origin', 'room-1', 'deleted-root');
-
-    await vi.waitFor(() => expect(firstSignal?.aborted).toBe(true));
-    await vi.waitFor(() => expect(queryFn).toHaveBeenCalledTimes(2));
-    await vi.waitFor(() =>
-      expect(flattenFollowedThreads(observer.getCurrentResult().data)[0]?.threadRootEventId).toBe(
-        'safe-root'
       )
     );
     unsubscribe();

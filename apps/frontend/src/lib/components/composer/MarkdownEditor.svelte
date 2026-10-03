@@ -12,10 +12,7 @@ the same API as the visual editor while keeping the stored Markdown visible.
     historyKeymap,
     indentLess,
     indentMore,
-    indentWithTab,
-    insertNewlineAndIndent,
-    simplifySelection,
-    temporarilySetTabFocusMode
+    insertNewlineAndIndent
   } from '@codemirror/commands';
   import { syntaxHighlighting, HighlightStyle } from '@codemirror/language';
   import {
@@ -24,12 +21,7 @@ the same API as the visual editor while keeping the stored Markdown visible.
     markdown
   } from '@codemirror/lang-markdown';
   import { Compartment, EditorSelection, EditorState, Prec, Transaction } from '@codemirror/state';
-  import {
-    drawSelection,
-    EditorView,
-    keymap,
-    placeholder as editorPlaceholder
-  } from '@codemirror/view';
+  import { EditorView, keymap, placeholder as editorPlaceholder } from '@codemirror/view';
   import { tags } from '@lezer/highlight';
   import { Autolink, Table } from '@lezer/markdown';
   import { m } from '$lib/i18n/messages';
@@ -61,11 +53,6 @@ the same API as the visual editor while keeping the stored Markdown visible.
     canOutdent: true
   };
 
-  const escapeWithTabFocus = (editorView: EditorView): boolean => {
-    simplifySelection(editorView);
-    return temporarilySetTabFocusMode(editorView);
-  };
-
   const toggleSourceFormatting = (
     editorView: EditorView,
     command: ComposerFormattingCommand
@@ -90,7 +77,8 @@ the same API as the visual editor while keeping the stored Markdown visible.
     { tag: tags.strong, fontWeight: '700' },
     { tag: tags.emphasis, fontStyle: 'italic' },
     { tag: [tags.link, tags.url], color: 'var(--color-link)', textDecoration: 'underline' },
-    { tag: [tags.list, tags.quote], color: 'var(--color-muted)' },
+    { tag: tags.list, color: 'var(--color-text)' },
+    { tag: tags.quote, color: 'var(--color-muted)' },
     {
       tag: tags.monospace,
       color: 'var(--color-text)',
@@ -116,15 +104,16 @@ the same API as the visual editor while keeping the stored Markdown visible.
       lineHeight: '1.5'
     },
     '.cm-content': {
-      minHeight: '2rem',
+      // Hosts can increase the editable area without changing the chat default.
+      minHeight: 'var(--composer-min-height, 2rem)',
       padding: '0.25rem 0',
       caretColor: 'var(--color-text)'
     },
-    '.cm-cursor, .cm-dropCursor': {
-      borderLeftColor: 'var(--color-text)'
-    },
     '.cm-line': { padding: '0' },
     '.cm-placeholder': { color: 'var(--color-muted)', fontStyle: 'normal' },
+    // Firefox positions the native caret against the buffer before the placeholder.
+    // Keep that buffer on the text baseline when the editor is empty.
+    '.cm-line:has(> .cm-placeholder) > .cm-widgetBuffer': { verticalAlign: 'baseline' },
     '.cm-code-fence': {
       boxSizing: 'border-box',
       backgroundColor: 'color-mix(in srgb, var(--color-surface-emphasized) 68%, transparent)',
@@ -156,10 +145,9 @@ the same API as the visual editor while keeping the stored Markdown visible.
       paddingBottom: '0.2rem',
       color: 'var(--color-muted)'
     },
-    '&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground, > .cm-scroller > .cm-selectionLayer .cm-selectionBackground, ::selection':
-      {
-        backgroundColor: 'color-mix(in srgb, var(--color-action) 20%, transparent)'
-      },
+    '::selection': {
+      backgroundColor: 'color-mix(in srgb, var(--color-action) 20%, transparent)'
+    },
     '.hljs-comment, .hljs-quote': {
       color: 'var(--composer-code-comment)',
       fontStyle: 'italic'
@@ -210,19 +198,14 @@ the same API as the visual editor while keeping the stored Markdown visible.
       state: EditorState.create({
         extensions: [
           history(),
-          drawSelection(),
           keymap.of([
             { key: 'Mod-b', run: (view) => toggleSourceFormatting(view, 'bold') },
             { key: 'Mod-i', run: (view) => toggleSourceFormatting(view, 'italic') },
             {
               key: '`',
               run: (view) =>
-                view.state.selection.main.empty
-                  ? false
-                  : toggleSourceFormatting(view, 'inlineCode')
+                view.state.selection.main.empty ? false : toggleSourceFormatting(view, 'inlineCode')
             },
-            { key: 'Escape', run: escapeWithTabFocus },
-            indentWithTab,
             ...historyKeymap,
             ...defaultKeymap
           ]),
@@ -281,10 +264,12 @@ the same API as the visual editor while keeping the stored Markdown visible.
         suppressUpdate = false;
         publishFormattingState(editorView);
       },
-      focus: (position = 'end') => {
+      focus: (position) => {
         if (destroyed) return;
-        const cursor = position === 'start' ? 0 : editorView.state.doc.length;
-        editorView.dispatch({ selection: EditorSelection.cursor(cursor), scrollIntoView: true });
+        if (position) {
+          const cursor = position === 'start' ? 0 : editorView.state.doc.length;
+          editorView.dispatch({ selection: EditorSelection.cursor(cursor), scrollIntoView: true });
+        }
         editorView.focus();
       },
       performEnter: () => {
@@ -399,7 +384,10 @@ the same API as the visual editor while keeping the stored Markdown visible.
       'aria-label': label,
       'aria-multiline': 'true',
       spellcheck: 'true',
+      autocorrect: 'on',
       autocapitalize: 'sentences',
+      writingsuggestions: 'true',
+      inputmode: 'text',
       ...(dataTestid ? { 'data-testid': dataTestid } : {})
     });
   }

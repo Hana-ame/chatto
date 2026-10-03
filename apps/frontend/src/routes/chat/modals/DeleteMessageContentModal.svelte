@@ -1,8 +1,7 @@
 <script lang="ts">
   import type { DeleteMessageContentModalState } from '$lib/modal';
-  import { createMessageAPI } from '$lib/api-client/messages';
-  import { serverConnectionManager } from '$lib/state/server/serverConnection.svelte';
-  import { notifyRoomMessageMutated } from '$lib/state/room/messageMutationEvents';
+  import { createMessageAPI } from '@chatto/client/api/messages';
+  import { serverConnectionManager, serverRegistry } from '$lib/client';
   import { toast } from '$lib/ui/toast';
   import { m } from '$lib/i18n/messages';
   import { ConfirmDialog } from '$lib/ui';
@@ -80,29 +79,20 @@
 
     switch (modal.type) {
       case 'deleteMessage':
-        notifyRoomMessageMutated({
-          serverId: modal.serverId,
-          roomId: modal.roomId,
-          eventId: modal.eventId,
-          reason: 'message-deleted'
-        });
+        serverRegistry
+          .tryGetStore(modal.serverId)
+          ?.applyLocalMessageMutation(modal.roomId, modal.eventId, 'message-deleted');
         toast.success(m('room.message.deleted'));
         break;
       case 'deleteAttachment':
-        notifyRoomMessageMutated({
-          serverId: modal.serverId,
-          roomId: modal.roomId,
-          eventId: modal.eventId,
-          reason: 'attachment-deleted'
-        });
+        serverRegistry
+          .tryGetStore(modal.serverId)
+          ?.applyLocalMessageMutation(modal.roomId, modal.eventId, 'attachment-deleted');
         break;
       case 'deleteLinkPreview':
-        notifyRoomMessageMutated({
-          serverId: modal.serverId,
-          roomId: modal.roomId,
-          eventId: modal.eventId,
-          reason: 'link-preview-deleted'
-        });
+        serverRegistry
+          .tryGetStore(modal.serverId)
+          ?.applyLocalMessageMutation(modal.roomId, modal.eventId, 'link-preview-deleted');
         break;
     }
     onclose();

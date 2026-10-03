@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"strings"
 	"time"
+
+	"google.golang.org/protobuf/proto"
 
 	"hmans.de/chatto/internal/evtstream"
 	evtv1 "hmans.de/chatto/internal/pb/chatto/core/evt/v1"
@@ -20,6 +23,29 @@ type UserModel struct {
 	users       events.ProjectionHandle[*UserProjection]
 	auth        events.ProjectionHandle[*UserAuthProjection]
 	contentKeys events.ProjectionHandle[*ContentKeyProjection]
+}
+
+// UserContentSnapshot is an immutable capture of one user's content-view
+// state. It contains encrypted PII and can be hydrated after the content-view
+// read barrier is released.
+type UserContentSnapshot struct {
+	state      *projectedUserSnapshot
+	capturedAt time.Time
+}
+
+// Deleted reports whether the captured account was deleted or crypto-shredded.
+// Hydration returns no content for such an account; callers that must keep
+// its ID show it as a deleted user instead.
+func (s *UserContentSnapshot) Deleted() bool {
+	return s != nil && s.state != nil && (s.state.deleted || s.state.shredded)
+}
+
+// HydratedUserContent contains the public user state that was captured in one
+// UserContentSnapshot. Presence is runtime state and is not included.
+type HydratedUserContent struct {
+	User        *evtv1.User
+	Avatar      *evtv1.AssetRecord
+	Preferences *evtv1.ServerUserPreferences
 }
 
 func newUserModel(
@@ -108,6 +134,42 @@ func (m *UserModel) user(ctx context.Context, userID string) (*evtv1.User, bool,
 	return m.users.Projection().GetContext(ctx, userID)
 }
 
+// CaptureUserContentSnapshot copies one user's projected state without
+// resolving encryption keys. Callers can use it inside a content-view read
+// barrier because it performs bounded in-memory work only.
+func (c *ChattoCore) CaptureUserContentSnapshot(userID string) *UserContentSnapshot {
+	if c == nil || c.userModel == nil || c.userModel.users.Projection() == nil {
+		return nil
+	}
+	state := c.userModel.users.Projection().contentSnapshot(userID)
+	if state == nil {
+		return nil
+	}
+	return &UserContentSnapshot{state: state, capturedAt: time.Now()}
+}
+
+// HydrateUserContentSnapshot resolves encrypted PII after the content-view
+// read barrier is released. The returned state still represents the captured
+// content generation.
+func (c *ChattoCore) HydrateUserContentSnapshot(ctx context.Context, snapshot *UserContentSnapshot) (*HydratedUserContent, bool, error) {
+	if c == nil || c.userModel == nil || c.userModel.users.Projection() == nil || snapshot == nil || snapshot.state == nil {
+		return nil, false, nil
+	}
+	state := cloneProjectedUserSnapshot(snapshot.state)
+	user, ok, err := c.userModel.users.Projection().hydrateUserSnapshot(WithDEKRequestCache(ctx), state, snapshot.capturedAt)
+	if err != nil || !ok {
+		return nil, ok, err
+	}
+	result := &HydratedUserContent{User: user}
+	if state.avatar != nil {
+		result.Avatar = proto.Clone(state.avatar).(*evtv1.AssetRecord)
+	}
+	if state.preferences != nil {
+		result.Preferences = proto.Clone(state.preferences).(*evtv1.ServerUserPreferences)
+	}
+	return result, true, nil
+}
+
 func (m *UserModel) userReference(ctx context.Context, userID string) (*evtv1.User, bool, error) {
 	return m.users.Projection().GetReferenceContext(ctx, userID)
 }
@@ -162,12 +224,7 @@ func (m *UserModel) externalIdentities(userID string) []ExternalIdentity {
 }
 
 func (m *UserModel) passwordHash(userID string) ([]byte, bool) {
-	hash, _, ok := m.auth.Projection().PasswordHashWithSetAt(userID)
-	return hash, ok
-}
-
-func (m *UserModel) passwordHashWithSetAt(userID string) ([]byte, time.Time, bool) {
-	return m.auth.Projection().PasswordHashWithSetAt(userID)
+	return m.auth.Projection().PasswordHash(userID)
 }
 
 func (m *UserModel) authGeneration(userID string) (uint64, bool) {
@@ -227,6 +284,32 @@ func (m *UserModel) loginChangedAt(userID string) time.Time {
 
 func (m *UserModel) allUsers(ctx context.Context) ([]*evtv1.User, error) {
 	return m.users.Projection().UsersContext(ctx)
+}
+
+// adminDirectoryCandidates avoids profile reads for timestamp-ordered users.
+// Legacy users without timestamps still need their login for the fallback sort.
+func (m *UserModel) adminDirectoryCandidates(ctx context.Context, search string) ([]*evtv1.User, error) {
+	if strings.TrimSpace(search) != "" {
+		return m.allUsers(ctx)
+	}
+	ctx = WithDEKRequestCache(ctx)
+	entries := m.users.Projection().ActiveDirectoryMetadata()
+	users := make([]*evtv1.User, 0, len(entries))
+	for _, entry := range entries {
+		user := &evtv1.User{Id: entry.ID, CreatedAt: entry.CreatedAt}
+		if entry.CreatedAt == nil {
+			legacy, ok, err := m.users.Projection().GetContext(ctx, entry.ID)
+			if err != nil {
+				return nil, err
+			}
+			if !ok {
+				continue
+			}
+			user.Login = legacy.GetLogin()
+		}
+		users = append(users, user)
+	}
+	return users, nil
 }
 
 func (m *UserModel) verifiedUserIDs() []string {

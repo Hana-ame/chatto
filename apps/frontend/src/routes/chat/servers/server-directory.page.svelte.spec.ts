@@ -1,27 +1,53 @@
 import { flushSync } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
-import type { PublicServerInfo } from '$lib/api-client/server';
-import type { ServerDirectorySnapshot } from '$lib/serverDirectory';
+import type { NeighborhoodServerProfile, PublicServerInfo } from '@chatto/client/api/server';
+import type { ServerDirectoryEntry } from '$lib/serverDirectory';
+
+type MockServer = {
+  id: string;
+  url: string;
+  name: string;
+  iconUrl: string | null;
+  addedAt: number;
+};
 
 const mocks = vi.hoisted(() => ({
-  servers: [] as Array<{
-    id: string;
-    url: string;
-    name: string;
-    iconUrl: string | null;
-    addedAt: number;
-  }>,
+  servers: [] as MockServer[],
+  /** Servers that the directory added. A reactive map, so the directory updates. */
+  added: null as Map<string, MockServer> | null,
   authenticated: new Set<string>(),
   loadServerDirectory: vi.fn(),
-  loadMoreDirectory: vi.fn(),
-  publishDirectorySnapshot: undefined as
-    ((snapshot: Partial<ServerDirectorySnapshot>) => void) | undefined,
   getPublicServerInfo: vi.fn(),
-  startServerOAuthFlow: vi.fn(),
-  startRemoteReauthentication: vi.fn(),
+  addSignedOutServer: vi.fn(),
+  toastError: vi.fn(),
   goto: vi.fn()
 }));
+
+// Page titles are tested separately from this page's partial route/server fixtures.
+vi.mock('$lib/client', async () => {
+  const { SvelteMap } = await import('svelte/reactivity');
+  mocks.added = new SvelteMap<string, MockServer>();
+  return {
+    ...(await import('$lib/test-utils/clientMock')).clientMockDefaults,
+    serverRegistry: {
+      get servers() {
+        return [...mocks.servers, ...mocks.added!.values()];
+      },
+      isAuthenticated: (serverId: string) => mocks.authenticated.has(serverId)
+    }
+  };
+});
+
+// The real catalogue finds servers in the mocked registry; joining is mocked.
+vi.mock('$lib/serverCatalogue', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('$lib/serverCatalogue')>()),
+  addSignedOutServer: mocks.addSignedOutServer
+}));
+
+vi.mock('$lib/render/pageTitle', () => ({ formatPageTitle: () => 'Chatto' }));
+
+vi.mock('$lib/ui/toast', () => ({ toast: { error: mocks.toastError } }));
 
 vi.mock('$app/navigation', () => ({
   goto: mocks.goto,
@@ -32,82 +58,15 @@ vi.mock('$lib/navigation', async (importOriginal) => {
   const actual = await importOriginal<typeof import('$lib/navigation')>();
   return { ...actual, serverIdToSegment: (serverId: string) => serverId };
 });
-vi.mock('$lib/api-client/server', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('$lib/api-client/server')>();
+vi.mock('@chatto/client/api/server', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@chatto/client/api/server')>();
   return { ...actual, getPublicServerInfo: mocks.getPublicServerInfo };
 });
 vi.mock('$lib/serverDirectory', async (importOriginal) => {
   const actual = await importOriginal<typeof import('$lib/serverDirectory')>();
-  return {
-    ...actual,
-    createServerDirectoryDiscovery: (origins: readonly string[]) => {
-      let listener: ((snapshot: ServerDirectorySnapshot) => void) | undefined;
-      let cancelled = false;
-      const snapshot = (value: Partial<ServerDirectorySnapshot> = {}): ServerDirectorySnapshot => ({
-        entries: [],
-        failedSourceCount: 0,
-        failedCandidateCount: 0,
-        nonMutualCandidateCount: 0,
-        sourceCount: origins.length,
-        activeRequestCount: 0,
-        queuedCandidateCount: 0,
-        directoryRequestCount: origins.length,
-        profileRequestCount: 0,
-        totalRequestCount: origins.length,
-        isStarted: true,
-        isLoading: false,
-        isInitialLoading: false,
-        isPaused: false,
-        canLoadMore: false,
-        sessionLimitReached: false,
-        ...value
-      });
-      const publish = async (
-        loader: (values: readonly string[]) => Promise<Partial<ServerDirectorySnapshot>>
-      ) => {
-        const value = await loader(origins);
-        if (!cancelled) listener?.(snapshot(value));
-      };
-      return {
-        subscribe(callback: (value: ServerDirectorySnapshot) => void) {
-          listener = callback;
-          mocks.publishDirectorySnapshot = (value) => listener?.(snapshot(value));
-          callback(snapshot({ isStarted: false, isLoading: true, isInitialLoading: true }));
-          return () => {
-            listener = undefined;
-            mocks.publishDirectorySnapshot = undefined;
-          };
-        },
-        start() {
-          void publish(mocks.loadServerDirectory);
-        },
-        loadMore() {
-          if (mocks.loadMoreDirectory.getMockImplementation()) {
-            void publish(mocks.loadMoreDirectory);
-          }
-        },
-        setVisible: vi.fn(),
-        cancel() {
-          cancelled = true;
-        },
-        whenIdle: vi.fn(async () => undefined)
-      };
-    }
-  };
+  return { ...actual, loadServerDirectory: mocks.loadServerDirectory };
 });
-vi.mock('$lib/auth/reauth', () => ({
-  startServerOAuthFlow: mocks.startServerOAuthFlow,
-  startRemoteReauthentication: mocks.startRemoteReauthentication
-}));
-vi.mock('$lib/state/server/registry.svelte', () => ({
-  serverRegistry: {
-    get servers() {
-      return mocks.servers;
-    },
-    isAuthenticated: (serverId: string) => mocks.authenticated.has(serverId)
-  }
-}));
-
+import ServerDirectory from '$lib/components/ServerDirectory.svelte';
 import Page from './+page.svelte';
 
 function profile(name: string, overrides: Partial<PublicServerInfo> = {}): PublicServerInfo {
@@ -127,54 +86,52 @@ function profile(name: string, overrides: Partial<PublicServerInfo> = {}): Publi
   };
 }
 
+/** A cached Neighborhood profile, as returned by a registered server. */
+function cached(name: string, overrides: Partial<NeighborhoodServerProfile> = {}) {
+  return {
+    name,
+    version: '0.5.0',
+    description: `${name} description`,
+    iconUrl: `https://cdn.example/${name}/logo.webp`,
+    bannerUrl: `https://cdn.example/${name}/banner.webp`,
+    ...overrides
+  };
+}
+
+function entry(
+  origin: string,
+  profileValue: NeighborhoodServerProfile,
+  sourceOrigins = ['https://source.example']
+): ServerDirectoryEntry {
+  return { origin, profile: profileValue, imageOrigin: 'https://source.example', sourceOrigins };
+}
+
 function button(container: HTMLElement, label: string): HTMLButtonElement | undefined {
   return Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find(
     (candidate) => candidate.textContent?.trim() === label
   );
 }
 
+/** Wait for the directory to load, open the address lookup, and enter a value. */
+async function enterServerAddress(container: HTMLElement, value: string) {
+  await vi.waitFor(() =>
+    expect(
+      container.querySelector('#add-server-url') ?? button(container, 'Connect by address')
+    ).toBeTruthy()
+  );
+  button(container, 'Connect by address')?.click();
+  flushSync();
+  const input = container.querySelector<HTMLInputElement>('#add-server-url')!;
+  input.value = value;
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  flushSync();
+  container.querySelector('form')!.requestSubmit();
+}
+
 function link(container: HTMLElement, label: string): HTMLAnchorElement | undefined {
   return Array.from(container.querySelectorAll<HTMLAnchorElement>('a')).find(
     (candidate) => candidate.textContent?.trim() === label
   );
-}
-
-let intersectionCallback: IntersectionObserverCallback | undefined;
-
-function mockIntersectionObserver() {
-  intersectionCallback = undefined;
-  vi.stubGlobal(
-    'IntersectionObserver',
-    class {
-      constructor(callback: IntersectionObserverCallback) {
-        intersectionCallback = callback;
-      }
-      observe = vi.fn();
-      disconnect = vi.fn();
-    }
-  );
-}
-
-function triggerIntersection(isIntersecting = true) {
-  intersectionCallback?.(
-    [{ isIntersecting } as IntersectionObserverEntry],
-    {} as IntersectionObserver
-  );
-}
-
-function approachAutomaticLoad(container: HTMLElement): HTMLElement {
-  const sentinel = container.querySelector<HTMLElement>(
-    '[data-testid="server-directory-auto-load-sentinel"]'
-  )!;
-  const scrollContainer = sentinel.closest<HTMLElement>('[role="region"]')!;
-  Object.defineProperty(scrollContainer, 'scrollTop', {
-    configurable: true,
-    value: 100,
-    writable: true
-  });
-  triggerIntersection();
-  scrollContainer.dispatchEvent(new Event('scroll'));
-  return scrollContainer;
 }
 
 describe('Server Directory page', () => {
@@ -197,13 +154,17 @@ describe('Server Directory page', () => {
     ];
     mocks.authenticated = new Set(['joined']);
     mocks.loadServerDirectory.mockReset();
-    mocks.loadMoreDirectory.mockReset();
-    mocks.publishDirectorySnapshot = undefined;
     mocks.getPublicServerInfo.mockReset();
-    mocks.startServerOAuthFlow.mockReset();
-    mocks.startServerOAuthFlow.mockResolvedValue(undefined);
-    mocks.startRemoteReauthentication.mockReset();
-    mocks.startRemoteReauthentication.mockResolvedValue(undefined);
+    mocks.toastError.mockReset();
+    mocks.addSignedOutServer.mockReset();
+    mocks.added?.clear();
+    mocks.addSignedOutServer.mockImplementation(
+      (url: string, { name, iconUrl }: { name: string; iconUrl: string | null }) => {
+        const id = new URL(url).hostname;
+        mocks.added!.set(id, { id, url, name, iconUrl, addedAt: Date.now() });
+        return id;
+      }
+    );
     mocks.goto.mockReset();
     mocks.goto.mockResolvedValue(undefined);
   });
@@ -213,19 +174,70 @@ describe('Server Directory page', () => {
     vi.restoreAllMocks();
   });
 
+  it('loads the Neighborhoods of registered servers without a consent step', async () => {
+    mocks.loadServerDirectory.mockResolvedValue({
+      entries: [],
+      failedSourceCount: 0,
+      sourceCount: 2
+    });
+
+    const { container } = render(Page);
+
+    await vi.waitFor(() => expect(mocks.loadServerDirectory).toHaveBeenCalledOnce());
+    expect(mocks.loadServerDirectory).toHaveBeenCalledWith(
+      ['https://a.example', 'https://source.example'],
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    );
+    expect(button(container, 'Discover servers')).toBeUndefined();
+    expect(container.textContent).not.toContain('can see your IP address');
+    await vi.waitFor(() => expect(container.textContent).toContain('No recommended servers yet'));
+  });
+
+  it('leads with recommendations and opens the address lookup from a button', async () => {
+    mocks.loadServerDirectory.mockResolvedValue({
+      entries: [entry('https://remote.example', cached('Remote'))],
+      failedSourceCount: 0,
+      sourceCount: 2
+    });
+
+    const { container } = render(ServerDirectory, { inDialog: true });
+
+    await vi.waitFor(() => expect(container.textContent).toContain('Remote description'));
+    expect(container.querySelector('#add-server-url')).toBeNull();
+
+    button(container, 'Connect by address')!.click();
+    flushSync();
+
+    expect(container.querySelector('#add-server-url')).not.toBeNull();
+    expect(button(container, 'Connect by address')).toBeUndefined();
+    expect(container.textContent).toContain('Remote description');
+  });
+
+  it('retries after every registered server failed', async () => {
+    mocks.loadServerDirectory.mockResolvedValueOnce({
+      entries: [],
+      failedSourceCount: 2,
+      sourceCount: 2
+    });
+    mocks.loadServerDirectory.mockResolvedValueOnce({
+      entries: [entry('https://remote.example', cached('Remote'))],
+      failedSourceCount: 0,
+      sourceCount: 2
+    });
+
+    const { container } = render(Page);
+    await vi.waitFor(() => expect(button(container, 'Try Again')).toBeDefined());
+    button(container, 'Try Again')?.click();
+
+    await vi.waitFor(() => expect(container.textContent).toContain('Remote description'));
+    expect(mocks.loadServerDirectory).toHaveBeenCalledTimes(2);
+  });
+
   it('keeps directory response order and marks registered entries as joined', async () => {
     mocks.loadServerDirectory.mockResolvedValue({
       entries: [
-        {
-          origin: 'https://z.example',
-          profile: profile('Zulu'),
-          sourceOrigins: ['https://source.example']
-        },
-        {
-          origin: 'https://a.example',
-          profile: profile('Alpha'),
-          sourceOrigins: ['https://source.example']
-        }
+        entry('https://z.example', cached('Zulu'), ['https://source.example']),
+        entry('https://a.example', cached('Alpha'), ['https://source.example'])
       ],
       failedSourceCount: 0,
       sourceCount: 2
@@ -245,23 +257,13 @@ describe('Server Directory page', () => {
     ]);
     expect(entries[0]?.textContent).toContain('Zulu description');
     expect(entries[1]?.textContent).toContain('Joined');
-    expect(entries[1]?.querySelector('img')?.src).toContain('/Alpha/banner.webp');
+    expect(entries[1]?.querySelector('img')).toBeNull();
+    expect(container.textContent).toContain('Recommended servers (2)');
   });
 
-  it('hides unavailable entries and reports partial source failures', async () => {
+  it('reports partial source failures', async () => {
     mocks.loadServerDirectory.mockResolvedValue({
-      entries: [
-        {
-          origin: 'https://offline.example',
-          profile: null,
-          sourceOrigins: ['https://source.example']
-        },
-        {
-          origin: 'https://online.example',
-          profile: profile('Online'),
-          sourceOrigins: ['https://source.example']
-        }
-      ],
+      entries: [entry('https://online.example', cached('Online'))],
       failedSourceCount: 1,
       sourceCount: 2
     });
@@ -276,21 +278,45 @@ describe('Server Directory page', () => {
     );
     expect(entries).toHaveLength(1);
     expect(entries[0]?.dataset.origin).toBe('https://online.example');
-    expect(container.textContent).not.toContain('offline.example');
-    expect(container.textContent).not.toContain('public profile could not be loaded');
-    expect(button(container, 'Sign-in unavailable')).toBeUndefined();
   });
 
-  it('starts the OAuth flow for an advertised server', async () => {
-    const remoteProfile = profile('Remote');
+  it('loads cached images only from the registered server that supplied them', async () => {
+    const fetchImage = vi.fn(async () => new Response(null, { status: 404 }));
+    vi.stubGlobal('fetch', fetchImage);
     mocks.loadServerDirectory.mockResolvedValue({
       entries: [
-        {
-          origin: 'https://remote.example',
-          profile: remoteProfile,
-          sourceOrigins: ['https://source.example']
-        }
+        entry(
+          'https://remote.example',
+          cached('Remote', {
+            iconUrl: '/assets/neighborhood/logo',
+            bannerUrl: 'https://remote.example/banner.webp'
+          })
+        )
       ],
+      failedSourceCount: 0,
+      sourceCount: 2
+    });
+
+    const { container } = render(Page);
+
+    await vi.waitFor(() =>
+      expect(fetchImage).toHaveBeenCalledWith(
+        'https://source.example/assets/neighborhood/logo',
+        expect.objectContaining({ credentials: 'omit', redirect: 'error' })
+      )
+    );
+    expect(fetchImage).not.toHaveBeenCalledWith(
+      'https://remote.example/banner.webp',
+      expect.anything()
+    );
+    expect(container.textContent).toContain('Remote description');
+  });
+
+  it('adds a recommended server with its current profile and stays in the directory', async () => {
+    const remoteProfile = profile('Remote');
+    mocks.getPublicServerInfo.mockResolvedValue(remoteProfile);
+    mocks.loadServerDirectory.mockResolvedValue({
+      entries: [entry('https://remote.example', cached('Remote'))],
       failedSourceCount: 0,
       sourceCount: 2
     });
@@ -308,22 +334,110 @@ describe('Server Directory page', () => {
     expect(iconAction.querySelector('.shimmer-hover.rounded-xl')).toBeTruthy();
     iconAction.click();
 
-    await vi.waitFor(() => {
-      expect(mocks.startServerOAuthFlow).toHaveBeenCalledWith(
-        'https://remote.example',
-        remoteProfile
-      );
+    // The entry changes to the joined state, so the user cannot join it again.
+    await vi.waitFor(() => expect(button(container, 'Open')).toBeDefined());
+    expect(button(container, 'Join')).toBeUndefined();
+    expect(container.textContent).toContain('Joined');
+    expect(mocks.goto).not.toHaveBeenCalled();
+    expect(mocks.getPublicServerInfo).toHaveBeenCalledWith(
+      'https://remote.example',
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    );
+    expect(mocks.addSignedOutServer).toHaveBeenCalledExactlyOnceWith('https://remote.example', {
+      name: 'Remote',
+      iconUrl: remoteProfile.iconUrl
     });
+    expect(mocks.toastError).not.toHaveBeenCalled();
+  });
+
+  it('stops a join when the current version is no longer compatible', async () => {
+    mocks.getPublicServerInfo.mockResolvedValue(profile('Remote', { version: '0.4.19' }));
+    mocks.loadServerDirectory.mockResolvedValue({
+      entries: [entry('https://remote.example', cached('Remote'))],
+      failedSourceCount: 0,
+      sourceCount: 2
+    });
+
+    const { container } = render(Page);
+    await vi.waitFor(() => expect(button(container, 'Join')).toBeDefined());
+    button(container, 'Join')?.click();
+
+    await vi.waitFor(() => expect(mocks.toastError).toHaveBeenCalledWith('Sign-in unavailable'));
+    await vi.waitFor(() => expect(link(container, 'Open in new tab')).toBeDefined());
+    expect(mocks.addSignedOutServer).not.toHaveBeenCalled();
+  });
+
+  it('stops a join when the server no longer supports sign-in', async () => {
+    mocks.getPublicServerInfo.mockResolvedValue(profile('Remote', { authorizeUrl: '' }));
+    mocks.loadServerDirectory.mockResolvedValue({
+      entries: [entry('https://remote.example', cached('Remote'))],
+      failedSourceCount: 0,
+      sourceCount: 2
+    });
+
+    const { container } = render(Page);
+    await vi.waitFor(() => expect(button(container, 'Join')).toBeDefined());
+    button(container, 'Join')?.click();
+
+    await vi.waitFor(() => expect(mocks.toastError).toHaveBeenCalledWith('Sign-in unavailable'));
+    await vi.waitFor(() => expect(button(container, 'Sign-in unavailable')?.disabled).toBe(true));
+    expect(mocks.addSignedOutServer).not.toHaveBeenCalled();
+  });
+
+  it('shows a failed join as a toast instead of a directory panel error', async () => {
+    mocks.loadServerDirectory.mockResolvedValue({
+      entries: [entry('https://remote.example', cached('Remote'), ['https://source.example'])],
+      failedSourceCount: 0,
+      sourceCount: 1
+    });
+    mocks.getPublicServerInfo.mockRejectedValue(new TypeError('Failed to fetch'));
+    const { container } = render(Page);
+    await vi.waitFor(() =>
+      expect(
+        container.querySelector('[data-testid="server-directory-entry-icon-action"]')
+      ).toBeTruthy()
+    );
+    container
+      .querySelector<HTMLButtonElement>('[data-testid="server-directory-entry-icon-action"]')!
+      .click();
+    const message = 'Could not connect. Check the URL and try again.';
+    await vi.waitFor(() => expect(mocks.toastError).toHaveBeenCalledWith(message));
+    expect(container.textContent).not.toContain(message);
+    expect(mocks.addSignedOutServer).not.toHaveBeenCalled();
+    expect(mocks.goto).not.toHaveBeenCalled();
+    expect(
+      container.querySelector<HTMLButtonElement>(
+        '[data-testid="server-directory-entry-icon-action"]'
+      )!.disabled
+    ).toBe(false);
+  });
+
+  it('shows a generic error when the server cannot be registered', async () => {
+    mocks.getPublicServerInfo.mockResolvedValue(profile('Remote'));
+    mocks.addSignedOutServer.mockImplementation(() => {
+      throw new Error('The server could not be registered.');
+    });
+    mocks.loadServerDirectory.mockResolvedValue({
+      entries: [entry('https://remote.example', cached('Remote'))],
+      failedSourceCount: 0,
+      sourceCount: 2
+    });
+
+    const { container } = render(Page);
+    await vi.waitFor(() => expect(button(container, 'Join')).toBeDefined());
+    button(container, 'Join')?.click();
+
+    await vi.waitFor(() => expect(mocks.toastError).toHaveBeenCalledOnce());
+    expect(mocks.toastError).toHaveBeenCalledWith('Something went wrong');
+    expect(button(container, 'Join')).toBeDefined();
   });
 
   it('hands an incompatible advertised server off to its own client', async () => {
     mocks.loadServerDirectory.mockResolvedValue({
       entries: [
-        {
-          origin: 'https://old.example',
-          profile: profile('Old server', { version: '0.4.19', authorizeUrl: '' }),
-          sourceOrigins: ['https://source.example']
-        }
+        entry('https://old.example', cached('Old server', { version: '0.4.19' }), [
+          'https://source.example'
+        ])
       ],
       failedSourceCount: 0,
       sourceCount: 2
@@ -346,17 +460,15 @@ describe('Server Directory page', () => {
     expect(iconAction.target).toBe('_blank');
     expect(iconAction.rel).toBe('noopener noreferrer');
     expect(iconAction.getAttribute('aria-label')).toBe('Open in new tab: Old server');
-    expect(mocks.startServerOAuthFlow).not.toHaveBeenCalled();
+    expect(mocks.addSignedOutServer).not.toHaveBeenCalled();
   });
 
   it('opens an advertised server that is already joined', async () => {
     mocks.loadServerDirectory.mockResolvedValue({
       entries: [
-        {
-          origin: 'https://a.example',
-          profile: profile('Alpha', { version: '0.4.19' }),
-          sourceOrigins: ['https://source.example']
-        }
+        entry('https://a.example', cached('Alpha', { version: '0.4.19' }), [
+          'https://source.example'
+        ])
       ],
       failedSourceCount: 0,
       sourceCount: 2
@@ -367,56 +479,87 @@ describe('Server Directory page', () => {
     button(container, 'Open')?.click();
 
     await vi.waitFor(() => {
-      expect(mocks.goto).toHaveBeenCalledWith('/chat/joined');
+      expect(mocks.goto).toHaveBeenCalledWith('/chat/joined', { replaceState: false });
     });
   });
 
-  it('keeps sign-in for an incompatible joined server without a session', async () => {
+  it('replaces the dialog history entry when it opens a joined server', async () => {
+    mocks.loadServerDirectory.mockResolvedValue({
+      entries: [entry('https://a.example', cached('Alpha'))],
+      failedSourceCount: 0,
+      sourceCount: 2
+    });
+
+    const { container } = render(ServerDirectory, { inDialog: true });
+    await vi.waitFor(() => expect(button(container, 'Open')).toBeDefined());
+    button(container, 'Open')?.click();
+
+    await vi.waitFor(() => {
+      expect(mocks.goto).toHaveBeenCalledWith('/chat/joined', { replaceState: true });
+    });
+  });
+
+  it('opens an incompatible joined server without a session instead of signing in', async () => {
     mocks.authenticated.clear();
     mocks.loadServerDirectory.mockResolvedValue({
       entries: [
-        {
-          origin: 'https://a.example',
-          profile: profile('Alpha', { version: '0.4.19' }),
-          sourceOrigins: ['https://source.example']
-        }
+        entry('https://a.example', cached('Alpha', { version: '0.4.19' }), [
+          'https://source.example'
+        ])
       ],
       failedSourceCount: 0,
       sourceCount: 2
     });
 
     const { container } = render(Page);
-    await vi.waitFor(() => expect(button(container, 'Sign in')).toBeDefined());
+    await vi.waitFor(() => expect(button(container, 'Open')).toBeDefined());
     expect(link(container, 'Open in new tab')).toBeUndefined();
-    button(container, 'Sign in')?.click();
+    button(container, 'Open')?.click();
 
     await vi.waitFor(() => {
-      expect(mocks.startRemoteReauthentication).toHaveBeenCalledWith(
-        expect.objectContaining({ id: 'joined' })
-      );
+      expect(mocks.goto).toHaveBeenCalledWith('/chat/joined', { replaceState: false });
+    });
+    expect(mocks.addSignedOutServer).not.toHaveBeenCalled();
+  });
+
+  it('keeps the dialog open after a join and replaces its history entry on open', async () => {
+    mocks.getPublicServerInfo.mockResolvedValue(profile('Remote'));
+    mocks.loadServerDirectory.mockResolvedValue({
+      entries: [entry('https://remote.example', cached('Remote'))],
+      failedSourceCount: 0,
+      sourceCount: 2
+    });
+
+    const { container } = render(ServerDirectory, { inDialog: true });
+    await vi.waitFor(() => expect(button(container, 'Join')).toBeDefined());
+    button(container, 'Join')?.click();
+    await vi.waitFor(() => expect(button(container, 'Open')).toBeDefined());
+    expect(mocks.goto).not.toHaveBeenCalled();
+
+    button(container, 'Open')?.click();
+    await vi.waitFor(() => {
+      expect(mocks.goto).toHaveBeenCalledWith('/chat/remote.example', { replaceState: true });
     });
   });
 
-  it('keeps sign-in unavailable for a supported server without an OAuth URL', async () => {
-    mocks.loadServerDirectory.mockResolvedValue({
-      entries: [
-        {
-          origin: 'https://closed.example',
-          profile: profile('Closed', { authorizeUrl: '' }),
-          sourceOrigins: ['https://source.example']
-        }
-      ],
-      failedSourceCount: 0,
-      sourceCount: 2
-    });
+  it('adds a server found by address without another profile request', async () => {
+    const customProfile = profile('Custom');
+    mocks.getPublicServerInfo.mockResolvedValue(customProfile);
 
-    const { container } = render(Page);
-    await vi.waitFor(() => expect(button(container, 'Sign-in unavailable')).toBeDefined());
-    expect(button(container, 'Sign-in unavailable')?.disabled).toBe(true);
-    expect(link(container, 'Open in new tab')).toBeUndefined();
-    expect(
-      container.querySelector('[data-testid="server-directory-entry-icon-action"]')
-    ).toBeNull();
+    const { container } = render(ServerDirectory, { inDialog: true });
+    await enterServerAddress(container, 'custom.example');
+    await vi.waitFor(() => expect(button(container, 'Join')).toBeDefined());
+    mocks.getPublicServerInfo.mockClear();
+
+    button(container, 'Join')?.click();
+
+    await vi.waitFor(() => expect(button(container, 'Open')).toBeDefined());
+    expect(mocks.goto).not.toHaveBeenCalled();
+    expect(mocks.addSignedOutServer).toHaveBeenCalledExactlyOnceWith('https://custom.example', {
+      name: 'Custom',
+      iconUrl: customProfile.iconUrl
+    });
+    expect(mocks.getPublicServerInfo).not.toHaveBeenCalled();
   });
 
   it('probes a custom address and shows the same profile card', async () => {
@@ -428,11 +571,7 @@ describe('Server Directory page', () => {
     mocks.getPublicServerInfo.mockResolvedValue(profile('Custom'));
 
     const { container } = render(Page);
-    const input = container.querySelector<HTMLInputElement>('#add-server-url')!;
-    input.value = 'custom.example';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    flushSync();
-    container.querySelector('form')!.requestSubmit();
+    await enterServerAddress(container, 'custom.example');
 
     await vi.waitFor(() => {
       expect(mocks.getPublicServerInfo).toHaveBeenCalledWith(
@@ -454,18 +593,14 @@ describe('Server Directory page', () => {
     );
 
     const { container } = render(Page);
-    const input = container.querySelector<HTMLInputElement>('#add-server-url')!;
-    input.value = 'custom.example';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    flushSync();
-    container.querySelector('form')!.requestSubmit();
+    await enterServerAddress(container, 'custom.example');
 
     await vi.waitFor(() => expect(link(container, 'Open in new tab')).toBeDefined());
     const externalAction = link(container, 'Open in new tab')!;
     expect(externalAction.href).toBe('https://custom.example/');
     expect(externalAction.target).toBe('_blank');
     expect(externalAction.rel).toBe('noopener noreferrer');
-    expect(mocks.startServerOAuthFlow).not.toHaveBeenCalled();
+    expect(mocks.addSignedOutServer).not.toHaveBeenCalled();
   });
 
   it('shows compact recommendation provenance with the full accessible source list', async () => {
@@ -476,21 +611,16 @@ describe('Server Directory page', () => {
     ];
     mocks.loadServerDirectory.mockResolvedValue({
       entries: [
-        {
-          origin: 'https://single.example',
-          profile: profile('Single'),
-          sourceOrigins: ['https://one.example']
-        },
-        {
-          origin: 'https://double.example',
-          profile: profile('Double'),
-          sourceOrigins: ['https://one.example', 'https://two.example']
-        },
-        {
-          origin: 'https://triple.example',
-          profile: profile('Triple'),
-          sourceOrigins: ['https://one.example', 'https://two.example', 'https://three.example']
-        }
+        entry('https://single.example', cached('Single'), ['https://one.example']),
+        entry('https://double.example', cached('Double'), [
+          'https://one.example',
+          'https://two.example'
+        ]),
+        entry('https://triple.example', cached('Triple'), [
+          'https://one.example',
+          'https://two.example',
+          'https://three.example'
+        ])
       ],
       failedSourceCount: 0,
       sourceCount: 3
@@ -510,239 +640,5 @@ describe('Server Directory page', () => {
     expect(attributions[2]?.textContent).toContain('Recommended by One, Two, and 1 more');
     expect(attributions[2]?.getAttribute('aria-label')).toContain('One, Two, and Three');
     expect(attributions[2]?.title).toContain('One, Two, and Three');
-  });
-
-  it('shows verified entries while discovery is still active', async () => {
-    mocks.loadServerDirectory.mockResolvedValue({
-      entries: [
-        {
-          origin: 'https://ready.example',
-          profile: profile('Ready'),
-          sourceOrigins: ['https://source.example']
-        }
-      ],
-      failedSourceCount: 0,
-      sourceCount: 2,
-      isLoading: true,
-      isInitialLoading: false,
-      activeRequestCount: 1
-    });
-
-    const { container } = render(Page);
-
-    await vi.waitFor(() => {
-      expect(container.textContent).toContain('Ready description');
-      expect(container.textContent).toContain('Discovering more servers');
-    });
-    expect(container.querySelector('[aria-busy="true"]')).toBeNull();
-  });
-
-  it('loads one additional discovery batch without removing existing entries', async () => {
-    const first = {
-      origin: 'https://first.example',
-      profile: profile('First'),
-      sourceOrigins: ['https://source.example']
-    };
-    mocks.loadServerDirectory.mockResolvedValue({
-      entries: [first],
-      failedSourceCount: 0,
-      sourceCount: 2,
-      canLoadMore: true,
-      queuedCandidateCount: 1
-    });
-    mocks.loadMoreDirectory.mockResolvedValue({
-      entries: [
-        first,
-        {
-          origin: 'https://second.example',
-          profile: profile('Second'),
-          sourceOrigins: ['https://source.example']
-        }
-      ],
-      failedSourceCount: 0,
-      sourceCount: 2
-    });
-
-    const { container } = render(Page);
-    await vi.waitFor(() => expect(button(container, 'Load more')).toBeDefined());
-    button(container, 'Load more')?.click();
-
-    await vi.waitFor(() => {
-      const entries = Array.from(
-        container.querySelectorAll<HTMLElement>('[data-testid="server-directory-entry"]')
-      );
-      expect(entries.map(({ dataset }) => dataset.origin)).toEqual([
-        'https://first.example',
-        'https://second.example'
-      ]);
-    });
-  });
-
-  it('does not add an automatic batch after the user loads more manually', async () => {
-    mockIntersectionObserver();
-    const first = {
-      origin: 'https://first.example',
-      profile: profile('First'),
-      sourceOrigins: ['https://source.example']
-    };
-    mocks.loadServerDirectory.mockResolvedValue({
-      entries: [first],
-      canLoadMore: true,
-      queuedCandidateCount: 2
-    });
-    mocks.loadMoreDirectory.mockResolvedValue({
-      entries: [first],
-      canLoadMore: true,
-      queuedCandidateCount: 1
-    });
-
-    const { container } = render(Page);
-    await vi.waitFor(() => expect(button(container, 'Load more')).toBeDefined());
-    button(container, 'Load more')?.click();
-    await vi.waitFor(() => expect(mocks.loadMoreDirectory).toHaveBeenCalledOnce());
-
-    approachAutomaticLoad(container);
-    await new Promise((resolve) => requestAnimationFrame(resolve));
-    expect(mocks.loadMoreDirectory).toHaveBeenCalledOnce();
-  });
-
-  it('does not automatically load when a short directory starts near the sentinel', async () => {
-    mockIntersectionObserver();
-    mocks.loadServerDirectory.mockResolvedValue({
-      entries: [
-        {
-          origin: 'https://first.example',
-          profile: profile('First'),
-          sourceOrigins: ['https://source.example']
-        }
-      ],
-      canLoadMore: true,
-      queuedCandidateCount: 1
-    });
-
-    const { container } = render(Page);
-    await vi.waitFor(() => expect(intersectionCallback).toBeDefined());
-    triggerIntersection();
-
-    await new Promise((resolve) => requestAnimationFrame(resolve));
-    expect(mocks.loadMoreDirectory).not.toHaveBeenCalled();
-    expect(button(container, 'Load more')).toBeDefined();
-  });
-
-  it('automatically loads only one batch after the user scrolls near the end', async () => {
-    mockIntersectionObserver();
-    const first = {
-      origin: 'https://first.example',
-      profile: profile('First'),
-      sourceOrigins: ['https://source.example']
-    };
-    mocks.loadServerDirectory.mockResolvedValue({
-      entries: [first],
-      canLoadMore: true,
-      queuedCandidateCount: 2
-    });
-    mocks.loadMoreDirectory.mockResolvedValue({
-      entries: [first],
-      canLoadMore: true,
-      queuedCandidateCount: 1
-    });
-
-    const { container } = render(Page);
-    await vi.waitFor(() => expect(intersectionCallback).toBeDefined());
-    const scrollContainer = approachAutomaticLoad(container);
-    triggerIntersection();
-
-    await vi.waitFor(() => expect(mocks.loadMoreDirectory).toHaveBeenCalledOnce());
-    scrollContainer.dispatchEvent(new Event('scroll'));
-    triggerIntersection();
-    await new Promise((resolve) => requestAnimationFrame(resolve));
-    expect(mocks.loadMoreDirectory).toHaveBeenCalledOnce();
-    expect(button(container, 'Load more')).toBeDefined();
-  });
-
-  it('waits for active discovery before spending an approached automatic batch', async () => {
-    mockIntersectionObserver();
-    const first = {
-      origin: 'https://first.example',
-      profile: profile('First'),
-      sourceOrigins: ['https://source.example']
-    };
-    mocks.loadServerDirectory.mockResolvedValue({
-      entries: [first],
-      isLoading: true,
-      canLoadMore: false,
-      queuedCandidateCount: 1
-    });
-    mocks.loadMoreDirectory.mockResolvedValue({ entries: [first] });
-
-    const { container } = render(Page);
-    await vi.waitFor(() => expect(intersectionCallback).toBeDefined());
-    approachAutomaticLoad(container);
-    expect(mocks.loadMoreDirectory).not.toHaveBeenCalled();
-
-    mocks.publishDirectorySnapshot?.({
-      entries: [first],
-      isLoading: false,
-      canLoadMore: true,
-      queuedCandidateCount: 1
-    });
-
-    await vi.waitFor(() => expect(mocks.loadMoreDirectory).toHaveBeenCalledOnce());
-  });
-
-  it('does not spend the automatic batch while the page is hidden', async () => {
-    mockIntersectionObserver();
-    const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible');
-    const first = {
-      origin: 'https://first.example',
-      profile: profile('First'),
-      sourceOrigins: ['https://source.example']
-    };
-    mocks.loadServerDirectory.mockResolvedValue({
-      entries: [first],
-      canLoadMore: true,
-      queuedCandidateCount: 1
-    });
-    mocks.loadMoreDirectory.mockResolvedValue({ entries: [first] });
-
-    const { container } = render(Page);
-    await vi.waitFor(() => expect(intersectionCallback).toBeDefined());
-    visibility.mockReturnValue('hidden');
-    approachAutomaticLoad(container);
-    expect(mocks.loadMoreDirectory).not.toHaveBeenCalled();
-
-    visibility.mockReturnValue('visible');
-    document.dispatchEvent(new Event('visibilitychange'));
-    await vi.waitFor(() => expect(mocks.loadMoreDirectory).toHaveBeenCalledOnce());
-    visibility.mockRestore();
-  });
-
-  it('explains when the page-session discovery limit is reached', async () => {
-    mockIntersectionObserver();
-    mocks.loadServerDirectory.mockResolvedValue({
-      entries: [
-        {
-          origin: 'https://first.example',
-          profile: profile('First'),
-          sourceOrigins: ['https://source.example']
-        }
-      ],
-      failedSourceCount: 0,
-      sourceCount: 2,
-      canLoadMore: false,
-      sessionLimitReached: true
-    });
-
-    const { container } = render(Page);
-    await vi.waitFor(() => {
-      expect(container.textContent).toContain(
-        'The discovery limit for this session has been reached'
-      );
-    });
-    expect(button(container, 'Load more')).toBeUndefined();
-    expect(
-      container.querySelector('[data-testid="server-directory-auto-load-sentinel"]')
-    ).toBeNull();
-    expect(mocks.loadMoreDirectory).not.toHaveBeenCalled();
   });
 });

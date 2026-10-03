@@ -37,16 +37,20 @@ type AdminMemberRole struct {
 }
 
 type AdminMember struct {
-	ID                     string
-	Login                  string
-	DisplayName            string
-	AvatarURL              string
-	Roles                  []string
-	CreatedAt              *timestamppb.Timestamp
-	Deleted                bool
-	IsBot            bool
-	HasVerifiedEmail       bool
-	VerifiedEmails         []string
+	ID          string
+	Login       string
+	DisplayName string
+	AvatarURL   string
+	Roles       []string
+	CreatedAt   *timestamppb.Timestamp
+	Deleted     bool
+	IsBot       bool
+	// BotOwnerUserID identifies the human owner of a bot.
+	BotOwnerUserID   string
+	HasVerifiedEmail bool
+	VerifiedEmails   []string
+	// PrimaryVerifiedEmail is empty when no primary address is visible.
+	PrimaryVerifiedEmail   string
 	ViewerCanDeleteAccount bool
 	LastLoginChange        *time.Time
 	CustomStatus           *evtv1.CustomUserStatus
@@ -70,39 +74,36 @@ type AdminMemberDetails struct {
 	RevocableRoleNames             []string
 }
 
-func (c *ChattoCore) ListAdminMembers(ctx context.Context, actorID string, input AdminMemberListInput) (*AdminMemberList, error) {
+// AdminMemberIDPage selects members without hydrating administrative fields.
+type AdminMemberIDPage struct {
+	UserIDs    []string
+	TotalCount int
+	HasMore    bool
+}
+
+// ListAdminMembers returns ordered IDs for an authorized admin directory read.
+// Hydration is owned by BatchGetAdminMembers and checks authorization again.
+func (c *ChattoCore) ListAdminMembers(ctx context.Context, actorID string, input AdminMemberListInput) (*AdminMemberIDPage, error) {
 	if err := c.requireCanViewAdminMembers(ctx, actorID); err != nil {
 		return nil, err
 	}
 	limit, offset := adminMemberPagination(input.Limit, input.Offset)
 
-	members, totalCount, err := c.GetServerMembers(ctx, input.Search, limit, offset)
+	allUsers, err := c.userModel.adminDirectoryCandidates(ctx, input.Search)
 	if err != nil {
 		return nil, err
 	}
 
-	users := make([]AdminMember, 0, len(members))
+	members, totalCount := serverMemberUserPage(allUsers, input.Search, limit, offset)
+	ids := make([]string, 0, len(members))
 	for _, member := range members {
-		if member.User == nil {
-			continue
-		}
-		adminMember, err := c.adminMemberForViewer(ctx, actorID, member.User, explicitServerRoles(member.Roles))
-		if err != nil {
-			return nil, err
-		}
-		users = append(users, *adminMember)
+		ids = append(ids, member.GetId())
 	}
 
-	roles, err := c.ListServerRoles(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	return &AdminMemberList{
-		Users:      users,
-		Roles:      adminMemberRoleSummaries(roles),
+	return &AdminMemberIDPage{
+		UserIDs:    ids,
 		TotalCount: totalCount,
-		HasMore:    offset+len(users) < totalCount,
+		HasMore:    offset+len(ids) < totalCount,
 	}, nil
 }
 
@@ -187,6 +188,7 @@ func (c *ChattoCore) GetAdminMemberDetails(ctx context.Context, actorID, targetU
 }
 
 func (c *ChattoCore) BatchGetAdminMembers(ctx context.Context, actorID string, userIDs []string) (*AdminMemberList, error) {
+	ctx = WithDEKRequestCache(ctx)
 	if err := c.requireCanViewAdminMembers(ctx, actorID); err != nil {
 		return nil, err
 	}
@@ -287,15 +289,16 @@ func (c *ChattoCore) adminMemberForViewer(ctx context.Context, actorID string, u
 	}
 
 	member := &AdminMember{
-		ID:           user.GetId(),
-		Login:        user.GetLogin(),
-		DisplayName:  user.GetDisplayName(),
-		AvatarURL:    avatarURL,
-		Roles:        roles,
-		CreatedAt:    user.GetCreatedAt(),
-		Deleted:      user.GetDeleted(),
-		IsBot:  user.GetIsBot(),
-		CustomStatus: user.GetCustomStatus(),
+		ID:             user.GetId(),
+		Login:          user.GetLogin(),
+		DisplayName:    user.GetDisplayName(),
+		AvatarURL:      avatarURL,
+		Roles:          roles,
+		CreatedAt:      user.GetCreatedAt(),
+		Deleted:        user.GetDeleted(),
+		IsBot:          user.GetIsBot(),
+		BotOwnerUserID: user.GetBotOwnerUserId(),
+		CustomStatus:   user.GetCustomStatus(),
 	}
 
 	if canViewEmails, err := c.canViewAdminMemberEmails(ctx, actorID, user.GetId()); err != nil {
@@ -313,6 +316,9 @@ func (c *ChattoCore) adminMemberForViewer(ctx context.Context, actorID string, u
 		member.VerifiedEmails = make([]string, 0, len(verifiedEmails))
 		for _, email := range verifiedEmails {
 			member.VerifiedEmails = append(member.VerifiedEmails, email.Email)
+			if email.Primary {
+				member.PrimaryVerifiedEmail = email.Email
+			}
 		}
 	}
 
@@ -364,16 +370,6 @@ func adminMemberPagination(limit, offset int) (int, int) {
 		offset = 0
 	}
 	return limit, offset
-}
-
-func explicitServerRoles(roles []string) []string {
-	out := make([]string, 0, len(roles))
-	for _, role := range roles {
-		if role != RoleEveryone {
-			out = append(out, role)
-		}
-	}
-	return out
 }
 
 func adminMemberRoleSummaries(roles []RoleWithPermissions) []AdminMemberRoleSummary {

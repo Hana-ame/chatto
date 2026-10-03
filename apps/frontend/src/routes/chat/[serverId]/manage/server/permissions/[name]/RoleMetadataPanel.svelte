@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Role } from '$lib/components/rbac';
   import { untrack } from 'svelte';
-  import Panel from '$lib/ui/Panel.svelte';
+  import { Panel } from '$lib/ui';
   import { Button, Checkbox, TextArea, TextInput } from '$lib/ui/form';
   import { m } from '$lib/i18n/messages';
 
@@ -51,7 +51,7 @@
   <form class="flex flex-col gap-4" onsubmit={saveMetadata}>
     <div>
       <div class="mb-1 text-sm font-medium">{m('rbac.role_form.name')}</div>
-      <code class="rounded bg-surface-emphasized px-2 py-1">{role.name}</code>
+      <code class="rounded bg-surface px-2 py-1">{role.name}</code>
       <p class="mt-1 text-xs text-muted">{m('rbac.role_form.name_locked')}</p>
     </div>
 

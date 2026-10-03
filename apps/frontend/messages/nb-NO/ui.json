@@ -16,7 +16,6 @@
       "remote_title": "{server} trenger pålogging",
       "remote_message": "Denne serveren avviste den lagrede påloggingen. Koble den til igjen for å gjenoppta liveoppdateringer og handlinger.",
       "remote_action": "Koble til på nytt",
-      "remote_failed": "Kunne ikke starte på nytt",
       "sidebar_reauth": "{server} trenger pålogging"
     },
     "access_denied": {
@@ -48,7 +47,8 @@
       "complete": "Chatto ble bygd opp igjen. Sluttpoengsum: {count} poeng"
     },
     "pane_header": {
-      "back": "Tilbake"
+      "back": "Tilbake",
+      "actions": "Panelhandlinger"
     },
     "sidebar_nav": {
       "back_to_chat": "Tilbake til chat"
@@ -67,7 +67,12 @@
     "image_modal": {
       "previous": "Forrige bilde",
       "next": "Neste bilde",
-      "fallback_alt": "Bilde"
+      "fallback_alt": "Bilde",
+      "zoom_in": "Zoom inn",
+      "zoom_out": "Zoom ut",
+      "fit": "Tilpass",
+      "details": "Detaljer",
+      "file_type": "Filtype"
     },
     "toast": {
       "dismiss": "Avvis varsel"
@@ -78,11 +83,9 @@
       "clear": "Fjern"
     },
     "expiry": {
-      "label": "Utløper",
       "24h": "24 timer",
       "7d": "7 dager",
       "30d": "30 dager",
-      "indefinite": "Ingen utløp",
       "custom": "Egendefinert",
       "custom_label": "Egendefinert utløp",
       "error_required": "Velg en utløpsdato.",

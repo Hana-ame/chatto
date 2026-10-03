@@ -3,7 +3,6 @@ package core
 import (
 	"context"
 	"fmt"
-	"hmans.de/chatto/internal/pb/chatto/core/live/v1"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -11,9 +10,12 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"google.golang.org/protobuf/types/known/timestamppb"
-	"hmans.de/chatto/internal/core/subjects"
+
 	"hmans.de/chatto/internal/evtstream"
+	apiv1 "hmans.de/chatto/internal/pb/chatto/api/v1"
 	evtv1 "hmans.de/chatto/internal/pb/chatto/core/evt/v1"
+	pubsubv1 "hmans.de/chatto/internal/pb/chatto/core/pubsub/v1"
+	realtimev1 "hmans.de/chatto/internal/pb/chatto/realtime/v1"
 	"hmans.de/chatto/pkg/events"
 )
 
@@ -96,8 +98,8 @@ func (s *MyEventsModel) Metrics() MyEventsMetrics {
 // that is relevant to a specific user.
 //
 // The process-wide MyEventsHub receives two internal NATS Core subject roots:
-// live.sync.> carries transient LiveEvent messages and live.evt.> is the raw
-// singleton republish of committed EVT facts. EVT delivery is not UI-safe by
+// live.sync.> carries PubSubEvent messages and live.evt.> is the
+// raw singleton republish of committed EVT facts. EVT delivery is not UI-safe by
 // itself: the hub waits for the relevant local projection(s) to reach the
 // republished stream sequence, then applies each user's authorization before
 // forwarding the event through the realtime API.
@@ -105,11 +107,12 @@ func (s *MyEventsModel) Metrics() MyEventsMetrics {
 // Authorization:
 //   - Room events (live.sync.room.> and deliverable live.evt.room.>) are
 //     delivered only for rooms where the user is a member. Message-bearing
-//     durable facts and typing indicators in channel rooms also require
-//     message.read. DM membership authorizes DM delivery. The membership set is
+//     durable facts and typing indicators also require applicable message-read
+//     authority. The membership set is
 //     pre-loaded across both kinds (channel + dm) and updated as
 //     join/leave/room-deleted events arrive.
-//   - User/config/member subjects are filtered by isAuthorizedForLiveEvent.
+//   - User-scoped PubSub subjects are delivered only to their target user.
+//     Room-scoped PubSub subjects must match their typing payload and room.
 //   - Presence updates from the per-process PresenceHub are deployment-wide;
 //     the hub dedups status flapping.
 //
@@ -242,12 +245,20 @@ func (s *MyEventsModel) StreamMyEvents(ctx context.Context, userID string, optio
 					s.slowDisconnects.Add(1)
 					return
 				}
-				live := newLiveEvent(update.UserID, &livev1.LiveEvent{
-					Event: &livev1.LiveEvent_PresenceChanged{
-						PresenceChanged: &livev1.PresenceChangedEvent{Status: update.Status},
+				// Discard an obsolete queued transition after a newer private choice.
+				current, err := c.presenceModel.hub.GetUserPresences(ctx, []string{update.UserID})
+				if err != nil {
+					return
+				}
+				if current[update.UserID] != update.Status {
+					continue
+				}
+				pubsub := newPubSubEvent(update.UserID, &pubsubv1.PubSubEvent{
+					Event: &pubsubv1.PubSubEvent_PresenceChanged{
+						PresenceChanged: &realtimev1.PresenceChangedEvent{Status: publicPresenceStatus(update.Status)},
 					},
 				})
-				if !send(NewLiveEventEnvelope(live)) {
+				if !send(NewPubSubEventEnvelope(pubsub)) {
 					return
 				}
 			case <-presenceSub.Done:
@@ -260,6 +271,19 @@ func (s *MyEventsModel) StreamMyEvents(ctx context.Context, userID string, optio
 	}()
 
 	return eventChan, nil
+}
+
+func publicPresenceStatus(status string) apiv1.PresenceStatus {
+	switch status {
+	case PresenceStatusOffline:
+		return apiv1.PresenceStatus_PRESENCE_STATUS_OFFLINE
+	case PresenceStatusAway:
+		return apiv1.PresenceStatus_PRESENCE_STATUS_AWAY
+	case PresenceStatusDoNotDisturb:
+		return apiv1.PresenceStatus_PRESENCE_STATUS_DO_NOT_DISTURB
+	default:
+		return apiv1.PresenceStatus_PRESENCE_STATUS_ONLINE
+	}
 }
 
 // populateMemberRoomsCache (re)builds one user's room visibility set in place.
@@ -292,53 +316,67 @@ func (s *MyEventsModel) populateMemberRoomsCache(ctx context.Context, userID str
 	return nil
 }
 
-func (c *ChattoCore) filterLiveSyncEvent(ctx context.Context, userID string, memberRooms map[string]struct{}, msg *nats.Msg, event *livev1.LiveEvent) (EventEnvelope, bool) {
-	return c.myEventsModel.filterLiveSyncEvent(ctx, userID, memberRooms, msg, event)
+// pubSubDelivery holds the recipient-independent scope of one live sync event.
+// pubSubSubjectPayloadScope accepts only typing events on room subjects, so a
+// delivery with a roomID is always a typing event.
+type pubSubDelivery struct {
+	event        *pubsubv1.PubSubEvent
+	kind         RoomKind
+	roomID       string
+	targetUserID string
 }
 
-func (s *MyEventsModel) filterLiveSyncEvent(ctx context.Context, userID string, memberRooms map[string]struct{}, msg *nats.Msg, event *livev1.LiveEvent) (EventEnvelope, bool) {
+// preparePubSubEvent checks that the subject and payload agree. It does not
+// depend on the recipient.
+func (s *MyEventsModel) preparePubSubEvent(msg *nats.Msg, event *pubsubv1.PubSubEvent) (pubSubDelivery, bool) {
 	if event == nil || event.Event == nil {
 		s.core.logger.Warn("Dropping live sync event without payload", "subject", msg.Subject)
+		return pubSubDelivery{}, false
+	}
+	kind, roomID, targetUserID, ok := pubSubSubjectPayloadScope(msg.Subject, event)
+	if !ok {
+		s.core.logger.Warn("Dropping live sync event with mismatched subject and payload", "subject", msg.Subject)
+		return pubSubDelivery{}, false
+	}
+	return pubSubDelivery{event: event, kind: kind, roomID: roomID, targetUserID: targetUserID}, true
+}
+
+// typingSenderVisible applies the sender's private visibility choice. It reads
+// the authoritative record, so callers must not hold MyEventsHub.mu.
+func (s *MyEventsModel) typingSenderVisible(ctx context.Context, senderID string) bool {
+	allowed, err := s.core.MayPublishTyping(ctx, senderID)
+	return err == nil && allowed
+}
+
+// filterPreparedPubSubEvent applies the recipient-specific delivery rules. For
+// room (typing) events, the caller must already have checked
+// typingSenderVisible.
+func (s *MyEventsModel) filterPreparedPubSubEvent(ctx context.Context, userID string, memberRooms map[string]struct{}, delivery pubSubDelivery) (EventEnvelope, bool) {
+	event := delivery.event
+	if delivery.roomID == "" {
+		if delivery.targetUserID != userID {
+			return nil, false
+		}
+		return NewPubSubEventEnvelope(event), true
+	}
+	// Skip own typing events; the sender doesn't need to see them.
+	if event.ActorId == userID {
 		return nil, false
 	}
-
-	if kind := subjects.ParseKindFromRoomSubject(msg.Subject); kind != "" {
-		roomID := subjects.ParseRoomIDFromSubject(msg.Subject)
-		if roomID == "" {
-			return nil, false
-		}
-
-		_, isMember := memberRooms[roomID]
-
-		// Skip own typing events; the sender doesn't need to see them.
-		if event.GetUserTyping() != nil && event.ActorId == userID {
-			return nil, false
-		}
-
-		if !isMember {
-			return nil, false
-		}
-		if event.GetUserTyping() != nil {
-			typing := event.GetUserTyping()
-			var canRead bool
-			var err error
-			if typing.GetThreadRootEventId() != "" {
-				canRead, err = s.core.CanReadThreadMessages(ctx, userID, RoomKind(kind), roomID, typing.GetThreadRootEventId())
-			} else {
-				canRead, err = s.core.CanReadMessages(ctx, userID, RoomKind(kind), roomID)
-			}
-			if err != nil || !canRead {
-				return nil, false
-			}
-		}
-		return NewLiveEventEnvelope(event), true
-	}
-
-	if !s.isAuthorizedForLiveEvent(ctx, userID, msg.Subject) {
+	if _, isMember := memberRooms[delivery.roomID]; !isMember {
 		return nil, false
 	}
-
-	return NewLiveEventEnvelope(event), true
+	var canRead bool
+	var err error
+	if threadRootID := event.GetUserTyping().GetThreadRootEventId(); threadRootID != "" {
+		canRead, err = s.core.CanReadThreadMessages(ctx, userID, delivery.kind, delivery.roomID, threadRootID)
+	} else {
+		canRead, err = s.core.CanReadMessages(ctx, userID, delivery.kind, delivery.roomID)
+	}
+	if err != nil || !canRead {
+		return nil, false
+	}
+	return NewPubSubEventEnvelope(event), true
 }
 
 func liveEVTMsgSeq(msg *nats.Msg) uint64 {
@@ -352,7 +390,7 @@ func liveEVTMsgSeq(msg *nats.Msg) uint64 {
 	return seq
 }
 
-func (s *MyEventsModel) filterReadyEVTRoomSubjectEvent(userID string, memberRooms map[string]struct{}, roomID string, event *evtv1.Event, seq uint64) (EventEnvelope, bool) {
+func (s *MyEventsModel) filterReadyEVTRoomSubjectEvent(ctx context.Context, userID string, memberRooms map[string]struct{}, roomID string, event *evtv1.Event, seq uint64) (EventEnvelope, bool) {
 	if roomID == "" || event == nil || !isDeliverableLiveEVTRoomEvent(event) || seq == 0 {
 		return nil, false
 	}
@@ -361,13 +399,13 @@ func (s *MyEventsModel) filterReadyEVTRoomSubjectEvent(userID string, memberRoom
 	switch e := event.Event.(type) {
 	case *evtv1.Event_RoomCreated:
 		if e.RoomCreated.GetUniversal() {
-			if isEffective, err := s.core.RoomMembershipExists(context.Background(), KindChannel, userID, roomID); err == nil && isEffective {
+			if isEffective, err := s.core.RoomMembershipExists(ctx, KindChannel, userID, roomID); err == nil && isEffective {
 				memberRooms[roomID] = struct{}{}
 				isMember = true
 			}
 		}
 	case *evtv1.Event_RoomUniversalChanged:
-		isEffective, err := s.core.RoomMembershipExists(context.Background(), KindChannel, userID, roomID)
+		isEffective, err := s.core.RoomMembershipExists(ctx, KindChannel, userID, roomID)
 		if err == nil && isEffective {
 			memberRooms[roomID] = struct{}{}
 			isMember = true
@@ -391,6 +429,13 @@ func (s *MyEventsModel) filterReadyEVTRoomSubjectEvent(userID string, memberRoom
 		if e.RoomMemberBanned.GetUserId() == userID {
 			delete(memberRooms, roomID)
 		}
+	case *evtv1.Event_RoomMemberUnbanned:
+		if e.RoomMemberUnbanned.GetUserId() == userID {
+			if isEffective, err := s.core.RoomMembershipExists(ctx, KindChannel, userID, roomID); err == nil && isEffective {
+				memberRooms[roomID] = struct{}{}
+				isMember = true
+			}
+		}
 	case *evtv1.Event_RoomMemberAdded:
 		if e.RoomMemberAdded.GetUserId() == userID {
 			memberRooms[roomID] = struct{}{}
@@ -403,15 +448,21 @@ func (s *MyEventsModel) filterReadyEVTRoomSubjectEvent(userID string, memberRoom
 	case *evtv1.Event_RoomDeleted:
 		delete(memberRooms, roomID)
 	}
+	if followed := event.GetThreadFollowed(); followed != nil && followed.GetUserId() != userID {
+		return nil, false
+	}
+	if unfollowed := event.GetThreadUnfollowed(); unfollowed != nil && unfollowed.GetUserId() != userID {
+		return nil, false
+	}
 	if !isMember {
 		return nil, false
 	}
 	if protectedRoomID, protected := s.core.MessageReadProtectedEventRoomID(event); protected {
-		kind, err := s.core.FindRoomKind(context.Background(), protectedRoomID)
+		kind, err := s.core.FindRoomKind(ctx, protectedRoomID)
 		if err != nil {
 			return nil, false
 		}
-		canRead, err := s.core.CanReadMessageEvent(context.Background(), userID, kind, protectedRoomID, event)
+		canRead, err := s.core.CanReadMessageEvent(ctx, userID, kind, protectedRoomID, event)
 		if err != nil || !canRead {
 			return nil, false
 		}
@@ -419,18 +470,18 @@ func (s *MyEventsModel) filterReadyEVTRoomSubjectEvent(userID string, memberRoom
 	return NewEVTEventEnvelopeWithDeliverySeq(event, seq), true
 }
 
-func (s *MyEventsModel) filterReadyEVTAssetSubjectEvent(userID string, memberRooms map[string]struct{}, roomID string, event *evtv1.Event, seq uint64) (EventEnvelope, bool) {
+func (s *MyEventsModel) filterReadyEVTAssetSubjectEvent(ctx context.Context, userID string, memberRooms map[string]struct{}, roomID string, event *evtv1.Event, seq uint64) (EventEnvelope, bool) {
 	if roomID == "" || event == nil || !isDeliverableLiveEVTAssetEvent(event) || seq == 0 {
 		return nil, false
 	}
 	if _, isMember := memberRooms[roomID]; !isMember {
 		return nil, false
 	}
-	kind, err := s.core.FindRoomKind(context.Background(), roomID)
+	kind, err := s.core.FindRoomKind(ctx, roomID)
 	if err != nil {
 		return nil, false
 	}
-	canRead, err := s.core.CanReadMessageEvent(context.Background(), userID, kind, roomID, event)
+	canRead, err := s.core.CanReadMessageEvent(ctx, userID, kind, roomID, event)
 	if err != nil || !canRead {
 		return nil, false
 	}
@@ -474,10 +525,10 @@ func (s *MyEventsModel) waitForLiveMessageAuthorization(ctx context.Context, eve
 		return nil
 	}
 	entry, ok := s.core.roomModel.timelineEntry(messageEventID)
-	if !ok || entry == nil || entry.Event == nil || entry.StreamSeq == 0 {
+	if !ok || entry == nil || entry.RoomID != roomID || entry.StreamSeq == 0 {
 		return fmt.Errorf("message authorization source %q is not projected", messageEventID)
 	}
-	position := events.SubjectPosition(evtstream.RoomAggregate(roomID).SubjectFor(entry.Event), entry.StreamSeq)
+	position := events.SubjectPosition(evtstream.RoomAggregate(roomID).Subject(entry.EventType), entry.StreamSeq)
 	if err := s.core.roomModel.waitForThreads(ctx, position); err != nil {
 		return fmt.Errorf("wait for message authorization source %q: %w", messageEventID, err)
 	}
@@ -488,36 +539,51 @@ func (s *MyEventsModel) waitForLiveEVTUserEvent(ctx context.Context, subject str
 	return s.core.userModel.waitForUsers(ctx, events.SubjectPosition(subject, seq))
 }
 
-// isAuthorizedForLiveEvent checks whether a user can receive a non-room
-// transient live event based on its live.sync subject.
-func (c *ChattoCore) isAuthorizedForLiveEvent(ctx context.Context, userID, subject string) bool {
-	return c.myEventsModel.isAuthorizedForLiveEvent(ctx, userID, subject)
-}
-
-func (s *MyEventsModel) isAuthorizedForLiveEvent(_ context.Context, userID, subject string) bool {
+func pubSubSubjectPayloadScope(subject string, event *pubsubv1.PubSubEvent) (RoomKind, string, string, bool) {
 	parts := strings.Split(subject, ".")
-	if len(parts) < 3 || parts[0] != "live" || parts[1] != "sync" {
-		s.core.logger.Warn("Invalid live event subject format", "subject", subject)
-		return false
+	if event == nil || event.GetEvent() == nil || len(parts) < 3 || parts[0] != "live" || parts[1] != "sync" {
+		return "", "", "", false
 	}
-
 	switch parts[2] {
-	case "config", "member":
-		return true
 	case "user":
-		if len(parts) < 5 {
-			s.core.logger.Warn("Invalid user-scoped live event subject", "subject", subject)
-			return false
+		if len(parts) != 5 || parts[3] == "" || strings.ContainsAny(parts[3], ".*>") {
+			return "", "", "", false
 		}
-		if parts[4] == "profile_updated" {
-			return true
+		var eventType string
+		switch event.GetEvent().(type) {
+		case *pubsubv1.PubSubEvent_ViewerPresencePreferenceChanged:
+			eventType = "presence_preference"
+		case *pubsubv1.PubSubEvent_NotificationOccurrencesChanged:
+			eventType = "notification_v2"
+		case *pubsubv1.PubSubEvent_NotificationUnreadStateChanged:
+			eventType = "notification_unread"
+		case *pubsubv1.PubSubEvent_RoomReadStateChanged:
+			eventType = "room_read"
+		case *pubsubv1.PubSubEvent_ThreadViewerStateChanged:
+			eventType = "thread_viewer_state"
+		case *pubsubv1.PubSubEvent_SessionTerminated:
+			eventType = "session_terminated"
+		default:
+			return "", "", "", false
 		}
-		return parts[3] == userID
+		return "", "", parts[3], parts[4] == eventType
 	case "room":
-		s.core.logger.Warn("Room subject reached isAuthorizedForLiveEvent - should be filtered upstream", "subject", subject)
-		return false
+		// Room scope accepts only typing events. MyEventsHub.handlePubSub
+		// applies the typing privacy check to every room-scoped delivery, so a
+		// new room event type must revisit that check.
+		if len(parts) != 6 || parts[4] == "" || strings.ContainsAny(parts[4], ".*>") || parts[5] != "user_typing" {
+			return "", "", "", false
+		}
+		kind := RoomKind(parts[3])
+		if kind != KindChannel && kind != KindDM {
+			return "", "", "", false
+		}
+		typing := event.GetUserTyping()
+		if typing == nil || typing.GetRoomId() != parts[4] {
+			return "", "", "", false
+		}
+		return kind, parts[4], "", true
 	default:
-		s.core.logger.Warn("Unknown live event scope", "scope", parts[2], "subject", subject)
-		return false
+		return "", "", "", false
 	}
 }

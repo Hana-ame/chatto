@@ -1,6 +1,6 @@
 ---
 title: NotificationService
-description: Exact notification occurrence listing, read, deletion, and legacy server/room policy RPCs.
+description: Exact notification occurrence listing, read, and deletion RPCs.
 editUrl: false
 ---
 
@@ -25,9 +25,8 @@ Reads, marks read, and deletes notifications for the authenticated viewer.
 ### GetNotificationOccurrence
 
 Gets one exact visible occurrence. Message-derived occurrences require
-current room membership. Channel-room occurrences also require message.read
-or a matching thread relationship with message.read-interactions. DM
-membership authorizes DM occurrences. Returns NOT_FOUND when the occurrence
+current room membership. Occurrences also require message.read or a
+matching thread relationship with message.read-interactions. Returns NOT_FOUND when the occurrence
 is absent, deleted, expired, or no longer visible to the authenticated
 viewer. Returns UNIMPLEMENTED when this server cannot validate its signal
 kind.
@@ -99,9 +98,9 @@ Exact visible notification occurrences requested by stable ID.
 
 Lists exact Notifications 2.0 occurrences. Clients may derive temporary
 presentation groups without changing occurrence identity or counts.
-Message-derived occurrences require current room membership. Channel-room
-occurrences also require message.read or a matching thread relationship
-with message.read-interactions. DM membership authorizes DM occurrences.
+Message-derived occurrences require current room membership. Occurrences
+also require message.read or a matching thread relationship with
+message.read-interactions.
 Returns UNIMPLEMENTED rather than silently omitting an occurrence whose
 signal kind this server version cannot validate and assemble.
 
@@ -117,7 +116,7 @@ Request for one page of notification occurrences.
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `page` | [`PageRequest`](/reference/connectrpc-api/types/#chatto-api-v1-PageRequest) | Page request. Defaults to 50 results when absent or limit is zero. |
+| `page` | [`PageRequest`](/reference/connectrpc-api/types/#chatto-api-v1-PageRequest) | Defaults to 50 results when absent or limit is zero. Maximum: 100. |
 
 
 <a id="chatto-api-v1-ListNotificationOccurrencesResponse"></a>
@@ -268,71 +267,3 @@ Result of deleting every currently visible notification occurrence.
 | Field | Type | Description |
 | --- | --- | --- |
 | `deleted_count` | `int32` | Number of visible occurrences replaced by deletion tombstones. |
-
-
-<a id="chatto-api-v1-NotificationService-GetNotificationPolicy"></a>
-
-### GetNotificationPolicy
-
-Gets explicit and effective modes for every supported signal class.
-
-```http
-POST /api/connect/chatto.api.v1.NotificationService/GetNotificationPolicy
-```
-
-<a id="chatto-api-v1-GetNotificationPolicyRequest"></a>
-
-#### Input: GetNotificationPolicyRequest
-
-Request the authenticated viewer's notification policy.
-
-| Field | Type | Description |
-| --- | --- | --- |
-| `room_id` | `optional string` | Empty returns server-scoped preferences. A room ID returns the inherited effective policy for that room and requires current membership. |
-
-
-<a id="chatto-api-v1-GetNotificationPolicyResponse"></a>
-
-#### Result: GetNotificationPolicyResponse
-
-Complete supported notification policy for one scope.
-
-| Field | Type | Description |
-| --- | --- | --- |
-| `room_id` | `optional string` | Room scope when requested; absent for server scope. |
-| `policy` | [`NotificationPolicy`](/reference/connectrpc-api/types/#chatto-api-v1-NotificationPolicy) | Explicit and effective policy for the requested scope. |
-
-
-<a id="chatto-api-v1-NotificationService-UpdateNotificationPolicy"></a>
-
-### UpdateNotificationPolicy
-
-Atomically sets or clears selected server- or room-scoped signal-class overrides.
-
-```http
-POST /api/connect/chatto.api.v1.NotificationService/UpdateNotificationPolicy
-```
-
-<a id="chatto-api-v1-UpdateNotificationPolicyRequest"></a>
-
-#### Input: UpdateNotificationPolicyRequest
-
-Sparsely update notification policy overrides.
-
-| Field | Type | Description |
-| --- | --- | --- |
-| `room_id` | `optional string` | Room scope to change; absent changes the server scope. |
-| `overrides` | [`NotificationDeliveryModes`](/reference/connectrpc-api/types/#chatto-api-v1-NotificationDeliveryModes) | Sparse override values. Fields selected by update_mask but absent here are cleared to Inherit. |
-| `update_mask` | `google.protobuf.FieldMask` | Fields to set or clear, relative to overrides. The mask must contain at least one supported delivery-mode field. |
-
-
-<a id="chatto-api-v1-UpdateNotificationPolicyResponse"></a>
-
-#### Result: UpdateNotificationPolicyResponse
-
-Complete supported notification policy after a sparse update.
-
-| Field | Type | Description |
-| --- | --- | --- |
-| `room_id` | `optional string` | Room scope when changed; absent for server scope. |
-| `policy` | [`NotificationPolicy`](/reference/connectrpc-api/types/#chatto-api-v1-NotificationPolicy) | Explicit and effective policy after the update. |

@@ -1,7 +1,6 @@
 <script lang="ts">
-  import Panel from '$lib/ui/Panel.svelte';
+  import { Panel, ChoiceRow, FormSection, Hint, PageTitle, PaneContent, PaneHeader } from '$lib/ui';
   import { useServerScope } from '$lib/state/server/scope.svelte';
-  import { ChoiceRow, Hint, PaneContent, PaneHeader } from '$lib/ui';
   import { Button, RangeField } from '$lib/ui/form';
   import NotificationPolicySettings from '$lib/components/settings/NotificationPolicySettings.svelte';
   import { getServerNotificationPreferences } from '$lib/state/serverNotificationPreferences.svelte';
@@ -24,17 +23,9 @@
   import { m } from '$lib/i18n/messages';
 
   const serverScope = useServerScope();
-  let notificationPreferences = $state.raw(getServerNotificationPreferences(serverScope.serverId));
-
-  // SvelteKit can retain this page while only the server route parameter
-  // changes. Resolve the matching state in an effect so populating the
-  // reactive cache never happens inside a derived or template expression.
-  $effect(() => {
-    notificationPreferences = getServerNotificationPreferences(serverScope.serverId);
-  });
-
-  const activeServerId = $derived(serverScope.serverId);
-  const serverInfo = $derived(serverScope.store.serverInfo);
+  const serverId = serverScope.serverId;
+  const notificationPreferences = getServerNotificationPreferences(serverId);
+  const serverInfo = serverScope.store.serverInfo;
 
   function selectSound(soundId: NotificationSoundId) {
     notificationPreferences.notificationSound = soundId;
@@ -184,34 +175,21 @@
   let pushError = $state<string | null>(null);
   let pushTestLoading = $state(false);
   let pushTestStatus = $state<'sent' | 'failed' | null>(null);
-  let pushSubscriptionGeneration = 0;
-  let pushEnableGeneration = 0;
-  let pushTestGeneration = 0;
 
-  // Check push subscription status on mount
+  // Check the push subscription while the push controls are visible.
   $effect(() => {
-    const serverId = activeServerId;
-    const generation = ++pushSubscriptionGeneration;
-    ++pushEnableGeneration;
-    ++pushTestGeneration;
-    pushSubscribed = false;
-    pushLoading = false;
-    pushError = null;
-    pushTestLoading = false;
-    pushTestStatus = null;
-    if (showPushControls && pushSupported) {
-      pushPermission = getPermission();
-      checkPushSubscription(serverId).then((subscribed) => {
-        if (activeServerId === serverId && pushSubscriptionGeneration === generation) {
-          pushSubscribed = subscribed;
-        }
-      });
-    }
+    if (!showPushControls || !pushSupported) return;
+    pushPermission = getPermission();
+    let active = true;
+    void checkPushSubscription(serverId).then((subscribed) => {
+      if (active) pushSubscribed = subscribed;
+    });
+    return () => {
+      active = false;
+    };
   });
 
   async function handleEnablePush() {
-    const serverId = activeServerId;
-    const generation = ++pushEnableGeneration;
     if (!serverInfo.vapidPublicKey) {
       pushError = m('settings.notifications.push.not_configured');
       return;
@@ -222,286 +200,272 @@
 
     try {
       const result = await enablePushOnAllServers();
-      if (activeServerId !== serverId || pushEnableGeneration !== generation) return;
       pushPermission = getPermission();
       const activeRegistration = result.registrations.find(
         (registration) => registration.serverId === serverId
       );
+      pushSubscribed = activeRegistration?.registered ?? false;
       const success =
         result.registrations.length > 0 &&
         result.registrations.every((registration) => registration.registered);
-      if (success) {
-        pushSubscribed = activeRegistration?.registered ?? false;
-      } else {
-        pushSubscribed = activeRegistration?.registered ?? false;
+      if (!success) {
         pushError =
           pushPermission === 'denied'
             ? m('settings.notifications.push.blocked_error')
             : m('settings.notifications.push.enable_failed');
       }
     } catch {
-      if (activeServerId === serverId && pushEnableGeneration === generation) {
-        pushError = m('settings.notifications.push.enable_error');
-      }
+      pushError = m('settings.notifications.push.enable_error');
     } finally {
-      if (activeServerId === serverId && pushEnableGeneration === generation) pushLoading = false;
+      pushLoading = false;
     }
   }
 
   async function handleTestPush() {
-    const serverId = activeServerId;
-    const generation = ++pushTestGeneration;
     pushTestLoading = true;
     pushTestStatus = null;
     try {
-      const sent = await sendTestNotification(serverId);
-      if (activeServerId === serverId && pushTestGeneration === generation) {
-        pushTestStatus = sent ? 'sent' : 'failed';
-      }
+      pushTestStatus = (await sendTestNotification(serverId)) ? 'sent' : 'failed';
     } catch {
-      if (activeServerId === serverId && pushTestGeneration === generation) {
-        pushTestStatus = 'failed';
-      }
+      pushTestStatus = 'failed';
     } finally {
-      if (activeServerId === serverId && pushTestGeneration === generation) {
-        pushTestLoading = false;
-      }
+      pushTestLoading = false;
     }
   }
 </script>
 
-<PaneHeader
-  title={m('settings.notifications.title')}
-  subtitle={m('settings.notifications.subtitle')}
-  showMobileNav
-/>
+<PageTitle title={m('settings.notifications.title')} />
 
-<PaneContent>
-  <div class="flex flex-col gap-6">
-    <!-- Push Notifications Section (only show if enabled on server) -->
-    {#if showPushControls}
-      <section data-testid="push-notification-settings">
-        <Hint
-          tone={pushError
-            ? 'danger'
-            : pushPermission === 'denied'
-              ? 'warning'
-              : pushSubscribed
-                ? 'success'
-                : 'info'}
-          icon="icon-[uil--bell]"
-        >
-          <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div class="min-w-0 max-w-2xl">
-              <h2 class="font-semibold text-text-top">
-                {m('settings.notifications.push.title')}
-              </h2>
-              {#if pushError}
-                <p class="mt-1">{pushError}</p>
-              {:else if needsIosHomeScreen}
-                <p class="mt-1 font-medium">
-                  {m('settings.notifications.push.ios_home_screen_title')}
-                </p>
-                <p class="mt-1 text-sm text-muted">
-                  {m('settings.notifications.push.ios_home_screen_description')}
-                </p>
-              {:else if !pushSupported}
-                <p class="mt-1">{m('settings.notifications.push.not_supported')}</p>
-              {:else if pushPermission === 'denied'}
-                <p class="mt-1 font-medium">
-                  {m('settings.notifications.push.blocked_title')}
-                </p>
-                <p class="mt-1 text-sm text-muted">
-                  {m('settings.notifications.push.blocked_description')}
-                </p>
-              {:else if pushSubscribed}
-                <p class="mt-1 font-medium">
-                  {m('settings.notifications.push.enabled_title')}
-                </p>
-                <p class="mt-1 text-sm text-muted">
-                  {m('settings.notifications.push.enabled_description')}
-                </p>
-              {:else}
-                <p class="mt-1 text-sm text-muted">
-                  {m('settings.notifications.push.enable_description')}
-                </p>
-              {/if}
+<div class="pane-page">
+  <PaneHeader
+    title={m('settings.notifications.title')}
+    subtitle={m('settings.notifications.subtitle')}
+  />
 
-              {#if pushTestStatus === 'sent'}
-                <p class="mt-2 text-success" role="status">
-                  {m('settings.notifications.push.test_sent')}
-                </p>
-              {:else if pushTestStatus === 'failed'}
-                <p class="mt-2 text-danger" role="alert">
-                  {m('settings.notifications.push.test_failed')}
-                </p>
+  <PaneContent>
+    <div class="flex flex-col gap-6">
+      <!-- Push Notifications Section (only show if enabled on server) -->
+      {#if showPushControls}
+        <section data-testid="push-notification-settings">
+          <Hint
+            tone={pushError
+              ? 'danger'
+              : pushPermission === 'denied'
+                ? 'warning'
+                : pushSubscribed
+                  ? 'success'
+                  : 'info'}
+            icon="icon-[uil--bell]"
+          >
+            <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div class="max-w-2xl min-w-0">
+                <h2 class="font-semibold text-text-top">
+                  {m('settings.notifications.push.title')}
+                </h2>
+                {#if pushError}
+                  <p class="mt-1">{pushError}</p>
+                {:else if needsIosHomeScreen}
+                  <p class="mt-1 font-medium">
+                    {m('settings.notifications.push.ios_home_screen_title')}
+                  </p>
+                  <p class="mt-1 text-sm text-muted">
+                    {m('settings.notifications.push.ios_home_screen_description')}
+                  </p>
+                {:else if !pushSupported}
+                  <p class="mt-1">{m('settings.notifications.push.not_supported')}</p>
+                {:else if pushPermission === 'denied'}
+                  <p class="mt-1 font-medium">
+                    {m('settings.notifications.push.blocked_title')}
+                  </p>
+                  <p class="mt-1 text-sm text-muted">
+                    {m('settings.notifications.push.blocked_description')}
+                  </p>
+                {:else if pushSubscribed}
+                  <p class="mt-1 font-medium">
+                    {m('settings.notifications.push.enabled_title')}
+                  </p>
+                  <p class="mt-1 text-sm text-muted">
+                    {m('settings.notifications.push.enabled_description')}
+                  </p>
+                {:else}
+                  <p class="mt-1 text-sm text-muted">
+                    {m('settings.notifications.push.enable_description')}
+                  </p>
+                {/if}
+
+                {#if pushTestStatus === 'sent'}
+                  <p class="mt-2 text-success" role="status">
+                    {m('settings.notifications.push.test_sent')}
+                  </p>
+                {:else if pushTestStatus === 'failed'}
+                  <p class="mt-2 text-danger" role="alert">
+                    {m('settings.notifications.push.test_failed')}
+                  </p>
+                {/if}
+              </div>
+
+              {#if pushSupported && pushPermission !== 'denied'}
+                {#if pushSubscribed}
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onclick={handleTestPush}
+                    disabled={pushTestLoading}
+                    loading={pushTestLoading}
+                    loadingText={m('settings.notifications.push.testing')}
+                  >
+                    {m('settings.notifications.push.test_button')}
+                  </Button>
+                {:else}
+                  <Button
+                    size="sm"
+                    onclick={handleEnablePush}
+                    disabled={pushLoading}
+                    loading={pushLoading}
+                    loadingText={m('settings.notifications.push.enabling')}
+                  >
+                    {m('settings.notifications.push.enable_button')}
+                  </Button>
+                {/if}
               {/if}
             </div>
+          </Hint>
+        </section>
+      {/if}
 
-            {#if pushSupported && pushPermission !== 'denied'}
-              {#if pushSubscribed}
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onclick={handleTestPush}
-                  disabled={pushTestLoading}
-                  loading={pushTestLoading}
-                  loadingText={m('settings.notifications.push.testing')}
-                >
-                  {m('settings.notifications.push.test_button')}
-                </Button>
-              {:else}
-                <Button
-                  size="sm"
-                  onclick={handleEnablePush}
-                  disabled={pushLoading}
-                  loading={pushLoading}
-                  loadingText={m('settings.notifications.push.enabling')}
-                >
-                  {m('settings.notifications.push.enable_button')}
-                </Button>
-              {/if}
-            {/if}
-          </div>
-        </Hint>
-      </section>
-    {/if}
+      <NotificationPolicySettings />
 
-    <NotificationPolicySettings />
+      <!-- Notification Sound Section -->
+      <Panel title={m('settings.notifications.sound.title')} icon="iconify icon-[uil--volume]">
+        <div class="flex max-w-lg flex-col gap-4">
+          {#each soundCategories as category (category)}
+            {@const sounds = getSoundsForCategory(category)}
+            <FormSection title={soundCategoryLabel(category)}>
+              <div
+                class="flex flex-col gap-1"
+                role="radiogroup"
+                aria-label={soundCategoryLabel(category)}
+              >
+                {#each sounds as sound (sound.id)}
+                  {@const isSelected = notificationPreferences.notificationSound === sound.id}
+                  <ChoiceRow
+                    label={soundNameLabel(sound.id)}
+                    selected={isSelected}
+                    onclick={() => selectSound(sound.id)}
+                  />
+                {/each}
+              </div>
+            </FormSection>
+          {/each}
+        </div>
+      </Panel>
 
-    <!-- Notification Sound Section -->
-    <Panel title={m('settings.notifications.sound.title')} icon="iconify icon-[uil--volume]">
-      <div class="flex max-w-lg flex-col gap-4">
-        {#each soundCategories as category (category)}
-          {@const sounds = getSoundsForCategory(category)}
-          <div>
-            <h4 class="mb-2 text-xs font-medium tracking-wide text-muted uppercase">
-              {soundCategoryLabel(category)}
-            </h4>
-            <div
-              class="flex flex-col gap-1"
-              role="radiogroup"
-              aria-label={soundCategoryLabel(category)}
-            >
-              {#each sounds as sound (sound.id)}
-                {@const isSelected = notificationPreferences.notificationSound === sound.id}
-                <ChoiceRow
-                  label={soundNameLabel(sound.id)}
-                  selected={isSelected}
-                  onclick={() => selectSound(sound.id)}
-                />
-              {/each}
-            </div>
-          </div>
-        {/each}
-      </div>
-    </Panel>
+      <Panel
+        title={m('settings.notifications.sound.shape_title')}
+        icon="iconify icon-[uil--sliders-v-alt]"
+      >
+        {#snippet actions()}
+          <Button
+            variant="secondary"
+            size="sm"
+            onclick={previewSelectedSound}
+            disabled={notificationPreferences.notificationSound === 'silent'}
+          >
+            {m('settings.notifications.sound.preview')}
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onclick={() => notificationPreferences.resetNotificationSoundFilters()}
+          >
+            {m('settings.notifications.sound.reset')}
+          </Button>
+        {/snippet}
 
-    <Panel
-      title={m('settings.notifications.sound.shape_title')}
-      icon="iconify icon-[uil--sliders-v-alt]"
-    >
-      {#snippet actions()}
-        <Button
-          variant="secondary"
-          size="sm"
-          onclick={previewSelectedSound}
-          disabled={notificationPreferences.notificationSound === 'silent'}
-        >
-          {m('settings.notifications.sound.preview')}
-        </Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          onclick={() => notificationPreferences.resetNotificationSoundFilters()}
-        >
-          {m('settings.notifications.sound.reset')}
-        </Button>
-      {/snippet}
+        <div class="flex max-w-lg flex-col gap-2">
+          <RangeField
+            id="notification-volume-filter"
+            testid="notification-volume-filter"
+            label={m('settings.notifications.sound.volume')}
+            icon="icon-[uil--volume]"
+            min={0}
+            max={2}
+            step={0.05}
+            value={notificationPreferences.notificationSoundFilters.volume}
+            displayValue={formatVolume(notificationPreferences.notificationSoundFilters.volume)}
+            oninput={(event) => updateSoundFilter('volume', event)}
+            onchange={previewSelectedSound}
+          />
 
-      <div class="flex max-w-lg flex-col gap-2">
-        <RangeField
-          id="notification-volume-filter"
-          testid="notification-volume-filter"
-          label={m('settings.notifications.sound.volume')}
-          icon="icon-[uil--volume]"
-          min={0}
-          max={2}
-          step={0.05}
-          value={notificationPreferences.notificationSoundFilters.volume}
-          displayValue={formatVolume(notificationPreferences.notificationSoundFilters.volume)}
-          oninput={(event) => updateSoundFilter('volume', event)}
-          onchange={previewSelectedSound}
-        />
+          <RangeField
+            id="notification-high-pass-filter"
+            testid="notification-high-pass-filter"
+            label={m('settings.notifications.sound.tinny')}
+            icon="icon-[uil--bolt]"
+            min={20}
+            max={2000}
+            step={10}
+            value={notificationPreferences.notificationSoundFilters.highPassHz}
+            displayValue={formatTinny(notificationPreferences.notificationSoundFilters.highPassHz)}
+            oninput={(event) => updateSoundFilter('highPassHz', event)}
+            onchange={previewSelectedSound}
+          />
 
-        <RangeField
-          id="notification-high-pass-filter"
-          testid="notification-high-pass-filter"
-          label={m('settings.notifications.sound.tinny')}
-          icon="icon-[uil--bolt]"
-          min={20}
-          max={2000}
-          step={10}
-          value={notificationPreferences.notificationSoundFilters.highPassHz}
-          displayValue={formatTinny(notificationPreferences.notificationSoundFilters.highPassHz)}
-          oninput={(event) => updateSoundFilter('highPassHz', event)}
-          onchange={previewSelectedSound}
-        />
+          <RangeField
+            id="notification-low-pass-filter"
+            testid="notification-low-pass-filter"
+            label={m('settings.notifications.sound.muffled')}
+            icon="icon-[uil--volume-mute]"
+            min={0}
+            max={100}
+            value={muffledAmountFromLowPassHz(
+              notificationPreferences.notificationSoundFilters.lowPassHz
+            )}
+            displayValue={formatMuffled(notificationPreferences.notificationSoundFilters.lowPassHz)}
+            oninput={updateMuffledFilter}
+            onchange={previewSelectedSound}
+          />
 
-        <RangeField
-          id="notification-low-pass-filter"
-          testid="notification-low-pass-filter"
-          label={m('settings.notifications.sound.muffled')}
-          icon="icon-[uil--volume-mute]"
-          min={0}
-          max={100}
-          value={muffledAmountFromLowPassHz(
-            notificationPreferences.notificationSoundFilters.lowPassHz
-          )}
-          displayValue={formatMuffled(notificationPreferences.notificationSoundFilters.lowPassHz)}
-          oninput={updateMuffledFilter}
-          onchange={previewSelectedSound}
-        />
+          <RangeField
+            id="notification-echo-filter"
+            testid="notification-echo-filter"
+            label={m('settings.notifications.sound.echo')}
+            icon="icon-[uil--redo] rtl:-scale-x-100"
+            min={0}
+            max={100}
+            value={notificationPreferences.notificationSoundFilters.echo}
+            displayValue={formatEffect(notificationPreferences.notificationSoundFilters.echo)}
+            oninput={(event) => updateSoundFilter('echo', event)}
+            onchange={previewSelectedSound}
+          />
 
-        <RangeField
-          id="notification-echo-filter"
-          testid="notification-echo-filter"
-          label={m('settings.notifications.sound.echo')}
-          icon="icon-[uil--redo]"
-          min={0}
-          max={100}
-          value={notificationPreferences.notificationSoundFilters.echo}
-          displayValue={formatEffect(notificationPreferences.notificationSoundFilters.echo)}
-          oninput={(event) => updateSoundFilter('echo', event)}
-          onchange={previewSelectedSound}
-        />
+          <RangeField
+            id="notification-reverb-filter"
+            testid="notification-reverb-filter"
+            label={m('settings.notifications.sound.reverb')}
+            icon="icon-[uil--cloud]"
+            min={0}
+            max={100}
+            value={notificationPreferences.notificationSoundFilters.reverb}
+            displayValue={formatEffect(notificationPreferences.notificationSoundFilters.reverb)}
+            oninput={(event) => updateSoundFilter('reverb', event)}
+            onchange={previewSelectedSound}
+          />
 
-        <RangeField
-          id="notification-reverb-filter"
-          testid="notification-reverb-filter"
-          label={m('settings.notifications.sound.reverb')}
-          icon="icon-[uil--cloud]"
-          min={0}
-          max={100}
-          value={notificationPreferences.notificationSoundFilters.reverb}
-          displayValue={formatEffect(notificationPreferences.notificationSoundFilters.reverb)}
-          oninput={(event) => updateSoundFilter('reverb', event)}
-          onchange={previewSelectedSound}
-        />
-
-        <RangeField
-          id="notification-crunch-filter"
-          testid="notification-crunch-filter"
-          label={m('settings.notifications.sound.crunch')}
-          icon="icon-[uil--fire]"
-          min={0}
-          max={100}
-          value={notificationPreferences.notificationSoundFilters.crunch}
-          displayValue={formatEffect(notificationPreferences.notificationSoundFilters.crunch)}
-          oninput={(event) => updateSoundFilter('crunch', event)}
-          onchange={previewSelectedSound}
-        />
-      </div>
-    </Panel>
-  </div>
-</PaneContent>
+          <RangeField
+            id="notification-crunch-filter"
+            testid="notification-crunch-filter"
+            label={m('settings.notifications.sound.crunch')}
+            icon="icon-[uil--fire]"
+            min={0}
+            max={100}
+            value={notificationPreferences.notificationSoundFilters.crunch}
+            displayValue={formatEffect(notificationPreferences.notificationSoundFilters.crunch)}
+            oninput={(event) => updateSoundFilter('crunch', event)}
+            onchange={previewSelectedSound}
+          />
+        </div>
+      </Panel>
+    </div>
+  </PaneContent>
+</div>

@@ -71,7 +71,9 @@
     },
     "timeline": {
       "beginning": "這是這段對話的開端。",
-      "read_denied": "你沒有權限閱讀此房間中的訊息。"
+      "read_denied": "你沒有權限閱讀此房間中的訊息。",
+      "limited_empty": "還沒有你可以閱讀的對話。",
+      "loading": "正在載入訊息..."
     },
     "message": {
       "empty": "尚無訊息",
@@ -87,6 +89,7 @@
         "remove_reaction": "移除 {emoji}",
         "add_reaction": "新增回應",
         "more_reactions": "更多回應",
+        "reactions": "回應",
         "reply": "回覆",
         "reply_room": "在聊天室中回覆",
         "reply_thread": "在討論串中回覆",
@@ -96,9 +99,18 @@
         "edit_short": "編輯",
         "copy_text": "複製文字",
         "copy_text_failed": "無法複製文字",
-        "copy_link": "複製連結"
+        "copy_link": "複製連結",
+        "copy_message_link": "複製訊息連結",
+        "copy_image": "複製圖片",
+        "link_copied": "連結已複製",
+        "message_link_copied": "訊息連結已複製",
+        "copy_link_failed": "無法複製連結",
+        "image_copied": "圖片已複製",
+        "copy_image_failed": "無法複製圖片"
       },
       "meta": {
+        "echo": "回聲",
+        "edited_short": "已編輯",
         "pinned": "已釘選訊息",
         "thread": "討論串",
         "edited": "已編輯的訊息",
@@ -142,6 +154,14 @@
       },
       "show_less": "顯示較少"
     },
+    "typing": {
+      "one": "{name} 正在輸入",
+      "two": "{first} 和 {second} 正在輸入",
+      "many_count": {
+        "other": "{names} 等其他 {count} 人正在輸入",
+        "one": "{names} 等其他 {count} 人正在輸入"
+      }
+    },
     "attachment": {
       "delete_title": "刪除附件",
       "delete_prompt": "確定要刪除此附件嗎？此操作無法復原。",
@@ -150,7 +170,27 @@
       "view_label": "檢視 {filename}",
       "download_label": "下載 {filename}",
       "image_refresh_failed": "無法重新整理圖片連結",
-      "download_refresh_failed": "無法重新整理下載連結"
+      "download_refresh_failed": "無法重新整理下載連結",
+      "add_description": "新增描述",
+      "edit_description": "編輯描述",
+      "description_title": "附件描述",
+      "description_label": "描述（選填）",
+      "description_help": "請為無法看到或聽到此附件的人描述其內容。",
+      "description_too_long": "描述最多可包含 {max} 個字元。",
+      "description_update_failed": "無法更新附件描述",
+      "html_viewer": {
+        "download": "下載",
+        "show_preview": "顯示預覽",
+        "warning": "此文件可能會從外部網站載入內容。這些網站可以看到你的 IP 位址。",
+        "preview_title": "{filename} 的預覽",
+        "preview_failed": "無法載入預覽。請再試一次。",
+        "document_type": "文件類型",
+        "html_document": "HTML 文件",
+        "xhtml_document": "XHTML 文件",
+        "file_size": "檔案大小",
+        "unavailable": "無法取得",
+        "no_preview": "無法預覽此檔案。請下載以儲存。"
+      }
     },
     "link_preview": {
       "delete_title": "刪除連結預覽",
@@ -158,6 +198,7 @@
       "delete_failed": "無法刪除連結預覽"
     },
     "sidebar": {
+      "go_to_message": "前往訊息",
       "extras": "聊天室資訊",
       "resize": "調整聊天室資訊面板大小",
       "hide": "隱藏聊天室資訊",
@@ -170,6 +211,7 @@
       "clear_member_search": "清除成員搜尋",
       "no_members": "找不到成員。",
       "online": "上線（{count}）",
+      "bots": "機器人（{count}）",
       "offline": "離線（{count}）",
       "no_files": "此聊天室尚無檔案。",
       "files": "檔案",
@@ -177,17 +219,17 @@
       "call": "通話",
       "jump_to_file": "前往 {filename}",
       "loading_files": "正在載入檔案...",
+      "loading_members": "正在載入成員...",
       "calls_unavailable": "此伺服器不支援通話。",
       "view_profile": "檢視 {name} 的個人檔案",
       "in_voice_call": "正在語音通話",
       "in_video_call": "正在視訊通話",
-      "ban_failed": "無法將成員停權並移出聊天室",
-      "ban_success": "已將 {name} 停權並移出聊天室"
+      "remove_failed": "無法將使用者移出聊天室",
+      "remove_success": "已將 {name} 移出聊天室",
+      "search": "搜尋"
     },
     "pins": {
-      "show": "顯示已釘選訊息",
       "unseen": "有新的已釘選訊息",
-      "hide": "隱藏已釘選訊息",
       "pin": "釘選訊息",
       "unpin": "取消釘選",
       "unpin_prompt": "確定要取消釘選這則訊息嗎？",

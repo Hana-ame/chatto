@@ -6,12 +6,18 @@ Starlight.
 ## Audience
 
 - Write for community members, server operators, administrators, and API users.
+- Document current product behavior and reader tasks. Do not describe
+  implementation history or internal mechanisms unless readers need that
+  information to use, integrate with, or operate the product.
 - Do not put maintainer workflow text in visible pages. You can use hidden
   source comments when they help.
 - The repository, binaries, and Docker images are public. Do not document
   private repository or registry access.
 
 ## Keep Docs In Sync
+
+Apply the meaningful reader impact rule in root `AGENTS.md` before making any
+of the updates below. Related code changes alone do not require guide updates.
 
 - Public API stability or version-skew changes: update
   `guides/integrations/api-compatibility.mdx` and the API
@@ -24,6 +30,13 @@ Starlight.
   guide pages that mention them.
 - Add a sidebar entry in `astro.config.mjs` for a new page when needed.
 - Keep generated ConnectRPC reference pages useful to API users.
+- Generate the realtime reference from `chatto.realtime.v1`. Its
+  `RealtimeEvent` union lists the public event variants. The small realtime
+  `events.proto` catalogue owns their dedicated public payloads. Do not expose the complete
+  core Event union or storage-only fields as a public reference.
+- When a client-visible event changes, update the realtime payload catalogue,
+  union, generated reference, protocol guide, compatibility guide, and release
+  notes in the same change.
 - Do not add instructions to upgrade all replicas for a routine feature.
   Operators already keep replicas on a consistent version. Add rollout
   instructions only when an upgrade needs a special order, downtime, an
@@ -31,8 +44,7 @@ Starlight.
 
 ## Style
 
-- Follow the ASD-STE100 rules and the approved exclusion list in the root
-  `AGENTS.md`. The root list is the only documentation exclusion list.
+- Follow root `AGENTS.md` for ASD-STE100 and canonical terminology.
 - Use direct, short sentences.
 - Use the second person and present tense.
 - Give the action before background information.

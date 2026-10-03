@@ -1,10 +1,12 @@
 <script lang="ts">
+  import { toastError } from '$lib/utils/errorMessage';
+  import { formatAccountName } from '@chatto/client/timeline/accountName';
   import { PresenceStatus } from '@chatto/api-types/api/v1/presence_pb';
-  import DropZoneOverlay from '$lib/attachments/DropZoneOverlay.svelte';
-  import { dropZone } from '$lib/attachments/dropZone.svelte';
+  import DropZoneOverlay from '$lib/dom/DropZoneOverlay.svelte';
+  import { dropZone } from '$lib/dom/dropZone.svelte';
   import UserAvatar from '$lib/components/UserAvatar.svelte';
   import { m } from '$lib/i18n/messages';
-  import Panel from '$lib/ui/Panel.svelte';
+  import { Panel } from '$lib/ui';
   import { Button } from '$lib/ui/form';
   import { toast } from '$lib/ui/toast';
 
@@ -55,9 +57,7 @@
     try {
       if (await onupload(file)) toast.success(m('settings.profile.avatar.uploaded'));
     } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : m('settings.profile.avatar.upload_failed')
-      );
+      toastError(error, m('settings.profile.avatar.upload_failed'));
     } finally {
       uploading = false;
       if (fileInput) fileInput.value = '';
@@ -82,9 +82,7 @@
     try {
       if (await ondelete()) toast.success(m('settings.profile.avatar.removed'));
     } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : m('settings.profile.avatar.delete_failed')
-      );
+      toastError(error, m('settings.profile.avatar.delete_failed'));
     } finally {
       deleting = false;
     }
@@ -96,7 +94,7 @@
     class="relative flex max-w-md items-start gap-6"
     data-testid="avatar-drop-zone"
     role="group"
-    aria-label={`${m('settings.profile.avatar.title')}: ${user.displayName}`}
+    aria-label={`${m('settings.profile.avatar.title')}: ${formatAccountName(user.displayName, user)}`}
     {@attach avatarDropZone}
   >
     <DropZoneOverlay
@@ -119,7 +117,7 @@
         />
         <Button
           onclick={() => fileInput?.click()}
-          label={`${user.avatarUrl ? m('settings.profile.avatar.change') : m('settings.profile.avatar.upload')}: ${user.displayName}`}
+          label={`${user.avatarUrl ? m('settings.profile.avatar.change') : m('settings.profile.avatar.upload')}: ${formatAccountName(user.displayName, user)}`}
           loading={uploading}
           loadingText={m('settings.profile.avatar.uploading')}
         >
@@ -134,7 +132,7 @@
           <Button
             variant="danger-secondary"
             onclick={deleteAvatar}
-            label={`${m('settings.profile.avatar.remove')}: ${user.displayName}`}
+            label={`${m('settings.profile.avatar.remove')}: ${formatAccountName(user.displayName, user)}`}
             loading={deleting}
             loadingText={m('settings.profile.avatar.removing')}
           >

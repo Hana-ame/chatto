@@ -1,27 +1,25 @@
 <script lang="ts">
-  import type { MessageAttachmentView } from '$lib/render/messageAttachments';
-  import type { ImageItem } from '$lib/ui/ImageModal.svelte';
+  import { trackScrollEdges, type ScrollEdges } from '$lib/ui/scrollEdges';
+  import { LoadingFog, LoadRetry } from '$lib/ui';
+  import { type MessageAttachmentView } from '@chatto/client/timeline/messageAttachments';
 
   type RawAttachment = MessageAttachmentView;
-  import SkeletonImg from '$lib/ui/SkeletonImg.svelte';
   import { SvelteMap, SvelteSet } from 'svelte/reactivity';
   import { pushState } from '$app/navigation';
   import { useServerScope } from '$lib/state/server/scope.svelte';
   import { m } from '$lib/i18n/messages';
-  import { toast } from '$lib/ui/toast';
   import {
     assetUrlNeedsRefresh,
     createAssetUrlRetainer,
     earliestAssetUrlRefreshAt,
-    LIGHTBOX_ATTACHMENT_IMAGE_REFRESH,
     mergeRefreshedAttachmentUrls,
     refreshAttachmentUrlsForAssets,
     withAssetUrlRetryParam,
     type ExpiringAssetUrl,
     type RefreshedAttachmentUrls
-  } from '$lib/attachments/attachmentUrls';
-  import { createAttachmentAPI } from '$lib/api-client/attachments';
-  import { assetUrlForServer } from '$lib/assets/assetUrls';
+  } from '@chatto/client/attachments/attachmentUrls';
+  import { createAttachmentAPI } from '@chatto/client/api/attachments';
+  import { assetUrlForServer } from '@chatto/client/util/assetUrls';
   import { useExpiringAssetUrlRefresh } from '$lib/attachments/useExpiringAssetUrlRefresh.svelte';
 
   let videoPlayerModule: Promise<typeof import('$lib/components/chat/VideoPlayer.svelte')> | null =
@@ -43,22 +41,25 @@
     serverId,
     roomId,
     eventId,
-    canDeleteAttachment = false
+    canDeleteAttachment = false,
+    canEditAttachmentDescription = false
   }: {
     attachments: readonly MessageAttachmentView[];
     serverId: string;
     roomId: string;
     eventId: string;
     canDeleteAttachment?: boolean;
+    canEditAttachmentDescription?: boolean;
   } = $props();
 
   let refreshedAttachmentUrls = $state.raw(new Map<string, RefreshedAttachmentUrls>());
   const assetRetrySalts = new SvelteMap<string, number>();
   let refreshPromise: Promise<Map<string, RefreshedAttachmentUrls>> | null = null;
   const failedAssetRefreshKeys = new SvelteSet<string>();
+  // Retain only the latest settled URL per attachment as signed URLs rotate.
+  const settledImageUrls = new SvelteMap<string, string>();
   const retainAssetUrl = createAssetUrlRetainer();
-  let galleryScrolledFromLeft = $state(false);
-  let galleryScrolledFromRight = $state(false);
+  let galleryEdges = $state<ScrollEdges>({ start: false, end: false });
 
   function normalizeAssetUrl(value: ExpiringAssetUrl | null | undefined): ExpiringAssetUrl | null {
     if (!value) return null;
@@ -145,6 +146,10 @@
     };
   }
 
+  function descriptionID(attachment: Attachment): string {
+    return `attachment-description-${eventId}-${attachment.id}`;
+  }
+
   type Attachment = ReturnType<typeof normalizeAttachment>;
 
   const attachments = $derived.by(() =>
@@ -216,6 +221,15 @@
     };
   }
 
+  /** Reserve a stable frame when an older image has no recorded dimensions. */
+  function fallbackSingleThumbDisplay(): ThumbDisplay {
+    return {
+      width: PORTRAIT_THUMB_MAX_WIDTH,
+      height: SINGLE_THUMB_MAX_HEIGHT,
+      fit: 'contain'
+    };
+  }
+
   function isGalleryImageAttachment(attachment: Attachment): boolean {
     return (
       attachment.contentType.startsWith('image/') &&
@@ -234,43 +248,9 @@
     return attachment.thumbnailUrl ?? attachment.url;
   }
 
-  function updateGalleryScrollEdges(el: HTMLElement) {
-    const maxScrollLeft = Math.max(0, el.scrollWidth - el.clientWidth);
-    const scrollLeft = Math.min(Math.max(el.scrollLeft, 0), maxScrollLeft);
-    const canScroll = maxScrollLeft > 1;
-
-    galleryScrolledFromLeft = canScroll && scrollLeft > 1;
-    galleryScrolledFromRight = canScroll && maxScrollLeft - scrollLeft > 1;
-  }
-
-  function trackGalleryScrollEdges(el: HTMLElement) {
-    const update = () => updateGalleryScrollEdges(el);
-
-    update();
-    el.addEventListener('scroll', update, { passive: true });
-
-    const ro = new ResizeObserver(update);
-    ro.observe(el);
-    for (const child of el.children) {
-      if (child instanceof HTMLElement) ro.observe(child);
-    }
-
-    const mo = new MutationObserver(() => {
-      ro.disconnect();
-      ro.observe(el);
-      for (const child of el.children) {
-        if (child instanceof HTMLElement) ro.observe(child);
-      }
-      update();
-    });
-    mo.observe(el, { childList: true });
-
-    return () => {
-      el.removeEventListener('scroll', update);
-      mo.disconnect();
-      ro.disconnect();
-    };
-  }
+  const trackGalleryScrollEdges = trackScrollEdges('x', (edges) => {
+    galleryEdges = edges;
+  });
 
   const imageAttachments = $derived(attachments.filter(isGalleryImageAttachment));
   const hasImageGallery = $derived(imageAttachments.length > 1);
@@ -371,70 +351,22 @@
     return serverScope.connection.getAPI(createAttachmentAPI);
   }
 
-  async function refreshLightboxUrls(): Promise<Map<string, RefreshedAttachmentUrls>> {
-    const freshUrls = await refreshAttachmentUrlsForAssets(
-      currentAttachmentAPI(),
-      roomId,
-      imageAttachments.map((attachment) => attachment.id),
-      LIGHTBOX_ATTACHMENT_IMAGE_REFRESH
-    );
-    if (freshUrls.size > 0) {
-      refreshedAttachmentUrls = mergeRefreshedAttachmentUrls(refreshedAttachmentUrls, freshUrls);
-    }
-    return freshUrls;
-  }
-
-  async function openImageModal(attachment: Attachment) {
-    // Refresh in one round-trip so navigating between images in the
-    // lightbox can't hit an expired URL mid-session.
-    const freshUrls = await refreshLightboxUrls();
-    if (!serverScope.isCurrent()) return;
-    const imageItems: ImageItem[] = imageAttachments
-      .map((a) => ({
-        id: a.id,
-        src:
-          normalizeAssetUrl(
-            freshUrls.has(a.id) ? freshUrls.get(a.id)!.thumbnailAssetUrl : a.thumbnailAssetUrl
-          )?.url ?? '',
-        originalSrc: normalizeAssetUrl(
-          freshUrls.has(a.id) ? freshUrls.get(a.id)!.assetUrl : a.assetUrl
-        )?.url,
-        alt: a.filename,
-        filename: a.filename
-      }))
-      .filter((item) => item.src !== '');
-    if (imageItems.length === 0) {
-      toast.error(m('room.attachment.image_refresh_failed'));
-      return;
-    }
-    const imageIndex = imageItems.findIndex((item) => item.id === attachment.id);
-    if (imageIndex < 0) {
-      toast.error(m('room.attachment.image_refresh_failed'));
-      return;
-    }
+  function openAttachmentModal(attachment: Attachment) {
+    // Capture file identities and URLs; media state stays local to the viewer.
+    const items =
+      attachment.contentType.startsWith('image/') && !attachment.videoProcessing
+        ? attachments.filter((a) => a.contentType.startsWith('image/') && !a.videoProcessing)
+        : attachments.filter((a) => a.id === attachment.id);
     pushState('', {
       modal: {
-        type: 'imageViewer',
+        type: 'attachmentViewer',
         serverId,
         roomId,
         eventId,
-        imageItems,
-        imageIndex
+        items,
+        index: items.findIndex((a) => a.id === attachment.id)
       }
     });
-  }
-
-  async function openDownload(attachment: Attachment) {
-    const freshUrls = await refreshAndApplyUrls();
-    if (!serverScope.isCurrent()) return;
-    const fresh = normalizeAssetUrl(
-      freshUrls.has(attachment.id) ? freshUrls.get(attachment.id)!.assetUrl : attachment.assetUrl
-    )?.url;
-    if (!fresh) {
-      toast.error(m('room.attachment.download_refresh_failed'));
-      return;
-    }
-    window.open(fresh, '_blank', 'noopener,noreferrer');
   }
 
   function openDeleteConfirmation(attachment: Attachment, event: Event) {
@@ -451,20 +383,76 @@
       }
     });
   }
+
+  function openDescriptionEditor(attachment: Attachment, event: Event) {
+    event.stopPropagation();
+    pushState('', {
+      modal: {
+        type: 'editAttachmentDescription',
+        serverId,
+        roomId,
+        eventId,
+        attachmentId: attachment.id,
+        description: attachment.description ?? ''
+      }
+    });
+  }
 </script>
 
 {#if attachments.length > 0}
-  {#snippet deleteAttachmentButton(attachment: Attachment, className = '')}
+  {#snippet deleteAttachmentButton(attachment: Attachment)}
     {#if canDeleteAttachment}
       <button
         type="button"
         onclick={(event) => openDeleteConfirmation(attachment, event)}
-        class={['attachment-remove-button md:group-hover/attachment:opacity-100', className]}
+        class="btn-danger-secondary attachment-action-button"
         aria-label={m('room.attachment.delete_label')}
         title={m('room.attachment.delete_label')}
       >
-        <span class="iconify icon-[uil--times] text-sm"></span>
+        <span class="iconify icon-[uil--trash-alt] text-sm" aria-hidden="true"></span>
       </button>
+    {/if}
+  {/snippet}
+
+  {#snippet editDescriptionButton(attachment: Attachment)}
+    {#if canEditAttachmentDescription}
+      <button
+        type="button"
+        onclick={(event) => openDescriptionEditor(attachment, event)}
+        class="btn-secondary attachment-action-button"
+        aria-label={attachment.description
+          ? m('room.attachment.edit_description')
+          : m('room.attachment.add_description')}
+        title={attachment.description
+          ? m('room.attachment.edit_description')
+          : m('room.attachment.add_description')}
+      >
+        <span class="iconify icon-[uil--file-edit-alt] text-sm" aria-hidden="true"></span>
+      </button>
+    {/if}
+  {/snippet}
+
+  {#snippet attachmentControls(
+    attachment: Attachment,
+    showViewer = false,
+    layout: 'overlay' | 'row' = 'overlay'
+  )}
+    {#if canDeleteAttachment || showViewer || canEditAttachmentDescription}
+      <div
+        class={[
+          'z-10 flex gap-1',
+          layout === 'row' ? 'max-w-full flex-wrap items-center' : 'shrink-0 flex-col',
+          layout === 'overlay' && 'absolute end-2 top-3',
+          layout !== 'row' &&
+            'transition-opacity feedback-quick group-hover/attachment:opacity-100 focus-within:opacity-100 compact-input:hover-actions:opacity-0'
+        ]}
+      >
+        {@render deleteAttachmentButton(attachment)}
+        {#if showViewer}
+          {@render viewAttachmentButton(attachment)}
+        {/if}
+        {@render editDescriptionButton(attachment)}
+      </div>
     {/if}
   {/snippet}
 
@@ -476,195 +464,228 @@
           : thumbDisplay(attachment.width, attachment.height)
         : variant === 'gallery'
           ? fallbackGalleryThumbDisplay()
-          : null}
+          : fallbackSingleThumbDisplay()}
+    <div
+      class={[
+        'group/attachment relative min-w-0',
+        variant === 'gallery' ? 'shrink-0' : 'max-w-full'
+      ]}
+    >
+      <button
+        type="button"
+        onclick={() => openAttachmentModal(attachment)}
+        data-message-image-attachment
+        title={attachment.description || undefined}
+        aria-label={m('room.attachment.view_label', { filename: attachment.filename })}
+        aria-describedby={attachment.description ? descriptionID(attachment) : undefined}
+        data-testid={variant === 'gallery' ? 'message-gallery-image' : undefined}
+        style={imageButtonStyle(display, variant)}
+        class="relative embed-frame block min-w-0 cursor-pointer overflow-hidden"
+      >
+        {#if attachment.description}
+          <span id={descriptionID(attachment)} class="sr-only">{attachment.description}</span>
+        {/if}
+        {#if imageAttachmentUrl(attachment)}
+          {@const imageUrl = imageAttachmentUrl(attachment)!}
+          {#if settledImageUrls.get(attachment.id) !== imageUrl}
+            <span class="pointer-events-none absolute inset-0" aria-hidden="true">
+              <LoadingFog class="h-full w-full rounded-none" />
+            </span>
+          {/if}
+          <img
+            loading="lazy"
+            src={imageUrl}
+            alt={attachment.description || attachment.filename}
+            class={['h-full w-full', display.fit === 'contain' ? 'object-contain' : 'object-cover']}
+            onload={() => settledImageUrls.set(attachment.id, imageUrl)}
+            onerror={() => {
+              settledImageUrls.set(attachment.id, imageUrl);
+              refreshAfterAssetError(attachment, attachment.thumbnailUrl ? 'thumbnail' : 'asset');
+            }}
+          />
+        {:else}
+          <span class="flex h-16 w-16 items-center justify-center text-muted" aria-hidden="true">
+            <span aria-hidden="true" class="iconify icon-[mdi--file-image-outline] text-2xl"></span>
+          </span>
+        {/if}
+      </button>
+      {@render attachmentControls(attachment)}
+    </div>
+  {/snippet}
+
+  {#snippet viewAttachmentButton(attachment: Attachment)}
     <button
       type="button"
-      onclick={() => openImageModal(attachment)}
+      class="btn-secondary attachment-action-button"
+      onclick={(event) => {
+        // Stop inline playback before the viewer creates another player.
+        event.currentTarget
+          .closest('[data-attachment-media]')
+          ?.querySelectorAll('audio, video')
+          .forEach((media) => {
+            if (media instanceof HTMLMediaElement) media.pause();
+          });
+        openAttachmentModal(attachment);
+      }}
       aria-label={m('room.attachment.view_label', { filename: attachment.filename })}
-      data-testid={variant === 'gallery' ? 'message-gallery-image' : undefined}
-      class={[
-        'group/attachment relative embed-frame block min-w-0 cursor-pointer',
-        variant === 'gallery' && 'shrink-0',
-        !display && 'max-h-32'
-      ]}
-      style={display ? imageButtonStyle(display, variant) : undefined}
+      title={m('room.attachment.view_label', { filename: attachment.filename })}
+      aria-describedby={attachment.description ? descriptionID(attachment) : undefined}
     >
-      {#if imageAttachmentUrl(attachment)}
-        <SkeletonImg
-          loading="lazy"
-          src={imageAttachmentUrl(attachment)}
-          alt={attachment.filename}
-          class={[
-            display?.fit === 'contain' ? 'object-contain' : 'object-cover',
-            display ? 'h-full w-full' : 'max-h-32 w-auto'
-          ]}
-          onerror={() =>
-            refreshAfterAssetError(attachment, attachment.thumbnailUrl ? 'thumbnail' : 'asset')}
-        />
-      {:else}
-        <span class="flex h-16 w-16 items-center justify-center text-muted" aria-hidden="true">
-          <span class="iconify icon-[mdi--file-image-outline] text-2xl"></span>
-        </span>
-      {/if}
-      {#if canDeleteAttachment}
-        <span
-          role="button"
-          tabindex="-1"
-          onclick={(e) => openDeleteConfirmation(attachment, e)}
-          onkeydown={(e) => {
-            if (e.key === 'Enter' || e.key === ' ') openDeleteConfirmation(attachment, e);
-          }}
-          class="attachment-remove-button md:group-hover/attachment:opacity-100"
-          aria-label={m('room.attachment.delete_label')}
-          title={m('room.attachment.delete_label')}
-        >
-          <span class="iconify icon-[uil--times] text-sm"></span>
-        </span>
-      {/if}
+      <span class="iconify icon-[uil--expand-alt] shrink-0" aria-hidden="true"></span>
     </button>
   {/snippet}
 
   {#snippet attachmentItem(attachment: Attachment)}
-    {#if attachment.videoProcessing && (attachment.contentType === 'image/gif' || attachment.contentType.startsWith('video/'))}
-      {@const autoLoop = attachment.contentType === 'image/gif'}
-      <div class="group/attachment relative min-w-0">
-        {#await loadVideoPlayer(videoPlayerLoadAttempt)}
-          <div
-            class="embed-frame flex min-h-32 min-w-48 items-center justify-center p-4 text-sm text-muted"
-            aria-busy="true"
-          >
-            {m('common.loading')}
-          </div>
-        {:then { default: VideoPlayer }}
-          <VideoPlayer
-            status={attachment.videoProcessing.status}
-            variants={attachment.videoProcessing.variants}
-            thumbnailUrl={attachment.videoProcessing.thumbnailUrl}
-            hlsUrl={attachment.videoProcessing.hlsUrl}
-            fallbackUrl={attachment.url}
-            fallbackContentType={attachment.contentType}
-            width={attachment.videoProcessing.width}
-            height={attachment.videoProcessing.height}
-            reasonCode={attachment.videoProcessing.reasonCode}
-            filename={attachment.filename}
-            {autoLoop}
-            onPosterError={autoLoop ? undefined : () => refreshAfterAssetError(attachment, 'video')}
-            onMediaError={() =>
-              refreshAfterAssetError(
-                attachment,
-                !autoLoop && attachment.videoProcessing?.hlsUrl ? 'hls' : 'video'
-              )}
-          />
-        {:catch}
-          <div
-            class="embed-frame flex min-h-32 min-w-48 flex-col items-center justify-center gap-3 p-4 text-center"
-          >
-            <p class="text-sm text-muted">{m('common.error.network')}</p>
-            <button
-              type="button"
-              class="btn-secondary"
-              onclick={() => (videoPlayerLoadAttempt += 1)}
-            >
-              {m('common.retry')}
-            </button>
-          </div>
-        {/await}
-        {@render deleteAttachmentButton(attachment, autoLoop ? '' : 'z-10')}
-      </div>
-    {:else if attachment.contentType.startsWith('image/')}
-      {@render imageAttachmentButton(attachment, 'single')}
-    {:else if attachment.contentType.startsWith('video/') && attachment.url}
-      <!--
+    <div class="flex max-w-full min-w-0 flex-col items-start">
+      {#if attachment.videoProcessing && (attachment.contentType === 'image/gif' || attachment.contentType.startsWith('video/'))}
+        {@const autoLoop = attachment.contentType === 'image/gif'}
+        <div
+          class="group/attachment attachment-video-frame"
+          data-attachment-media
+          title={attachment.description || undefined}
+        >
+          {#await loadVideoPlayer(videoPlayerLoadAttempt)}
+            <LoadingFog class="embed-frame min-h-32 min-w-48" />
+          {:then { default: VideoPlayer }}
+            <VideoPlayer
+              status={attachment.videoProcessing.status}
+              variants={attachment.videoProcessing.variants}
+              thumbnailUrl={attachment.videoProcessing.thumbnailUrl}
+              hlsUrl={attachment.videoProcessing.hlsUrl}
+              fallbackUrl={attachment.url}
+              fallbackContentType={attachment.contentType}
+              width={attachment.videoProcessing.width}
+              height={attachment.videoProcessing.height}
+              reasonCode={attachment.videoProcessing.reasonCode}
+              filename={attachment.filename}
+              describedBy={attachment.description ? descriptionID(attachment) : undefined}
+              {autoLoop}
+              onPosterError={autoLoop
+                ? undefined
+                : () => refreshAfterAssetError(attachment, 'video')}
+              onMediaError={() =>
+                refreshAfterAssetError(
+                  attachment,
+                  !autoLoop && attachment.videoProcessing?.hlsUrl ? 'hls' : 'video'
+                )}
+            />
+          {:catch}
+            <LoadRetry
+              class="embed-frame min-h-32 min-w-48"
+              onretry={() => (videoPlayerLoadAttempt += 1)}
+            />
+          {/await}
+          {@render attachmentControls(attachment, true)}
+        </div>
+      {:else if attachment.contentType.startsWith('image/')}
+        {@render imageAttachmentButton(attachment, 'single')}
+      {:else if attachment.contentType.startsWith('video/') && attachment.url}
+        <!--
           A video attachment that hasn't been projected as a processing manifest
           yet — e.g. the message arrived before AssetProcessingStartedEvent did,
           or processing has never been requested for this asset. Render the raw
           original so the user can at least play it.
         -->
-      <div class="embed-frame">
-        <video
-          controls
-          preload="metadata"
-          src={attachment.url}
-          class="max-h-64 max-w-full"
-          onerror={() => refreshAfterAssetError(attachment, 'asset')}
+        <div
+          class="group/attachment attachment-video-frame embed-frame"
+          data-attachment-media
+          title={attachment.description || undefined}
         >
-          <track kind="captions" />
-        </video>
-      </div>
-    {:else if attachment.contentType.startsWith('audio/') && attachment.url}
-      <div class="group/attachment relative min-w-0">
-        <div class="embed-frame flex items-center gap-3 px-3 py-2">
+          <video
+            controls
+            preload="metadata"
+            src={attachment.url}
+            class="max-h-64 max-w-full object-contain"
+            onerror={() => refreshAfterAssetError(attachment, 'asset')}
+            aria-describedby={attachment.description ? descriptionID(attachment) : undefined}
+          >
+            <track kind="captions" />
+          </video>
+          {@render attachmentControls(attachment, true)}
+        </div>
+      {:else if attachment.contentType.startsWith('audio/') && attachment.url}
+        <div
+          class="group/attachment embed-frame attachment-card w-[30rem] min-w-0 flex-wrap"
+          data-attachment-media
+          title={attachment.description || undefined}
+        >
           <audio
             controls
             preload="metadata"
             src={attachment.url}
-            class="h-8 max-w-xs"
+            class="h-10 max-w-full min-w-[min(12rem,100%)] flex-1 basis-48"
             data-testid="audio-player"
             onerror={() => refreshAfterAssetError(attachment, 'asset')}
+            aria-describedby={attachment.description ? descriptionID(attachment) : undefined}
           >
             {attachment.filename}
           </audio>
-          <span class="text-sm text-muted">{attachment.filename}</span>
+          {@render attachmentControls(attachment, true, 'row')}
         </div>
-        {@render deleteAttachmentButton(attachment)}
-      </div>
-    {:else}
-      <div class="group/attachment relative embed-frame block">
-        <button
-          type="button"
-          onclick={() => openDownload(attachment)}
-          aria-label={m('room.attachment.download_label', { filename: attachment.filename })}
-          class="block w-full cursor-pointer text-start"
-        >
-          <div class="flex h-16 items-center gap-2 px-3">
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              class="h-6 w-6 text-muted"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-            >
-              <path
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                stroke-width="2"
-                d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"
-              />
-            </svg>
-            <span class="text-sm">{attachment.filename}</span>
-          </div>
-        </button>
-        {@render deleteAttachmentButton(attachment)}
-      </div>
-    {/if}
+      {:else}
+        <div class="group/attachment embed-frame attachment-card min-w-[min(14rem,100%)]">
+          <button
+            type="button"
+            onclick={() => openAttachmentModal(attachment)}
+            aria-label={m('room.attachment.view_label', { filename: attachment.filename })}
+            aria-describedby={attachment.description ? descriptionID(attachment) : undefined}
+            class="block min-w-0 flex-1 cursor-pointer text-start"
+            title={attachment.description || undefined}
+          >
+            <div class="flex min-h-10 items-center gap-3">
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                class="h-6 w-6 shrink-0 text-muted"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"
+                />
+              </svg>
+              <span class="min-w-0 text-sm wrap-anywhere"><bdi>{attachment.filename}</bdi></span>
+            </div>
+          </button>
+          {@render attachmentControls(attachment, false, 'row')}
+        </div>
+      {/if}
+      {#if attachment.description && !isGalleryImageAttachment(attachment)}
+        <span id={descriptionID(attachment)} class="sr-only">{attachment.description}</span>
+      {/if}
+    </div>
   {/snippet}
 
   {#if hasImageGallery}
     <div class="mt-2 flex min-w-0 flex-col gap-2 first:mt-0">
       <div class="relative w-full max-w-full min-w-0">
         <div
-          {@attach trackGalleryScrollEdges}
-          class="flex w-full gap-3 overflow-x-auto overscroll-x-contain p-1"
+          class="w-full overflow-x-auto overscroll-x-contain"
           data-testid="message-image-gallery"
         >
-          {#each imageAttachments as attachment (attachment.id)}
-            {@render imageAttachmentButton(attachment, 'gallery')}
-          {/each}
+          <div class="flex w-max min-w-full gap-3 p-1" {@attach trackGalleryScrollEdges}>
+            {#each imageAttachments as attachment (attachment.id)}
+              {@render imageAttachmentButton(attachment, 'gallery')}
+            {/each}
+          </div>
         </div>
         <div
           aria-hidden="true"
-          data-testid="message-image-gallery-left-fade"
+          data-testid="message-image-gallery-start-fade"
           class={[
-            'pointer-events-none absolute inset-y-0 left-0 z-10 w-8 bg-gradient-to-r from-background to-transparent transition-opacity',
-            !galleryScrolledFromLeft && 'opacity-0'
+            'pointer-events-none absolute inset-y-0 start-0 z-10 w-8 bg-gradient-to-r from-background to-transparent transition-opacity group-hover/msg:from-surface rtl:bg-gradient-to-l',
+            !galleryEdges.start && 'opacity-0'
           ]}
         ></div>
         <div
           aria-hidden="true"
-          data-testid="message-image-gallery-right-fade"
+          data-testid="message-image-gallery-end-fade"
           class={[
-            'pointer-events-none absolute inset-y-0 right-0 z-10 w-8 bg-gradient-to-l from-background to-transparent transition-opacity',
-            !galleryScrolledFromRight && 'opacity-0'
+            'pointer-events-none absolute inset-y-0 end-0 z-10 w-8 bg-gradient-to-l from-background to-transparent transition-opacity group-hover/msg:from-surface rtl:bg-gradient-to-r',
+            !galleryEdges.end && 'opacity-0'
           ]}
         ></div>
       </div>

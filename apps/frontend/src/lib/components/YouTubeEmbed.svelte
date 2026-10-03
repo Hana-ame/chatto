@@ -29,6 +29,7 @@ Its parent owns shared link-preview actions and passes the relevant callbacks.
   } = $props();
 </script>
 
+<!-- Context menu only. The same actions stay available from the message action menu. -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
   class="group/preview relative embed-frame w-full max-w-md"
@@ -46,19 +47,19 @@ Its parent owns shared link-preview actions and passes the relevant callbacks.
     <button
       type="button"
       onclick={onDismiss}
-      class="embed-control-button md:group-hover/preview:opacity-100"
+      class="embed-control-button"
       aria-label={m('preview.youtube_dismiss')}
     >
-      <span class="iconify icon-[uil--times] text-sm"></span>
+      <span aria-hidden="true" class="iconify icon-[uil--times] text-sm"></span>
     </button>
   {:else if onDelete}
     <button
       type="button"
       onclick={onDelete}
-      class="embed-control-button md:group-hover/preview:opacity-100"
+      class="embed-control-button"
       aria-label={m('preview.youtube_delete')}
     >
-      <span class="iconify icon-[uil--times] text-sm"></span>
+      <span aria-hidden="true" class="iconify icon-[uil--times] text-sm"></span>
     </button>
   {/if}
 </div>

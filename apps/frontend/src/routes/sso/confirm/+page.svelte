@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { errorMessage } from '$lib/utils/errorMessage';
   import { goto } from '$app/navigation';
   import { resolve } from '$app/paths';
   import { completeOriginAuthentication } from '$lib/auth/originAuthentication';
@@ -6,11 +7,10 @@
   import {
     createExternalIdentityFlowAPI,
     ExternalIdentityFlowKind
-  } from '$lib/api-client/externalIdentities';
+  } from '$lib/api/externalIdentities';
   import { m } from '$lib/i18n/messages';
   import { validateDisplayName } from '$lib/validation/displayName';
-  import Hint from '$lib/ui/Hint.svelte';
-  import PageTitle from '$lib/ui/PageTitle.svelte';
+  import { Hint, PageTitle } from '$lib/ui';
   import { TextInput, FormError, Button, z, validate } from '$lib/ui/form';
 
   const { data } = $props();
@@ -57,12 +57,22 @@
     actionError = '';
     try {
       await flowAPI.createAccount({ token: data.token, login, displayName });
+      const returnURL = new URL(redirectPath, window.location.origin);
+      if (
+        returnURL.pathname === resolve('/servers/callback') &&
+        returnURL.searchParams.get('mode') === 'provider'
+      ) {
+        // The opening tab owns its saved return navigation. Complete this
+        // popup before any copied sessionStorage return path can take over.
+        await goto(resolve(redirectPath as '/'), { replaceState: true });
+        return;
+      }
       const resumedReturnNavigation = await completeOriginAuthentication();
       if (!resumedReturnNavigation) {
         goto(resolve(redirectPath as '/'), { replaceState: true });
       }
     } catch (err) {
-      actionError = err instanceof Error ? err.message : m('auth.sso.create_failed');
+      actionError = errorMessage(err, m('auth.sso.create_failed'));
     } finally {
       submitting = false;
     }
@@ -77,7 +87,7 @@
       await flowAPI.confirmLink(data.token);
       goto(resolve(redirectPath as '/'), { replaceState: true });
     } catch (err) {
-      actionError = err instanceof Error ? err.message : m('auth.sso.link_failed');
+      actionError = errorMessage(err, m('auth.sso.link_failed'));
     } finally {
       submitting = false;
     }
@@ -97,9 +107,7 @@
 
 <PageTitle title={m('auth.sso.title')} />
 
-<AuthLayout>
-  <h1 class="mb-6 text-center text-2xl font-bold">{m('auth.sso.title')}</h1>
-
+<AuthLayout title={m('auth.sso.title')}>
   {#if !data.token}
     <Hint tone="danger">{m('auth.sso.invalid')}</Hint>
     <p class="mt-6 text-center">
@@ -155,14 +163,14 @@
         loading={submitting}
         loadingText={m('auth.sso.creating')}
       >
-        <span class="iconify icon-[uil--user-plus]"></span>
+        <span aria-hidden="true" class="iconify icon-[uil--user-plus]"></span>
         {m('common.create_account')}
       </Button>
     </form>
 
     <div class="mt-3">
       <Button variant="secondary" fullWidth href={resolve('/login')} disabled={submitting}>
-        <span class="iconify icon-[mdi--login]"></span>
+        <span aria-hidden="true" class="iconify icon-[mdi--login]"></span>
         {m('auth.sso.sign_in_existing')}
       </Button>
     </div>
@@ -192,7 +200,7 @@
         loadingText={m('auth.sso.linking')}
         onclick={handleLink}
       >
-        <span class="iconify icon-[uil--link]"></span>
+        <span aria-hidden="true" class="iconify icon-[uil--link]"></span>
         {m('auth.sso.link_button')}
       </Button>
       <Button variant="secondary" fullWidth onclick={handleCancel} disabled={submitting}>

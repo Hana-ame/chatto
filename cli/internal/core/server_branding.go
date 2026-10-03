@@ -4,24 +4,15 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"hmans.de/chatto/internal/pb/chatto/core/live/v1"
 	"io"
-	"net/url"
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"google.golang.org/protobuf/proto"
 
 	"hmans.de/chatto/internal/assets"
-	"hmans.de/chatto/internal/core/subjects"
 	"hmans.de/chatto/internal/evtstream"
 	evtv1 "hmans.de/chatto/internal/pb/chatto/core/evt/v1"
-)
-
-// Historical INSTANCE KV keys for server branding.
-const (
-	serverLogoKey   = "instance.logo"
-	serverBannerKey = "instance.banner"
 )
 
 // UploadServerLogo processes a logo image (resize + WebP) and uploads the
@@ -114,8 +105,8 @@ func (c *ChattoCore) SetServerBanner(ctx context.Context, actorID string, asset 
 }
 
 // setServerBrandingAsset is the shared OCC swap implementation backing
-// SetServerLogo / SetServerBanner. Publishes ServerUpdatedEvent on
-// success so subscribers can refetch the updated branding.
+// SetServerLogo and SetServerBanner. The durable config fact is also the
+// source of the public realtime profile-change event.
 func (c *ChattoCore) setServerBrandingAsset(ctx context.Context, actorID, kind string, asset *evtv1.AssetRecord) error {
 	if c.configModel == nil {
 		return fmt.Errorf("config model not configured")
@@ -151,7 +142,6 @@ func (c *ChattoCore) setServerBrandingAsset(ctx context.Context, actorID, kind s
 	if oldAsset != nil {
 		c.deleteAsset(ctx, assetStorageFromAsset(oldAsset), kind, "server")
 	}
-	c.PublishServerUpdated(ctx, actorID)
 	c.logger.Info("Updated server "+kind, "asset_id", asset.GetId())
 	return nil
 }
@@ -191,7 +181,7 @@ func (cm *ConfigModel) serverBrandingAsset(kind string) *evtv1.AssetRecord {
 	return cloneAssetRecord(cm.config.Projection().server.banner)
 }
 
-// GetServerLogoURL returns the URL for the server's logo, optionally
+// GetServerLogoURL returns the server-relative URL for the server's logo, optionally
 // transformed to the given dimensions. Returns empty string when no logo
 // is set.
 func (c *ChattoCore) GetServerLogoURL(ctx context.Context, width, height *int, fit string) (string, error) {
@@ -199,10 +189,10 @@ func (c *ChattoCore) GetServerLogoURL(ctx context.Context, width, height *int, f
 	if err != nil || logo == nil {
 		return "", err
 	}
-	return c.serverAssetURL(logo, "logo", width, height, fit), nil
+	return c.serverAssetURL(logo, width, height, fit), nil
 }
 
-// GetServerBannerURL returns the URL for the server's banner, optionally
+// GetServerBannerURL returns the server-relative URL for the server's banner, optionally
 // transformed to the given dimensions. Returns empty string when no banner
 // is set.
 func (c *ChattoCore) GetServerBannerURL(ctx context.Context, width, height *int, fit string) (string, error) {
@@ -210,33 +200,23 @@ func (c *ChattoCore) GetServerBannerURL(ctx context.Context, width, height *int,
 	if err != nil || banner == nil {
 		return "", err
 	}
-	return c.serverAssetURL(banner, "banner", width, height, fit), nil
+	return c.serverAssetURL(banner, width, height, fit), nil
 }
 
-// serverAssetURL builds the public URL for an server-scoped asset,
+// serverAssetURL builds the server-relative URL for a server-scoped asset,
 // optionally with transform parameters.
-// 【本地改动 2026-08-23】URL 追加 {fn.ext} 尾段（kind 作为无文件名记录的
-// 兜底基名，如 logo/banner），走公开 immutable 缓存语义。
-// 2026-08-29 合并 upstream：保留本地 kind 参数（两个调用方都传字面量），
-// 同时跟随 upstream #2162 "separate internal storage contracts" 把参数类型从
-// corev1.AssetRecord 改为 evtv1.AssetRecord——core/v1 pb 包已被拆掉，旧引用会编译失败。
-func (c *ChattoCore) serverAssetURL(asset *evtv1.AssetRecord, kind string, width, height *int, fit string) string {
+func (c *ChattoCore) serverAssetURL(asset *evtv1.AssetRecord, width, height *int, fit string) string {
 	assetKey := ServerAssetDeliveryKey(asset)
 	if assetKey == "" {
 		return ""
 	}
-	tail := ServerAssetURLFilename(asset, kind)
 	if width != nil && height != nil {
 		if fit == "" {
 			fit = "cover"
 		}
-		return c.GetTransformedServerAssetURLWithFilename(assetKey, tail, *width, *height, fit)
+		return c.GetTransformedServerAssetURL(assetKey, *width, *height, fit)
 	}
-	path := fmt.Sprintf("/assets/server/%s", assetKey)
-	if tail != "" {
-		path += "/" + url.PathEscape(tail)
-	}
-	return c.assetURL(path)
+	return fmt.Sprintf("/assets/server/%s", assetKey)
 }
 
 // DeleteServerLogo clears the server's logo pointer and object-store asset.
@@ -281,54 +261,8 @@ func (c *ChattoCore) deleteServerBrandingAsset(ctx context.Context, actorID, kin
 		return nil
 	}
 	c.deleteAsset(ctx, assetStorageFromAsset(asset), kind, "server")
-	c.PublishServerUpdated(ctx, actorID)
 	c.logger.Info("Deleted server " + kind)
 	return nil
-}
-
-// PublishServerUpdated publishes the member-visible server profile/config
-// refresh signal. It carries only public presentation fields; clients should
-// treat arrival as a refetch trigger for Server.profile.
-//
-// Best-effort: a publish failure does not roll back the underlying config
-// change.
-func (c *ChattoCore) PublishServerUpdated(ctx context.Context, actorID string) {
-	name := ""
-	description := ""
-	if cm := c.ConfigModel(); cm != nil {
-		name = cm.GetEffectiveServerName()
-		if cfg := cm.GetServerConfig(); cfg != nil {
-			description = cfg.Description
-		}
-	}
-
-	logoURL, err := c.GetServerLogoURL(ctx, nil, nil, "")
-	if err != nil {
-		c.logger.Warn("failed to get instance logo URL for update event", "error", err)
-		logoURL = ""
-	}
-	bannerURL, err := c.GetServerBannerURL(ctx, nil, nil, "")
-	if err != nil {
-		c.logger.Warn("failed to get instance banner URL for update event", "error", err)
-		bannerURL = ""
-	}
-
-	event := newLiveEvent(actorID, &livev1.LiveEvent{
-		Event: &livev1.LiveEvent_ServerUpdated{
-			ServerUpdated: &livev1.ServerUpdatedEvent{
-				ServerId:    LegacyServerSpaceID,
-				Name:        name,
-				Description: description,
-				LogoUrl:     logoURL,
-				BannerUrl:   bannerURL,
-			},
-		},
-	})
-
-	subject := subjects.LiveSyncConfigEvent("server_updated")
-	if err := c.publishLiveEvent(ctx, subject, event); err != nil {
-		c.logger.Warn("failed to publish server update event", "error", err)
-	}
 }
 
 // assetIDFromAsset extracts the asset ID from a NATS- or S3-backed asset

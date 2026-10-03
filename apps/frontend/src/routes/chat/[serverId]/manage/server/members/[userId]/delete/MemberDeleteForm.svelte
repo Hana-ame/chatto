@@ -1,5 +1,8 @@
 <script lang="ts">
-  import type { AdminMember } from '$lib/api-client/adminUsers';
+  import { errorMessage } from '$lib/utils/errorMessage';
+  import { accountNameToken } from '@chatto/client/timeline/accountName';
+  import AccountNameTokens from '$lib/components/users/AccountNameTokens.svelte';
+  import type { AdminMember } from '$lib/api/adminUsers';
   import { m } from '$lib/i18n/messages';
   import { Hint, Panel } from '$lib/ui';
   import { Button, FormError, TextInput } from '$lib/ui/form';
@@ -37,7 +40,7 @@
       await deleteMember();
       // On success the parent navigates away; keep the busy state while it does.
     } catch (err) {
-      error = err instanceof Error ? err.message : m('admin.member_delete.failed');
+      error = errorMessage(err, m('admin.member_delete.failed'));
       // Keep the typed confirmation so a retry needs no retyping.
       deleting = false;
     }
@@ -48,7 +51,12 @@
 <Panel title={m('admin.members.danger_zone')} icon="iconify icon-[uil--exclamation-triangle]">
   <form class="flex max-w-md flex-col gap-4" onsubmit={handleSubmit}>
     <Hint tone="danger">
-      <strong>{m('admin.member_delete.warning', { name: isolate(member.displayName) })}</strong>
+      <strong
+        ><AccountNameTokens
+          text={m('admin.member_delete.warning', { name: accountNameToken(0) })}
+          accounts={[{ name: member.displayName, identity: member }]}
+        /></strong
+      >
     </Hint>
 
     <p class="text-sm text-muted">{m('admin.member_delete.consequences_intro')}</p>

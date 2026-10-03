@@ -1,7 +1,8 @@
 import { tick } from 'svelte';
+import '../../../app.css';
 import { describe, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
-import { VideoProcessingStatus } from '$lib/render/messageAttachments';
+import { VideoProcessingStatus } from '@chatto/client/timeline/messageAttachments';
 import VideoPlayer from './VideoPlayer.svelte';
 
 const TRANSPARENT_THUMBNAIL = 'data:image/gif;base64,R0lGODlhAQABAAAAACwAAAAAAQABAAA=';
@@ -92,12 +93,27 @@ async function posterImage(container: HTMLElement): Promise<HTMLImageElement> {
 }
 
 describe('VideoPlayer', () => {
+  it.each([
+    [VideoProcessingStatus.Pending, 'Video queued for processing...'],
+    [VideoProcessingStatus.Processing, 'Processing video...']
+  ])('keeps the %s fog inside the reserved video frame', async (status, label) => {
+    const { container } = render(VideoPlayer, {
+      props: { status, filename: 'clip.mp4', width: 1280, height: 720 }
+    });
+    const videoFrame = frame(container);
+    const fog = container.querySelector<HTMLElement>('[data-loading-fog]');
+
+    expect(videoFrame.getAttribute('style')).toContain('aspect-ratio: 480 / 270');
+    expect(fog?.getAttribute('aria-label')).toBe(label);
+    await expect.poll(() => fog?.getBoundingClientRect().width).toBeGreaterThan(0);
+    expect(fog?.getBoundingClientRect().width).toBeCloseTo(videoFrame.clientWidth, 0);
+    expect(fog?.getBoundingClientRect().height).toBeCloseTo(videoFrame.clientHeight, 0);
+  });
+
   it('plays a newly processed HLS-only video', async () => {
     const canPlayType = vi
       .spyOn(HTMLMediaElement.prototype, 'canPlayType')
-      .mockImplementation((type) =>
-        type === 'application/vnd.apple.mpegurl' ? 'probably' : ''
-      );
+      .mockImplementation((type) => (type === 'application/vnd.apple.mpegurl' ? 'probably' : ''));
     const hlsUrl = 'https://chat.example.test/assets/hls/a/master.m3u8?access=ticket';
     try {
       const { container } = renderPostedVideo({
@@ -127,6 +143,19 @@ describe('VideoPlayer', () => {
 
     await expect.poll(() => player.src?.src).toBe('https://chat.example.test/clip.mp4');
     expect(player.src?.type).toBe('video/mp4');
+  });
+
+  it('scales the inline player proportionally in narrow containers', async () => {
+    const { container } = renderPostedVideo({ width: 1280, height: 720 });
+    await mediaPlayer(container);
+    for (const width of [240, 120, 640]) {
+      container.style.width = `${width}px`;
+      await expect
+        .poll(() => frame(container).getBoundingClientRect().width)
+        .toBeLessThanOrEqual(width);
+      const bounds = frame(container).getBoundingClientRect();
+      expect(bounds.height).toBeCloseTo((bounds.width * 9) / 16, 0);
+    }
   });
 
   it('frames 16:9 videos as 16:9 embeds', () => {

@@ -1,19 +1,24 @@
 <script lang="ts">
-  import { createInfiniteQuery, createMutation, createQuery } from '@tanstack/svelte-query';
+  import { errorMessage } from '$lib/utils/errorMessage';
+  import {
+    BOT_ACCOUNT_LABEL,
+    accountNameToken,
+    isBotAccount
+  } from '@chatto/client/timeline/accountName';
+  import AccountNameTokens from '$lib/components/users/AccountNameTokens.svelte';
+  import AccountName from '$lib/components/users/AccountName.svelte';
+  import BotBadge from '$lib/components/users/BotBadge.svelte';
   import { onDestroy } from 'svelte';
-  import type { DirectoryMember } from '$lib/api-client/memberDirectory';
-  import { createMemberDirectoryAPI } from '$lib/api-client/memberDirectory';
-  import { createRoomCommandAPI } from '$lib/api-client/rooms';
-  import DataTable from '$lib/ui/DataTable.svelte';
-  import Panel from '$lib/ui/Panel.svelte';
+  import type { DirectoryMember } from '@chatto/client/api/memberDirectory';
+  import { createMemberDirectoryAPI } from '@chatto/client/api/memberDirectory';
+  import { createRoomCommandAPI } from '@chatto/client/api/rooms';
+  import { DataTable, LoadingFog, Panel, ConfirmDialog, Hint } from '$lib/ui';
   import UserAvatar from '$lib/components/UserAvatar.svelte';
-  import { ConfirmDialog } from '$lib/ui';
-  import Hint from '$lib/ui/Hint.svelte';
   import { Button, Combobox } from '$lib/ui/form';
   import { useProjectionEvent } from '$lib/hooks';
   import { toast } from '$lib/ui/toast';
   import { useDebounce } from '$lib/hooks/useDebounce.svelte';
-  import { queryClient } from '$lib/query/client';
+  import { createInfiniteQuery, createMutation, createQuery, queryClient } from '$lib/query/client';
   import { directoryQueryKeys } from '$lib/query/directory';
   import {
     ELIGIBLE_ROOM_MEMBER_LIMIT,
@@ -26,12 +31,11 @@
     ROOM_MEMBER_MANAGEMENT_PAGE_SIZE,
     roomMembersQueryPage
   } from '$lib/query/roomMembers';
-  import type { ServerConnection } from '$lib/state/server/serverConnection.svelte';
+  import { createSessionGuard, type SessionSnapshot } from '$lib/state/server/sessionGuard.svelte';
   import { useServerScope } from '$lib/state/server/scope.svelte';
   import { m } from '$lib/i18n/messages';
 
   let {
-    serverId,
     roomId,
     roomName,
     isUniversal,
@@ -39,7 +43,6 @@
     canManageMembers,
     scrollRoot
   }: {
-    serverId: string;
     roomId: string;
     roomName: string;
     isUniversal: boolean;
@@ -49,6 +52,7 @@
   } = $props();
 
   const serverScope = useServerScope();
+  const session = createSessionGuard(serverScope);
 
   let selectedUser = $state<DirectoryMember | null>(null);
   let selectedUserId = $state('');
@@ -56,104 +60,81 @@
   let removeCandidate = $state<DirectoryMember | null>(null);
   let activeDirectorySearch = $state('');
   let directoryDebouncePending = $state(false);
-  let privacyGeneration = 0;
-  let disposed = false;
   const searchDebounce = useDebounce();
 
   const canEditMembership = $derived(canManageMembers && !isUniversal && !archived);
   const columns = $derived(canEditMembership ? 3 : 2);
 
-  const membersQuery = createInfiniteQuery(
-    () => {
-      const connection = serverScope.connection;
-      const targetServerId = serverId;
-      const targetRoomId = roomId;
-      return {
-        queryKey: directoryQueryKeys.roomMembers(targetServerId, connection, targetRoomId),
-        queryFn: async ({ pageParam, signal }) => {
-          const page = await connection
-            .getAPI(createMemberDirectoryAPI)
-            .listRoomMembers(targetRoomId, '', ROOM_MEMBER_MANAGEMENT_PAGE_SIZE, pageParam, {
-              signal
-            });
-          return roomMembersQueryPage(page, pageParam);
-        },
-        initialPageParam: 0,
-        getNextPageParam: (lastPage, _pages, lastPageParam) =>
-          nextRoomMembersPageParam(lastPage, lastPageParam)
-      };
-    },
-    () => queryClient
-  );
+  const membersQuery = createInfiniteQuery(() => {
+    const connection = serverScope.connection;
+    const targetServerId = serverScope.serverId;
+    const targetRoomId = roomId;
+    return {
+      queryKey: directoryQueryKeys.roomMembers(targetServerId, connection, targetRoomId),
+      queryFn: async ({ pageParam, signal }) => {
+        const page = await connection
+          .getAPI(createMemberDirectoryAPI)
+          .listRoomMembers(targetRoomId, '', ROOM_MEMBER_MANAGEMENT_PAGE_SIZE, pageParam, {
+            signal
+          });
+        return roomMembersQueryPage(page, pageParam);
+      },
+      initialPageParam: 0,
+      getNextPageParam: (lastPage, _pages, lastPageParam) =>
+        nextRoomMembersPageParam(lastPage, lastPageParam)
+    };
+  });
 
-  const eligibleMembersQuery = createQuery(
-    () => {
-      const connection = serverScope.connection;
-      const targetServerId = serverId;
-      const targetRoomId = roomId;
-      const search = activeDirectorySearch;
-      return {
-        queryKey: directoryQueryKeys.eligibleRoomMembers(
-          targetServerId,
-          connection,
+  const eligibleMembersQuery = createQuery(() => {
+    const connection = serverScope.connection;
+    const targetServerId = serverScope.serverId;
+    const targetRoomId = roomId;
+    const search = activeDirectorySearch;
+    return {
+      queryKey: directoryQueryKeys.eligibleRoomMembers(
+        targetServerId,
+        connection,
+        targetRoomId,
+        search,
+        ELIGIBLE_ROOM_MEMBER_LIMIT
+      ),
+      queryFn: ({ signal }) =>
+        listEligibleRoomMembers(
+          connection.getAPI(createMemberDirectoryAPI),
           targetRoomId,
           search,
-          ELIGIBLE_ROOM_MEMBER_LIMIT
+          ELIGIBLE_ROOM_MEMBER_LIMIT,
+          signal
         ),
-        queryFn: ({ signal }) =>
-          listEligibleRoomMembers(
-            connection.getAPI(createMemberDirectoryAPI),
-            targetRoomId,
-            search,
-            ELIGIBLE_ROOM_MEMBER_LIMIT,
-            signal
-          ),
-        enabled: search.length > 0
-      };
-    },
-    () => queryClient
-  );
+      enabled: search.length > 0
+    };
+  });
 
-  type MemberMutationScope = {
-    serverId: string;
+  type MemberMutationScope = SessionSnapshot & {
     roomId: string;
-    connection: ServerConnection;
-    privacyGeneration: number;
     user: DirectoryMember;
   };
 
-  const addMemberMutation = createMutation(
-    () => ({
-      mutationFn: (target: MemberMutationScope) =>
-        target.connection
-          .getAPI(createRoomCommandAPI)
-          .addMember({ roomId: target.roomId, userId: target.user.id })
-    }),
-    () => queryClient
-  );
+  const addMemberMutation = createMutation(() => ({
+    mutationFn: (target: MemberMutationScope) =>
+      target.connection
+        .getAPI(createRoomCommandAPI)
+        .addMember({ roomId: target.roomId, userId: target.user.id })
+  }));
 
-  const removeMemberMutation = createMutation(
-    () => ({
-      mutationFn: (target: MemberMutationScope) =>
-        target.connection
-          .getAPI(createRoomCommandAPI)
-          .removeMember({ roomId: target.roomId, userId: target.user.id })
-    }),
-    () => queryClient
-  );
+  const removeMemberMutation = createMutation(() => ({
+    mutationFn: (target: MemberMutationScope) =>
+      target.connection
+        .getAPI(createRoomCommandAPI)
+        .removeMember({ roomId: target.roomId, userId: target.user.id })
+  }));
 
   const members = $derived(flattenRoomMembers(membersQuery.data));
   const totalCount = $derived(membersQuery.data?.pages.at(-1)?.totalCount ?? 0);
   const hasMore = $derived(membersQuery.hasNextPage);
   const loading = $derived(membersQuery.isPending);
   const loadingMore = $derived(membersQuery.isFetchingNextPage);
-  const loadError = $derived(
-    membersQuery.error instanceof Error
-      ? membersQuery.error.message
-      : membersQuery.error
-        ? String(membersQuery.error)
-        : null
-  );
+  const loadError = $derived(membersQuery.error ? errorMessage(membersQuery.error) : null);
   const directoryResults = $derived(
     activeDirectorySearch && !directoryDebouncePending ? (eligibleMembersQuery.data ?? []) : []
   );
@@ -161,11 +142,7 @@
     directoryDebouncePending || (!!activeDirectorySearch && eligibleMembersQuery.isFetching)
   );
   const directoryError = $derived(
-    eligibleMembersQuery.error instanceof Error
-      ? eligibleMembersQuery.error.message
-      : eligibleMembersQuery.error
-        ? String(eligibleMembersQuery.error)
-        : null
+    eligibleMembersQuery.error ? errorMessage(eligibleMembersQuery.error) : null
   );
   const addingUserId = $derived(
     addMemberMutation.isPending && isCurrentTarget(addMemberMutation.variables)
@@ -178,42 +155,30 @@
       : null
   );
 
-  onDestroy(() => {
-    disposed = true;
-    privacyGeneration += 1;
-    searchDebounce.cancel();
-  });
+  onDestroy(() => searchDebounce.cancel());
 
   useProjectionEvent((event) => {
-    for (const operation of event.operations) {
-      switch (operation.operation.case) {
-        case 'roomUpsert':
-          if (operation.operation.value.room?.room?.id === roomId) {
-            void invalidateRoomMemberQueries(serverId, serverScope.connection, roomId);
-            return;
-          }
-          break;
-        case 'roomRemove':
-          if (operation.operation.value.roomId === roomId) {
-            privacyGeneration += 1;
-            clearLocalState();
-            purgeRoomMemberQueries(serverId, serverScope.connection, roomId);
-            return;
-          }
-          break;
-        case 'userRemove': {
-          const userId = operation.operation.value.userId;
-          const affectsSelection = selectedUser?.id === userId;
-          const affectsRemoval = removeCandidate?.id === userId;
-          const affectsMutation =
-            addMemberMutation.variables?.user.id === userId ||
-            removeMemberMutation.variables?.user.id === userId;
-          if (affectsSelection || affectsRemoval || affectsMutation) privacyGeneration += 1;
-          if (affectsSelection) clearSelectedUser();
-          if (affectsRemoval) removeCandidate = null;
-          break;
-        }
+    if (event.resource?.case === 'rooms') {
+      if (event.resource.value.rooms.some((room) => room.room?.id === roomId)) {
+        void invalidateRoomMemberQueries(serverScope.serverId, serverScope.connection, roomId);
+      } else {
+        session.invalidate();
+        clearLocalState();
+        purgeRoomMemberQueries(serverScope.serverId, serverScope.connection, roomId);
       }
+      return;
+    }
+    const semantic = event.event?.event;
+    if (semantic?.case === 'userAccountDeleted') {
+      const userId = semantic.value.userId;
+      const affectsSelection = selectedUser?.id === userId;
+      const affectsRemoval = removeCandidate?.id === userId;
+      const affectsMutation =
+        addMemberMutation.variables?.user.id === userId ||
+        removeMemberMutation.variables?.user.id === userId;
+      if (affectsSelection || affectsRemoval || affectsMutation) session.invalidate();
+      if (affectsSelection) clearSelectedUser();
+      if (affectsRemoval) removeCandidate = null;
     }
   });
 
@@ -252,25 +217,11 @@
   }
 
   function mutationTarget(user: DirectoryMember): MemberMutationScope {
-    return {
-      serverId,
-      roomId,
-      connection: serverScope.connection,
-      privacyGeneration,
-      user
-    };
+    return { ...session.snapshot(), roomId, user };
   }
 
   function isCurrentTarget(target: MemberMutationScope | undefined): boolean {
-    return (
-      target !== undefined &&
-      !disposed &&
-      serverScope.isCurrent() &&
-      target.serverId === serverId &&
-      target.roomId === roomId &&
-      target.connection.queryScope === serverScope.connection.queryScope &&
-      target.privacyGeneration === privacyGeneration
-    );
+    return session.isCurrent(target) && target.roomId === roomId;
   }
 
   async function reconcileMembership(target: MemberMutationScope): Promise<void> {
@@ -299,12 +250,17 @@
       await reconcileMembership(target);
       if (!isCurrentTarget(target)) return;
       clearSelectedUser();
-      toast.success(m('admin.rooms_admin.member_added', { name: user.displayName }));
+      toast.success({
+        text: m('admin.rooms_admin.member_added', { name: accountNameToken(0) }),
+        accounts: [
+          { name: user.displayName, identity: { isBot: user.isBot, deleted: user.deleted } }
+        ]
+      });
     } catch (error) {
       if (!isCurrentTarget(target)) return;
       toast.error(
         m('admin.rooms_admin.add_member_failed', {
-          error: error instanceof Error ? error.message : String(error)
+          error: errorMessage(error)
         })
       );
     }
@@ -320,12 +276,17 @@
       await reconcileMembership(target);
       if (!isCurrentTarget(target)) return;
       removeCandidate = null;
-      toast.success(m('admin.rooms_admin.member_removed', { name: user.displayName }));
+      toast.success({
+        text: m('admin.rooms_admin.member_removed', { name: accountNameToken(0) }),
+        accounts: [
+          { name: user.displayName, identity: { isBot: user.isBot, deleted: user.deleted } }
+        ]
+      });
     } catch (error) {
       if (!isCurrentTarget(target)) return;
       toast.error(
         m('admin.rooms_admin.remove_member_failed', {
-          error: error instanceof Error ? error.message : String(error)
+          error: errorMessage(error)
         })
       );
     }
@@ -374,10 +335,14 @@
           ontextchange={scheduleDirectorySearch}
           onselect={(user) => (selectedUser = user)}
           onclear={clearSelectedUser}
+          selectionDescription={isBotAccount(selectedUser) ? BOT_ACCOUNT_LABEL : undefined}
         >
+          {#snippet selectionAdornment()}
+            {#if isBotAccount(selectedUser)}<BotBadge />{/if}
+          {/snippet}
           {#snippet item({ item: user })}
-            <UserAvatar user={user} size="sm" useLiveProfile={false} />
-            <span class="min-w-0 truncate">{user.displayName}</span>
+            <UserAvatar {user} size="sm" useLiveProfile={false} />
+            <AccountName name={user.displayName} identity={user} />
             <span class="min-w-0 truncate text-muted">@{user.login}</span>
           {/snippet}
         </Combobox>
@@ -407,7 +372,7 @@
   {/if}
 
   {#if loading && members.length === 0}
-    <div class="p-5 text-muted">{m('admin.members.loading')}</div>
+    <LoadingFog class="m-5 h-32" label={m('admin.members.loading')} />
   {:else}
     <DataTable
       items={members}
@@ -424,7 +389,7 @@
         <th class="table-header-cell">{m('admin.common.user')}</th>
         <th class="table-header-cell">{m('admin.users.login')}</th>
         {#if canEditMembership}
-          <th class="table-header-cell text-right">
+          <th class="table-header-cell text-end">
             <span class="sr-only">{m('admin.rooms_admin.remove_member')}</span>
           </th>
         {/if}
@@ -433,12 +398,16 @@
         <td class="px-4 py-3">
           <div class="flex min-w-0 items-center gap-3">
             <UserAvatar user={member} size="sm" useLiveProfile={false} />
-            <span class="min-w-0 truncate font-medium text-text-top">{member.displayName}</span>
+            <AccountName
+              name={member.displayName}
+              identity={member}
+              class="font-medium text-text-top"
+            />
           </div>
         </td>
         <td class="px-4 py-3 text-muted">@{member.login}</td>
         {#if canEditMembership}
-          <td class="px-4 py-3 text-right">
+          <td class="px-4 py-3 text-end">
             <Button
               variant="danger-secondary"
               size="sm"
@@ -463,9 +432,12 @@
     onconfirm={() => void confirmRemoveMember()}
     onclose={() => (removeCandidate = null)}
   >
-    {m('admin.rooms_admin.remove_member_prompt', {
-      name: removeCandidate.displayName,
-      room: `#${roomName}`
-    })}
+    <AccountNameTokens
+      text={m('admin.rooms_admin.remove_member_prompt', {
+        name: accountNameToken(0),
+        room: `#${roomName}`
+      })}
+      accounts={[{ name: removeCandidate.displayName, identity: removeCandidate }]}
+    />
   </ConfirmDialog>
 {/if}

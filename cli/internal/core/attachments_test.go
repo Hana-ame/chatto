@@ -11,7 +11,6 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
-	"hmans.de/chatto/internal/assets"
 	"hmans.de/chatto/internal/config"
 	"hmans.de/chatto/internal/evtstream"
 	evtv1 "hmans.de/chatto/internal/pb/chatto/core/evt/v1"
@@ -19,94 +18,6 @@ import (
 	"hmans.de/chatto/internal/testutil/fakes3"
 	"hmans.de/chatto/pkg/events"
 )
-
-// 【本地改动 2026-09-12】纠正规则:声明 image/ 永不覆盖;非 image/ 声明
-// 遇到已知图片签名才纠正;文件头无结论时保留声明。
-func TestCorrectUploadContentTypeTrustingImageDeclaration(t *testing.T) {
-	// A client that declares image/* already routed the upload into the image
-	// pipeline, so its declaration is kept even when the bytes disagree.
-	if got := correctUploadContentType("image/png", []byte("RIFF\x00\x00\x00\x00WEBP")); got != "image/png" {
-		t.Fatalf("correctUploadContentType() = %q, want %q", got, "image/png")
-	}
-}
-
-func TestCorrectUploadContentTypeOverridesMediaDeclaration(t *testing.T) {
-	tests := []struct {
-		name     string
-		declared string
-		header   []byte
-		want     string
-	}{
-		{
-			name:     "avif image declared as mp4 video",
-			declared: "video/mp4",
-			header:   []byte("\x00\x00\x00\x18ftypavif"),
-			want:     "image/avif",
-		},
-		{
-			name:     "webp image declared as octet-stream",
-			declared: "application/octet-stream",
-			header:   []byte("RIFF\x00\x00\x00\x00WEBP"),
-			want:     "image/webp",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := correctUploadContentType(tt.declared, tt.header); got != tt.want {
-				t.Fatalf("correctUploadContentType(%q) = %q, want %q", tt.declared, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestCorrectUploadContentTypeKeepsDeclarationWithoutSignature(t *testing.T) {
-	tests := []struct {
-		declared string
-		header   []byte
-	}{
-		{"video/mp4", []byte("\x00\x00\x00\x18ftypmp42")},
-		{"text/plain", []byte("hello world")},
-		{"video/mp4", nil},
-		{"video/mp4", []byte("ftyp")},
-	}
-
-	for _, tt := range tests {
-		if got := correctUploadContentType(tt.declared, tt.header); got != tt.declared {
-			t.Fatalf("correctUploadContentType(%q) = %q, want the declaration kept", tt.declared, got)
-		}
-	}
-}
-
-func TestReadUploadHeaderKeepsTheCompleteStream(t *testing.T) {
-	input := []byte("\x89PNG\r\n\x1a\nremaining payload")
-	header, stream := readUploadHeader(bytes.NewReader(input))
-
-	if string(header) != "\x89PNG\r\n\x1a\nrema" {
-		t.Fatalf("readUploadHeader() header = %q", string(header))
-	}
-	rest, err := io.ReadAll(stream)
-	if err != nil {
-		t.Fatalf("io.ReadAll: %v", err)
-	}
-	if !bytes.Equal(rest, input) {
-		t.Fatalf("stream after header = %q, want the full input", string(rest))
-	}
-}
-
-func TestReadUploadHeaderToleratesShortUploads(t *testing.T) {
-	header, stream := readUploadHeader(bytes.NewReader([]byte("GIF8")))
-	if string(header) != "GIF8" {
-		t.Fatalf("readUploadHeader() header = %q, want %q", string(header), "GIF8")
-	}
-	rest, err := io.ReadAll(stream)
-	if err != nil {
-		t.Fatalf("io.ReadAll: %v", err)
-	}
-	if string(rest) != "GIF8" {
-		t.Fatalf("stream after header = %q, want the full input", string(rest))
-	}
-}
 
 // createTestPNG creates a simple PNG image for testing
 func createTestPNG(width, height int) []byte {
@@ -125,17 +36,6 @@ func createTestPNG(width, height int) []byte {
 // ============================================================================
 // Attachment Upload Tests
 // ============================================================================
-
-// ffmpegAvailable 报告上传路径当前是否会真的产出 AVIF。
-// 【本地改动 32e1f566 + 2026-08-30 + 2026-09-02 + 2026-09-12】历史:2026-09-02
-// 前存储格式是 AVIF;2026-09-02 ~ 2026-09-12 改为 WebP(assets.WebPAvailable
-// /image/webp);2026-09-12 又回到原尺寸 AVIF。能否编 AVIF 由 core.AVIFEnabled、
-// ffmpeg 存在性、AV1 编码器三者共同决定,复用 assets.AVIFAvailable 和上传
-// 路径的同一份 Config(core.AssetsConfig())——否则「本地没装 ffmpeg」与
-// 「CI 装了 ffmpeg 期望 image/avif」会互相打架。
-func ffmpegAvailable(ctx context.Context, core *ChattoCore) bool {
-	return assets.AVIFAvailable(ctx, core.AssetsConfig())
-}
 
 func TestChattoCore_UploadAttachment(t *testing.T) {
 	core, _ := setupTestCore(t)
@@ -176,14 +76,8 @@ func TestChattoCore_UploadAttachment(t *testing.T) {
 			t.Errorf("Expected filename 'test-image.png', got '%s'", attachment.Filename)
 		}
 
-		wantContentType := "image/png"
-		// 【本地改动 32e1f566 + 2026-09-02 + 2026-09-12】同 ffmpegAvailable:
-		// 上传路径在 AVIF 可用时转原尺寸 AVIF,断言必须与环境一致,不能写死。
-		if ffmpegAvailable(ctx, core) {
-			wantContentType = "image/avif"
-		}
-		if attachment.ContentType != wantContentType {
-			t.Errorf("Expected content type %q, got %q", wantContentType, attachment.ContentType)
+		if attachment.ContentType != "image/png" {
+			t.Errorf("Expected content type 'image/png', got '%s'", attachment.ContentType)
 		}
 
 		if attachment.RoomId != room.Id {
@@ -705,54 +599,24 @@ func TestGetAttachmentReader_ProbesWhenStorageMissing(t *testing.T) {
 // Absolute Asset URL Tests
 // ============================================================================
 
-func TestChattoCore_AssetBaseURL(t *testing.T) {
+func TestChattoCore_AssetURLsAreServerRelative(t *testing.T) {
 	core, _ := setupTestCore(t)
 
-	t.Run("GetStableAttachmentURL returns relative when AssetBaseURL is empty", func(t *testing.T) {
-		core.AssetBaseURL = ""
-		url := core.mediaModel.GetStableAttachmentURL("attachment456", "Uviewer")
-		if !bytes.HasPrefix([]byte(url), []byte("/assets/files/attachment456?access=")) {
-			t.Errorf("Expected relative URL, got '%s'", url)
+	// The API layer adds the public origin of each request.
+	tests := map[string]struct {
+		url    string
+		prefix string
+	}{
+		"attachment":             {core.mediaModel.GetStableAttachmentAssetURL("attachment456", "Uviewer").URL, "/assets/files/attachment456?access="},
+		"transformed attachment": {core.mediaModel.GetStableTransformedAttachmentAssetURL("attachment456", "Uviewer", 200, 150, "contain").URL, "/assets/files/attachment456/image/200x150/contain?access="},
+		"HLS master playlist":    {core.mediaModel.GetStableHLSMasterPlaylistAssetURL("attachment456", "Uviewer").URL, "/assets/hls/attachment456/master.m3u8?access="},
+		"transformed server":     {core.GetTransformedServerAssetURL("avatar-key", 100, 100, "cover"), "/assets/server/avatar-key/t/"},
+	}
+	for name, tt := range tests {
+		if !bytes.HasPrefix([]byte(tt.url), []byte(tt.prefix)) {
+			t.Errorf("%s URL = %q, want prefix %q", name, tt.url, tt.prefix)
 		}
-	})
-
-	t.Run("GetStableAttachmentURL returns absolute when AssetBaseURL is set", func(t *testing.T) {
-		core.AssetBaseURL = "https://chat.example.com"
-		defer func() { core.AssetBaseURL = "" }()
-
-		url := core.mediaModel.GetStableAttachmentURL("attachment456", "Uviewer")
-
-		if !bytes.HasPrefix([]byte(url), []byte("https://chat.example.com/assets/files/attachment456?access=")) {
-			t.Errorf("Expected absolute URL with base, got '%s'", url)
-		}
-	})
-
-	t.Run("GetStableTransformedAttachmentURL returns the original URL in the fork", func(t *testing.T) {
-		core.AssetBaseURL = "https://chat.example.com"
-		defer func() { core.AssetBaseURL = "" }()
-
-		// 【本地改动 2026-09-12】fork 取消附件衍生图:宽高与 fit 参数被忽略,
-		// 回原图链接(仍带 access ticket,绝对化行为不变)。
-		url := core.mediaModel.GetStableTransformedAttachmentURL("attachment456", "Uviewer", 200, 150, "contain")
-
-		if !bytes.HasPrefix([]byte(url), []byte("https://chat.example.com/assets/files/attachment456?access=")) {
-			t.Errorf("Expected absolute original-form URL with base, got '%s'", url)
-		}
-		if bytes.Contains([]byte(url), []byte("/image/")) {
-			t.Errorf("Transformed attachment URL %q must not carry a transform path", url)
-		}
-	})
-
-	t.Run("GetTransformedServerAssetURL returns absolute when AssetBaseURL is set", func(t *testing.T) {
-		core.AssetBaseURL = "https://chat.example.com"
-		defer func() { core.AssetBaseURL = "" }()
-
-		url := core.GetTransformedServerAssetURL("avatar-key", 100, 100, "cover")
-
-		if !bytes.HasPrefix([]byte(url), []byte("https://chat.example.com/assets/server/")) {
-			t.Errorf("Expected absolute URL with base, got '%s'", url)
-		}
-	})
+	}
 }
 
 // ============================================================================
@@ -821,7 +685,7 @@ func TestAttachment_FullLifecycle(t *testing.T) {
 	}
 
 	// 2. Verify stable access-ticket URL generation
-	url := core.mediaModel.GetStableAttachmentURL(attachment.Id, SystemActorID)
+	url := core.mediaModel.GetStableAttachmentAssetURL(attachment.Id, SystemActorID).URL
 	if url == "" {
 		t.Error("URL generation failed")
 	}

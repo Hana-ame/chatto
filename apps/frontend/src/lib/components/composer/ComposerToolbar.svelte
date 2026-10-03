@@ -1,11 +1,11 @@
 <!--
 @component
 
-Compact message-level actions for the composer input row. Formatting commands
-live in `ComposerFormattingToolbar` so this row can stay aligned with the
-48-pixel app-shell controls.
+Message-level actions that wrap below the editor in narrow composer containers.
+Formatting commands live in `ComposerFormattingToolbar`.
 -->
 <script lang="ts">
+  import { CompactActionButton } from '$lib/ui';
   import { m } from '$lib/i18n/messages';
   import ComposerTimestampPicker from './ComposerTimestampPicker.svelte';
   import type { ComposerEditorApi } from './editorTypes';
@@ -23,6 +23,7 @@ live in `ComposerFormattingToolbar` so this row can stay aligned with the
     createThreadRequired = false,
     onToggleCreateThread = () => {},
     showAlsoSendToChannel = false,
+    echoToConversation = false,
     alsoSendToChannel = false,
     onToggleAlsoSendToChannel = () => {},
     onsubmit
@@ -39,85 +40,97 @@ live in `ComposerFormattingToolbar` so this row can stay aligned with the
     createThreadRequired?: boolean;
     onToggleCreateThread?: () => void;
     showAlsoSendToChannel?: boolean;
+    echoToConversation?: boolean;
     alsoSendToChannel?: boolean;
     onToggleAlsoSendToChannel?: () => void;
     onsubmit: () => void;
   } = $props();
 </script>
 
-<div class="mb-1.5 flex shrink-0 items-center gap-1" data-testid="composer-action-toolbar">
+<div
+  class="flex min-w-0 flex-wrap items-center justify-end gap-1 @min-[560px]/composer:shrink-0 @min-[560px]/composer:flex-nowrap @min-[560px]/composer:desktop-presentation:mb-1"
+  data-testid="composer-action-toolbar"
+>
   <div class="flex items-center gap-0.5">
     {#if !isEditing && canAttach}
-      <button
+      <CompactActionButton
+        wrapperClass="mobile-presentation:pill-button-group-touch"
+        label={m('composer.attach_file')}
         type="button"
         onclick={() => fileInputElement?.click()}
         disabled={inputDisabled}
-        class="flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded text-muted transition-[color,scale] duration-100 active:scale-[0.96] enabled:hover:bg-surface-emphasized enabled:hover:text-text disabled:cursor-not-allowed disabled:opacity-50"
-        aria-label={m('composer.attach_file')}
         title={m('composer.attach_file')}
       >
-        <span class="iconify icon-[uil--image-upload] text-[15px]"></span>
-      </button>
+        <span aria-hidden="true" class="iconify icon-[uil--image-upload] text-[15px]"></span>
+      </CompactActionButton>
     {/if}
 
     <ComposerTimestampPicker disabled={inputDisabled} {editorApi} {effectiveTimezone} />
   </div>
 
-  <div class="flex items-center gap-0.5">
+  <div
+    class="flex max-w-full flex-wrap items-center justify-end gap-0.5 @min-[560px]/composer:flex-nowrap"
+  >
     {#if showCreateThread}
-      <button
+      <CompactActionButton
+        wrapperClass="mobile-presentation:pill-button-group-touch"
+        label={m('composer.post_as_thread')}
         type="button"
         onpointerdown={(event) => event.preventDefault()}
         onclick={onToggleCreateThread}
         disabled={inputDisabled || createThreadRequired}
-        aria-label={m('composer.post_as_thread')}
         aria-pressed={createThread}
         title={m('composer.post_as_thread')}
         class={[
-          'flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded text-xs font-medium transition-[background-color,color] duration-100 disabled:cursor-not-allowed @min-[560px]:w-auto @min-[560px]:gap-1 @min-[560px]:px-1.5',
+          '@min-[560px]/composer:gap-1',
           inputDisabled && 'opacity-50',
-          createThread
-            ? 'bg-action/10 text-action'
-            : 'text-muted enabled:hover:bg-surface-emphasized enabled:hover:text-text'
+          createThread ? 'bg-action/10 text-action' : 'text-muted'
         ]}
       >
-        <span class="iconify icon-[uil--comment-alt-lines] text-[15px]"></span>
-        <span class="hidden @min-[560px]:inline">{m('composer.thread_label')}</span>
-      </button>
+        <span aria-hidden="true" class="iconify icon-[uil--comment-alt-lines] text-[15px]"></span>
+        <span class="hidden @min-[560px]/composer:inline">{m('composer.thread_label')}</span>
+      </CompactActionButton>
     {/if}
 
     {#if showAlsoSendToChannel}
-      <button
+      <CompactActionButton
+        wrapperClass="mobile-presentation:pill-button-group-touch"
+        label={m(
+          echoToConversation
+            ? 'composer.also_send_to_conversation'
+            : 'composer.also_send_to_channel'
+        )}
         type="button"
         onpointerdown={(event) => event.preventDefault()}
         onclick={onToggleAlsoSendToChannel}
         disabled={inputDisabled}
-        aria-label={m('composer.also_send_to_channel')}
         aria-pressed={alsoSendToChannel}
-        title={m('composer.also_send_to_channel')}
+        title={m(
+          echoToConversation
+            ? 'composer.also_send_to_conversation'
+            : 'composer.also_send_to_channel'
+        )}
         class={[
-          'flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded text-xs font-medium transition-[background-color,color] duration-100 disabled:cursor-not-allowed disabled:opacity-50 @min-[560px]:w-auto @min-[560px]:gap-1 @min-[560px]:px-1.5',
-          alsoSendToChannel
-            ? 'bg-action/10 text-action'
-            : 'text-muted enabled:hover:bg-surface-emphasized enabled:hover:text-text'
+          '@min-[560px]/composer:gap-1',
+          alsoSendToChannel ? 'bg-action/10 text-action' : 'text-muted'
         ]}
       >
-        <span class="iconify icon-[uil--megaphone] text-[15px]"></span>
-        <span class="hidden @min-[560px]:inline">{m('composer.echo_label')}</span>
-      </button>
+        <span aria-hidden="true" class="iconify icon-[uil--megaphone] text-[15px]"></span>
+        <span class="hidden @min-[560px]/composer:inline">{m('composer.echo_label')}</span>
+      </CompactActionButton>
     {/if}
+    <CompactActionButton
+      wrapperClass="mobile-presentation:pill-button-group-touch"
+      label={m('composer.send')}
+      type="button"
+      onpointerdown={(event) => event.preventDefault()}
+      onclick={onsubmit}
+      disabled={!canSubmit}
+      class="@min-[560px]/composer:gap-1"
+      title={m('composer.send')}
+    >
+      <span aria-hidden="true" class="iconify icon-[uil--telegram-alt] text-[15px]"></span>
+      <span class="hidden @min-[560px]/composer:inline">{m('composer.send_label')}</span>
+    </CompactActionButton>
   </div>
-
-  <button
-    type="button"
-    onpointerdown={(event) => event.preventDefault()}
-    onclick={onsubmit}
-    disabled={!canSubmit}
-    class="flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded text-xs font-medium text-muted transition-[background-color,color,scale] duration-100 active:scale-[0.96] enabled:hover:bg-surface-emphasized enabled:hover:text-text disabled:cursor-not-allowed disabled:opacity-50 @min-[560px]:w-auto @min-[560px]:gap-1 @min-[560px]:px-1.5"
-    aria-label={m('composer.send')}
-    title={m('composer.send')}
-  >
-    <span class="iconify icon-[uil--telegram-alt] text-[15px]"></span>
-    <span class="hidden @min-[560px]:inline">{m('composer.send_label')}</span>
-  </button>
 </div>

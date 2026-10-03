@@ -1,6 +1,17 @@
+<script module lang="ts">
+  let storyQueryScopeCount = 0;
+
+  /** Returns a query scope that no other harness instance shares. */
+  function nextStoryQueryScope(): string {
+    storyQueryScopeCount += 1;
+    return `storybook-${storyQueryScopeCount}`;
+  }
+</script>
+
 <script lang="ts">
+  import { setServerUiForTests } from '$lib/state/server/serverUi';
   import { SvelteMap } from 'svelte/reactivity';
-  import { RoomKind } from '$lib/api-client/roomDirectory';
+  import { RoomKind } from '@chatto/client/api/roomDirectory';
   import {
     NotificationDeliveryMode,
     notificationPolicyScopeKey,
@@ -11,11 +22,10 @@
     type NotificationPolicyPatch,
     type NotificationPolicyScope,
     type ScopedNotificationPolicy
-  } from '$lib/api-client/notifications';
+  } from '@chatto/client/api/notifications';
   import { provideServerScope } from '$lib/state/server/scope.svelte';
-  import type { ServerConnection } from '$lib/state/server/serverConnection.svelte';
-  import { NotificationPolicyMatrixState } from '$lib/state/server/notificationPolicies.svelte';
-  import type { ServerStateStore } from '$lib/state/server/store.svelte';
+  import type { ServerConnection } from '@chatto/client/server/serverConnection';
+  import type { ServerStateStore } from '@chatto/client/server/store';
   import NotificationPolicySettings from './NotificationPolicySettings.svelte';
 
   let { loadFailure = false }: { loadFailure?: boolean } = $props();
@@ -120,29 +130,35 @@
     }
   } as unknown as NotificationAPI;
 
-  const matrixState = new NotificationPolicyMatrixState(api);
+  const store = {
+    serverInfo: { name: 'Example server' }
+  } as unknown as ServerStateStore;
+  // The story's UI state: the sidebar navigation that the settings read.
+  setServerUiForTests(store, {
+    navigation: {
+      roomGroups: [
+        {
+          id: 'community',
+          name: 'Community',
+          roomIds: ['general', 'support']
+        }
+      ],
+      rooms: [
+        { id: 'general', name: 'general', viewerIsMember: true, type: RoomKind.CHANNEL },
+        { id: 'support', name: 'support', viewerIsMember: true, type: RoomKind.CHANNEL },
+        { id: 'staff', name: 'staff', viewerIsMember: false, type: RoomKind.CHANNEL },
+        { id: 'dm-alex', name: 'Alex', viewerIsMember: true, type: RoomKind.DM }
+      ]
+    }
+  });
+
   provideServerScope({
     serverId: 'storybook',
-    connection: {} as ServerConnection,
-    store: {
-      notifications: { notificationPolicies: matrixState },
-      serverInfo: { name: 'Example server' },
-      navigation: {
-        roomGroups: [
-          {
-            id: 'community',
-            name: 'Community',
-            roomIds: ['general', 'support']
-          }
-        ],
-        rooms: [
-          { id: 'general', name: 'general', viewerIsMember: true, type: RoomKind.CHANNEL },
-          { id: 'support', name: 'support', viewerIsMember: true, type: RoomKind.CHANNEL },
-          { id: 'staff', name: 'staff', viewerIsMember: false, type: RoomKind.CHANNEL },
-          { id: 'dm-alex', name: 'Alex', viewerIsMember: true, type: RoomKind.DM }
-        ]
-      }
-    } as unknown as ServerStateStore,
+    connection: {
+      queryScope: nextStoryQueryScope(),
+      getAPI: () => api
+    } as unknown as ServerConnection,
+    store,
     isCurrent: () => true
   });
 </script>

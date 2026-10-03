@@ -1,7 +1,7 @@
 # FDR-002: Verified Email Signup
 
 **Status:** Experimental
-**Last reviewed:** 2026-08-21
+**Last reviewed:** 2026-09-15
 
 ## Overview
 
@@ -41,7 +41,11 @@ durable account and starts the browser session defined by FDR-003.
    and falls back to `user` when fewer than two characters remain. The value
    is an identity hint, not a login credential or an Authling-wide unique name.
 8. Authling creates a fresh browser session and takes the person to the signed-in
-   account page. If session storage is unavailable, the account remains created
+   account page, or resumes the pending OIDC consent request when signup started
+   from an app. Signup carries the opaque request ID through each form and
+   validates it before email, verification, or account creation. Form validation
+   errors preserve that ID. An unavailable request stops the OIDC signup flow.
+   If session storage is unavailable, the account remains created
    and the person can sign in later.
 
 Requests for an already claimed address follow the same throttling, SMTP, and
@@ -74,7 +78,9 @@ reservation.
 - Cross-origin form submissions are rejected. Opaque flow tokens additionally
   bind the verification and completion forms to server-side state.
 - SMTP transport encryption is mandatory by default. Opportunistic TLS is an
-  explicit development-only choice used by the checked-in Mailpit config.
+  explicit development-only choice used by the checked-in Mailpit config. The
+  runtime logs a startup warning when SMTP uses opportunistic TLS or skips
+  certificate verification.
 
 ## Design decisions
 
@@ -122,11 +128,17 @@ all other password verification remain case-sensitive.
   update and extension story. The feature remains Experimental until those
   controls exist.
 - Key provisioning writes a durable operation marker before key material and
-  removes it after the referencing event commits. Normal failures compensate
-  immediately. A crash orphan remains discoverable but is deliberately not
-  deleted by a time-based heuristic; a future event-backed cleanup worker must
-  prove that no publication can still reference it. Cryptographic erasure also
-  requires erasure-aware replay before any account key is destroyed.
+  removes it after the referencing event commit is acknowledged. Failures before
+  publication and definite OCC rejections permit immediate cleanup. A timeout
+  or lost reply can follow a successful commit, so an unknown publication
+  outcome retains both keys and the operation marker. The browser can report
+  failure even when the account was created; the person can then sign in with
+  the submitted password. Retained markers and crash orphans remain discoverable.
+  A future event-backed cleanup worker must prove that no publication can still
+  reference the keys; elapsed time alone is not sufficient. Account deletion
+  already provides durable key destruction and erasure-aware replay, as defined
+  by [FDR-013](FDR-013-account-deletion.md). Orphan-provisioning cleanup remains
+  a separate workflow.
 - There is no resend button; submitting the email form again starts a separate
   code flow within the shared delivery limit.
 

@@ -19,13 +19,23 @@ func (s *permissionService) GetRolePermissionTierMatrix(ctx context.Context, req
 	if err != nil {
 		return nil, err
 	}
+	if scope := req.Msg.GetScope(); scope.GetKind() == adminv1.PermissionScopeKind_PERMISSION_SCOPE_KIND_DM {
+		if scope.GetId() != "" {
+			return nil, invalidArgument("direct-message scope id must be empty")
+		}
+		matrix, err := s.api.core.GetRolePermissionDMTierMatrix(ctx, caller.UserID)
+		if err != nil {
+			return nil, err
+		}
+		return connect.NewResponse(&adminv1.GetRolePermissionTierMatrixResponse{Matrix: apiTierRoles(matrix)}), nil
+	}
 	roomID, groupID, err := permissionScopeIDs(req.Msg.GetScope())
 	if err != nil {
 		return nil, err
 	}
 	matrix, err := s.api.core.GetRolePermissionTierMatrix(ctx, caller.UserID, roomID, groupID)
 	if err != nil {
-		return nil, connectError(err)
+		return nil, err
 	}
 	return connect.NewResponse(&adminv1.GetRolePermissionTierMatrixResponse{Matrix: apiTierRoles(matrix)}), nil
 }
@@ -35,11 +45,15 @@ func (s *permissionService) GetRolePermissionMatrix(ctx context.Context, req *co
 	if err != nil {
 		return nil, err
 	}
-	matrix, err := s.api.core.GetRolePermissionMatrix(ctx, caller.UserID, req.Msg.GetRoleName())
+	query, err := permissionScopeQuery(req.Msg.GetPage(), req.Msg.GetScope())
 	if err != nil {
-		return nil, connectError(err)
+		return nil, err
 	}
-	return connect.NewResponse(&adminv1.GetRolePermissionMatrixResponse{Matrix: apiRolePermissionMatrix(matrix)}), nil
+	matrix, err := s.api.core.GetRolePermissionMatrixPage(ctx, caller.UserID, req.Msg.GetRoleName(), req.Msg.GetIncludeDirectMessageScope(), query)
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(&adminv1.GetRolePermissionMatrixResponse{Matrix: apiRolePermissionMatrix(matrix), Page: apiPermissionScopePage(matrix.Page)}), nil
 }
 
 func (s *permissionService) ListRolePermissionDecisions(ctx context.Context, req *connect.Request[adminv1.ListRolePermissionDecisionsRequest]) (*connect.Response[adminv1.ListRolePermissionDecisionsResponse], error) {
@@ -47,13 +61,19 @@ func (s *permissionService) ListRolePermissionDecisions(ctx context.Context, req
 	if err != nil {
 		return nil, err
 	}
-	matrix, err := s.api.core.GetRolePermissionMatrix(ctx, caller.UserID, req.Msg.GetRoleName())
+	query, err := permissionScopeQuery(req.Msg.GetPage(), req.Msg.GetScope())
 	if err != nil {
-		return nil, connectError(err)
+		return nil, err
+	}
+	matrix, err := s.api.core.GetRolePermissionMatrixPage(ctx, caller.UserID, req.Msg.GetRoleName(), req.Msg.GetIncludeDirectMessageScope(), query)
+	if err != nil {
+		return nil, err
 	}
 	return connect.NewResponse(&adminv1.ListRolePermissionDecisionsResponse{
 		RoleName:  matrix.RoleName,
 		Decisions: apiPermissionDecisionEntries(matrix.Scopes, matrix.Cells),
+		Page:      apiPermissionScopePage(matrix.Page),
+		Scopes:    apiPermissionScopes(matrix.Scopes),
 	}), nil
 }
 
@@ -62,11 +82,15 @@ func (s *permissionService) GetUserPermissionMatrix(ctx context.Context, req *co
 	if err != nil {
 		return nil, err
 	}
-	matrix, err := s.api.core.GetUserPermissionMatrix(ctx, caller.UserID, req.Msg.GetUserId())
+	query, err := permissionScopeQuery(req.Msg.GetPage(), req.Msg.GetScope())
 	if err != nil {
-		return nil, connectError(err)
+		return nil, err
 	}
-	return connect.NewResponse(&adminv1.GetUserPermissionMatrixResponse{Matrix: apiUserPermissionMatrix(matrix)}), nil
+	matrix, err := s.api.core.GetUserPermissionMatrixPage(ctx, caller.UserID, req.Msg.GetUserId(), req.Msg.GetIncludeDirectMessageScope(), query)
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(&adminv1.GetUserPermissionMatrixResponse{Matrix: apiUserPermissionMatrix(matrix), Page: apiPermissionScopePage(matrix.Page)}), nil
 }
 
 func (s *permissionService) ListUserPermissionDecisions(ctx context.Context, req *connect.Request[adminv1.ListUserPermissionDecisionsRequest]) (*connect.Response[adminv1.ListUserPermissionDecisionsResponse], error) {
@@ -74,13 +98,19 @@ func (s *permissionService) ListUserPermissionDecisions(ctx context.Context, req
 	if err != nil {
 		return nil, err
 	}
-	matrix, err := s.api.core.GetUserPermissionMatrix(ctx, caller.UserID, req.Msg.GetUserId())
+	query, err := permissionScopeQuery(req.Msg.GetPage(), req.Msg.GetScope())
 	if err != nil {
-		return nil, connectError(err)
+		return nil, err
+	}
+	matrix, err := s.api.core.GetUserPermissionMatrixPage(ctx, caller.UserID, req.Msg.GetUserId(), req.Msg.GetIncludeDirectMessageScope(), query)
+	if err != nil {
+		return nil, err
 	}
 	return connect.NewResponse(&adminv1.ListUserPermissionDecisionsResponse{
 		UserId:    matrix.UserID,
 		Decisions: apiPermissionDecisionEntries(matrix.Scopes, matrix.Cells),
+		Page:      apiPermissionScopePage(matrix.Page),
+		Scopes:    apiPermissionScopes(matrix.Scopes),
 	}), nil
 }
 
@@ -89,9 +119,13 @@ func (s *permissionService) ExplainPermissions(ctx context.Context, req *connect
 	if err != nil {
 		return nil, err
 	}
-	explanations, err := s.api.core.ExplainPermissions(ctx, caller.UserID, req.Msg.GetUserId(), req.Msg.GetRoomId())
+	target, err := explanationTarget(req.Msg)
 	if err != nil {
-		return nil, connectError(err)
+		return nil, err
+	}
+	explanations, err := s.api.core.ExplainPermissionsAtScope(ctx, caller.UserID, req.Msg.GetUserId(), target)
+	if err != nil {
+		return nil, err
 	}
 	return connect.NewResponse(&adminv1.ExplainPermissionsResponse{Explanations: apiPermissionExplanations(explanations)}), nil
 }
@@ -110,7 +144,7 @@ func (s *permissionService) SetRolePermission(ctx context.Context, req *connect.
 		return nil, err
 	}
 	if err := s.api.core.SetRolePermissionState(ctx, caller.UserID, req.Msg.GetRoleName(), scope, core.Permission(req.Msg.GetPermission()), state); err != nil {
-		return nil, connectError(err)
+		return nil, err
 	}
 	return connect.NewResponse(&adminv1.SetRolePermissionResponse{
 		Decision: apiPermissionDecisionUpdate(scope, core.Permission(req.Msg.GetPermission()), req.Msg.GetDecision()),
@@ -131,7 +165,7 @@ func (s *permissionService) SetUserPermission(ctx context.Context, req *connect.
 		return nil, err
 	}
 	if err := s.api.core.SetUserPermissionState(ctx, caller.UserID, req.Msg.GetUserId(), scope, core.Permission(req.Msg.GetPermission()), state); err != nil {
-		return nil, connectError(err)
+		return nil, err
 	}
 	return connect.NewResponse(&adminv1.SetUserPermissionResponse{
 		Decision: apiPermissionDecisionUpdate(scope, core.Permission(req.Msg.GetPermission()), req.Msg.GetDecision()),
@@ -209,6 +243,8 @@ func apiPermissionDecisionLevel(level core.PermissionLevel) adminv1.PermissionDe
 		return adminv1.PermissionDecisionLevel_PERMISSION_DECISION_LEVEL_GROUP
 	case core.LevelRoom:
 		return adminv1.PermissionDecisionLevel_PERMISSION_DECISION_LEVEL_ROOM
+	case core.LevelDM:
+		return adminv1.PermissionDecisionLevel_PERMISSION_DECISION_LEVEL_DM
 	default:
 		return adminv1.PermissionDecisionLevel_PERMISSION_DECISION_LEVEL_UNSPECIFIED
 	}
@@ -312,6 +348,8 @@ func apiPermissionTargetScope(scope core.PermissionTargetScope) *adminv1.Permiss
 			Kind: adminv1.PermissionScopeKind_PERMISSION_SCOPE_KIND_ROOM,
 			Id:   scope.ID,
 		}
+	case core.MatrixScopeDM:
+		return &adminv1.PermissionScope{Kind: adminv1.PermissionScopeKind_PERMISSION_SCOPE_KIND_DM}
 	default:
 		return &adminv1.PermissionScope{
 			Kind: adminv1.PermissionScopeKind_PERMISSION_SCOPE_KIND_SERVER,
@@ -331,6 +369,8 @@ func apiPermissionEntryScope(scope core.PermissionMatrixScope) *adminv1.Permissi
 			Kind: adminv1.PermissionScopeKind_PERMISSION_SCOPE_KIND_ROOM,
 			Id:   strings.TrimPrefix(scope.ID, "room:"),
 		}
+	case core.MatrixScopeDM:
+		return &adminv1.PermissionScope{Kind: adminv1.PermissionScopeKind_PERMISSION_SCOPE_KIND_DM}
 	default:
 		return &adminv1.PermissionScope{
 			Kind: adminv1.PermissionScopeKind_PERMISSION_SCOPE_KIND_SERVER,
@@ -374,6 +414,8 @@ func apiPermissionScopeKind(kind core.MatrixScopeKind) adminv1.PermissionScopeKi
 		return adminv1.PermissionScopeKind_PERMISSION_SCOPE_KIND_GROUP
 	case core.MatrixScopeRoom:
 		return adminv1.PermissionScopeKind_PERMISSION_SCOPE_KIND_ROOM
+	case core.MatrixScopeDM:
+		return adminv1.PermissionScopeKind_PERMISSION_SCOPE_KIND_DM
 	default:
 		return adminv1.PermissionScopeKind_PERMISSION_SCOPE_KIND_SERVER
 	}
@@ -428,12 +470,23 @@ func permissionScopeIDs(scope *adminv1.PermissionScope) (roomID string, groupID 
 			return "", "", invalidArgument("room scope id is required")
 		}
 		return scope.GetId(), "", nil
+	case adminv1.PermissionScopeKind_PERMISSION_SCOPE_KIND_DM:
+		if scope.GetId() != "" {
+			return "", "", invalidArgument("direct-message scope id must be empty")
+		}
+		return "", "", invalidArgument("direct-message scope is not a channel scope")
 	default:
 		return "", "", invalidArgument("unsupported permission scope kind")
 	}
 }
 
 func corePermissionTargetScope(scope *adminv1.PermissionScope) (core.PermissionTargetScope, error) {
+	if scope != nil && scope.GetKind() == adminv1.PermissionScopeKind_PERMISSION_SCOPE_KIND_DM {
+		if scope.GetId() != "" {
+			return core.PermissionTargetScope{}, invalidArgument("direct-message scope id must be empty")
+		}
+		return core.PermissionTargetScope{Kind: core.MatrixScopeDM}, nil
+	}
 	roomID, groupID, err := permissionScopeIDs(scope)
 	if err != nil {
 		return core.PermissionTargetScope{}, err
@@ -446,4 +499,52 @@ func corePermissionTargetScope(scope *adminv1.PermissionScope) (core.PermissionT
 	default:
 		return core.PermissionTargetScope{}, nil
 	}
+}
+
+func explanationTarget(req *adminv1.ExplainPermissionsRequest) (core.PermissionTargetScope, error) {
+	if req.GetScope() == nil {
+		if req.GetRoomId() == "" {
+			return core.PermissionTargetScope{Kind: core.MatrixScopeServer}, nil
+		}
+		return core.PermissionTargetScope{Kind: core.MatrixScopeRoom, ID: req.GetRoomId()}, nil
+	}
+	target, err := corePermissionTargetScope(req.GetScope())
+	if err != nil {
+		return core.PermissionTargetScope{}, err
+	}
+	if req.GetRoomId() != "" && (target.Kind != core.MatrixScopeRoom || target.ID != req.GetRoomId()) {
+		return core.PermissionTargetScope{}, invalidArgument("room_id and scope identify different targets")
+	}
+	return target, nil
+}
+
+// permissionScopeQuery decodes the shared scope-page contract without applying policy.
+func permissionScopeQuery(page *apiv1.PageRequest, scope *adminv1.PermissionScope) (core.PermissionScopeQuery, error) {
+	query := core.PermissionScopeQuery{Limit: int(page.GetLimit()), Offset: int(page.GetOffset())}
+	if scope != nil {
+		if scope.GetKind() == adminv1.PermissionScopeKind_PERMISSION_SCOPE_KIND_UNSPECIFIED {
+			return query, invalidArgument("explicit scope kind is required")
+		}
+		target, err := corePermissionTargetScope(scope)
+		if err != nil {
+			return query, err
+		}
+		if target.Kind == "" {
+			target.Kind = core.MatrixScopeServer
+		}
+		query.Scope = &target
+	}
+	return query, nil
+}
+
+func apiPermissionScopePage(page core.PermissionScopePage) *apiv1.PageInfo {
+	return &apiv1.PageInfo{TotalCount: int64(page.TotalCount), HasMore: page.HasMore}
+}
+
+func apiPermissionScopes(scopes []core.PermissionMatrixScope) []*adminv1.PermissionScope {
+	out := make([]*adminv1.PermissionScope, 0, len(scopes))
+	for _, scope := range scopes {
+		out = append(out, apiPermissionEntryScope(scope))
+	}
+	return out
 }

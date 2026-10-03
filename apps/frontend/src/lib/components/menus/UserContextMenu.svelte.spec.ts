@@ -18,13 +18,23 @@ const serverScopeMock = vi.hoisted(() => ({
   permissions: {
     loaded: true,
     canAdminViewUsers: false,
+    canAdminManageAccounts: false,
+    canManageBots: false,
     canStartDMs: true
   },
+  accountId: 'viewer-1',
   currentUser: { user: { id: 'viewer-1' } },
   projection: { rooms: new Map() }
 }));
 
+// The store mock also carries the frontend UI state of its server.
+vi.mock(
+  '$lib/state/server/serverUi',
+  async () => (await import('$lib/test-utils/serverUiMock')).serverUiIsStore
+);
+
 vi.mock('$lib/navigation', () => ({
+  segmentToServerId: vi.fn(),
   serverIdToSegment: (serverId: string) => `${serverId}.example.test`
 }));
 
@@ -32,6 +42,9 @@ vi.mock('$lib/state/server/scope.svelte', () => ({
   useServerScope: () => ({
     serverId: serverScopeMock.serverId,
     store: {
+      get accountId() {
+        return serverScopeMock.accountId;
+      },
       permissions: serverScopeMock.permissions,
       currentUser: serverScopeMock.currentUser,
       projection: serverScopeMock.projection
@@ -46,13 +59,8 @@ vi.mock('$lib/state/userProfiles.svelte', () => ({
   getLiveDisplayName: (_userId: string, fallback: string) => fallback,
   getLiveLogin: (_userId: string, fallback: string) => fallback,
   getLiveAvatarUrl: (_userId: string, fallback: string | null) => fallback,
-  getLiveCustomStatus: (_userId: string, fallback: unknown) => fallback
-}));
-
-vi.mock('$lib/state/presenceCache.svelte', () => ({
-  getPresenceCache: () => ({
-    get: (_scope: { serverId: string; userId: string }, fallback: string) => fallback
-  })
+  getLiveCustomStatus: (_userId: string, fallback: unknown) => fallback,
+  getLiveBotOwnerUserId: (_userId: string, fallback: string | null) => fallback
 }));
 
 const user = {
@@ -110,7 +118,10 @@ beforeEach(() => {
   serverScopeMock.serverId = 'server-1';
   serverScopeMock.permissions.loaded = true;
   serverScopeMock.permissions.canAdminViewUsers = false;
+  serverScopeMock.permissions.canAdminManageAccounts = false;
+  serverScopeMock.permissions.canManageBots = false;
   serverScopeMock.permissions.canStartDMs = true;
+  serverScopeMock.accountId = 'viewer-1';
   serverScopeMock.currentUser.user = { id: 'viewer-1' };
   serverScopeMock.projection.rooms.clear();
   toast.clear();
@@ -184,25 +195,25 @@ describe('UserContextMenu', () => {
     expect(onClose).toHaveBeenCalledOnce();
   });
 
-  it('disables profile navigation when no direct message exists and the viewer cannot create one', () => {
+  it('opens a profile without a direct message or permission to create one', () => {
     serverScopeMock.permissions.canStartDMs = false;
     const onClose = vi.fn();
     const onOpenProfile = vi.fn();
     const { container } = renderMenu({ onClose, onOpenProfile });
     const viewProfile = buttonWithText(container, 'View profile');
 
-    expect(viewProfile?.disabled).toBe(true);
-    expect(viewProfile?.title).toBe('A direct message is required to view this profile.');
+    expect(viewProfile?.disabled).toBe(false);
     viewProfile?.click();
 
-    expect(onOpenProfile).not.toHaveBeenCalled();
-    expect(onClose).not.toHaveBeenCalled();
+    expect(onOpenProfile).toHaveBeenCalledExactlyOnceWith('user-1');
+    expect(onClose).toHaveBeenCalledOnce();
   });
 
   it('keeps profile navigation available for an existing direct message without DM-create permission', () => {
     serverScopeMock.permissions.canStartDMs = false;
     serverScopeMock.projection.rooms.set('dm-1', {
-      room: { room: { kind: RoomKind.DM }, viewerState: { isMember: true } },
+      room: { kind: RoomKind.DM },
+      viewerState: { isMember: true },
       memberUserIds: ['viewer-1', 'user-1']
     });
     const onOpenProfile = vi.fn();
@@ -304,7 +315,7 @@ describe('UserContextMenu', () => {
       'Send Message',
       'View profile',
       'View in Server Admin',
-      'Ban from room'
+      'Remove from room'
     ]);
     const actionIcons = Array.from(dialog.querySelectorAll('.menu-entry > .menu-entry-leading'));
     expect(
@@ -315,7 +326,7 @@ describe('UserContextMenu', () => {
       'icon-[uil--comment-alt-message]',
       'icon-[uil--user]',
       'icon-[uil--servers]',
-      'icon-[uil--ban]',
+      'icon-[uil--user-minus]',
       'icon-[uil--copy]'
     ]);
     expect(sections[2]?.textContent).toContain('Copy User ID');
@@ -361,5 +372,51 @@ describe('UserContextMenu', () => {
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
 
     expect(onClose).toHaveBeenCalledOnce();
+  });
+  describe('Manage bot link', () => {
+    const bot = {
+      ...user,
+      id: 'bot-1',
+      login: 'helper_bot',
+      displayName: 'Helper Bot',
+      isBot: true,
+      bot: { ownerUserId: 'viewer-1' }
+    };
+
+    it('lets the bot owner open the bot management page', async () => {
+      const onClose = vi.fn();
+      const { container } = renderMenu({ user: bot, onClose });
+      const link = linkWithText(container, 'Manage bot');
+
+      await expect.element(link).toBeInTheDocument();
+      expect(link?.getAttribute('href')).toBe(
+        '/chat/server-1.example.test/manage/server/bots/bot-1'
+      );
+      link!.addEventListener('click', (event) => event.preventDefault());
+      link!.click();
+      expect(onClose).toHaveBeenCalledOnce();
+    });
+
+    it('hides the link from members who do not own or manage the bot', () => {
+      const { container } = renderMenu({ user: { ...bot, bot: { ownerUserId: 'someone-else' } } });
+      expect(linkWithText(container, 'Manage bot')).toBeNull();
+    });
+
+    it.each(['canManageBots', 'canAdminManageAccounts'] as const)(
+      'shows the link to a bot manager through %s',
+      async (permission) => {
+        serverScopeMock.permissions[permission] = true;
+        const { container } = renderMenu({
+          user: { ...bot, bot: { ownerUserId: 'someone-else' } }
+        });
+        await expect.element(linkWithText(container, 'Manage bot')).toBeInTheDocument();
+      }
+    );
+
+    it('never shows the link for a human account', () => {
+      serverScopeMock.permissions.canManageBots = true;
+      const { container } = renderMenu();
+      expect(linkWithText(container, 'Manage bot')).toBeNull();
+    });
   });
 });

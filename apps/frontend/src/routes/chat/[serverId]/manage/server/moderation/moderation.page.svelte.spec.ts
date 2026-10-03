@@ -2,15 +2,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
 import { flushSync } from 'svelte';
 import { queryClient } from '$lib/query/client';
+import { createTestServerScope } from '$lib/test-utils/serverScope.svelte';
 import { removeRegisteredAdminUserQueries } from '$lib/query/cacheRegistry';
-import type { DirectoryMember } from '$lib/api-client/memberDirectory';
-import type { RoomBanSummary } from '$lib/api-client/rooms';
-import { RoomThreadingMode } from '$lib/roomThreading';
+import type { DirectoryMember } from '@chatto/client/api/memberDirectory';
+import type { RoomSuspensionSummary } from '@chatto/client/api/rooms';
+import { RoomThreadingMode } from '@chatto/client/util/roomThreading';
 import ModerationPage from './+page.svelte';
 
 const mocks = vi.hoisted(() => ({
-  listBans: vi.fn(),
-  unbanMember: vi.fn()
+  listSuspensions: vi.fn(),
+  liftSuspension: vi.fn()
 }));
 
 let originalIntersectionObserver: typeof IntersectionObserver;
@@ -66,20 +67,13 @@ class MockIntersectionObserver implements IntersectionObserver {
   }
 }
 
-vi.mock('$lib/state/server/scope.svelte', () => ({
-  useServerScope: () => ({
-    serverId: 'origin',
-    store: { currentUser: { user: { settings: null } } },
-    connection: {
-      queryScope: 'moderation-test',
-      getAPI: () => ({
-        listBans: mocks.listBans,
-        unbanMember: mocks.unbanMember
-      })
-    },
-    isCurrent: () => true
-  })
-}));
+// Page titles are tested separately from this page's partial route/server fixtures.
+vi.mock('$lib/render/pageTitle', () => ({ formatPageTitle: () => 'Chatto' }));
+
+vi.mock(
+  '$lib/state/server/scope.svelte',
+  async () => (await import('$lib/test-utils/serverScope.svelte')).serverScopeModule
+);
 
 vi.mock('$lib/components/UserAvatar.svelte', async () => ({
   default: (await import('./ModerationUserAvatarMock.svelte')).default
@@ -103,7 +97,7 @@ function ban(
   id: string,
   user: DirectoryMember | null = null,
   moderator: DirectoryMember | null = null
-): RoomBanSummary {
+): RoomSuspensionSummary {
   return {
     id,
     roomId: 'room-1',
@@ -127,8 +121,8 @@ function ban(
   };
 }
 
-function result(bans: ReturnType<typeof ban>[], hasMore = false) {
-  return { bans, totalCount: bans.length, hasMore };
+function result(suspensions: ReturnType<typeof ban>[], hasMore = false) {
+  return { suspensions, totalCount: suspensions.length, hasMore };
 }
 
 async function settle() {
@@ -143,13 +137,17 @@ async function settle() {
 describe('server admin moderation bans', () => {
   beforeEach(() => {
     queryClient.clear();
+    createTestServerScope({
+      serverId: 'origin',
+      api: { listSuspensions: mocks.listSuspensions, liftSuspension: mocks.liftSuspension }
+    });
     originalIntersectionObserver = globalThis.IntersectionObserver;
     observers = [];
     globalThis.IntersectionObserver =
       MockIntersectionObserver as unknown as typeof IntersectionObserver;
-    mocks.listBans.mockReset();
-    mocks.unbanMember.mockReset();
-    mocks.unbanMember.mockResolvedValue(true);
+    mocks.listSuspensions.mockReset();
+    mocks.liftSuspension.mockReset();
+    mocks.liftSuspension.mockResolvedValue(true);
   });
 
   afterEach(() => {
@@ -158,7 +156,7 @@ describe('server admin moderation bans', () => {
   });
 
   it('loads bans in cancellable offset pages as the table end intersects', async () => {
-    mocks.listBans
+    mocks.listSuspensions
       .mockResolvedValueOnce(
         result(
           Array.from({ length: 20 }, (_, index) => ban(String(index))),
@@ -170,7 +168,7 @@ describe('server admin moderation bans', () => {
     const { container } = render(ModerationPage);
     await settle();
 
-    expect(mocks.listBans).toHaveBeenNthCalledWith(
+    expect(mocks.listSuspensions).toHaveBeenNthCalledWith(
       1,
       { limit: 20, offset: 0 },
       expect.objectContaining({ signal: expect.any(AbortSignal) })
@@ -181,7 +179,7 @@ describe('server admin moderation bans', () => {
     observers[0].trigger(true);
     await settle();
 
-    expect(mocks.listBans).toHaveBeenNthCalledWith(
+    expect(mocks.listSuspensions).toHaveBeenNthCalledWith(
       2,
       { limit: 20, offset: 20 },
       expect.objectContaining({ signal: expect.any(AbortSignal) })
@@ -190,28 +188,28 @@ describe('server admin moderation bans', () => {
   });
 
   it('invalidates and refreshes the scoped bans query after an unban', async () => {
-    mocks.listBans.mockResolvedValueOnce(result([ban('1')])).mockResolvedValue(result([]));
+    mocks.listSuspensions.mockResolvedValueOnce(result([ban('1')])).mockResolvedValue(result([]));
 
     const { container } = render(ModerationPage);
     await settle();
 
     const rowUnban = [...container.querySelectorAll('button')].find(
-      (button) => button.textContent?.trim() === 'Unban'
+      (button) => button.textContent?.trim() === 'Lift suspension'
     ) as HTMLButtonElement;
     rowUnban.click();
     await settle();
 
-    const reason = document.querySelector('#unban-room-member-reason') as HTMLTextAreaElement;
+    const reason = document.querySelector('#lift-room-suspension-reason') as HTMLTextAreaElement;
     reason.value = 'Appeal approved';
     reason.dispatchEvent(new Event('input', { bubbles: true }));
     flushSync();
 
     const submit = document.querySelector('dialog button[type="submit"]') as HTMLButtonElement;
     submit.click();
-    await vi.waitFor(() => expect(mocks.unbanMember).toHaveBeenCalledOnce());
-    await vi.waitFor(() => expect(mocks.listBans).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(mocks.liftSuspension).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(mocks.listSuspensions).toHaveBeenCalledTimes(2));
 
-    expect(mocks.unbanMember).toHaveBeenCalledWith({
+    expect(mocks.liftSuspension).toHaveBeenCalledWith({
       roomId: 'room-1',
       userId: 'user-1',
       reason: 'Appeal approved'
@@ -221,7 +219,7 @@ describe('server admin moderation bans', () => {
   it('redacts a removed user from mounted ban and moderator summaries without refetching', async () => {
     const removed = directoryMember('removed', 'Removed Person');
     const retained = directoryMember('retained', 'Retained Person');
-    mocks.listBans.mockResolvedValue(
+    mocks.listSuspensions.mockResolvedValue(
       result([ban('subject', removed, retained), ban('moderator', retained, removed)])
     );
 
@@ -234,6 +232,6 @@ describe('server admin moderation bans', () => {
 
     expect(container.textContent).not.toContain('Removed Person');
     expect(container.textContent).toContain('Retained Person');
-    expect(mocks.listBans).toHaveBeenCalledOnce();
+    expect(mocks.listSuspensions).toHaveBeenCalledOnce();
   });
 });

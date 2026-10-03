@@ -33,6 +33,15 @@ const (
 // reflection-formatted method names, remove the leading slash and convert the remaining slash to a
 // period.
 const (
+	// ThreadServiceGetThreadReadStateProcedure is the fully-qualified name of the ThreadService's
+	// GetThreadReadState RPC.
+	ThreadServiceGetThreadReadStateProcedure = "/chatto.api.v1.ThreadService/GetThreadReadState"
+	// ThreadServiceBatchGetThreadReadStatesProcedure is the fully-qualified name of the ThreadService's
+	// BatchGetThreadReadStates RPC.
+	ThreadServiceBatchGetThreadReadStatesProcedure = "/chatto.api.v1.ThreadService/BatchGetThreadReadStates"
+	// ThreadServiceListThreadParticipantsProcedure is the fully-qualified name of the ThreadService's
+	// ListThreadParticipants RPC.
+	ThreadServiceListThreadParticipantsProcedure = "/chatto.api.v1.ThreadService/ListThreadParticipants"
 	// ThreadServiceListFollowedThreadsProcedure is the fully-qualified name of the ThreadService's
 	// ListFollowedThreads RPC.
 	ThreadServiceListFollowedThreadsProcedure = "/chatto.api.v1.ThreadService/ListFollowedThreads"
@@ -55,29 +64,39 @@ const (
 
 // ThreadServiceClient is a client for the chatto.api.v1.ThreadService service.
 type ThreadServiceClient interface {
+	// Reads the current viewer's stored marker without changing it. Requires the
+	// same membership and read access as MarkThreadAsRead. Missing resources
+	// return NOT_FOUND; inaccessible resources return PERMISSION_DENIED.
+	GetThreadReadState(context.Context, *connect.Request[v1.GetThreadReadStateRequest]) (*connect.Response[v1.GetThreadReadStateResponse], error)
+	// Reads up to 100 states under the same authorization as GetThreadReadState.
+	// Missing and inaccessible resources are omitted; duplicates use first-seen order.
+	BatchGetThreadReadStates(context.Context, *connect.Request[v1.BatchGetThreadReadStatesRequest]) (*connect.Response[v1.BatchGetThreadReadStatesResponse], error)
+	// Lists distinct authors of non-retracted replies, excluding erased users.
+	// The root author is included only if they also replied. Requires the same
+	// membership and message-read access as GetThreadEvents.
+	ListThreadParticipants(context.Context, *connect.Request[v1.ListThreadParticipantsRequest]) (*connect.Response[v1.ListThreadParticipantsResponse], error)
 	// Returns followed threads in rooms where the current user is a member.
-	// Channel-room threads also require message.read or an active relationship
-	// with message.read-interactions. Historical DM threads use DM membership.
+	// All threads also require message.read or an active relationship with
+	// message.read-interactions. Direct-message threads are returned only when
+	// include_direct_message_threads is true.
 	// The result includes enough root and latest-reply data for clients to render
 	// the list without extra per-thread fetches.
 	// Activity can reorder the live result between offset pages. After a thread
 	// activity update, clients must restart paging at offset zero.
 	ListFollowedThreads(context.Context, *connect.Request[v1.ListFollowedThreadsRequest]) (*connect.Response[v1.ListFollowedThreadsResponse], error)
 	// Follows a thread for the current user. Room membership plus message.read or
-	// an active relationship with message.read-interactions are required. DMs do
-	// not support current thread actions.
+	// an active relationship with message.read-interactions are required.
 	// Followed threads can be surfaced in clients and can participate in thread
 	// notification behavior.
 	FollowThread(context.Context, *connect.Request[v1.FollowThreadRequest]) (*connect.Response[v1.FollowThreadResponse], error)
 	// Stops following a thread for the current user. Room membership plus
 	// message.read or an active relationship with message.read-interactions are
-	// required. DMs do not support current thread actions. The response reports
+	// required. The response reports
 	// the resulting follow state so clients can update local UI immediately.
 	UnfollowThread(context.Context, *connect.Request[v1.UnfollowThreadRequest]) (*connect.Response[v1.UnfollowThreadResponse], error)
 	// Returns one page of events in a message thread. Room membership is
-	// required. Channel-room reads also require message.read or an active
-	// relationship with message.read-interactions. Historical DM threads use DM
-	// membership. Initial pages include the thread root message; cursor pages
+	// required. Reads also require message.read or an active relationship with
+	// message.read-interactions. Initial pages include the thread root message; cursor pages
 	// return replies in the requested direction.
 	GetThreadEvents(context.Context, *connect.Request[v1.GetThreadEventsRequest]) (*connect.Response[v1.GetThreadEventsResponse], error)
 	// Returns a thread timeline window centered around a specific event. Use this
@@ -85,12 +104,11 @@ type ThreadServiceClient interface {
 	// NOT_FOUND when the thread root or anchor event is missing or hidden.
 	// Returns PERMISSION_DENIED when room membership is missing, both read modes
 	// are missing, or an interaction-scoped account has no relationship with the
-	// thread. Historical DM threads use DM membership.
+	// thread.
 	GetThreadEventsAround(context.Context, *connect.Request[v1.GetThreadEventsAroundRequest]) (*connect.Response[v1.GetThreadEventsAroundResponse], error)
 	// Marks a thread timeline as read through the supplied event without changing
 	// the room-level read marker. Room membership plus message.read or an active
-	// relationship with message.read-interactions are required. DMs do not
-	// support current thread actions.
+	// relationship with message.read-interactions are required.
 	MarkThreadAsRead(context.Context, *connect.Request[v1.MarkThreadAsReadRequest]) (*connect.Response[v1.MarkThreadAsReadResponse], error)
 }
 
@@ -105,6 +123,24 @@ func NewThreadServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 	baseURL = strings.TrimRight(baseURL, "/")
 	threadServiceMethods := v1.File_chatto_api_v1_threads_proto.Services().ByName("ThreadService").Methods()
 	return &threadServiceClient{
+		getThreadReadState: connect.NewClient[v1.GetThreadReadStateRequest, v1.GetThreadReadStateResponse](
+			httpClient,
+			baseURL+ThreadServiceGetThreadReadStateProcedure,
+			connect.WithSchema(threadServiceMethods.ByName("GetThreadReadState")),
+			connect.WithClientOptions(opts...),
+		),
+		batchGetThreadReadStates: connect.NewClient[v1.BatchGetThreadReadStatesRequest, v1.BatchGetThreadReadStatesResponse](
+			httpClient,
+			baseURL+ThreadServiceBatchGetThreadReadStatesProcedure,
+			connect.WithSchema(threadServiceMethods.ByName("BatchGetThreadReadStates")),
+			connect.WithClientOptions(opts...),
+		),
+		listThreadParticipants: connect.NewClient[v1.ListThreadParticipantsRequest, v1.ListThreadParticipantsResponse](
+			httpClient,
+			baseURL+ThreadServiceListThreadParticipantsProcedure,
+			connect.WithSchema(threadServiceMethods.ByName("ListThreadParticipants")),
+			connect.WithClientOptions(opts...),
+		),
 		listFollowedThreads: connect.NewClient[v1.ListFollowedThreadsRequest, v1.ListFollowedThreadsResponse](
 			httpClient,
 			baseURL+ThreadServiceListFollowedThreadsProcedure,
@@ -146,12 +182,30 @@ func NewThreadServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 
 // threadServiceClient implements ThreadServiceClient.
 type threadServiceClient struct {
-	listFollowedThreads   *connect.Client[v1.ListFollowedThreadsRequest, v1.ListFollowedThreadsResponse]
-	followThread          *connect.Client[v1.FollowThreadRequest, v1.FollowThreadResponse]
-	unfollowThread        *connect.Client[v1.UnfollowThreadRequest, v1.UnfollowThreadResponse]
-	getThreadEvents       *connect.Client[v1.GetThreadEventsRequest, v1.GetThreadEventsResponse]
-	getThreadEventsAround *connect.Client[v1.GetThreadEventsAroundRequest, v1.GetThreadEventsAroundResponse]
-	markThreadAsRead      *connect.Client[v1.MarkThreadAsReadRequest, v1.MarkThreadAsReadResponse]
+	getThreadReadState       *connect.Client[v1.GetThreadReadStateRequest, v1.GetThreadReadStateResponse]
+	batchGetThreadReadStates *connect.Client[v1.BatchGetThreadReadStatesRequest, v1.BatchGetThreadReadStatesResponse]
+	listThreadParticipants   *connect.Client[v1.ListThreadParticipantsRequest, v1.ListThreadParticipantsResponse]
+	listFollowedThreads      *connect.Client[v1.ListFollowedThreadsRequest, v1.ListFollowedThreadsResponse]
+	followThread             *connect.Client[v1.FollowThreadRequest, v1.FollowThreadResponse]
+	unfollowThread           *connect.Client[v1.UnfollowThreadRequest, v1.UnfollowThreadResponse]
+	getThreadEvents          *connect.Client[v1.GetThreadEventsRequest, v1.GetThreadEventsResponse]
+	getThreadEventsAround    *connect.Client[v1.GetThreadEventsAroundRequest, v1.GetThreadEventsAroundResponse]
+	markThreadAsRead         *connect.Client[v1.MarkThreadAsReadRequest, v1.MarkThreadAsReadResponse]
+}
+
+// GetThreadReadState calls chatto.api.v1.ThreadService.GetThreadReadState.
+func (c *threadServiceClient) GetThreadReadState(ctx context.Context, req *connect.Request[v1.GetThreadReadStateRequest]) (*connect.Response[v1.GetThreadReadStateResponse], error) {
+	return c.getThreadReadState.CallUnary(ctx, req)
+}
+
+// BatchGetThreadReadStates calls chatto.api.v1.ThreadService.BatchGetThreadReadStates.
+func (c *threadServiceClient) BatchGetThreadReadStates(ctx context.Context, req *connect.Request[v1.BatchGetThreadReadStatesRequest]) (*connect.Response[v1.BatchGetThreadReadStatesResponse], error) {
+	return c.batchGetThreadReadStates.CallUnary(ctx, req)
+}
+
+// ListThreadParticipants calls chatto.api.v1.ThreadService.ListThreadParticipants.
+func (c *threadServiceClient) ListThreadParticipants(ctx context.Context, req *connect.Request[v1.ListThreadParticipantsRequest]) (*connect.Response[v1.ListThreadParticipantsResponse], error) {
+	return c.listThreadParticipants.CallUnary(ctx, req)
 }
 
 // ListFollowedThreads calls chatto.api.v1.ThreadService.ListFollowedThreads.
@@ -186,29 +240,39 @@ func (c *threadServiceClient) MarkThreadAsRead(ctx context.Context, req *connect
 
 // ThreadServiceHandler is an implementation of the chatto.api.v1.ThreadService service.
 type ThreadServiceHandler interface {
+	// Reads the current viewer's stored marker without changing it. Requires the
+	// same membership and read access as MarkThreadAsRead. Missing resources
+	// return NOT_FOUND; inaccessible resources return PERMISSION_DENIED.
+	GetThreadReadState(context.Context, *connect.Request[v1.GetThreadReadStateRequest]) (*connect.Response[v1.GetThreadReadStateResponse], error)
+	// Reads up to 100 states under the same authorization as GetThreadReadState.
+	// Missing and inaccessible resources are omitted; duplicates use first-seen order.
+	BatchGetThreadReadStates(context.Context, *connect.Request[v1.BatchGetThreadReadStatesRequest]) (*connect.Response[v1.BatchGetThreadReadStatesResponse], error)
+	// Lists distinct authors of non-retracted replies, excluding erased users.
+	// The root author is included only if they also replied. Requires the same
+	// membership and message-read access as GetThreadEvents.
+	ListThreadParticipants(context.Context, *connect.Request[v1.ListThreadParticipantsRequest]) (*connect.Response[v1.ListThreadParticipantsResponse], error)
 	// Returns followed threads in rooms where the current user is a member.
-	// Channel-room threads also require message.read or an active relationship
-	// with message.read-interactions. Historical DM threads use DM membership.
+	// All threads also require message.read or an active relationship with
+	// message.read-interactions. Direct-message threads are returned only when
+	// include_direct_message_threads is true.
 	// The result includes enough root and latest-reply data for clients to render
 	// the list without extra per-thread fetches.
 	// Activity can reorder the live result between offset pages. After a thread
 	// activity update, clients must restart paging at offset zero.
 	ListFollowedThreads(context.Context, *connect.Request[v1.ListFollowedThreadsRequest]) (*connect.Response[v1.ListFollowedThreadsResponse], error)
 	// Follows a thread for the current user. Room membership plus message.read or
-	// an active relationship with message.read-interactions are required. DMs do
-	// not support current thread actions.
+	// an active relationship with message.read-interactions are required.
 	// Followed threads can be surfaced in clients and can participate in thread
 	// notification behavior.
 	FollowThread(context.Context, *connect.Request[v1.FollowThreadRequest]) (*connect.Response[v1.FollowThreadResponse], error)
 	// Stops following a thread for the current user. Room membership plus
 	// message.read or an active relationship with message.read-interactions are
-	// required. DMs do not support current thread actions. The response reports
+	// required. The response reports
 	// the resulting follow state so clients can update local UI immediately.
 	UnfollowThread(context.Context, *connect.Request[v1.UnfollowThreadRequest]) (*connect.Response[v1.UnfollowThreadResponse], error)
 	// Returns one page of events in a message thread. Room membership is
-	// required. Channel-room reads also require message.read or an active
-	// relationship with message.read-interactions. Historical DM threads use DM
-	// membership. Initial pages include the thread root message; cursor pages
+	// required. Reads also require message.read or an active relationship with
+	// message.read-interactions. Initial pages include the thread root message; cursor pages
 	// return replies in the requested direction.
 	GetThreadEvents(context.Context, *connect.Request[v1.GetThreadEventsRequest]) (*connect.Response[v1.GetThreadEventsResponse], error)
 	// Returns a thread timeline window centered around a specific event. Use this
@@ -216,12 +280,11 @@ type ThreadServiceHandler interface {
 	// NOT_FOUND when the thread root or anchor event is missing or hidden.
 	// Returns PERMISSION_DENIED when room membership is missing, both read modes
 	// are missing, or an interaction-scoped account has no relationship with the
-	// thread. Historical DM threads use DM membership.
+	// thread.
 	GetThreadEventsAround(context.Context, *connect.Request[v1.GetThreadEventsAroundRequest]) (*connect.Response[v1.GetThreadEventsAroundResponse], error)
 	// Marks a thread timeline as read through the supplied event without changing
 	// the room-level read marker. Room membership plus message.read or an active
-	// relationship with message.read-interactions are required. DMs do not
-	// support current thread actions.
+	// relationship with message.read-interactions are required.
 	MarkThreadAsRead(context.Context, *connect.Request[v1.MarkThreadAsReadRequest]) (*connect.Response[v1.MarkThreadAsReadResponse], error)
 }
 
@@ -232,6 +295,24 @@ type ThreadServiceHandler interface {
 // and JSON codecs. They also support gzip compression.
 func NewThreadServiceHandler(svc ThreadServiceHandler, opts ...connect.HandlerOption) (string, http.Handler) {
 	threadServiceMethods := v1.File_chatto_api_v1_threads_proto.Services().ByName("ThreadService").Methods()
+	threadServiceGetThreadReadStateHandler := connect.NewUnaryHandler(
+		ThreadServiceGetThreadReadStateProcedure,
+		svc.GetThreadReadState,
+		connect.WithSchema(threadServiceMethods.ByName("GetThreadReadState")),
+		connect.WithHandlerOptions(opts...),
+	)
+	threadServiceBatchGetThreadReadStatesHandler := connect.NewUnaryHandler(
+		ThreadServiceBatchGetThreadReadStatesProcedure,
+		svc.BatchGetThreadReadStates,
+		connect.WithSchema(threadServiceMethods.ByName("BatchGetThreadReadStates")),
+		connect.WithHandlerOptions(opts...),
+	)
+	threadServiceListThreadParticipantsHandler := connect.NewUnaryHandler(
+		ThreadServiceListThreadParticipantsProcedure,
+		svc.ListThreadParticipants,
+		connect.WithSchema(threadServiceMethods.ByName("ListThreadParticipants")),
+		connect.WithHandlerOptions(opts...),
+	)
 	threadServiceListFollowedThreadsHandler := connect.NewUnaryHandler(
 		ThreadServiceListFollowedThreadsProcedure,
 		svc.ListFollowedThreads,
@@ -270,6 +351,12 @@ func NewThreadServiceHandler(svc ThreadServiceHandler, opts ...connect.HandlerOp
 	)
 	return "/chatto.api.v1.ThreadService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case ThreadServiceGetThreadReadStateProcedure:
+			threadServiceGetThreadReadStateHandler.ServeHTTP(w, r)
+		case ThreadServiceBatchGetThreadReadStatesProcedure:
+			threadServiceBatchGetThreadReadStatesHandler.ServeHTTP(w, r)
+		case ThreadServiceListThreadParticipantsProcedure:
+			threadServiceListThreadParticipantsHandler.ServeHTTP(w, r)
 		case ThreadServiceListFollowedThreadsProcedure:
 			threadServiceListFollowedThreadsHandler.ServeHTTP(w, r)
 		case ThreadServiceFollowThreadProcedure:
@@ -290,6 +377,18 @@ func NewThreadServiceHandler(svc ThreadServiceHandler, opts ...connect.HandlerOp
 
 // UnimplementedThreadServiceHandler returns CodeUnimplemented from all methods.
 type UnimplementedThreadServiceHandler struct{}
+
+func (UnimplementedThreadServiceHandler) GetThreadReadState(context.Context, *connect.Request[v1.GetThreadReadStateRequest]) (*connect.Response[v1.GetThreadReadStateResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("chatto.api.v1.ThreadService.GetThreadReadState is not implemented"))
+}
+
+func (UnimplementedThreadServiceHandler) BatchGetThreadReadStates(context.Context, *connect.Request[v1.BatchGetThreadReadStatesRequest]) (*connect.Response[v1.BatchGetThreadReadStatesResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("chatto.api.v1.ThreadService.BatchGetThreadReadStates is not implemented"))
+}
+
+func (UnimplementedThreadServiceHandler) ListThreadParticipants(context.Context, *connect.Request[v1.ListThreadParticipantsRequest]) (*connect.Response[v1.ListThreadParticipantsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("chatto.api.v1.ThreadService.ListThreadParticipants is not implemented"))
+}
 
 func (UnimplementedThreadServiceHandler) ListFollowedThreads(context.Context, *connect.Request[v1.ListFollowedThreadsRequest]) (*connect.Response[v1.ListFollowedThreadsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("chatto.api.v1.ThreadService.ListFollowedThreads is not implemented"))

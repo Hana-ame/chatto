@@ -13,9 +13,10 @@
     "directory": {
       "title": "Serververzeichnis",
       "subtitle": "Andere Chatto-Server entdecken",
-      "custom_title": "Direkt verbinden",
+      "lookup_description": "Gib die Adresse eines Chatto-Servers ein, um ihm beizutreten.",
       "find": "Server suchen",
-      "servers_title": "Server",
+      "connect_by_address": "Per Adresse verbinden",
+      "servers_title": "Empfohlene Server",
       "servers_description": "Von Servern empfohlen, denen du beigetreten bist. Die Ergebnisse haben keine Rangfolge.",
       "recommended_by": "Empfohlen von {servers}",
       "more_recommenders_count": {
@@ -31,10 +32,7 @@
       "unavailable_title": "Verzeichnis nicht verfügbar",
       "unavailable_body": "Deine Server konnten keine Empfehlungen liefern. Du kannst dich weiterhin direkt verbinden.",
       "empty_title": "Noch keine empfohlenen Server",
-      "empty_body": "Du kannst dich weiterhin direkt über eine Serveradresse verbinden.",
-      "discovering": "Weitere Server werden gesucht…",
-      "load_more": "Mehr laden",
-      "session_limit_reached": "Das Suchlimit für diese Sitzung wurde erreicht."
+      "empty_body": "Du kannst dich weiterhin direkt über eine Serveradresse verbinden."
     }
   }
 }

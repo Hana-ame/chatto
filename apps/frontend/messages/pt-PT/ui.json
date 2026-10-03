@@ -16,7 +16,6 @@
       "remote_title": "{server} necessita de login",
       "remote_message": "Este servidor rejeitou o login armazenado. Volte a ligá-lo para retomar atualizações e ações ao vivo.",
       "remote_action": "Reconectar",
-      "remote_failed": "Falha ao iniciar a religação",
       "sidebar_reauth": "{server} necessita de login"
     },
     "access_denied": {
@@ -48,7 +47,8 @@
       "complete": "O Chatto foi reconstruído. Pontuação final: {count} pontos"
     },
     "pane_header": {
-      "back": "Voltar"
+      "back": "Voltar",
+      "actions": "Ações do painel"
     },
     "sidebar_nav": {
       "back_to_chat": "Voltar ao chat"
@@ -67,7 +67,12 @@
     "image_modal": {
       "previous": "Imagem anterior",
       "next": "Próxima imagem",
-      "fallback_alt": "Imagem"
+      "fallback_alt": "Imagem",
+      "zoom_in": "Ampliar",
+      "zoom_out": "Reduzir",
+      "fit": "Ajustar",
+      "details": "Detalhes",
+      "file_type": "Tipo de ficheiro"
     },
     "toast": {
       "dismiss": "Dispensar notificação"
@@ -78,11 +83,9 @@
       "clear": "Limpar"
     },
     "expiry": {
-      "label": "Expira",
       "24h": "24 horas",
       "7d": "7 dias",
       "30d": "Há 30 dias",
-      "indefinite": "Sem vencimento",
       "custom": "Personalizado",
       "custom_label": "Expiração personalizada",
       "error_required": "Escolha uma data de validade.",

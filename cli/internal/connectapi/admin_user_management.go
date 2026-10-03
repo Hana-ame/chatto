@@ -34,18 +34,11 @@ func (s *adminUserManagementService) ListMembers(ctx context.Context, req *conne
 		Offset: offset,
 	})
 	if err != nil {
-		return nil, connectError(err)
+		return nil, err
 	}
 	response := &adminv1.ListMembersResponse{
-		Members: make([]*adminv1.AdminMember, 0, len(members.Users)),
-		Roles:   make([]*apiv1.Role, 0, len(members.Roles)),
+		UserIds: members.UserIDs,
 		Page:    apiPageInfo(members.TotalCount, members.HasMore),
-	}
-	for _, user := range members.Users {
-		response.Members = append(response.Members, s.adminMember(ctx, user))
-	}
-	for _, role := range members.Roles {
-		response.Roles = append(response.Roles, publicAPIRoleFromAdminMemberSummary(role))
 	}
 	return connect.NewResponse(response), nil
 }
@@ -69,7 +62,7 @@ func (s *adminUserManagementService) GetMember(ctx context.Context, req *connect
 		}
 		user, err := s.api.core.GetUserByLogin(ctx, login)
 		if err != nil {
-			return nil, connectError(err)
+			return nil, err
 		}
 		userID = user.GetId()
 	default:
@@ -77,7 +70,7 @@ func (s *adminUserManagementService) GetMember(ctx context.Context, req *connect
 	}
 	details, err := s.api.core.GetAdminMemberDetails(ctx, caller.UserID, userID)
 	if err != nil {
-		return nil, connectError(err)
+		return nil, err
 	}
 	response := &adminv1.GetMemberResponse{
 		Member:                         s.adminMember(ctx, *details.Member),
@@ -101,17 +94,11 @@ func (s *adminUserManagementService) BatchGetMembers(ctx context.Context, req *c
 
 	members, err := s.api.core.BatchGetAdminMembers(ctx, caller.UserID, req.Msg.GetUserIds())
 	if err != nil {
-		return nil, connectError(err)
+		return nil, err
 	}
-	response := &adminv1.BatchGetMembersResponse{
-		Members: make([]*adminv1.AdminMember, 0, len(members.Users)),
-		Roles:   make([]*apiv1.Role, 0, len(members.Roles)),
-	}
-	for _, user := range members.Users {
-		response.Members = append(response.Members, s.adminMember(ctx, user))
-	}
-	for _, role := range members.Roles {
-		response.Roles = append(response.Roles, publicAPIRoleFromAdminMemberSummary(role))
+	response, err := s.assembleAdminMembers(ctx, members)
+	if err != nil {
+		return nil, err
 	}
 	return connect.NewResponse(response), nil
 }
@@ -128,7 +115,7 @@ func (s *adminUserManagementService) AssignRole(ctx context.Context, req *connec
 		return nil, invalidArgument("role_name is required")
 	}
 	if err := s.api.core.AdminAssignServerRole(ctx, caller.UserID, req.Msg.GetUserId(), req.Msg.GetRoleName()); err != nil {
-		return nil, connectError(err)
+		return nil, err
 	}
 	member, err := s.adminMemberAfterMutation(ctx, caller.UserID, req.Msg.GetUserId())
 	if err != nil {
@@ -149,7 +136,7 @@ func (s *adminUserManagementService) RevokeRole(ctx context.Context, req *connec
 		return nil, invalidArgument("role_name is required")
 	}
 	if err := s.api.core.AdminRevokeServerRole(ctx, caller.UserID, req.Msg.GetUserId(), req.Msg.GetRoleName()); err != nil {
-		return nil, connectError(err)
+		return nil, err
 	}
 	member, err := s.adminMemberAfterMutation(ctx, caller.UserID, req.Msg.GetUserId())
 	if err != nil {
@@ -158,33 +145,7 @@ func (s *adminUserManagementService) RevokeRole(ctx context.Context, req *connec
 	return connect.NewResponse(&adminv1.RevokeRoleResponse{Member: member}), nil
 }
 
-func (s *adminUserManagementService) UpdateUser(ctx context.Context, req *connect.Request[adminv1.UpdateUserRequest]) (*connect.Response[adminv1.UpdateUserResponse], error) {
-	caller, err := requireCaller(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if req.Msg.GetUserId() == "" {
-		return nil, invalidArgument("user_id is required")
-	}
-	updated, err := s.api.core.AdminUpdateUser(ctx, caller.UserID, req.Msg.GetUserId(), core.AdminUpdateUserInput{
-		Login:       req.Msg.Login,
-		DisplayName: req.Msg.DisplayName,
-	})
-	if err != nil {
-		return nil, connectError(err)
-	}
-	updatedMember, err := s.adminMemberAfterMutationForUser(ctx, caller.UserID, updated)
-	if err != nil {
-		return nil, err
-	}
-	updatedUser, err := requiredUserSummary(ctx, s.api, updated)
-	if err != nil {
-		return nil, err
-	}
-	return connect.NewResponse(&adminv1.UpdateUserResponse{User: updatedUser, Member: updatedMember}), nil
-}
-
-func (s *adminUserManagementService) UpdateUserPassword(ctx context.Context, req *connect.Request[adminv1.UpdateUserPasswordRequest]) (*connect.Response[adminv1.UpdateUserPasswordResponse], error) {
+func (s *adminUserManagementService) ChangeUserPassword(ctx context.Context, req *connect.Request[adminv1.ChangeUserPasswordRequest]) (*connect.Response[adminv1.ChangeUserPasswordResponse], error) {
 	caller, err := requireCaller(ctx)
 	if err != nil {
 		return nil, err
@@ -196,28 +157,28 @@ func (s *adminUserManagementService) UpdateUserPassword(ctx context.Context, req
 		return nil, invalidArgument("password is required")
 	}
 	if caller.UserID == req.Msg.GetUserId() {
-		return nil, connectError(core.ErrPermissionDenied)
+		return nil, core.ErrPermissionDenied
 	}
 	if caller.UserID != req.Msg.GetUserId() {
 		canManage, err := s.api.core.CanManageUserAccounts(ctx, caller.UserID)
 		if err != nil {
-			return nil, connectError(err)
+			return nil, err
 		}
 		if !canManage {
-			return nil, connectError(core.ErrPermissionDenied)
+			return nil, core.ErrPermissionDenied
 		}
 	}
 	if err := s.api.requireFreshCredential(ctx, caller, ""); err != nil {
-		return nil, connectError(err)
+		return nil, err
 	}
 	if err := s.api.core.AdminSetUserPasswordAuthorized(ctx, caller.UserID, req.Msg.GetUserId(), req.Msg.GetPassword()); err != nil {
-		return nil, connectError(err)
+		return nil, err
 	}
 	member, err := s.adminMemberAfterMutation(ctx, caller.UserID, req.Msg.GetUserId())
 	if err != nil {
 		return nil, err
 	}
-	return connect.NewResponse(&adminv1.UpdateUserPasswordResponse{Member: member}), nil
+	return connect.NewResponse(&adminv1.ChangeUserPasswordResponse{Member: member}), nil
 }
 
 func (s *adminUserManagementService) ClearUsernameCooldown(ctx context.Context, req *connect.Request[adminv1.ClearUsernameCooldownRequest]) (*connect.Response[adminv1.ClearUsernameCooldownResponse], error) {
@@ -229,9 +190,9 @@ func (s *adminUserManagementService) ClearUsernameCooldown(ctx context.Context, 
 		return nil, invalidArgument("user_id is required")
 	}
 	if err := s.api.core.AdminClearLoginChangeCooldown(ctx, caller.UserID, req.Msg.GetUserId()); err != nil {
-		return nil, connectError(err)
+		return nil, err
 	}
-	return connect.NewResponse(&adminv1.ClearUsernameCooldownResponse{Cleared: true}), nil
+	return connect.NewResponse(&adminv1.ClearUsernameCooldownResponse{}), nil
 }
 
 func (s *adminUserManagementService) DeleteUser(ctx context.Context, req *connect.Request[adminv1.DeleteUserRequest]) (*connect.Response[adminv1.DeleteUserResponse], error) {
@@ -244,28 +205,39 @@ func (s *adminUserManagementService) DeleteUser(ctx context.Context, req *connec
 	}
 	canDelete, err := s.api.core.CanDeleteUser(ctx, caller.UserID, req.Msg.GetUserId())
 	if err != nil {
-		return nil, connectError(err)
+		return nil, err
 	}
 	if !canDelete {
-		return nil, connectError(core.ErrPermissionDenied)
+		return nil, core.ErrPermissionDenied
 	}
 	if err := s.api.core.AdminDeleteUserAs(ctx, caller.UserID, req.Msg.GetUserId()); err != nil {
-		return nil, connectError(err)
+		return nil, err
 	}
-	return connect.NewResponse(&adminv1.DeleteUserResponse{Deleted: true}), nil
+	return connect.NewResponse(&adminv1.DeleteUserResponse{}), nil
 }
 
 func (s *adminUserManagementService) adminMember(ctx context.Context, member core.AdminMember) *adminv1.AdminMember {
+	presence, err := s.api.core.GetUserPresence(ctx, member.ID)
+	if err != nil {
+		presence = core.PresenceStatusOffline
+	}
+	return s.adminMemberWithPresence(ctx, member, presence)
+}
+
+func (s *adminUserManagementService) adminMemberWithPresence(ctx context.Context, member core.AdminMember, presence string) *adminv1.AdminMember {
 	response := &adminv1.AdminMember{
 		Roles:                  append([]string{}, member.Roles...),
 		CreatedAt:              member.CreatedAt,
 		HasVerifiedEmail:       member.HasVerifiedEmail,
 		VerifiedEmails:         append([]string{}, member.VerifiedEmails...),
 		ViewerCanDeleteAccount: member.ViewerCanDeleteAccount,
-		User:                   s.adminMemberUser(ctx, member),
+		User:                   adminMemberUserWithPresence(member, presence),
 	}
 	if member.AvatarURL != "" {
-		response.User.AvatarUrl = stringPtr(s.api.absolutizeAssetURL(ctx, member.AvatarURL))
+		response.User.AvatarUrl = stringPtr(s.api.absolutizeServerURL(ctx, member.AvatarURL))
+	}
+	if member.PrimaryVerifiedEmail != "" {
+		response.PrimaryVerifiedEmail = stringPtr(member.PrimaryVerifiedEmail)
 	}
 	if member.LastLoginChange != nil {
 		response.LastLoginChange = timestamppb.New(*member.LastLoginChange)
@@ -273,44 +245,43 @@ func (s *adminUserManagementService) adminMember(ctx context.Context, member cor
 	return response
 }
 
-func (s *adminUserManagementService) adminMemberUser(ctx context.Context, member core.AdminMember) *apiv1.User {
-	presence, err := s.api.core.GetUserPresence(ctx, member.ID)
-	if err != nil {
-		presence = core.PresenceStatusOffline
-	}
-	return &apiv1.User{
+func adminMemberUserWithPresence(member core.AdminMember, presence string) *apiv1.User {
+	summary := &apiv1.User{
 		Id:             member.ID,
 		Login:          member.Login,
 		DisplayName:    member.DisplayName,
 		Deleted:        member.Deleted,
-		IsBot:          member.IsBot,
 		PresenceStatus: corePresenceStatusToAPI(presence),
 		CustomStatus:   coreCustomStatusToAPI(member.CustomStatus),
 	}
+	if member.IsBot && !member.Deleted {
+		summary.Bot = &apiv1.BotInfo{OwnerUserId: member.BotOwnerUserID}
+	}
+	return summary
 }
 
 func (s *adminUserManagementService) adminMemberAfterMutation(ctx context.Context, actorID, userID string) (*adminv1.AdminMember, error) {
 	user, err := s.api.core.GetUser(ctx, userID)
 	if err != nil {
-		return nil, connectError(err)
+		return nil, err
 	}
 	return s.adminMemberAfterMutationForUser(ctx, actorID, user)
 }
 
 func (s *adminUserManagementService) adminMemberAfterMutationForUser(ctx context.Context, actorID string, user *evtv1.User) (*adminv1.AdminMember, error) {
 	if user == nil {
-		return nil, connectError(core.ErrNotFound)
+		return nil, core.ErrNotFound
 	}
 	details, err := s.api.core.GetAdminMemberDetails(ctx, actorID, user.GetId())
 	if err == nil {
 		return s.adminMember(ctx, *details.Member), nil
 	}
 	if !errors.Is(err, core.ErrPermissionDenied) {
-		return nil, connectError(err)
+		return nil, err
 	}
 	roles, err := s.api.core.GetUserRoles(ctx, user.GetId())
 	if err != nil {
-		return nil, connectError(err)
+		return nil, err
 	}
 	apiUser, err := userSummary(ctx, s.api, user, nil)
 	if err != nil {

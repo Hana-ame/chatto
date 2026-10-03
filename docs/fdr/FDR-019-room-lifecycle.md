@@ -1,7 +1,7 @@
 # FDR-019: Room Lifecycle
 
 **Status:** Active
-**Last reviewed:** 2026-08-30
+**Last reviewed:** 2026-09-24
 
 ## Overview
 
@@ -11,22 +11,32 @@ A channel room goes through a lifecycle of create, edit, archive, unarchive, and
 
 - **Create** — server admins (or anyone with `room.create` in the target group) can start room creation from that group in the sidebar. They give the channel a visible 1–30-code-point Unicode name, an optional description, a room group, and the desired Threading Mode, with Enabled as the default. They may also enable Universal. Names are unique across the server after Unicode compatibility normalization and full case folding.
 - **Edit** — `room.manage` holders can change the name, description, group, Universal setting, Threading Mode, and explicit member set of an existing channel room.
+- **Settings update** — one room-settings request commits its supplied name,
+  description, Universal, Slow Mode, and Threading Mode together. A rejected
+  commit leaves all requested fields unchanged. Omitted fields retain their
+  latest values when a concurrent update causes a retry. Group moves and
+  membership changes remain separate commands.
 - **Settings access** — a visible room's sidebar action menu links `room.manage` holders directly to that room's management page and lets them start the archive flow. Effective `room.manage` holders can change general settings; server-wide `role.manage` holders can configure the room's role permission matrix without receiving general room-management authority. The management read can load private-room metadata for either capability and is deliberately separate from the visibility-gated room directory.
 - **Display** — when set, the optional description appears after the channel room name in the desktop room pane header.
 - **Join preview** — a non-member who is allowed to list and join a visible channel room sees its group, description, exact effective member count, and up to five member identities before joining. Messages, files, and activity remain hidden. A user who cannot join sees only the access-denied state.
 - **Universal** — a channel room with Universal enabled behaves as joined for every server member who is currently eligible to join it. The system does not fan out `UserJoinedRoomEvent` facts for implicit membership. Existing explicit memberships remain intact, so disabling Universal restores the prior explicit membership set.
 - **Bootstrap defaults** — fresh servers seed `#announcements` as Universal with announcement-only posting defaults and `#general` as a normal channel room in the default Lobby group. Those posting defaults are an explicit trusted seed option; a user-created room merely named `announcements` receives ordinary permissions.
 - **Join / leave** — joining a Universal room succeeds without writing an explicit membership event. Leaving a Universal room is rejected; users can instead configure that room's notification policy. DMs cannot be Universal.
-- **API surface** — ConnectRPC `RoomService` exposes create, edit, archive, unarchive, Universal, Threading Mode, join, leave, manager add/remove, ban, and unban commands. ConnectRPC `RoomDirectoryService` exposes the complementary room list, room-group/sidebar list, single-room refresh, per-room viewer capability state, and group join-all command.
+- **API surface** — ConnectRPC `RoomService` exposes create, edit, archive, unarchive, Universal, Threading Mode, join, leave, manager add/remove, moderated removal, suspension listing, and suspension lifting. ConnectRPC `RoomDirectoryService` exposes the complementary room list, room-group/sidebar list, single-room refresh, per-room viewer capability state, and group join-all command.
 - **Archive** — `room.manage` toggles the room's durable `archived` flag.
   Archived rooms vanish from the sidebar, server Overview, and search results.
   Membership and history stay intact, but the room is read-only until an
   administrator unarchives it.
+- **Archive discovery** — API clients can list active rooms, archived rooms,
+  or both. The default room list still includes only active rooms. Archive
+  discovery keeps the normal membership and visibility rules; it does not give
+  access to hidden rooms or another user's DMs. Room-group navigation still
+  omits archived rooms.
 - **Unarchive** — same permission, flips the flag back. The room reappears in the sidebar and discovery surfaces.
-- **Manage members** — `room.manage` holders can list, inspect, add, or remove members of channel rooms, including when they are not themselves members or eligible to join. Adding can bring a user into a private room even when that user could not self-join through `room.join`. Active room bans still block adding; the user must be unbanned first. DM membership remains visible only to its participants.
-- **Ban member** — `room.ban-member` holders can ban a user from a channel room with a required reason and optional expiry. The banned user loses room read/write/live access immediately and cannot rejoin until the ban is removed or expires.
+- **Manage members** — `room.manage` holders can list, inspect, add, or remove members of channel rooms, including when they are not themselves members or eligible to join. Adding can bring a user into a private room even when that user could not self-join through `room.join`. Active room suspensions still block adding; a moderator must lift the suspension first. DM membership remains visible only to its participants.
+- **Moderated removal** — `room.remove-member` holders can remove a current user from a channel room with a required reason. Removal ends room read, write, live, notification, and call access. Without suspension, the user can rejoin when normal permissions allow it. A timed or indefinite suspension prevents rejoining. Universal rooms require a suspension because membership would otherwise return immediately.
 - **Delete** — `room.manage` commits `RoomDeletedEvent` and the room-group removal in one atomic EVT batch. Projections remove the room from the catalog and memberships.
-- Leaving, removal, a room ban, loss of Universal eligibility, a group move, or
+- Leaving, removal, a room suspension, loss of Universal eligibility, a group move, or
   an RBAC change removes notification occurrences the user can no longer see.
   Room deletion removes all occurrences targeting that room. A durable
   visibility boundary prevents older queued activity from reappearing after a
@@ -52,6 +62,12 @@ A channel room goes through a lifecycle of create, edit, archive, unarchive, and
 **Decision:** Archive is one boolean in the room projection. Durable room
 archive and unarchive facts change it. The room keeps its event history and
 members; active-room discovery filters on `archived: false`.
+`RoomDirectoryService.ListRooms` accepts an explicit archive filter for clients
+that need the archive. The room-kind scope and archive filter both apply.
+Integrations read the directory in bounded pages, ordered by room ID. Counts
+include only visible rooms that match the filters. Clients that need a complete
+list collect all pages before replacing local state. Ordered room groups and
+realtime navigation snapshots remain complete.
 **Why:** Archive's purpose is "stop showing this room everywhere, but don't lose the history". A full archived-rooms-elsewhere migration would mean different code paths for archived rooms, divergent reads, and a hard road back to active state. A flag is enough.
 **Tradeoff:** Every "show me rooms" query needs to remember to filter on `archived`. Centralised in the resolver layer.
 
@@ -72,37 +88,39 @@ read-only boundary prevents new room activity.
 **Tradeoff:** Membership records for an archived room remain stored even while
 users cannot use the room.
 
-### 6. Archive state converges through the realtime projection
+### 6. Archive state converges through realtime events
 
 **Decision:** Durable archive and unarchive facts make connected clients remove
 or restore the room and reconcile the current room-group layout.
 **Why:** Archiving must remove the room from every connected navigation surface
 without waiting for a page refresh. Unarchive must restore the authoritative
-room and layout state in the same convergence model.
-**Tradeoff:** Clients must handle room removal and restoration as projection
-operations. This follows the authoritative realtime pattern in ADR-051.
+room and layout state in the same convergence model. Semantic public events
+let bots observe the same room lifecycle while the frontend updates its local
+projection. See ADR-091 and FDR-045.
+**Tradeoff:** Clients must apply room lifecycle events in order and reconcile
+current room state after a snapshot fallback.
 
-### 7. Channel member bans use dedicated moderation events
+### 7. Moderated removal separates membership from suspension
 
-**Decision:** Banning someone from a channel room appends a normal `UserLeftRoomEvent` with the target user as actor, plus `RoomMemberBannedEvent` with the target user, required reason, optional expiry, and moderator actor. Unbanning appends `RoomMemberUnbannedEvent` with a required moderator reason. DMs are excluded; their participant set is fixed by DM creation policy in FDR-007.
-**Why:** Other room members should see an ordinary leave in room history, while the moderation/audit fact remains explicit and prevents the banned user from immediately rejoining. The public leave event does not reveal that the user was banned.
-**Tradeoff:** A ban is represented by two durable facts: one public membership transition and one moderation fact.
+**Decision:** Removing someone from a channel room appends a normal `UserLeftRoomEvent` with the target user as actor and a moderator audit fact. Removal without suspension uses `RoomMemberRemovedEvent` with a reason. Removal with suspension uses the stored `RoomMemberBannedEvent` format with an optional expiry; `RoomMemberUnbannedEvent` records lifting it. DMs are excluded; their participant set is fixed by DM creation policy in FDR-007.
+**Why:** Other members see an ordinary leave in room history. The moderator action stays auditable, and only a chosen suspension prevents rejoining. Existing stored ban events remain readable.
+**Tradeoff:** A moderated removal has two durable facts: one public membership transition and one audit fact.
 
 ### 8. Join and leave events remain actor-only
 
-**Decision:** `UserJoinedRoomEvent` and `UserLeftRoomEvent` do not carry a target user. The event actor is the user who joined or left. Manager-controlled add/remove writes a normal join/leave fact with the target user as actor plus a dedicated moderation audit fact with the manager as actor. Moderator bans use the same split. To the target user, an active ban is evaluated as an ordinary join authorization denial rather than a distinct API/UI state.
+**Decision:** `UserJoinedRoomEvent` and `UserLeftRoomEvent` do not carry a target user. The event actor is the user who joined or left. Manager-controlled additions write a normal join fact with the target user as actor and a manager audit fact. Manager-controlled and moderated removals write a normal leave fact with the target user as actor plus a manager or moderator audit fact. To the target user, an active suspension is an ordinary join authorization denial.
 **Why:** Join and leave are ordinary membership facts. Keeping the user in the envelope avoids dual-subject ambiguity and keeps room history focused on membership transitions. Separate moderation facts preserve who performed manager actions without changing public timeline semantics.
 **Tradeoff:** Audited manager actions are represented by two durable facts: one public membership transition and one moderation fact.
 
-### 9. Server-admin exposes active room bans
+### 9. Server-admin exposes active room suspensions
 
-**Decision:** Server-admin includes a Moderation page listing active room bans with target, room, moderator, reason, creation time, and optional expiry. Unbanning from the list prompts for a moderator reason and appends `RoomMemberUnbannedEvent`.
-**Why:** Operators need a way to audit and reverse room-level bans without spelunking the event log or editing RBAC state by hand.
-**Tradeoff:** The first page lists active bans only. Historical moderation audit remains in the durable event log.
+**Decision:** Server-admin includes a Moderation page listing active room suspensions with target, room, moderator, reason, creation time, and optional expiry. Lifting one prompts for a moderator reason and appends `RoomMemberUnbannedEvent`.
+**Why:** Operators need a way to inspect and lift active suspensions without reading the event log.
+**Tradeoff:** The page lists active suspensions only. Historical moderation audit remains in the durable event log.
 
 ### 10. Universal rooms derive membership from join eligibility
 
-**Decision:** Universal is a durable boolean on channel rooms, changed through `RoomUniversalChangedEvent`. Effective membership is explicit membership plus, for Universal channel rooms, every user for whom `room.join` currently resolves allow and no active room ban applies.
+**Decision:** Universal is a durable boolean on channel rooms, changed through `RoomUniversalChangedEvent`. Effective membership is explicit membership plus, for Universal channel rooms, every user for whom `room.join` currently resolves allow and no active room suspension applies.
 **Why:** Operators often need "everyone can see this channel" behavior without writing per-user membership events for every current and future server member. Deriving membership keeps the event log compact and makes disabling Universal restore the previous explicit membership state.
 **Tradeoff:** Member-derived surfaces such as member lists, mentions, unread state, attachment access, voice calls, and live event delivery must use effective membership rather than the explicit membership projection alone.
 
@@ -120,20 +138,33 @@ operations. This follows the authoritative realtime pattern in ADR-051.
 
 ### 13. Threading Mode is direct room metadata
 
-**Decision:** Every channel exposes one of Required, Encouraged, Enabled, or Disabled as ordinary room metadata. New and historically unspecified channels resolve to Enabled. DMs remain threadless and report Unspecified. `room.manage` changes append a dedicated room event and update every room-directory and realtime representation.
+**Decision:** Every channel exposes one of Required, Encouraged, Enabled, or Disabled as ordinary room metadata. New and historically unspecified channels resolve to Enabled. DMs use fixed Enabled behavior and do not store a configurable mode. `room.manage` changes append a dedicated room event and update every room-directory and realtime representation.
 **Why:** Conversation shape is a durable property of a room, not a side effect of permissions or a client-local preference. Keeping it beside Universal and Slow Mode makes creation, administration, API use, replay, and live updates converge on one setting.
 **Tradeoff:** Threading Mode and posting permissions are separate controls. Administrators must still grant the location permissions needed by the chosen mode; Required only waives `message.post-in-thread` for the automatic creation of a root's empty thread.
+
+### 14. A settings patch is one atomic command
+
+**Decision:** All changed fields in a room-settings request commit together.
+A conflict repeats authorization, validation, name uniqueness, and change
+detection against current state before the command can commit.
+**Why:** A manager must not receive an error after only part of a settings
+request has been stored. Retrying a sparse patch must preserve concurrent
+changes to fields the manager did not supply.
+**Tradeoff:** A supplied name requires a server-wide room-name concurrency
+guard. Other settings need only the target room's guard. Concurrent edits to
+the same supplied field can still replace each other because the request does
+not contain a client revision.
 
 ## Permissions
 
 - `room.create` — create a new channel room in a group. Configurable per group.
 - `room.manage` — edit, archive, unarchive, delete, change Universal and Threading Mode state, and list, inspect, add, or remove members for a channel room. Configurable per group and per room.
 - `role.manage` — configure role permission decisions at room scope without granting general room-management authority.
-- `room.ban-member` — ban members from a channel room. Configurable per group and per room.
+- `room.remove-member` — remove a current channel-room member with a reason and optional suspension. Configurable per group and per room.
 - `room.join` — gates whether a user can become an explicit member of an unarchived room and whether a user is an implicit member of a Universal room. Configurable per group and per room.
 - `room.list` + `room.join` — together allow a channel-room nonmember without `room.manage` to list its effective members. Existing members and room managers do not need these grants for member listing.
 
 ## Related
 
-- **ADRs:** ADR-031 (room-group-centric ACL), ADR-033 (event-sourced state with projections), ADR-035 (per-aggregate phased migration), ADR-076 (notification occurrences), ADR-077 (persistent notification list), ADR-086 (atomic room-layout structural mutations)
-- **FDRs:** FDR-001 (Roles & Permissions), FDR-002 (Replies & Threads), FDR-007 (Direct Messages), FDR-012 (Notifications), FDR-017 (Room Groups & Sidebar Layout)
+- **ADRs:** ADR-031 (room-group-centric ACL), ADR-033 (event-sourced state with projections), ADR-035 (per-aggregate phased migration), ADR-076 (notification occurrences), ADR-077 (persistent notification list), ADR-086 (atomic room-layout structural mutations), ADR-091 (semantic realtime events), ADR-095 (DM permission scope and threads)
+- **FDRs:** FDR-001 (Roles & Permissions), FDR-002 (Replies & Threads), FDR-007 (Direct Messages), FDR-012 (Notifications), FDR-017 (Room Groups & Sidebar Layout), FDR-045 (Realtime Event Stream)

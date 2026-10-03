@@ -1,6 +1,6 @@
-import type { ServerConnection } from '$lib/state/server/serverConnection.svelte';
+import type { ServerConnection } from '@chatto/client/server/serverConnection';
 import { adminQueryKeys } from './admin';
-import { queryClient } from './client';
+import { queryClient } from './queryClient';
 
 type AdminQueryConnection = Pick<ServerConnection, 'queryScope'>;
 
@@ -48,10 +48,15 @@ export function removeDeletedRoleQueries(
 ): void {
   const roleKey = adminQueryKeys.rolePermissions(serverId, connection, roleName);
   const roleDetailsKey = adminQueryKeys.role(serverId, connection, roleName);
+  void queryClient.cancelQueries({ queryKey: roleKey, exact: true });
   queryClient.setQueryData(roleKey, null);
   queryClient.setQueryData(roleDetailsKey, null);
   queryClient.removeQueries({ queryKey: roleKey, exact: true });
   queryClient.removeQueries({ queryKey: roleDetailsKey, exact: true });
+  const membersKey = adminQueryKeys.roleMembers(serverId, connection, roleName);
+  void queryClient.cancelQueries({ queryKey: membersKey, exact: true });
+  queryClient.setQueryData(membersKey, null);
+  queryClient.removeQueries({ queryKey: membersKey, exact: true });
   invalidateRolePermissionDependents(serverId, connection, roleName);
 }
 

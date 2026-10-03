@@ -1,44 +1,70 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
+  import { setTimelineViewport } from '$lib/state/room/timelineViewport';
+  import type { MessagesStore } from '@chatto/client/room/messages/MessagesStore';
+  import { onMount } from 'svelte';
   import { PresenceStatus } from '@chatto/api-types/api/v1/presence_pb';
   import {
     TimelineEventKind,
     type TimelineEventView
-  } from '$lib/render/timelineEvents';
+  } from '@chatto/client/timeline/timelineEvents';
   import {
     createComposerContext,
+    createRoomMembers,
     createRoomPermissions,
-    DEFAULT_ROOM_PERMISSIONS
+    DEFAULT_ROOM_PERMISSIONS,
+    type ComposerContext
   } from '$lib/state/room';
   import EventList from './EventList.svelte';
+  import type { TimelineReadPosition } from './readThroughTracker';
 
   let {
     eventIds,
     roomId = 'room-1',
+    permalinkThreadRootEventId = null,
     eventKind = 'message',
     scrollToEventId,
     onComplete,
     isLoading = false,
     isJumpedMode = false,
     onJumpToPresent,
-    updateCounter = 0,
     pendingHighlightId = null,
-    hasReachedStart = false
+    hasReachedStart = false,
+    recoveryViewport = null,
+    unreadAfterEventId = null,
+    onComposerReady,
+    onStoreRead,
+    onReadPosition
   }: {
     eventIds: string[];
     roomId?: string;
+    permalinkThreadRootEventId?: string | null;
     eventKind?: 'message' | 'join';
     scrollToEventId: string | null;
     onComplete?: () => void;
     isLoading?: boolean;
     isJumpedMode?: boolean;
     onJumpToPresent?: () => Promise<boolean>;
-    updateCounter?: number;
     pendingHighlightId?: string | null;
     hasReachedStart?: boolean;
+    recoveryViewport?: { eventId: string; offset: number; hasNewer?: boolean } | null;
+    unreadAfterEventId?: string | null;
+    onComposerReady?: (context: ComposerContext) => void;
+    onStoreRead?: () => void;
+    onReadPosition?: (position: TimelineReadPosition) => void;
   } = $props();
 
-  createComposerContext({ scroll: true });
+  const composerContext = createComposerContext();
+  onMount(() => onComposerReady?.(composerContext));
+  // Production panes drive these through the shared jump state.
+  $effect.pre(() => {
+    composerContext.jumpState.isJumpedMode = isJumpedMode;
+  });
+  $effect.pre(() => {
+    composerContext.jumpState.scrollToEventId = scrollToEventId;
+  });
   createRoomPermissions(() => DEFAULT_ROOM_PERMISSIONS);
+  createRoomMembers();
 
   const events = $derived(
     eventIds.map((id, index): TimelineEventView => {
@@ -88,26 +114,56 @@
     })
   );
 
-  const messageStore = {
+  // Match Room's derived store selection so delayed work sees real owner disposal.
+  const messageStore = $derived({
+    get isInitialLoading() {
+      return isLoading;
+    },
+    isLoadingMore: false,
+    get hasReachedStart() {
+      return hasReachedStart;
+    },
+    loadMore: async () => {},
+    canLoadNewer: false,
+    loadNewer: async () => ({ status: 'declined' }),
+    jumpToLatest: async () => (await onJumpToPresent?.()) ?? false,
+    get recoveryAnchor() {
+      onStoreRead?.();
+      return recoveryViewport
+        ? { eventId: recoveryViewport.eventId, hasNewer: recoveryViewport.hasNewer }
+        : null;
+    },
+    completeRecovery: () => {
+      recoveryViewport = null;
+    },
+    clearAnchor: () => {
+      recoveryViewport = null;
+    },
+    setAnchor: () => true,
     refreshCurrentWindow: async () => ({
       hasOlder: false,
       hasNewer: false,
       refreshed: false,
       changed: false
     })
-  };
+  });
+  // Keep the recovery offset where the room view keeps it.
+  untrack(() => {
+    if (recoveryViewport) {
+      setTimelineViewport(messageStore as unknown as MessagesStore, recoveryViewport);
+    }
+  });
 </script>
+
+<output data-testid="recovery-anchor">{recoveryViewport?.eventId ?? ''}</output>
 
 <EventList
   {roomId}
+  {permalinkThreadRootEventId}
   messageStore={messageStore as never}
   {events}
-  {isLoading}
-  {isJumpedMode}
-  {onJumpToPresent}
-  {updateCounter}
   {pendingHighlightId}
-  {hasReachedStart}
-  {scrollToEventId}
+  {unreadAfterEventId}
   onScrollToEventComplete={onComplete}
+  {onReadPosition}
 />

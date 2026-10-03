@@ -1,9 +1,7 @@
 export const APP_BADGE_REFRESH_MESSAGE_TYPE = 'app-badge-refresh';
 
 export type AppBadgeIntent =
-  | { kind: 'clear' }
-  | { kind: 'flag' }
-  | { kind: 'count'; count: number };
+  { kind: 'clear' } | { kind: 'flag' } | { kind: 'count'; count: number };
 
 type AppBadgeRefreshMessage = {
   type: typeof APP_BADGE_REFRESH_MESSAGE_TYPE;
@@ -30,7 +28,7 @@ export async function updateAppBadge(intent: AppBadgeIntent): Promise<void> {
   }
 }
 
-/** Replays the visible page's aggregate badge when a regular push may have replaced it. */
+/** Reconciles a push flag with the visible page's current important notification state. */
 export function listenForAppBadgeRefresh(refresh: () => void): () => void {
   if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return () => {};
 

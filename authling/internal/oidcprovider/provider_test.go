@@ -99,6 +99,27 @@ func TestJWKSCacheControlDependsOnResponseStatus(t *testing.T) {
 	}
 }
 
+func TestTokenPreflightRunsBeforePostValidation(t *testing.T) {
+	handler := (&Service{}).wrap(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("invalid request reached token engine")
+	}))
+	request := httptest.NewRequest(http.MethodOptions, "https://auth.example/oauth/token", nil)
+	request.Header.Set("Origin", "https://client.example")
+	request.Header.Set("Access-Control-Request-Method", "POST")
+	request.Header.Set("Access-Control-Request-Headers", "authorization,content-type")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent || response.Header().Get("Access-Control-Allow-Origin") != "*" || response.Header().Get("Access-Control-Allow-Headers") != "Authorization, Content-Type" {
+		t.Fatalf("preflight status/headers: %d %v", response.Code, response.Header())
+	}
+	// Moving preflight must not bypass validation for actual malformed POSTs.
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "https://auth.example/oauth/token", nil))
+	if response.Code != http.StatusBadRequest || response.Header().Get("Access-Control-Allow-Origin") != "*" {
+		t.Fatalf("invalid POST status/CORS: %d %v", response.Code, response.Header())
+	}
+}
+
 func TestValidateAuthorizeRequestRequiresExactCodePKCEProfile(t *testing.T) {
 	valid := "https://auth.example/oauth/authorize?client_id=client&redirect_uri=https%3A%2F%2Fclient.example%2Fcallback&response_type=code&scope=openid&code_challenge=" + strings.Repeat("a", 43) + "&code_challenge_method=S256"
 	tests := []struct {
@@ -113,10 +134,10 @@ func TestValidateAuthorizeRequestRequiresExactCodePKCEProfile(t *testing.T) {
 		{name: "extra scope"},
 		{name: "duplicate scope"},
 		{name: "account data without openid"},
-		{name: "prompt none"},
-		{name: "prompt login"},
+		{name: "prompt none", want: true},
+		{name: "prompt login", want: true},
 		{name: "form post"},
-		{name: "max age"},
+		{name: "max age", want: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -127,7 +148,7 @@ func TestValidateAuthorizeRequestRequiresExactCodePKCEProfile(t *testing.T) {
 			case "plain PKCE":
 				raw = strings.ReplaceAll(raw, "code_challenge_method=S256", "code_challenge_method=plain")
 			case "extra scope":
-				raw = strings.ReplaceAll(raw, "scope=openid", "scope=openid%20email")
+				raw = strings.ReplaceAll(raw, "scope=openid", "scope=openid%20unknown")
 			case "account data":
 				raw = strings.ReplaceAll(raw, "scope=openid", "scope=openid%20account_data")
 			case "account data first":
@@ -146,7 +167,7 @@ func TestValidateAuthorizeRequestRequiresExactCodePKCEProfile(t *testing.T) {
 				raw += "&max_age=0"
 			}
 			req := httptest.NewRequest(http.MethodGet, raw, nil)
-			if got := validateAuthorizeRequest(req) == nil; got != test.want {
+			if got := validateAuthorizeRequest(req, true) == nil; got != test.want {
 				t.Fatalf("valid = %v, want %v", got, test.want)
 			}
 		})
@@ -186,54 +207,6 @@ func TestCIMDResolverFetchesBoundsAndCachesValidDocuments(t *testing.T) {
 	uncached.validateDestination = func(context.Context, string) error { return nil }
 	if _, err := uncached.Resolve(context.Background(), clientID); err == nil || !strings.Contains(err.Error(), "exceeds") {
 		t.Fatalf("oversized CIMD error = %v", err)
-	}
-}
-
-func TestCIMDResolverBoundsConcurrentFetches(t *testing.T) {
-	var concurrent, maximum atomic.Int32
-	release := make(chan struct{})
-	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
-		current := concurrent.Add(1)
-		for {
-			previous := maximum.Load()
-			if current <= previous || maximum.CompareAndSwap(previous, current) {
-				break
-			}
-		}
-		defer concurrent.Add(-1)
-		select {
-		case <-release:
-		case <-request.Context().Done():
-			return nil, request.Context().Err()
-		}
-		document := `{"client_id":"` + request.URL.String() + `","redirect_uris":["https://client.example/callback"],"token_endpoint_auth_method":"none"}`
-		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}, "Cache-Control": {"no-store"}}, Body: io.NopCloser(strings.NewReader(document)), Request: request}, nil
-	})}
-	resolver, _ := NewCIMDResolver("https://auth.example", client, nil, nil)
-	resolver.validateDestination = func(context.Context, string) error { return nil }
-	errors := make(chan error, 9)
-	for index := range 9 {
-		go func() {
-			_, err := resolver.Resolve(context.Background(), fmt.Sprintf("https://client.example/metadata-%d.json", index))
-			errors <- err
-		}()
-	}
-	deadline := time.Now().Add(time.Second)
-	for maximum.Load() < 8 && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
-	if maximum.Load() != 8 {
-		close(release)
-		t.Fatalf("maximum concurrent CIMD fetches = %d, want 8", maximum.Load())
-	}
-	close(release)
-	for range 9 {
-		if err := <-errors; err != nil {
-			t.Fatal(err)
-		}
-	}
-	if maximum.Load() > 8 {
-		t.Fatalf("maximum concurrent CIMD fetches = %d", maximum.Load())
 	}
 }
 
@@ -277,14 +250,14 @@ func TestResolverSupportsConventionalPublicAndBasicClients(t *testing.T) {
 
 func TestValidateAuthorizeRequestRejectsDuplicateSecurityParameters(t *testing.T) {
 	raw := "https://auth.example/oauth/authorize?client_id=one&client_id=two&redirect_uri=https%3A%2F%2Fclient.example%2Fcallback&response_type=code&scope=openid&code_challenge=" + strings.Repeat("a", 43) + "&code_challenge_method=S256"
-	if err := validateAuthorizeRequest(httptest.NewRequest(http.MethodGet, raw, nil)); err == nil {
+	if err := validateAuthorizeRequest(httptest.NewRequest(http.MethodGet, raw, nil), true); err == nil {
 		t.Fatal("duplicate client_id was accepted")
 	}
 }
 
 func TestAuthorizeValidationErrorsRedirectOnlyToValidatedClients(t *testing.T) {
 	valid := "https://auth.example/oauth/authorize?client_id=client&redirect_uri=https%3A%2F%2Fclient.example%2Fcallback&response_type=code&scope=openid&state=opaque-state&code_challenge=" + strings.Repeat("a", 43) + "&code_challenge_method=S256"
-	invalidScope := strings.ReplaceAll(valid, "scope=openid", "scope=openid%20email")
+	invalidScope := strings.ReplaceAll(valid, "scope=openid", "scope=openid%20unknown")
 	service := &Service{storage: &Storage{clients: &Resolver{configured: map[string]*Client{
 		"client": {IDValue: "client", Redirects: []string{"https://client.example/callback"}},
 	}}}}
@@ -297,7 +270,10 @@ func TestAuthorizeValidationErrorsRedirectOnlyToValidatedClients(t *testing.T) {
 		{name: "unsupported scope", raw: invalidScope, wantStatus: http.StatusFound, wantError: "invalid_scope"},
 		{name: "missing PKCE", raw: strings.ReplaceAll(valid, "&code_challenge="+strings.Repeat("a", 43), ""), wantStatus: http.StatusFound, wantError: "invalid_request"},
 		{name: "request object", raw: valid + "&request=opaque", wantStatus: http.StatusFound, wantError: "request_not_supported"},
-		{name: "unsupported response type", raw: strings.ReplaceAll(valid, "response_type=code", "response_type=token"), wantStatus: http.StatusFound, wantError: "unauthorized_client"},
+		{name: "missing response type", raw: strings.ReplaceAll(valid, "response_type=code&", ""), wantStatus: http.StatusFound, wantError: "invalid_request"},
+		{name: "empty response type", raw: strings.ReplaceAll(valid, "response_type=code", "response_type="), wantStatus: http.StatusFound, wantError: "invalid_request"},
+		{name: "missing response type unsafe redirect", raw: strings.ReplaceAll(strings.ReplaceAll(valid, "response_type=code&", ""), "client.example%2Fcallback", "attacker.example%2Fcallback"), wantStatus: http.StatusBadRequest},
+		{name: "unsupported response type", raw: strings.ReplaceAll(valid, "response_type=code", "response_type=token"), wantStatus: http.StatusFound, wantError: "unsupported_response_type"},
 		{name: "unknown client", raw: strings.ReplaceAll(invalidScope, "client_id=client", "client_id=unknown"), wantStatus: http.StatusBadRequest},
 		{name: "unregistered redirect", raw: strings.ReplaceAll(invalidScope, "client.example%2Fcallback", "attacker.example%2Fcallback"), wantStatus: http.StatusBadRequest},
 		{name: "unsupported response mode", raw: valid + "&response_mode=form_post", wantStatus: http.StatusBadRequest},
@@ -459,5 +435,168 @@ func TestCIMDCachePolicyIsBounded(t *testing.T) {
 	}
 	if age, cache := cimdCacheAge("max-age=999999"); !cache || age != maxCIMDCacheAge {
 		t.Fatalf("cache age = %v, %v", age, cache)
+	}
+}
+
+func TestAuthenticationFreshness(t *testing.T) {
+	now := time.Date(2026, 9, 15, 12, 0, 0, 500, time.UTC)
+	age := uint(60)
+	zero := uint(0)
+	for _, tt := range []struct {
+		name  string
+		state authRequestState
+		at    time.Time
+		want  bool
+	}{
+		{"ordinary SSO", authRequestState{}, now.Add(-time.Hour), true},
+		{"missing evidence", authRequestState{}, time.Time{}, false},
+		{"future evidence", authRequestState{}, now.Add(time.Nanosecond), false},
+		{"recent", authRequestState{MaxAge: &age}, now.Add(-59 * time.Second), true},
+		{"exact boundary", authRequestState{MaxAge: &age}, now.Add(-60 * time.Second), true},
+		{"expired", authRequestState{MaxAge: &age}, now.Add(-60*time.Second - time.Nanosecond), false},
+		{"equal request time", authRequestState{CreatedAt: now, ForceLogin: true}, now, false},
+		{"same second old login", authRequestState{CreatedAt: now, ForceLogin: true}, now.Add(-time.Nanosecond), false},
+		{"forced login", authRequestState{CreatedAt: now.Add(-time.Second), ForceLogin: true}, now, true},
+		{"zero old login", authRequestState{CreatedAt: now, MaxAge: &zero}, now.Add(-time.Nanosecond), false},
+		{"zero permits consent after fresh login", authRequestState{CreatedAt: now.Add(-time.Minute), MaxAge: &zero}, now.Add(-time.Second), true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := tt.state.checkAuthentication(tt.at, now); (err == nil) != tt.want {
+				t.Fatalf("freshness error = %v, want allowed %v", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestFreshnessParameterValidation(t *testing.T) {
+	valid := "https://auth.example/oauth/authorize?client_id=client&redirect_uri=https%3A%2F%2Fclient.example%2Fcallback&response_type=code&scope=openid&code_challenge=" + strings.Repeat("a", 43) + "&code_challenge_method=S256"
+	for _, tt := range []struct {
+		query string
+		want  bool
+	}{
+		{"max_age=0", true}, {"max_age=60", true}, {"max_age=18446744073709551615", true},
+		{"max_age=", false}, {"max_age=-1", false}, {"max_age=%2B1", false}, {"max_age=1.5", false},
+		{"max_age=18446744073709551616", false}, {"max_age=1&max_age=2", false},
+		{"prompt=login", true}, {"prompt=login+consent", true}, {"prompt=consent+login", true},
+		{"prompt=login+login", false}, {"prompt=none+login", false}, {"prompt=select_account", false},
+	} {
+		t.Run(tt.query, func(t *testing.T) {
+			err := validateAuthorizeRequest(httptest.NewRequest(http.MethodGet, valid+"&"+tt.query, nil), true)
+			if (err == nil) != tt.want {
+				t.Fatalf("validation = %v, want allowed %v", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestOptionalPKCEStillRejectsMalformedChallenges(t *testing.T) {
+	base := "https://auth.example/oauth/authorize?client_id=client&redirect_uri=https%3A%2F%2Fclient.example%2Fcallback&response_type=code&scope=openid"
+	for _, tc := range []struct {
+		query string
+		valid bool
+	}{
+		{"", true},
+		{"&code_challenge=" + strings.Repeat("a", 43) + "&code_challenge_method=S256", true},
+		{"&code_challenge=", false},
+		{"&code_challenge_method=", false},
+		{"&code_challenge_method=S256", false},
+		{"&code_challenge=" + strings.Repeat("a", 43), false},
+		{"&code_challenge=" + strings.Repeat("a", 43) + "&code_challenge_method=plain", false},
+	} {
+		if got := validateAuthorizeRequest(httptest.NewRequest(http.MethodGet, base+tc.query, nil), false) == nil; got != tc.valid {
+			t.Fatal("incorrect optional PKCE validation")
+		}
+	}
+}
+
+func TestPKCEExceptionRequiresConfiguredConfidentialClient(t *testing.T) {
+	for _, tc := range []struct {
+		source          ClientSource
+		method          liboidc.AuthMethod
+		secret          string
+		allow, required bool
+	}{
+		{ClientSourceConfigured, liboidc.AuthMethodBasic, "secret", false, true},
+		{ClientSourceConfigured, liboidc.AuthMethodBasic, "secret", true, false},
+		{ClientSourceConfigured, liboidc.AuthMethodNone, "", true, true},
+		{ClientSourceCIMD, liboidc.AuthMethodNone, "", true, true},
+		{ClientSourceCIMD, liboidc.AuthMethodBasic, "secret", true, true},
+	} {
+		c := &Client{Source: tc.source, Method: tc.method, Secret: tc.secret, AllowWithoutPKCE: tc.allow}
+		if c.requiresPKCE() != tc.required {
+			t.Fatal("unsafe PKCE policy")
+		}
+	}
+}
+
+func TestCombinedResolverRequiresUnregisteredClientOptInBeforeFetching(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		t.Run(fmt.Sprint(enabled), func(t *testing.T) {
+			var fetches atomic.Int32
+			cimd := newCIMDTestResolver(t, func(request *http.Request) (*http.Response, error) {
+				fetches.Add(1)
+				return cimdTestResponse(request, "no-store"), nil
+			})
+			cfg := config.Config{OIDC: config.OIDCConfig{AllowUnregisteredClients: enabled, Clients: []config.OIDCClientConfig{{ID: "local", Name: "Local"}}}}
+			resolver := NewResolver(cfg, cimd)
+			if _, err := resolver.Resolve(t.Context(), "local"); err != nil {
+				t.Fatal("configured client was disabled")
+			}
+			_, err := resolver.Resolve(t.Context(), "https://client.example/metadata")
+			if enabled {
+				if err != nil || fetches.Load() != 1 {
+					t.Fatalf("enabled resolution failed: %v", err)
+				}
+			} else {
+				if err == nil || fetches.Load() != 0 {
+					t.Fatal("disabled CIMD resolved or fetched a document")
+				}
+			}
+		})
+	}
+}
+
+// Reject ambiguous credentials before the library can merge or select them.
+func TestTokenRejectsAmbiguousAuthentication(t *testing.T) {
+	for _, tc := range []struct{ name, suffix, query, header string }{
+		{"duplicate secret", "&client_secret=one&client_secret=two", "", ""},
+		{"duplicate client", "&client_id=one&client_id=two", "", ""},
+		{"query secret", "", "?client_secret=secret", ""},
+		{"query code", "", "?code=other", ""},
+		{"mixed methods", "&client_id=client&client_secret=secret", "", "Basic Y2xpZW50OnNlY3JldA=="},
+		{"empty mixed secret", "&client_secret=", "", "Basic Y2xpZW50OnNlY3JldA=="},
+		{"duplicate headers", "", "", "Basic Y2xpZW50OnNlY3JldA=="},
+		{"malformed basic", "&client_id=client&client_secret=secret", "", "Basic broken"},
+		{"unsupported header", "&client_id=client&client_secret=secret", "", "Bearer opaque"},
+		{"assertion", "&client_assertion=opaque", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			handler := (&Service{}).wrap(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Fatal("ambiguous credentials reached provider") }))
+			req := httptest.NewRequest(http.MethodPost, "https://auth.example/oauth/token"+tc.query, strings.NewReader("grant_type=authorization_code&code=opaque"+tc.suffix))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			if tc.header != "" {
+				req.Header.Set("Authorization", tc.header)
+			}
+			if tc.name == "duplicate headers" {
+				req.Header.Add("Authorization", tc.header)
+			}
+			res := httptest.NewRecorder()
+			handler.ServeHTTP(res, req)
+			if res.Code != http.StatusBadRequest || res.Body.String() != `{"error":"invalid_request"}` || res.Header().Get("Cache-Control") != "no-store" {
+				t.Fatalf("unexpected error response: status %d", res.Code)
+			}
+		})
+	}
+}
+func TestStandardAuthorizeScopes(t *testing.T) {
+	for _, scope := range []string{"openid", "openid profile", "openid email", "openid profile email", "email openid profile"} {
+		if !validAuthorizeScopes(scope) {
+			t.Errorf("rejected scopes %q", scope)
+		}
+	}
+	for _, scope := range []string{"", "profile", "email", "profile email", "openid profile profile", "openid email email", "openid unknown"} {
+		if validAuthorizeScopes(scope) {
+			t.Errorf("accepted scopes %q", scope)
+		}
 	}
 }

@@ -71,7 +71,9 @@
     },
     "timeline": {
       "beginning": "See on selle vestluse algus.",
-      "read_denied": "Sul pole õigust selles ruumis sõnumeid lugeda."
+      "read_denied": "Sul pole õigust selles ruumis sõnumeid lugeda.",
+      "limited_empty": "Veel pole vestlusi, mida saad lugeda.",
+      "loading": "Sõnumite laadimine..."
     },
     "message": {
       "empty": "Sõnumeid pole veel",
@@ -87,6 +89,7 @@
         "remove_reaction": "Eemalda {emoji}",
         "add_reaction": "Lisa reaktsioon",
         "more_reactions": "Rohkem reaktsioone",
+        "reactions": "Reaktsioonid",
         "reply": "Vasta",
         "reply_room": "Vasta ruumis",
         "reply_thread": "Vasta lõimes",
@@ -96,9 +99,18 @@
         "edit_short": "Muuda",
         "copy_text": "Kopeeri tekst",
         "copy_text_failed": "Teksti kopeerimine ebaõnnestus",
-        "copy_link": "Kopeeri link"
+        "copy_link": "Kopeeri link",
+        "copy_message_link": "Kopeeri sõnumi link",
+        "copy_image": "Kopeeri pilt",
+        "link_copied": "Link kopeeritud",
+        "message_link_copied": "Sõnumi link kopeeritud",
+        "copy_link_failed": "Lingi kopeerimine nurjus",
+        "image_copied": "Pilt kopeeritud",
+        "copy_image_failed": "Pildi kopeerimine nurjus"
       },
       "meta": {
+        "echo": "Kaja",
+        "edited_short": "Muudetud",
         "pinned": "Kinnitatud sõnum",
         "thread": "Niit",
         "edited": "Muudetud sõnum",
@@ -142,6 +154,14 @@
       },
       "show_less": "näita vähem"
     },
+    "typing": {
+      "one": "{name} kirjutab",
+      "two": "{first} ja {second} kirjutavad",
+      "many_count": {
+        "other": "{names} ja {count} kirjutavad",
+        "one": "{names} ja {count} kirjutavad"
+      }
+    },
     "attachment": {
       "delete_title": "Kustuta manus",
       "delete_prompt": "Kas olete kindel, et soovite selle manuse kustutada? Seda ei saa tagasi võtta.",
@@ -150,7 +170,27 @@
       "view_label": "Kuva {filename}",
       "download_label": "Laadi alla {filename}",
       "image_refresh_failed": "Pildi linki ei saanud värskendada",
-      "download_refresh_failed": "Allalaadimislinki ei saanud värskendada"
+      "download_refresh_failed": "Allalaadimislinki ei saanud värskendada",
+      "add_description": "Lisa kirjeldus",
+      "edit_description": "Muuda kirjeldust",
+      "description_title": "Manuse kirjeldus",
+      "description_label": "Kirjeldus (valikuline)",
+      "description_help": "Kirjelda manust inimestele, kes ei saa seda näha ega kuulda.",
+      "description_too_long": "Kirjeldus võib sisaldada kuni {max} märki.",
+      "description_update_failed": "Manuse kirjelduse uuendamine nurjus",
+      "html_viewer": {
+        "download": "Laadi alla",
+        "show_preview": "Näita eelvaadet",
+        "warning": "See dokument võib laadida sisu välistelt veebisaitidelt. Need veebisaidid näevad sinu IP-aadressi.",
+        "preview_title": "Faili {filename} eelvaade",
+        "preview_failed": "Eelvaate laadimine ebaõnnestus. Proovi uuesti.",
+        "document_type": "Dokumendi tüüp",
+        "html_document": "HTML-dokument",
+        "xhtml_document": "XHTML-dokument",
+        "file_size": "Faili suurus",
+        "unavailable": "Pole saadaval",
+        "no_preview": "Selle faili eelvaade pole saadaval. Salvestamiseks laadi see alla."
+      }
     },
     "link_preview": {
       "delete_title": "Kustuta lingi eelvaade",
@@ -158,6 +198,7 @@
       "delete_failed": "Lingi eelvaate kustutamine ebaõnnestus"
     },
     "sidebar": {
+      "go_to_message": "Mine sõnumi juurde",
       "extras": "Ruumi lisad",
       "resize": "Muutke ruumi lisade paani suurust",
       "hide": "Peida ruumi lisad",
@@ -170,24 +211,25 @@
       "clear_member_search": "Kustuta liikmeotsing",
       "no_members": "Ühtegi liiget ei leitud.",
       "online": "Võrgus ({count})",
+      "bots": "Bots ({count})",
       "offline": "Võrguühenduseta ({count})",
       "no_files": "Selles ruumis pole veel faile.",
       "files": "Failid",
       "pins": "Kinnitatud sõnumid",
-      "call": "Helista",
+      "call": "Kõne",
       "jump_to_file": "Hüppa {filename}",
       "loading_files": "Failide laadimine...",
+      "loading_members": "Liikmete laadimine...",
       "calls_unavailable": "Kõned pole selles serveris saadaval.",
       "view_profile": "Vaata profiili {name}",
       "in_voice_call": "Häälkõnes",
       "in_video_call": "Videokõnes",
-      "ban_failed": "Liikme ruumist blokeerimine ebaõnnestus",
-      "ban_success": "Blokeeritud {name} ruumist"
+      "remove_failed": "Kasutajat ei õnnestunud toast eemaldada",
+      "remove_success": "{name} eemaldati toast",
+      "search": "Otsi"
     },
     "pins": {
-      "show": "Kuva kinnitatud sõnumid",
       "unseen": "Uued kinnitatud sõnumid",
-      "hide": "Peida kinnitatud sõnumid",
       "pin": "Kinnita sõnum",
       "unpin": "Eemalda sõnumi kinnitus",
       "unpin_prompt": "Kas soovid kindlasti selle sõnumi kinnituse eemaldada?",

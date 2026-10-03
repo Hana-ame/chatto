@@ -8,8 +8,11 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
+	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"golang.org/x/sync/errgroup"
 	"hmans.de/authling/internal/accounts"
 	"hmans.de/authling/internal/authentication"
@@ -17,6 +20,7 @@ import (
 	"hmans.de/authling/internal/config"
 	"hmans.de/authling/internal/email"
 	"hmans.de/authling/internal/emailchange"
+	"hmans.de/authling/internal/erasure"
 	"hmans.de/authling/internal/evtstream"
 	"hmans.de/authling/internal/issuer"
 	"hmans.de/authling/internal/keyvault"
@@ -34,9 +38,12 @@ import (
 // Runtime owns Authling's NATS connection, event stream, projections, and
 // domain services.
 type Runtime struct {
-	connection *natsruntime.Connection
-	projectors []*events.Projector
-	issuer     *issuer.Service
+	connection       *natsruntime.Connection
+	projectors       []*events.Projector
+	issuer           *issuer.Service
+	erasureProjector *events.Projector
+	// Erasure resumes durable account key destruction.
+	Erasure *erasure.Service
 
 	// Accounts is Authling's account command and read boundary.
 	Accounts *accounts.Service
@@ -85,6 +92,9 @@ func newRuntimeWithOptions(ctx context.Context, cfg config.Config, logger events
 	if logger == nil {
 		return nil, fmt.Errorf("event logger is required")
 	}
+	if settings := cfg.SMTP.InsecureTransportSettings(); len(settings) > 0 {
+		logger.Warn("Insecure SMTP transport configured; verification and password-reset codes can be intercepted on the network", "settings", strings.Join(settings, ", "))
+	}
 	connection, err := natsruntime.Open(ctx, cfg.NATS)
 	if err != nil {
 		return nil, err
@@ -111,7 +121,10 @@ func newRuntimeWithOptions(ctx context.Context, cfg config.Config, logger events
 		return closeOnError(fmt.Errorf("open workflow key: %w", err))
 	}
 	publisher := evtstream.NewPublisher(eventLog)
+	erasureHandle := events.NewDecodedProjectionHandle(js, stream, erasure.NewProjection(), evtstream.Decode, logger)
+	erasureService := erasure.New(publisher, erasureHandle, vault)
 	projection := accounts.NewProjection(vault, workflowKey)
+	projection.SetErasureChecker(erasureService.IsRequested)
 	handle := events.NewDecodedProjectionHandle(
 		js,
 		stream,
@@ -129,38 +142,55 @@ func newRuntimeWithOptions(ctx context.Context, cfg config.Config, logger events
 	issuerService := issuer.NewService(publisher, issuerHandle, vault, cfg.HTTP.PublicURLOrDefault(), cfg.OIDC.SigningKeyRotationInterval(), issuerOptions...)
 	authorizationProjection := authorizations.NewProjection()
 	authorizationHandle := events.NewDecodedProjectionHandle(js, stream, authorizationProjection, evtstream.Decode, logger)
-	authorizationService, err := authorizations.NewService(publisher, authorizationHandle, workflowKey)
+	authorizationService, err := authorizations.NewService(publisher, authorizationHandle, workflowKey, vault)
 	if err != nil {
 		return closeOnError(fmt.Errorf("open authorization grant service: %w", err))
 	}
-	cimd, err := oidcprovider.NewCIMDResolver(
-		cfg.HTTP.PublicURLOrDefault(),
-		nil,
-		cfg.OIDC.TrustedPrivateCIMDHosts(),
-		cfg.OIDC.TrustedLoopbackCIMDHosts(),
-	)
-	if err != nil {
-		return closeOnError(fmt.Errorf("construct CIMD resolver: %w", err))
+	if err := erasureService.ConfigureWorker(ctx, stream, logger, func(ctx context.Context, state erasure.State) error {
+		if err := handle.Projector().WaitFor(ctx, events.SubjectPosition(evtstream.AccountRegistrySubject(), state.ReleaseSequence)); err != nil {
+			return err
+		}
+		subject, err := evtstream.AccountSubject(state.AccountID)
+		if err != nil {
+			return err
+		}
+		return authorizationHandle.Projector().WaitFor(ctx, events.SubjectPosition(subject, state.RequestSequence))
+	}); err != nil {
+		return closeOnError(fmt.Errorf("configure account erasure: %w", err))
+	}
+	var cimd *oidcprovider.CIMDResolver
+	if cfg.OIDC.AllowUnregisteredClients {
+		cimd, err = oidcprovider.NewCIMDResolver(
+			cfg.HTTP.PublicURLOrDefault(),
+			nil,
+			cfg.OIDC.TrustedPrivateCIMDHosts(),
+			cfg.OIDC.TrustedLoopbackCIMDHosts(),
+		)
+		if err != nil {
+			return closeOnError(fmt.Errorf("construct CIMD resolver: %w", err))
+		}
 	}
 	clients := oidcprovider.NewResolver(cfg, cimd)
 	oidcStorage := oidcprovider.NewStorage(stores.RuntimeState, js, workflowKey, clients, issuerService, func(ctx context.Context, accountID string) (string, string, error) {
 		profile, err := accountService.Profile(ctx, accountID)
 		return profile.PreferredUsername, profile.FullName, err
-	})
+	}, accountService.RequireActive, accountService.EmailAddress)
 	oidcService := oidcprovider.New(cfg, issuerService, oidcStorage, authorizationService, vault)
 	authenticationService := authentication.New(stores.RuntimeState, js, workflowKey, accountService)
 	return &Runtime{
-		connection:     connection,
-		projectors:     []*events.Projector{handle.Projector(), issuerHandle.Projector(), authorizationHandle.Projector()},
-		issuer:         issuerService,
-		Accounts:       accountService,
-		Registration:   registration.New(stores.RuntimeState, js, workflowKey, sender, accountService),
-		PasswordReset:  passwordreset.New(stores.RuntimeState, js, workflowKey, sender, accountService),
-		EmailChange:    emailchange.New(stores.RuntimeState, js, workflowKey, sender, accountService, authenticationService, emailChangeOptions...),
-		Authentication: authenticationService,
-		Sessions:       sessionService,
-		Authorizations: authorizationService,
-		OIDC:           oidcService,
+		connection:       connection,
+		erasureProjector: erasureHandle.Projector(),
+		Erasure:          erasureService,
+		projectors:       []*events.Projector{handle.Projector(), issuerHandle.Projector(), authorizationHandle.Projector()},
+		issuer:           issuerService,
+		Accounts:         accountService,
+		Registration:     registration.New(stores.RuntimeState, js, workflowKey, sender, accountService, cfg.Site.Resolve(cfg.HTTP.PublicURLOrDefault()).Name),
+		PasswordReset:    passwordreset.New(stores.RuntimeState, js, workflowKey, sender, accountService, cfg.Site.Resolve(cfg.HTTP.PublicURLOrDefault()).Name),
+		EmailChange:      emailchange.New(stores.RuntimeState, js, workflowKey, sender, accountService, authenticationService, cfg.Site.Resolve(cfg.HTTP.PublicURLOrDefault()).Name, emailChangeOptions...),
+		Authentication:   authenticationService,
+		Sessions:         sessionService,
+		Authorizations:   authorizationService,
+		OIDC:             oidcService,
 	}, nil
 }
 
@@ -168,9 +198,16 @@ func newRuntimeWithOptions(ctx context.Context, cfg config.Config, logger events
 // context ends or the projection fails.
 func (r *Runtime) Run(ctx context.Context) error {
 	group, groupContext := errgroup.WithContext(ctx)
+	group.Go(func() error { return r.erasureProjector.Run(groupContext) })
+	group.Go(func() error { return r.Erasure.Run(groupContext) })
 	for _, projector := range r.projectors {
 		projector := projector
-		group.Go(func() error { return projector.Run(groupContext) })
+		group.Go(func() error {
+			if err := r.erasureProjector.WaitForStartup(groupContext); err != nil {
+				return err
+			}
+			return projector.Run(groupContext)
+		})
 	}
 	group.Go(func() error { return r.issuer.Run(groupContext) })
 	group.Go(func() error { return r.Sessions.RunInventory(groupContext) })
@@ -180,6 +217,9 @@ func (r *Runtime) Run(ctx context.Context) error {
 // WaitReady blocks until every required model has replayed its startup
 // history.
 func (r *Runtime) WaitReady(ctx context.Context) error {
+	if err := r.erasureProjector.WaitForStartup(ctx); err != nil {
+		return err
+	}
 	for _, projector := range r.projectors {
 		if err := projector.WaitForStartup(ctx); err != nil {
 			return err
@@ -214,17 +254,34 @@ func Serve(ctx context.Context, cfg config.Config, logger *slog.Logger) (serveEr
 		serveErr = errors.Join(serveErr, runtime.Close())
 	}()
 
+	return serveRuntime(ctx, cfg, logger, runtime)
+}
+
+// serveRuntime owns the running tasks; its caller owns closing runtime storage.
+func serveRuntime(ctx context.Context, cfg config.Config, logger *slog.Logger, runtime *Runtime) error {
 	runContext, cancel := context.WithCancel(ctx)
 	defer cancel()
 	runErrors := make(chan error, 1)
 	go func() {
 		runErrors <- runtime.Run(runContext)
+		// Release readiness waits when any required runtime task stops.
+		cancel()
 	}()
 
-	if err := runtime.WaitReady(ctx); err != nil {
+	if err := runtime.WaitReady(runContext); err != nil {
 		cancel()
-		<-runErrors
-		return fmt.Errorf("wait for Authling readiness: %w", err)
+		runErr := <-runErrors
+		startupErr := errors.Join(err, runErr)
+		var jsErr jetstream.JetStreamError
+		var legacyErr nats.JetStreamError
+		// KV Watch currently uses the legacy client internally; projectors
+		// use the newer JetStream API. Keep both error chains intact.
+		missingTier := errors.As(startupErr, &jsErr) && jsErr.APIError() != nil && jsErr.APIError().ErrorCode == 10120
+		missingTier = missingTier || (errors.As(startupErr, &legacyErr) && legacyErr.APIError() != nil && legacyErr.APIError().ErrorCode == 10120)
+		if missingTier {
+			return fmt.Errorf("wait for Authling readiness: check NATS account JetStream tiers; R3 data streams also need an R1 tier for temporary consumers: %w", startupErr)
+		}
+		return fmt.Errorf("wait for Authling readiness: %w", startupErr)
 	}
 	listener, err := net.Listen("tcp", cfg.HTTP.BindAddressOrDefault())
 	if err != nil {
@@ -234,6 +291,7 @@ func Serve(ctx context.Context, cfg config.Config, logger *slog.Logger) (serveEr
 	}
 	httpServer := &http.Server{
 		Handler: web.Handler(web.Dependencies{
+			Site:              cfg.Site.Resolve(cfg.HTTP.PublicURLOrDefault()),
 			Accounts:          runtime.Accounts,
 			Authentication:    runtime.Authentication,
 			Registration:      runtime.Registration,

@@ -47,6 +47,11 @@ to the browser's `getDisplayMedia` picker through LiveKit.
 
   onMount(() => {
     nativeAvailable = isNativeScreenShareAvailable();
+    // The chooser dialog does not report a close when this control unmounts,
+    // for example when the call ends. Cancel a running source listing here.
+    return () => {
+      if (dialogVisible) clearChooserState();
+    };
   });
 
   async function refreshSources() {
@@ -79,6 +84,7 @@ to the browser's `getDisplayMedia` picker through LiveKit.
   }
 
   async function handleControl() {
+    if (!voiceCallState.isScreenShareEnabled && !voiceCallState.canScreenShare) return;
     try {
       if (voiceCallState.isScreenShareEnabled) {
         await voiceCallState.toggleScreenShare();
@@ -123,6 +129,7 @@ to the browser's `getDisplayMedia` picker through LiveKit.
   {iconClass}
   onclick={() => void handleControl()}
   {pending}
+  disabled={!voiceCallState.canScreenShare && !voiceCallState.isScreenShareEnabled}
 />
 
 {#if nativeAvailable}

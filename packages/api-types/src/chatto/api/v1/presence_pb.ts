@@ -7,11 +7,11 @@ import type { BinaryReadOptions, FieldList, JsonReadOptions, JsonValue, PartialM
 import { Message, proto3 } from "@bufbuild/protobuf";
 
 /**
- * Live presence status returned by public read APIs.
+ * Availability used for private choices and effective public presence.
  *
- * Offline is a read-side state only. Clients cannot update their presence to
- * Offline through the account presence RPC; they should stop refreshing and let
- * the server's live presence record expire.
+ * Public Offline reveals neither connection liveness nor whether the account
+ * selected "Appear Offline". A saved Online, Away, or Do Not Disturb choice
+ * becomes public Offline when no device refreshes liveness.
  *
  * @generated from enum chatto.api.v1.PresenceStatus
  */
@@ -24,28 +24,28 @@ export enum PresenceStatus {
   UNSPECIFIED = 0,
 
   /**
-   * The user is actively available.
+   * Online while at least one device refreshes liveness.
    *
    * @generated from enum value: PRESENCE_STATUS_ONLINE = 1;
    */
   ONLINE = 1,
 
   /**
-   * The user is connected but away or idle.
+   * Away while at least one device refreshes liveness.
    *
    * @generated from enum value: PRESENCE_STATUS_AWAY = 2;
    */
   AWAY = 2,
 
   /**
-   * The user does not want notifications while this live status is active.
+   * Do Not Disturb. A saved choice suppresses alerts even while disconnected.
    *
    * @generated from enum value: PRESENCE_STATUS_DO_NOT_DISTURB = 3;
    */
   DO_NOT_DISTURB = 3,
 
   /**
-   * The user has no active live presence record.
+   * No public live presence. As a saved choice, suppresses presence and typing.
    *
    * @generated from enum value: PRESENCE_STATUS_OFFLINE = 4;
    */
@@ -61,11 +61,297 @@ proto3.util.setEnumType(PresenceStatus, "chatto.api.v1.PresenceStatus", [
 ]);
 
 /**
- * Request to update the current user's live presence status.
+ * Saved choice visible only to the authenticated account itself.
  *
- * @generated from message chatto.api.v1.UpdatePresenceRequest
+ * @generated from message chatto.api.v1.PresencePreference
  */
-export class UpdatePresenceRequest extends Message<UpdatePresenceRequest> {
+export class PresencePreference extends Message<PresencePreference> {
+  /**
+   * Saved choice, independent of liveness. OFFLINE means "Appear Offline";
+   * DO_NOT_DISTURB suppresses alerts even while disconnected.
+   *
+   * @generated from field: chatto.api.v1.PresenceStatus status = 1;
+   */
+  status = PresenceStatus.UNSPECIFIED;
+
+  /**
+   * Opaque revision required when replacing this choice.
+   *
+   * @generated from field: string revision = 2;
+   */
+  revision = "";
+
+  constructor(data?: PartialMessage<PresencePreference>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "chatto.api.v1.PresencePreference";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "status", kind: "enum", T: proto3.getEnumType(PresenceStatus) },
+    { no: 2, name: "revision", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): PresencePreference {
+    return new PresencePreference().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): PresencePreference {
+    return new PresencePreference().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): PresencePreference {
+    return new PresencePreference().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: PresencePreference | PlainMessage<PresencePreference> | undefined, b: PresencePreference | PlainMessage<PresencePreference> | undefined): boolean {
+    return proto3.util.equals(PresencePreference, a, b);
+  }
+}
+
+/**
+ * Read the authenticated account's own choice; accepts no other user ID.
+ *
+ * @generated from message chatto.api.v1.GetPresencePreferenceRequest
+ */
+export class GetPresencePreferenceRequest extends Message<GetPresencePreferenceRequest> {
+  constructor(data?: PartialMessage<GetPresencePreferenceRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "chatto.api.v1.GetPresencePreferenceRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): GetPresencePreferenceRequest {
+    return new GetPresencePreferenceRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): GetPresencePreferenceRequest {
+    return new GetPresencePreferenceRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): GetPresencePreferenceRequest {
+    return new GetPresencePreferenceRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: GetPresencePreferenceRequest | PlainMessage<GetPresencePreferenceRequest> | undefined, b: GetPresencePreferenceRequest | PlainMessage<GetPresencePreferenceRequest> | undefined): boolean {
+    return proto3.util.equals(GetPresencePreferenceRequest, a, b);
+  }
+}
+
+/**
+ * Current private choice, or absence before first initialization.
+ *
+ * @generated from message chatto.api.v1.GetPresencePreferenceResponse
+ */
+export class GetPresencePreferenceResponse extends Message<GetPresencePreferenceResponse> {
+  /**
+   * Absent until the account first saves a choice.
+   *
+   * @generated from field: chatto.api.v1.PresencePreference preference = 1;
+   */
+  preference?: PresencePreference;
+
+  constructor(data?: PartialMessage<GetPresencePreferenceResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "chatto.api.v1.GetPresencePreferenceResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "preference", kind: "message", T: PresencePreference },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): GetPresencePreferenceResponse {
+    return new GetPresencePreferenceResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): GetPresencePreferenceResponse {
+    return new GetPresencePreferenceResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): GetPresencePreferenceResponse {
+    return new GetPresencePreferenceResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: GetPresencePreferenceResponse | PlainMessage<GetPresencePreferenceResponse> | undefined, b: GetPresencePreferenceResponse | PlainMessage<GetPresencePreferenceResponse> | undefined): boolean {
+    return proto3.util.equals(GetPresencePreferenceResponse, a, b);
+  }
+}
+
+/**
+ * An explicit selection. Heartbeats must not call this operation.
+ *
+ * @generated from message chatto.api.v1.SetPresencePreferenceRequest
+ */
+export class SetPresencePreferenceRequest extends Message<SetPresencePreferenceRequest> {
+  /**
+   * Explicit new choice for every device on this server.
+   *
+   * @generated from field: chatto.api.v1.PresenceStatus status = 1;
+   */
+  status = PresenceStatus.UNSPECIFIED;
+
+  /**
+   * Revision from the last read; empty only when initializing an absent choice.
+   *
+   * @generated from field: string expected_revision = 2;
+   */
+  expectedRevision = "";
+
+  constructor(data?: PartialMessage<SetPresencePreferenceRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "chatto.api.v1.SetPresencePreferenceRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "status", kind: "enum", T: proto3.getEnumType(PresenceStatus) },
+    { no: 2, name: "expected_revision", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): SetPresencePreferenceRequest {
+    return new SetPresencePreferenceRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): SetPresencePreferenceRequest {
+    return new SetPresencePreferenceRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): SetPresencePreferenceRequest {
+    return new SetPresencePreferenceRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: SetPresencePreferenceRequest | PlainMessage<SetPresencePreferenceRequest> | undefined, b: SetPresencePreferenceRequest | PlainMessage<SetPresencePreferenceRequest> | undefined): boolean {
+    return proto3.util.equals(SetPresencePreferenceRequest, a, b);
+  }
+}
+
+/**
+ * Acknowledged current choice after the selection commits.
+ *
+ * @generated from message chatto.api.v1.SetPresencePreferenceResponse
+ */
+export class SetPresencePreferenceResponse extends Message<SetPresencePreferenceResponse> {
+  /**
+   * @generated from field: chatto.api.v1.PresencePreference preference = 1;
+   */
+  preference?: PresencePreference;
+
+  constructor(data?: PartialMessage<SetPresencePreferenceResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "chatto.api.v1.SetPresencePreferenceResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "preference", kind: "message", T: PresencePreference },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): SetPresencePreferenceResponse {
+    return new SetPresencePreferenceResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): SetPresencePreferenceResponse {
+    return new SetPresencePreferenceResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): SetPresencePreferenceResponse {
+    return new SetPresencePreferenceResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: SetPresencePreferenceResponse | PlainMessage<SetPresencePreferenceResponse> | undefined, b: SetPresencePreferenceResponse | PlainMessage<SetPresencePreferenceResponse> | undefined): boolean {
+    return proto3.util.equals(SetPresencePreferenceResponse, a, b);
+  }
+}
+
+/**
+ * Refresh the authenticated account's liveness without supplying a choice.
+ *
+ * @generated from message chatto.api.v1.RefreshPresenceRequest
+ */
+export class RefreshPresenceRequest extends Message<RefreshPresenceRequest> {
+  constructor(data?: PartialMessage<RefreshPresenceRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "chatto.api.v1.RefreshPresenceRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): RefreshPresenceRequest {
+    return new RefreshPresenceRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): RefreshPresenceRequest {
+    return new RefreshPresenceRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): RefreshPresenceRequest {
+    return new RefreshPresenceRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: RefreshPresenceRequest | PlainMessage<RefreshPresenceRequest> | undefined, b: RefreshPresenceRequest | PlainMessage<RefreshPresenceRequest> | undefined): boolean {
+    return proto3.util.equals(RefreshPresenceRequest, a, b);
+  }
+}
+
+/**
+ * Current private choice after refreshing liveness.
+ *
+ * @generated from message chatto.api.v1.RefreshPresenceResponse
+ */
+export class RefreshPresenceResponse extends Message<RefreshPresenceResponse> {
+  /**
+   * Private saved choice; clients use this to recover missed device updates.
+   *
+   * @generated from field: chatto.api.v1.PresencePreference preference = 1;
+   */
+  preference?: PresencePreference;
+
+  constructor(data?: PartialMessage<RefreshPresenceResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "chatto.api.v1.RefreshPresenceResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "preference", kind: "message", T: PresencePreference },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): RefreshPresenceResponse {
+    return new RefreshPresenceResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): RefreshPresenceResponse {
+    return new RefreshPresenceResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): RefreshPresenceResponse {
+    return new RefreshPresenceResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: RefreshPresenceResponse | PlainMessage<RefreshPresenceResponse> | undefined, b: RefreshPresenceResponse | PlainMessage<RefreshPresenceResponse> | undefined): boolean {
+    return proto3.util.equals(RefreshPresenceResponse, a, b);
+  }
+}
+
+/**
+ * Legacy live report. A saved private choice takes precedence over this report.
+ *
+ * @generated from message chatto.api.v1.SetPresenceRequest
+ */
+export class SetPresenceRequest extends Message<SetPresenceRequest> {
   /**
    * Live status to store for the authenticated user. Offline is rejected.
    *
@@ -74,49 +360,48 @@ export class UpdatePresenceRequest extends Message<UpdatePresenceRequest> {
   status = PresenceStatus.UNSPECIFIED;
 
   /**
-   * True when this update comes from a deliberate user selection rather than
-   * automatic idle/refresh updates. Automatic updates do not overwrite an
-   * active manually selected Away or Do Not Disturb status from another client.
+   * Legacy manual-selection flag. It cannot replace a saved private choice.
+   * New clients use SetPresencePreference for explicit selections.
    *
    * @generated from field: bool user_selected = 2;
    */
   userSelected = false;
 
-  constructor(data?: PartialMessage<UpdatePresenceRequest>) {
+  constructor(data?: PartialMessage<SetPresenceRequest>) {
     super();
     proto3.util.initPartial(data, this);
   }
 
   static readonly runtime: typeof proto3 = proto3;
-  static readonly typeName = "chatto.api.v1.UpdatePresenceRequest";
+  static readonly typeName = "chatto.api.v1.SetPresenceRequest";
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
     { no: 1, name: "status", kind: "enum", T: proto3.getEnumType(PresenceStatus) },
     { no: 2, name: "user_selected", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
   ]);
 
-  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): UpdatePresenceRequest {
-    return new UpdatePresenceRequest().fromBinary(bytes, options);
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): SetPresenceRequest {
+    return new SetPresenceRequest().fromBinary(bytes, options);
   }
 
-  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): UpdatePresenceRequest {
-    return new UpdatePresenceRequest().fromJson(jsonValue, options);
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): SetPresenceRequest {
+    return new SetPresenceRequest().fromJson(jsonValue, options);
   }
 
-  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): UpdatePresenceRequest {
-    return new UpdatePresenceRequest().fromJsonString(jsonString, options);
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): SetPresenceRequest {
+    return new SetPresenceRequest().fromJsonString(jsonString, options);
   }
 
-  static equals(a: UpdatePresenceRequest | PlainMessage<UpdatePresenceRequest> | undefined, b: UpdatePresenceRequest | PlainMessage<UpdatePresenceRequest> | undefined): boolean {
-    return proto3.util.equals(UpdatePresenceRequest, a, b);
+  static equals(a: SetPresenceRequest | PlainMessage<SetPresenceRequest> | undefined, b: SetPresenceRequest | PlainMessage<SetPresenceRequest> | undefined): boolean {
+    return proto3.util.equals(SetPresenceRequest, a, b);
   }
 }
 
 /**
  * Result of updating live presence.
  *
- * @generated from message chatto.api.v1.UpdatePresenceResponse
+ * @generated from message chatto.api.v1.SetPresenceResponse
  */
-export class UpdatePresenceResponse extends Message<UpdatePresenceResponse> {
+export class SetPresenceResponse extends Message<SetPresenceResponse> {
   /**
    * Reportable status accepted and stored by the server.
    *
@@ -124,30 +409,30 @@ export class UpdatePresenceResponse extends Message<UpdatePresenceResponse> {
    */
   status = PresenceStatus.UNSPECIFIED;
 
-  constructor(data?: PartialMessage<UpdatePresenceResponse>) {
+  constructor(data?: PartialMessage<SetPresenceResponse>) {
     super();
     proto3.util.initPartial(data, this);
   }
 
   static readonly runtime: typeof proto3 = proto3;
-  static readonly typeName = "chatto.api.v1.UpdatePresenceResponse";
+  static readonly typeName = "chatto.api.v1.SetPresenceResponse";
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
     { no: 1, name: "status", kind: "enum", T: proto3.getEnumType(PresenceStatus) },
   ]);
 
-  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): UpdatePresenceResponse {
-    return new UpdatePresenceResponse().fromBinary(bytes, options);
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): SetPresenceResponse {
+    return new SetPresenceResponse().fromBinary(bytes, options);
   }
 
-  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): UpdatePresenceResponse {
-    return new UpdatePresenceResponse().fromJson(jsonValue, options);
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): SetPresenceResponse {
+    return new SetPresenceResponse().fromJson(jsonValue, options);
   }
 
-  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): UpdatePresenceResponse {
-    return new UpdatePresenceResponse().fromJsonString(jsonString, options);
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): SetPresenceResponse {
+    return new SetPresenceResponse().fromJsonString(jsonString, options);
   }
 
-  static equals(a: UpdatePresenceResponse | PlainMessage<UpdatePresenceResponse> | undefined, b: UpdatePresenceResponse | PlainMessage<UpdatePresenceResponse> | undefined): boolean {
-    return proto3.util.equals(UpdatePresenceResponse, a, b);
+  static equals(a: SetPresenceResponse | PlainMessage<SetPresenceResponse> | undefined, b: SetPresenceResponse | PlainMessage<SetPresenceResponse> | undefined): boolean {
+    return proto3.util.equals(SetPresenceResponse, a, b);
   }
 }

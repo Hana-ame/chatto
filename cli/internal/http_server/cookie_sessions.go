@@ -3,7 +3,6 @@ package http_server
 import (
 	"context"
 	"errors"
-	"hmans.de/chatto/internal/pb/chatto/core/runtime_state/v1"
 	"net/http"
 	"strings"
 	"time"
@@ -15,6 +14,7 @@ import (
 	"hmans.de/chatto/internal/connectapi"
 	"hmans.de/chatto/internal/core"
 	evtv1 "hmans.de/chatto/internal/pb/chatto/core/evt/v1"
+	runtimestatev1 "hmans.de/chatto/internal/pb/chatto/core/runtime_state/v1"
 )
 
 const (
@@ -227,14 +227,6 @@ func (s *HTTPServer) browserSessionID(c *gin.Context) (string, bool) {
 	return "", false
 }
 
-func (s *HTTPServer) validateCookieSession(c *gin.Context) (string, string, *runtimestatev1.CookieSession, bool) {
-	credential, ok, _ := s.cookiePresentedCredential(c)
-	if !ok {
-		return "", "", nil, false
-	}
-	return credential.auth.UserID, credential.auth.Handle, credential.cookieRecord, true
-}
-
 func (s *HTTPServer) cookiePresentedCredential(c *gin.Context) (presentedRuntimeCredential, bool, error) {
 	if err := authenticationValidationError(c.Request.Context()); err != nil {
 		return presentedRuntimeCredential{}, false, err
@@ -294,19 +286,24 @@ func (s *HTTPServer) cookiePresentedCredential(c *gin.Context) (presentedRuntime
 		return presentedRuntimeCredential{}, false, nil
 	}
 
-	user, err := s.core.GetUser(c.Request.Context(), userID)
+	user, err := s.credentialUser(c.Request.Context(), userID)
 	if err != nil {
 		log.Warn("Failed to load user from cookie runtime credential", "userId", userID, "error", err)
-		return presentedRuntimeCredential{}, false, nil
+		return presentedRuntimeCredential{}, false, err
+	}
+	privilegedModeExpiresAt := time.Time{}
+	if deadline := record.GetPrivilegedModeExpiresAt(); deadline != nil {
+		privilegedModeExpiresAt = deadline.AsTime()
 	}
 
 	return presentedRuntimeCredential{
 		user: user,
 		auth: authctx.RuntimeCredential{
-			Kind:      authctx.RuntimeCredentialKindCookieSession,
-			UserID:    userID,
-			Handle:    selected.token,
-			ExpiresAt: record.GetExpiresAt().AsTime(),
+			Kind:                    authctx.RuntimeCredentialKindCookieSession,
+			UserID:                  userID,
+			Handle:                  selected.token,
+			ExpiresAt:               record.GetExpiresAt().AsTime(),
+			PrivilegedModeExpiresAt: privilegedModeExpiresAt,
 		},
 		cookieRecord:      record,
 		presentedSessions: presentedSessions,

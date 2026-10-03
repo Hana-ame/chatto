@@ -1,10 +1,10 @@
 <script lang="ts">
   import { fullscreenVideo } from '$lib/state/globals.svelte';
-  import { createPresenceCache } from '$lib/state/presenceCache.svelte';
-  import { createUserProfileCache } from '$lib/state/userProfiles.svelte';
+  import { provideUserProfiles } from '$lib/state/userProfiles.svelte';
   import ChatRoot from './ChatRoot.svelte';
+  import { serverRegistry } from '$lib/client';
 
-  let { data, children } = $props();
+  let { children } = $props();
   let fullscreenVideoOverlayModule: Promise<
     typeof import('$lib/components/chat/FullscreenVideoOverlay.svelte')
   > | null = null;
@@ -14,14 +14,16 @@
     return fullscreenVideoOverlayModule;
   }
 
-  const profileCache = createUserProfileCache();
-  const presenceCache = createPresenceCache();
+  provideUserProfiles(() => {
+    const id = serverRegistry.originServer?.id;
+    return id ? serverRegistry.tryGetStore(id)?.projection.users : undefined;
+  });
 </script>
 
-<!-- Origin login/logout changes replace the origin-scoped effects while the
-     chat-wide coordinator remains available to remote-only sessions. -->
-{#key data.user?.id}
-  <ChatRoot user={data.user} {profileCache} {presenceCache}>
+<!-- Keep the viewer's tree through verification and route loads. Only an
+     actual identity change resets origin-scoped effects and local UI state. -->
+{#key serverRegistry.originServer?.userId}
+  <ChatRoot>
     {@render children?.()}
   </ChatRoot>
 {/key}

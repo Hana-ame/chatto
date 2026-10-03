@@ -71,7 +71,9 @@
     },
     "timeline": {
       "beginning": "Dit is het begin van dit gesprek.",
-      "read_denied": "Je hebt geen toestemming om berichten in deze ruimte te lezen."
+      "read_denied": "Je hebt geen toestemming om berichten in deze ruimte te lezen.",
+      "limited_empty": "Er zijn nog geen gesprekken die je kunt lezen.",
+      "loading": "Berichten laden..."
     },
     "message": {
       "empty": "Nog geen berichten",
@@ -87,6 +89,7 @@
         "remove_reaction": "{emoji} verwijderen",
         "add_reaction": "Reactie toevoegen",
         "more_reactions": "Meer reacties",
+        "reactions": "Reacties",
         "reply": "Beantwoorden",
         "reply_room": "Antwoorden in ruimte",
         "reply_thread": "Reageer in gesprek",
@@ -96,9 +99,18 @@
         "edit_short": "Bewerken",
         "copy_text": "Kopieer tekst",
         "copy_text_failed": "Tekst kopiëren mislukt",
-        "copy_link": "Kopieer link"
+        "copy_link": "Kopieer link",
+        "copy_message_link": "Kopieer berichtlink",
+        "copy_image": "Kopieer afbeelding",
+        "link_copied": "Link gekopieerd",
+        "message_link_copied": "Berichtlink gekopieerd",
+        "copy_link_failed": "Kan link niet kopiëren",
+        "image_copied": "Afbeelding gekopieerd",
+        "copy_image_failed": "Kan afbeelding niet kopiëren"
       },
       "meta": {
+        "echo": "Echo",
+        "edited_short": "Bewerkt",
         "pinned": "Vastgezet bericht",
         "thread": "Discussie",
         "edited": "Bewerkt bericht",
@@ -142,6 +154,14 @@
       },
       "show_less": "laten minder zien"
     },
+    "typing": {
+      "one": "{name} is aan het typen",
+      "two": "{first} en {second} zijn aan het typen",
+      "many_count": {
+        "other": "{names} en {count} anderen zijn aan het typen",
+        "one": "{names} en {count} ander zijn aan het typen"
+      }
+    },
     "attachment": {
       "delete_title": "Bijlage verwijderen",
       "delete_prompt": "Weet u zeker dat u deze bijlage wilt verwijderen? Dit kan niet ongedaan worden gemaakt.",
@@ -150,7 +170,27 @@
       "view_label": "Bekijk {filename}",
       "download_label": "{filename} downloaden",
       "image_refresh_failed": "Kan afbeeldingslink niet vernieuwen",
-      "download_refresh_failed": "Kan de downloadlink niet vernieuwen"
+      "download_refresh_failed": "Kan de downloadlink niet vernieuwen",
+      "add_description": "Beschrijving toevoegen",
+      "edit_description": "Beschrijving bewerken",
+      "description_title": "Beschrijving van bijlage",
+      "description_label": "Beschrijving (optioneel)",
+      "description_help": "Beschrijf de bijlage voor mensen die deze niet kunnen zien of horen.",
+      "description_too_long": "Beschrijvingen mogen maximaal {max} tekens bevatten.",
+      "description_update_failed": "Beschrijving van bijlage bijwerken mislukt",
+      "html_viewer": {
+        "download": "Downloaden",
+        "show_preview": "Voorbeeld tonen",
+        "warning": "Dit document kan inhoud van externe websites laden. Deze websites kunnen je IP-adres zien.",
+        "preview_title": "Voorbeeld van {filename}",
+        "preview_failed": "Het voorbeeld kon niet worden geladen. Probeer het opnieuw.",
+        "document_type": "Documenttype",
+        "html_document": "HTML-document",
+        "xhtml_document": "XHTML-document",
+        "file_size": "Bestandsgrootte",
+        "unavailable": "Niet beschikbaar",
+        "no_preview": "Er is geen voorbeeld beschikbaar voor dit bestand. Download het om het op te slaan."
+      }
     },
     "link_preview": {
       "delete_title": "Linkvoorbeeld verwijderen",
@@ -158,6 +198,7 @@
       "delete_failed": "Kan linkvoorbeeld niet verwijderen"
     },
     "sidebar": {
+      "go_to_message": "Ga naar bericht",
       "extras": "Kamerextra's",
       "resize": "Wijzig het formaat van het deelvenster met kamerextra's",
       "hide": "Kamerextra's verbergen",
@@ -170,24 +211,25 @@
       "clear_member_search": "Zoeken naar leden wissen",
       "no_members": "Geen leden gevonden.",
       "online": "Online ({count})",
+      "bots": "Bots ({count})",
       "offline": "Offline ({count})",
       "no_files": "Nog geen bestanden in deze kamer.",
       "files": "Bestanden",
       "pins": "Vastgezette berichten",
-      "call": "Bel",
+      "call": "Gesprek",
       "jump_to_file": "Ga naar {filename}",
       "loading_files": "Bestanden laden...",
+      "loading_members": "Leden laden...",
       "calls_unavailable": "Oproepen zijn niet beschikbaar op deze server.",
       "view_profile": "Bekijk profiel van {name}",
       "in_voice_call": "In een spraakoproep",
       "in_video_call": "In een videogesprek",
-      "ban_failed": "Kan lid niet uitsluiten van kamer",
-      "ban_success": "{name} is uitgesloten van de kamer"
+      "remove_failed": "Gebruiker kon niet uit de kamer worden verwijderd",
+      "remove_success": "{name} is uit de kamer verwijderd",
+      "search": "Zoeken"
     },
     "pins": {
-      "show": "Vastgezette berichten tonen",
       "unseen": "Nieuwe vastgezette berichten",
-      "hide": "Vastgezette berichten verbergen",
       "pin": "Bericht vastzetten",
       "unpin": "Bericht losmaken",
       "unpin_prompt": "Weet je zeker dat je deze vastzetting wilt verwijderen?",

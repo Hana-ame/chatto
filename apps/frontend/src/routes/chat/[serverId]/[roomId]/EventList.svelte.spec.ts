@@ -1,15 +1,29 @@
 import { describe, expect, it, vi } from 'vitest';
 import { page } from 'vitest/browser';
 import { render } from 'vitest-browser-svelte';
+import { tick } from 'svelte';
 import EventListTestHarness from './EventListTestHarness.svelte';
 import {
   setVirtualizerForcedRenderedIndex,
+  setVirtualizerFoundItemIndex,
   setVirtualizerScrollOffset
 } from './EventListVirtualizerMock.svelte';
 import { loadLocaleMessages } from '$lib/i18n/messages';
 import { setReactiveLocale } from '$lib/i18n/state.svelte';
+import type { JumpToMessageState } from '$lib/state/room';
 
 const resumeCallbacks = vi.hoisted(() => [] as Array<() => void>);
+
+vi.mock('$lib/client', async () => ({
+  ...(await import('$lib/test-utils/clientMock')).clientMockDefaults,
+  serverRegistry: {
+    getStore: () => ({
+      currentUser: { user: { id: 'test-user' } },
+      realtimeSync: { isRecoveringSnapshot: false },
+      serverInfo: { messageEditWindowSeconds: 300 }
+    })
+  }
+}));
 
 vi.mock('virtua/svelte', async () => {
   const { default: Virtualizer } = await import('./EventListVirtualizerMock.svelte');
@@ -25,17 +39,8 @@ vi.mock('$lib/state/activeServer.svelte', () => ({
   getActiveServer: () => 'server-1'
 }));
 
-vi.mock('$lib/state/server/registry.svelte', () => ({
-  serverRegistry: {
-    getStore: () => ({
-      currentUser: { user: { id: 'test-user' } },
-      serverInfo: { messageEditWindowSeconds: 300 }
-    })
-  }
-}));
-
 vi.mock('$lib/state/server/scope.svelte', async () => {
-  const { serverRegistry } = await import('$lib/state/server/registry.svelte');
+  const { serverRegistry } = await import('$lib/client');
   return {
     useServerScope: () => ({
       serverId: 'server-1',
@@ -48,24 +53,177 @@ vi.mock('$lib/state/server/scope.svelte', async () => {
 });
 
 vi.mock('$lib/state/userProfiles.svelte', () => ({
-    getLiveBio: () => null,
-    getLiveTimezone: () => null,
+  getLiveBotOwnerUserId: (_userId: string, fallback: string | null) => fallback,
+  getLiveBio: () => null,
+  getLiveTimezone: () => null,
   getLiveDisplayName: (_userId: string, fallback: string) => fallback,
   getLiveAvatarUrl: (_userId: string, fallback: string | null) => fallback,
   getLiveCustomStatus: (_userId: string, fallback: unknown) => fallback
-}));
-
-vi.mock('$lib/state/presenceCache.svelte', () => ({
-  getPresenceCache: () => ({
-    get: (_scope: { serverId: string; userId: string }, fallback: unknown) => fallback
-  })
 }));
 
 vi.mock('$lib/hooks/useTabResumeCallback.svelte', () => ({
   useTabResumeCallback: (callback: () => void) => resumeCallbacks.push(callback)
 }));
 
+describe('EventList read position', () => {
+  it('reports the newest message while the timeline follows the bottom', async () => {
+    const onReadPosition = vi.fn();
+    render(EventListTestHarness, {
+      props: { eventIds: ['msg-a', 'msg-b'], scrollToEventId: null, onReadPosition }
+    });
+
+    await vi.waitFor(() =>
+      expect(onReadPosition).toHaveBeenLastCalledWith(
+        expect.objectContaining({ eventId: 'msg-b', latest: true })
+      )
+    );
+  });
+
+  it('reports the newest visible message while the timeline shows history', async () => {
+    // Beyond the last item, so the lookup clamps to the newest message.
+    setVirtualizerFoundItemIndex(99);
+    try {
+      const onReadPosition = vi.fn();
+      render(EventListTestHarness, {
+        props: {
+          eventIds: ['msg-a', 'msg-b'],
+          scrollToEventId: null,
+          isJumpedMode: true,
+          onReadPosition
+        }
+      });
+
+      await vi.waitFor(() =>
+        expect(onReadPosition).toHaveBeenCalledWith(
+          expect.objectContaining({ eventId: 'msg-b', latest: false })
+        )
+      );
+      expect(onReadPosition).not.toHaveBeenCalledWith(expect.objectContaining({ latest: true }));
+    } finally {
+      setVirtualizerFoundItemIndex(0);
+    }
+  });
+
+  it('reports no position while the first page loads', async () => {
+    const onReadPosition = vi.fn();
+    const rendered = render(EventListTestHarness, {
+      props: { eventIds: ['msg-a'], scrollToEventId: null, isLoading: true, onReadPosition }
+    });
+    await tick();
+    expect(onReadPosition).not.toHaveBeenCalled();
+
+    await rendered.rerender({ isLoading: false });
+    await vi.waitFor(() =>
+      expect(onReadPosition).toHaveBeenCalledWith(
+        expect.objectContaining({ eventId: 'msg-a', latest: true })
+      )
+    );
+  });
+
+  it('does not use system rows as a read position', async () => {
+    const onReadPosition = vi.fn();
+    render(EventListTestHarness, {
+      props: { eventIds: ['join-a'], scrollToEventId: null, eventKind: 'join', onReadPosition }
+    });
+    await tick();
+    await tick();
+
+    expect(onReadPosition).not.toHaveBeenCalled();
+  });
+});
+
 describe('EventList jump completion', () => {
+  it('stops pending bottom scrolling before reading an unmounted room', async () => {
+    const frames: FrameRequestCallback[] = [];
+    const requestFrame = vi
+      .spyOn(window, 'requestAnimationFrame')
+      .mockImplementation((callback) => {
+        frames.push(callback);
+        return frames.length;
+      });
+    const onStoreRead = vi.fn();
+    const view = render(EventListTestHarness, {
+      props: { eventIds: ['message'], scrollToEventId: null, onStoreRead }
+    });
+    try {
+      await tick();
+      expect(frames.length).toBeGreaterThan(0);
+      view.unmount();
+      onStoreRead.mockClear();
+      for (const frame of frames.splice(0)) frame(performance.now());
+      await tick();
+      expect(onStoreRead).not.toHaveBeenCalled();
+    } finally {
+      requestFrame.mockRestore();
+    }
+  });
+  it('releases interrupted forward pagination when the snapshot viewport is restored', async () => {
+    let jumpState!: JumpToMessageState;
+    const rendered = render(EventListTestHarness, {
+      props: {
+        eventIds: [],
+        scrollToEventId: null,
+        isLoading: true,
+        recoveryViewport: { eventId: 'msg-anchor', offset: 17, hasNewer: true },
+        onComposerReady: (context) => {
+          jumpState = context.jumpState;
+          jumpState.isJumpedMode = true;
+          // Snapshot invalidation prevents the old request's finally block
+          // from changing pagination state for the replacement window.
+          jumpState.isLoadingNewer = true;
+        }
+      }
+    });
+    await rendered.rerender({ eventIds: ['msg-anchor'], isLoading: false });
+    await expect.element(page.getByTestId('virtualizer-scroll-offset')).toHaveTextContent('17');
+    expect(jumpState.isLoadingNewer).toBe(false);
+    expect(jumpState.isJumpedMode).toBe(true);
+    expect(jumpState.hasReachedEnd).toBe(false);
+  });
+  it('shows the loading indicator until the first page arrives', async () => {
+    const rendered = render(EventListTestHarness, {
+      props: { eventIds: [], scrollToEventId: null, isLoading: true }
+    });
+    const indicator = page.getByRole('status', { name: 'Loading messages...' });
+    await expect.element(indicator).toBeInTheDocument();
+
+    await rendered.rerender({ eventIds: [], scrollToEventId: null, isLoading: false });
+    await expect.element(indicator).not.toBeInTheDocument();
+    await expect.element(page.getByText('No messages yet')).toBeVisible();
+  });
+  it('releases the saved position when recovery produces an empty timeline', async () => {
+    render(EventListTestHarness, {
+      props: {
+        eventIds: [],
+        scrollToEventId: null,
+        recoveryViewport: { eventId: 'removed', offset: 17 }
+      }
+    });
+    await vi.waitFor(() =>
+      expect(page.getByTestId('recovery-anchor').element().textContent).toBe('')
+    );
+  });
+  it('restores the saved event and pixel offset after a cleared timeline loads', async () => {
+    const rendered = render(EventListTestHarness, {
+      props: {
+        eventIds: [],
+        scrollToEventId: null,
+        isLoading: true,
+        recoveryViewport: { eventId: 'msg-anchor', offset: 17, hasNewer: true }
+      }
+    });
+    await rendered.rerender({
+      eventIds: ['msg-before', 'msg-anchor', 'msg-after'],
+      scrollToEventId: null,
+      isLoading: false,
+      recoveryViewport: { eventId: 'msg-anchor', offset: 17, hasNewer: true }
+    });
+    await expect.element(page.getByText('msg-anchor', { exact: true })).toBeVisible();
+    await expect
+      .element(page.getByTestId('virtualizer-scroll-alignment'))
+      .toHaveTextContent('start');
+    await expect.element(page.getByTestId('virtualizer-scroll-offset')).toHaveTextContent('17');
+  });
   it('signals completion after highlighting a rendered target', async () => {
     const onComplete = vi.fn();
     render(EventListTestHarness, {
@@ -198,16 +356,15 @@ describe('EventList jump completion', () => {
       const rendered = render(EventListTestHarness, {
         props: {
           eventIds: ['msg-target'],
-          scrollToEventId: null,
-          updateCounter: 0
+          scrollToEventId: null
         }
       });
 
       await vi.waitFor(() => expect(animationFrames.length).toBeGreaterThan(0));
+      // A newly arrived message starts a second bottom scroll.
       await rendered.rerender({
-        eventIds: ['msg-target'],
-        scrollToEventId: null,
-        updateCounter: 1
+        eventIds: ['msg-target', 'msg-next'],
+        scrollToEventId: null
       });
 
       for (let frame = 0; frame < 50; frame++) {
@@ -241,8 +398,7 @@ describe('EventList jump completion', () => {
       props: {
         eventIds: initialEventIds,
         eventKind: 'join',
-        scrollToEventId: null,
-        updateCounter: initialEventIds.length
+        scrollToEventId: null
       }
     });
 
@@ -255,8 +411,7 @@ describe('EventList jump completion', () => {
     await rendered.rerender({
       eventIds: extendedEventIds,
       eventKind: 'join',
-      scrollToEventId: null,
-      updateCounter: extendedEventIds.length
+      scrollToEventId: null
     });
     await expect
       .element(page.getByTestId('virtualizer-rendered-key'))
@@ -271,8 +426,7 @@ describe('EventList jump completion', () => {
       eventIds: extendedEventIds,
       roomId: 'room-2',
       eventKind: 'join',
-      scrollToEventId: null,
-      updateCounter: extendedEventIds.length
+      scrollToEventId: null
     });
     await expect.element(page.getByRole('button', { name: '3 others' })).toBeVisible();
   });
@@ -301,5 +455,189 @@ describe('EventList localisation', () => {
       await loadLocaleMessages('en-GB');
       setReactiveLocale('en-GB');
     }
+  });
+});
+
+describe('EventList unread entry landing', () => {
+  const eventIds = ['msg-1', 'msg-2', 'msg-3'];
+
+  async function nextFrames(count = 3) {
+    for (let frame = 0; frame < count; frame++) {
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    }
+  }
+
+  it('lands on the unread separator when the marker resolves after entry', async () => {
+    setVirtualizerScrollOffset(400);
+    try {
+      const rendered = render(EventListTestHarness, {
+        props: { eventIds, scrollToEventId: null }
+      });
+      await expect
+        .element(page.getByTestId('virtualizer-scroll-alignment'))
+        .toHaveTextContent('end');
+
+      await rendered.rerender({
+        eventIds,
+        scrollToEventId: null,
+        unreadAfterEventId: 'msg-2'
+      });
+
+      await expect
+        .element(page.getByTestId('virtualizer-rendered-key'))
+        .toHaveAttribute('data-rendered-key', 'unread-separator-msg-2');
+      await expect
+        .element(page.getByTestId('virtualizer-scroll-alignment'))
+        .toHaveTextContent('start');
+      await expect.element(page.getByTestId('jump-to-present')).toBeVisible();
+    } finally {
+      setVirtualizerScrollOffset(700);
+    }
+  });
+
+  it('waits for the viewer to return before landing on a separator placed while away', async () => {
+    setVirtualizerScrollOffset(400);
+    try {
+      const rendered = render(EventListTestHarness, {
+        props: { eventIds, scrollToEventId: null }
+      });
+      await expect
+        .element(page.getByTestId('virtualizer-scroll-alignment'))
+        .toHaveTextContent('end');
+
+      window.dispatchEvent(new Event('blur'));
+      await rendered.rerender({
+        eventIds,
+        scrollToEventId: null,
+        unreadAfterEventId: 'msg-2'
+      });
+      await nextFrames();
+
+      // While away, the timeline keeps following the latest message.
+      await expect
+        .element(page.getByTestId('virtualizer-scroll-alignment'))
+        .toHaveTextContent('end');
+
+      window.dispatchEvent(new Event('focus'));
+
+      await expect
+        .element(page.getByTestId('virtualizer-rendered-key'))
+        .toHaveAttribute('data-rendered-key', 'unread-separator-msg-2');
+      await expect
+        .element(page.getByTestId('virtualizer-scroll-alignment'))
+        .toHaveTextContent('start');
+    } finally {
+      window.dispatchEvent(new Event('focus'));
+      setVirtualizerScrollOffset(700);
+    }
+  });
+
+  it('lets the jump button cancel a running landing', async () => {
+    const frames: FrameRequestCallback[] = [];
+    const requestFrame = vi
+      .spyOn(window, 'requestAnimationFrame')
+      .mockImplementation((callback) => {
+        frames.push(callback);
+        return frames.length;
+      });
+    setVirtualizerScrollOffset(400);
+    try {
+      render(EventListTestHarness, {
+        props: {
+          eventIds,
+          scrollToEventId: null,
+          unreadAfterEventId: 'msg-2'
+        }
+      });
+      await expect.element(page.getByTestId('jump-to-present')).toBeVisible();
+
+      (page.getByTestId('jump-to-present').element() as HTMLButtonElement).click();
+      for (let frame = 0; frame < 60 && frames.length > 0; frame++) {
+        frames.shift()?.(frame * 16);
+        await tick();
+        await Promise.resolve();
+      }
+      // Real frames let the button's fade-out transition finish.
+      requestFrame.mockRestore();
+
+      await expect.element(page.getByTestId('jump-to-present')).not.toBeInTheDocument();
+      expect(page.getByTestId('virtualizer-scroll-alignment').element().textContent).toBe('end');
+    } finally {
+      requestFrame.mockRestore();
+      setVirtualizerScrollOffset(700);
+    }
+  });
+
+  it('skips the landing when the entry targets a specific message', async () => {
+    const rendered = render(EventListTestHarness, {
+      props: {
+        eventIds,
+        scrollToEventId: null,
+        unreadAfterEventId: 'msg-2',
+        pendingHighlightId: 'msg-3'
+      }
+    });
+    await nextFrames();
+
+    // The highlight can clear without a jump, for example when the target
+    // is missing. The entry still does not move to the separator.
+    await rendered.rerender({
+      eventIds,
+      scrollToEventId: null,
+      unreadAfterEventId: 'msg-2',
+      pendingHighlightId: null
+    });
+    await expect.element(page.getByTestId('virtualizer-scroll-alignment')).toHaveTextContent('end');
+    await nextFrames();
+
+    expect(page.getByTestId('virtualizer-scroll-alignment').element().textContent).toBe('end');
+  });
+
+  it('lands again when a thread timeline switches to another thread', async () => {
+    const threadProps = (threadId: string, marker: string | null) => ({
+      eventIds,
+      permalinkThreadRootEventId: threadId,
+      scrollToEventId: null,
+      unreadAfterEventId: marker
+    });
+    const rendered = render(EventListTestHarness, { props: threadProps('thread-1', 'msg-2') });
+    await expect
+      .element(page.getByTestId('virtualizer-rendered-key'))
+      .toHaveAttribute('data-rendered-key', 'unread-separator-msg-2');
+
+    await rendered.rerender(threadProps('thread-2', null));
+    await rendered.rerender({ ...threadProps('thread-2', null), eventIds: [...eventIds, 'msg-4'] });
+    await expect.element(page.getByTestId('virtualizer-scroll-alignment')).toHaveTextContent('end');
+
+    await rendered.rerender({
+      ...threadProps('thread-2', 'msg-3'),
+      eventIds: [...eventIds, 'msg-4']
+    });
+    await expect
+      .element(page.getByTestId('virtualizer-scroll-alignment'))
+      .toHaveTextContent('start');
+    await expect
+      .element(page.getByTestId('virtualizer-rendered-key'))
+      .toHaveAttribute('data-rendered-key', 'unread-separator-msg-3');
+  });
+
+  it('keeps the viewport when the user scrolls before the marker resolves', async () => {
+    const rendered = render(EventListTestHarness, {
+      props: { eventIds, scrollToEventId: null }
+    });
+    await expect.element(page.getByTestId('virtualizer-scroll-alignment')).toHaveTextContent('end');
+
+    page
+      .getByTestId('messages-container')
+      .element()
+      .dispatchEvent(new WheelEvent('wheel', { deltaY: -100, bubbles: true }));
+    await rendered.rerender({
+      eventIds,
+      scrollToEventId: null,
+      unreadAfterEventId: 'msg-2'
+    });
+    await nextFrames();
+
+    expect(page.getByTestId('virtualizer-scroll-alignment').element().textContent).toBe('end');
   });
 });

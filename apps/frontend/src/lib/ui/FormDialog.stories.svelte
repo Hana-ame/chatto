@@ -6,6 +6,8 @@
   const componentDescription = `
     Use FormDialog for modal forms with a single submit action and cancel/close behavior. It owns
     the footer action pattern, loading state, disabled state, and top-level form error treatment.
+    Below 768 px, touch-capable windows use a bottom sheet with full-width submit and Cancel actions.
+    Mouse windows retain the centred dialog.
   `.trim();
 
   const { Story } = defineMeta({
@@ -44,6 +46,9 @@
 
   let narrowVisible = $state(false);
   let narrowName = $state('');
+
+  let statusVisible = $state(false);
+  let statusText = $state('In focus mode');
 
   function fakeSubmit() {
     loading = true;
@@ -87,6 +92,39 @@
 </Story>
 
 <Story
+  name="Secondary action"
+  asChild
+  parameters={{
+    docs: {
+      description: {
+        story:
+          'Use `secondaryActions` for an alternative that does not submit the form, such as clearing the record being edited. It sits between Cancel and the submit action.'
+      }
+    }
+  }}
+>
+  <Button onclick={() => (statusVisible = true)}>Set a status...</Button>
+
+  <FormDialog
+    bind:visible={statusVisible}
+    title="Set a status"
+    submitLabel="Save status"
+    disabled={!statusText.trim()}
+    onsubmit={() => (statusVisible = false)}
+    onclose={() => (statusVisible = false)}
+  >
+    <TextInput id="story-status" label="Status" bind:value={statusText} />
+
+    {#snippet secondaryActions()}
+      <Button type="button" variant="secondary" onclick={() => (statusText = '')}>
+        <span aria-hidden="true" class="iconify icon-[uil--times]"></span>
+        Clear status
+      </Button>
+    {/snippet}
+  </FormDialog>
+</Story>
+
+<Story
   name="Validation error"
   asChild
   parameters={{
@@ -123,7 +161,7 @@
     docs: {
       description: {
         story:
-          'Resize the canvas to 375 pixels. The dialog keeps its viewport gutter and visible footer actions.'
+          'Resize the canvas to 375 pixels. The form becomes a full-width sheet with submit first and Cancel last. Long labels wrap.'
       }
     }
   }}

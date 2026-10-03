@@ -1,8 +1,14 @@
 {
   "chat": {
+    "privileged_mode": {
+      "enable": "特権モードを有効にする",
+      "disable": "特権モードを無効にする",
+      "confirmation": "15分間、このサーバーで割り当てられている追加の権限を有効にします。"
+    },
     "notifications": {
       "title": "通知",
       "subtitle": "新機能はこちら",
+      "list_title": "最近のアクティビティ",
       "clear_read": "既読を削除",
       "empty_title": "通知はありません",
       "empty_body": "みんなも追いつきました！",
@@ -42,40 +48,96 @@
       "send_message": "メッセージを送信",
       "view_profile": "プロフィールを見る",
       "profile_requires_direct_message": "このプロフィールを表示するにはダイレクトメッセージが必要です。",
+      "manage_bot": "ボットを管理",
       "view_in_admin": "サーバー管理で表示",
       "copy_user_id": "ユーザーIDをコピー"
     },
     "server_gutter": {
       "add_server": "サーバーの追加",
+      "log_in": "このサーバーにログイン",
+      "sign_out": "このサーバーからログアウト",
       "version": "バージョン {version}",
-      "version_unknown": "バージョン不明",
       "unreachable": "サーバーに接続できません",
+      "connection_unavailable": "接続できません",
       "compatibility_server_too_old": "このアプリが接続するには、サーバーを Chatto 0.5 以降にアップグレードする必要があります。",
-      "compatibility_unknown": "このアプリはサーバーのバージョンから互換性を判断できません。"
+      "compatibility_unknown": "このアプリはサーバーのバージョンから互換性を判断できません。",
+      "go_to_notifications_count": {
+        "one": "{count} 件の通知に移動",
+        "other": "{count} 件の通知に移動"
+      },
+      "go_to_notification": "通知に移動",
+      "go_to_first_unread": "最初の未読ルームに移動",
+      "notifications_count": {
+        "one": "{count} 件の通知",
+        "other": "{count} 件の通知"
+      }
+    },
+    "server_unavailable": {
+      "too_old_title": "サーバーのアップグレードが必要です",
+      "too_old_body": "このサーバーでは、このアプリがサポートしなくなった Chatto のバージョンが動作しています。サーバー管理者に Chatto のアップグレードを依頼してください。",
+      "unknown_title": "不明なサーバーバージョン",
+      "unknown_body": "このアプリはこのサーバーの Chatto のバージョンを特定できないため、接続できません。",
+      "unreachable_body": "このアプリはこのサーバーに接続できません。ネットワーク接続を確認するか、しばらくしてからもう一度お試しください。",
+      "server_version": "サーバーのバージョン",
+      "required_version": "必要なバージョン",
+      "required_version_value": "{version} 以降",
+      "check_again": "もう一度確認"
+    },
+    "server_signed_out": {
+      "title": "このサーバーからログアウトしています",
+      "body": "このサーバーでメッセージを読んだり送信したりするには、ログインしてください。"
     },
     "threads": {
       "title": "私のスレッド",
       "subtitle": "あなたがフォローしているスレッド",
+      "list_title": "フォロー中のスレッド",
       "filter_label": "スレッドのフィルタリング",
       "filter_all": "全て",
       "filter_unread": "未読",
       "empty_title": "フォローされているスレッドはありません",
       "empty_body": "あなたがフォローしているスレッドがここに表示されます。参加しているスレッドを自動的にフォローします。",
-      "no_unread_loaded": "未読のスレッドがロードされていません",
       "all_caught_up": "みんな追いつきました",
-      "loaded_summary": "{total} の {loaded} に従ってスレッドがロードされました。",
       "load_more": "もっと読み込む",
       "no_unread": "現在、未読のスレッドはありません。",
       "message_missing": "メッセージは利用できなくなりました",
       "in_room": "で",
-      "in_room_capitalized": "で"
+      "in_room_capitalized": "で",
+      "load_failed": "スレッドの読み込みに失敗しました",
+      "notifications_count": {
+        "one": "{count} 件の通知",
+        "other": "{count} 件の通知"
+      }
     },
     "profile": {
       "title": "プロフィール",
       "fallback_title": "プロフィール",
       "not_found": "ユーザーが見つかりません",
       "bot": "ボット",
-      "local_time": "現地時間 {time}（{zone}）"
+      "local_time": "現地時間 {time}（{zone}）",
+      "permissions": {
+        "title": "できること",
+        "empty": "表示できる有効な権限はありません。",
+        "error": "このボットの権限を読み込めませんでした。",
+        "inactive_title": "無効な権限",
+        "inactive_note": "これらの権限は保存されていますが、所有者の現在の権限では許可されていません。",
+        "read": "すべてのメッセージを読む",
+        "interactions": "自分が作成したスレッドや直接メンションされたスレッドを読む",
+        "post": "新しいメッセージを投稿する",
+        "room": "#{name}",
+        "group": "グループ：{name}",
+        "dm": "参加中のダイレクトメッセージ",
+        "joined_rooms": "参加しているルーム",
+        "all_rooms": "ルーム",
+        "server": "このサーバー",
+        "list_rooms": "ルームを探す",
+        "echo": "スレッドの返信をルームのタイムラインに表示する",
+        "start_calls": "通話を開始する",
+        "browse_join": "ルームを探して参加",
+        "reply": "スレッドで返信",
+        "manage_messages": "メッセージを管理"
+      },
+      "owned_by": "所有者",
+      "open_card": "{name} のプロフィールカードを開く"
     }
   }
 }

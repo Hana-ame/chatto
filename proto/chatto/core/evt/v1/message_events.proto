@@ -40,7 +40,9 @@ message MessagePostedEvent {
 
   // Echo fields (empty for regular messages, set for "also send to channel" echoes).
   // When set, this event is an echo of a thread reply. Echoes are independent
-  // message events that reference the original reply by event ID.
+  // message events that reference the original reply by event ID. New echoes
+  // have no MessageBodyEvent, mentions, or reply attribution of their own.
+  // Reads resolve these fields from the original; historical copies are ignored.
 
   // Event ID of the original thread reply this echoes (empty = not an echo)
   string echo_of_event_id = 7;
@@ -57,6 +59,13 @@ message MessagePostedEvent {
   // can therefore apply the correct policy without re-parsing message content
   // or consulting newer room state.
   repeated MessageMention mentions = 10;
+
+  // Historical imports record the operator as the event actor. This user is
+  // the displayed author and the owner of the encrypted message body.
+  string author_id = 11;
+
+  // Historical imports must not generate live posting effects during replay.
+  bool historical_import = 12;
 }
 
 message DirectUserMention {}
@@ -92,7 +101,7 @@ message MessageMention {
 
 // MessageBodyEvent carries the encrypted body payload for a message post or
 // body update. It is durable, room-scoped projection input but is not delivered
-// as a public live event. The target message event remains MessagePostedEvent;
+// as a public realtime event. The target message event remains MessagePostedEvent;
 // edits also emit a bodyless MessageEditedEvent as the public semantic signal.
 message MessageBodyEvent {
   // Room ID — identifies which room this message body belongs to.

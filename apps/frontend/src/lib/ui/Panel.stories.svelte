@@ -1,4 +1,5 @@
 <script module lang="ts">
+  import AccountName from '$lib/components/users/AccountName.svelte';
   import { resolve } from '$app/paths';
   import { defineMeta } from '@storybook/addon-svelte-csf';
   import Panel from './Panel.svelte';
@@ -10,6 +11,7 @@
   actions. It owns the canonical \`panel-shell panel-shell-raised\` container
   and the shared \`panel-header\` treatment. A slim surface frame wraps its rounded
   background work plane so forms, tables, and dense lists share one geometry.
+  A faint frame highlight and inner shadow give the content a recessed appearance.
   `.trim();
 
   const { Story } = defineMeta({
@@ -25,6 +27,13 @@
     }
   });
 </script>
+
+<Story name="Account title" asChild>
+  <Panel title="Assistant (BOT)">
+    {#snippet titleContent()}<AccountName name="Assistant" identity={{ isBot: true }} />{/snippet}
+    <p>Account details</p>
+  </Panel>
+</Story>
 
 <Story
   name="With header actions"
@@ -76,7 +85,8 @@
   parameters={{
     docs: {
       description: {
-        story: 'Pass a named `subtitle` snippet when the panel subtitle needs an inline link or other simple inline markup.'
+        story:
+          'Pass a named `subtitle` snippet when the panel subtitle needs an inline link or other simple inline markup.'
       }
     }
   }}
@@ -87,11 +97,13 @@
         Configure server defaults here.
         <a
           href={resolve('/chat/[serverId]/manage/rooms', { serverId: 'example-server' })}
-          class="link"
-        >Manage room overrides</a>.
+          class="link">Manage room overrides</a
+        >.
       {/snippet}
 
-      <p class="text-sm text-muted">These defaults apply before room-specific permission overrides.</p>
+      <p class="text-sm text-muted">
+        These defaults apply before room-specific permission overrides.
+      </p>
     </Panel>
   </div>
 </Story>
@@ -140,7 +152,10 @@
     <Panel title="Rooms" noPadding>
       <ul class="selectable-list">
         <li>
-          <button type="button" class="flex w-full items-center gap-3 selectable-list-item px-3 py-2 text-start">
+          <button
+            type="button"
+            class="flex w-full items-center gap-3 selectable-list-item px-3 py-2 text-start"
+          >
             <span class="text-muted" aria-hidden="true">#</span>
             <span class="min-w-0 flex-1">
               <span class="block font-medium">announcements</span>
@@ -149,7 +164,10 @@
           </button>
         </li>
         <li>
-          <button type="button" class="flex w-full items-center gap-3 selectable-list-item px-3 py-2 text-start">
+          <button
+            type="button"
+            class="flex w-full items-center gap-3 selectable-list-item px-3 py-2 text-start"
+          >
             <span class="text-muted" aria-hidden="true">#</span>
             <span class="min-w-0 flex-1">
               <span class="block font-medium">general</span>

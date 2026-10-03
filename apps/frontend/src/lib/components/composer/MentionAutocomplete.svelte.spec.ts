@@ -5,13 +5,10 @@ import { flushSync } from 'svelte';
 import MentionAutocomplete from './MentionAutocomplete.svelte';
 import type { RoomMember } from '$lib/state/room';
 
-vi.mock('$lib/state/presenceCache.svelte', () => ({
-  getPresenceCache: () => ({ get: (_key: unknown, fallback: unknown) => fallback })
-}));
-
 vi.mock('$lib/state/userProfiles.svelte', () => ({
-    getLiveBio: () => null,
-    getLiveTimezone: () => null,
+  getLiveBotOwnerUserId: (_userId: string, fallback: string | null) => fallback,
+  getLiveBio: () => null,
+  getLiveTimezone: () => null,
   getLiveAvatarUrl: (_userId: string, fallback: string | null) => fallback,
   getLiveCustomStatus: (_userId: string, fallback: unknown) => fallback
 }));
@@ -31,6 +28,7 @@ function renderAutocomplete(props: {
   query: string;
   members: RoomMember[];
   roles?: { name: string; isSystem?: boolean; position?: number; pingable?: boolean }[];
+  prioritizedUserIds?: ReadonlySet<string>;
   onSelect?: (login: string, viaTab: boolean) => void;
   onClose?: () => void;
 }) {
@@ -39,6 +37,7 @@ function renderAutocomplete(props: {
       query: props.query,
       members: props.members,
       roles: props.roles ?? [],
+      prioritizedUserIds: props.prioritizedUserIds,
       onSelect: props.onSelect ?? (() => {}),
       onClose: props.onClose ?? (() => {})
     }
@@ -89,11 +88,12 @@ describe('MentionAutocomplete', () => {
       expect(container.querySelector('bdi:not([dir])')?.textContent).toBe('Alice Wonderland');
     });
 
-    it('marks bot mention targets with the shared avatar badge', () => {
+    it('marks bot mention targets beside their names', () => {
       const bot = { ...member('helper_bot', 'Helper Bot'), isBot: true };
       const { container } = renderAutocomplete({ query: 'helper', members: [bot] });
 
-      expect(container.querySelector('[data-testid="bot-badge"]')).not.toBeNull();
+      expect(visibleLogins(container)).toEqual(['helper_bot']);
+      expect(container.querySelector('[data-testid="bot-badge"]')?.textContent).toBe('BOT');
     });
 
     it('does not render deleted members as mention targets', () => {
@@ -117,6 +117,16 @@ describe('MentionAutocomplete', () => {
       });
       const order = visibleLogins(container);
       expect(order[0]).toBe('al'); // exact match wins
+    });
+
+    it('lists prioritized users, such as thread participants, first', () => {
+      const { container } = renderAutocomplete({
+        query: 'cha',
+        members: [member('chaz6'), member('chatto'), member('chatto_bot', 'ChattoBot')],
+        prioritizedUserIds: new Set(['u_chatto_bot'])
+      });
+      expect(visibleLogins(container)).toEqual(['chatto_bot', 'chaz6', 'chatto']);
+      expect(activeLogin(container)).toBe('chatto_bot');
     });
 
     it('includes virtual mention handles and pingable role names', () => {

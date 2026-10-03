@@ -1,7 +1,9 @@
 <script module lang="ts">
   import { PresenceStatus } from '@chatto/api-types/api/v1/presence_pb';
   import { defineMeta } from '@storybook/addon-svelte-csf';
-  import type { UserAvatarUserView } from '$lib/render/users';
+  import type { UserAvatarUserView } from '@chatto/client/timeline/users';
+  import imageAvatar from '$lib/assets/chatto-icon-maskable.png';
+  import AccountName from './users/AccountName.svelte';
   import UserAvatar from './UserAvatar.svelte';
 
   const { Story } = defineMeta({
@@ -11,7 +13,8 @@
     parameters: {
       docs: {
         description: {
-          component: 'Circular user avatar rendering with optional presence dots.'
+          component:
+            'Circular user avatars with optional presence and custom status. Bot identity appears beside the account name.'
         }
       }
     }
@@ -40,19 +43,32 @@
 </script>
 
 <script lang="ts">
-  import { createPresenceCache } from '$lib/state/presenceCache.svelte';
-  import { createUserProfileCache } from '$lib/state/userProfiles.svelte';
+  import { provideUserProfiles } from '$lib/state/userProfiles.svelte';
 
-  createUserProfileCache();
-  createPresenceCache();
+  provideUserProfiles();
 </script>
 
 <Story name="Presence dots" asChild>
   <div class="flex items-center gap-5 rounded-md bg-surface p-4">
-    <UserAvatar user={onlineUser} serverId="storybook" size="md" showPresence />
-    <UserAvatar user={awayUser} serverId="storybook" size="md" showPresence />
-    <UserAvatar user={dndUser} serverId="storybook" size="md" showPresence />
-    <UserAvatar user={offlineUser} serverId="storybook" size="md" showPresence />
+    <UserAvatar user={onlineUser} size="md" showPresence />
+    <UserAvatar user={awayUser} size="md" showPresence />
+    <UserAvatar user={dndUser} size="md" showPresence />
+    <UserAvatar user={offlineUser} size="md" showPresence />
+  </div>
+</Story>
+
+<Story name="Current presence" asChild>
+  <!-- The server store's current presence replaces the presence in the profile. -->
+  <div class="flex items-center gap-5 rounded-md bg-surface p-4">
+    <UserAvatar user={offlineUser} presence={PresenceStatus.ONLINE} size="md" showPresence />
+    <UserAvatar user={offlineUser} presence={PresenceStatus.AWAY} size="md" showPresence />
+    <UserAvatar
+      user={offlineUser}
+      presence={PresenceStatus.DO_NOT_DISTURB}
+      size="md"
+      showPresence
+    />
+    <UserAvatar user={offlineUser} presence={PresenceStatus.OFFLINE} size="md" showPresence />
   </div>
 </Story>
 
@@ -61,5 +77,64 @@
     <UserAvatar user={onlineUser} size="xs" />
     <UserAvatar user={awayUser} size="sm" />
     <UserAvatar user={dndUser} size="md" />
+  </div>
+</Story>
+
+<Story name="Bot accounts" asChild>
+  <div class="flex flex-wrap items-center gap-6 rounded-md bg-surface p-6">
+    {#each ['xs', 'sm', 'md', 'message', 'lg', 'xl'] as const as size (size)}
+      <div class="flex flex-col items-center gap-3">
+        <UserAvatar user={{ ...onlineUser, displayName: 'Assistant', isBot: true }} {size} />
+        <AccountName name="Assistant" identity={{ isBot: true }} />
+        <span class="text-xs text-muted">{size}</span>
+      </div>
+    {/each}
+  </div>
+</Story>
+
+<Story name="Bots with status" asChild>
+  <div class="flex items-center gap-6 rounded-md bg-surface p-6">
+    <UserAvatar
+      user={{ ...onlineUser, displayName: 'Assistant', isBot: true }}
+      size="sm"
+      showPresence
+    />
+    <UserAvatar
+      user={{
+        ...onlineUser,
+        displayName: 'Assistant',
+        isBot: true,
+        customStatus: { emoji: '🔧', text: 'Building', expiresAt: null }
+      }}
+      size="message"
+      showPresence
+      showStatus
+    />
+    <UserAvatar user={onlineUser} size="message" showPresence />
+  </div>
+</Story>
+
+<Story name="Bot avatar images" asChild>
+  <div class="flex max-w-2xl items-center justify-center gap-16 rounded-xl bg-surface px-10 py-12">
+    <div class="flex flex-col items-center gap-6">
+      <div class="flex items-center gap-6">
+        <UserAvatar user={{ ...onlineUser, displayName: 'Assistant', isBot: true }} size="sm" />
+        <UserAvatar
+          user={{ ...onlineUser, displayName: 'Assistant', isBot: true }}
+          size="message"
+          showPresence
+        />
+        <UserAvatar user={{ ...onlineUser, displayName: 'Assistant', isBot: true }} size="xl" />
+      </div>
+      <div class="flex items-center gap-6">
+        {#each ['xs', 'sm', 'message'] as const as size (size)}
+          <UserAvatar
+            user={{ ...onlineUser, displayName: 'Assistant', isBot: true, avatarUrl: imageAvatar }}
+            {size}
+          />
+        {/each}
+      </div>
+      <span class="text-sm text-muted">Actual avatar sizes</span>
+    </div>
   </div>
 </Story>

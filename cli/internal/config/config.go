@@ -35,7 +35,7 @@ type ChattoConfig struct {
 	AssetProcessing AssetProcessingConfig `toml:"asset_processing" comment:"Built-in durable asset-processing worker."`
 	LiveKit         LiveKitConfig         `toml:"livekit,commented" comment:"LiveKit voice call configuration."`
 	NATS            NATSConfig            `toml:"nats"`
-	Bootstrap       BootstrapConfig       `toml:"bootstrap,commented" comment:"Dev/E2E-only: users and spaces auto-created on startup. ONLY honored by builds compiled with the 'bootstrap' build tag; release binaries ignore this section entirely."`
+	Bootstrap       BootstrapConfig       `toml:"bootstrap,commented" comment:"Dev/E2E-only: users, bots, and server data auto-created on first startup. ONLY honored by builds compiled with the 'bootstrap' build tag; release binaries ignore this section entirely."`
 }
 
 // ApplyDefaults fills derived config values that are safe to compute from other
@@ -95,6 +95,12 @@ func embeddedNATSClientURL(cfg EmbeddedNATSConfig) string {
 // Validate checks the configuration for errors and returns a descriptive error if any are found.
 func (c *ChattoConfig) Validate() error {
 	var errs []string
+	if err := c.Core.Log.Validate(); err != nil {
+		errs = append(errs, err.Error())
+	}
+	if err := c.Core.BotWebhooks.Validate(); err != nil {
+		errs = append(errs, err.Error())
+	}
 
 	// Required fields
 	if err := validateHexSecret("webserver.cookie_signing_secret", c.Webserver.CookieSigningSecret, true); err != nil {
@@ -206,6 +212,9 @@ func (c *ChattoConfig) Validate() error {
 		if c.NATS.Embedded.HTTPPort < 0 || c.NATS.Embedded.HTTPPort > 65535 {
 			errs = append(errs, "nats.embedded.http_port must be between 0 and 65535")
 		}
+		if _, _, err := c.NATS.Embedded.ParsedSyncInterval(); err != nil {
+			errs = append(errs, fmt.Sprintf("nats.embedded.sync_interval %v", err))
+		}
 		// Require auth token when TCP port is enabled
 		if c.NATS.Embedded.Port > 0 && c.NATS.Embedded.AuthToken == "" {
 			errs = append(errs, "nats.embedded.auth_token is required when TCP port is enabled")
@@ -310,6 +319,23 @@ func (c *ChattoConfig) Validate() error {
 		}
 		if provider.ClientSecret == "" && provider.Type != AuthProviderTypeOpenIDConnect {
 			errs = append(errs, prefix+".client_secret is required")
+		}
+		if method := provider.TokenEndpointAuthMethod; method != "" {
+			if provider.Type != AuthProviderTypeOpenIDConnect {
+				errs = append(errs, prefix+".token_endpoint_auth_method is only supported for OIDC")
+			}
+			switch method {
+			case "client_secret_basic", "client_secret_post":
+				if provider.ClientSecret == "" {
+					errs = append(errs, prefix+".client_secret is required for the token authentication method")
+				}
+			case "none":
+				if provider.ClientSecret != "" {
+					errs = append(errs, prefix+".client_secret must be empty for token authentication method none")
+				}
+			default:
+				errs = append(errs, prefix+".token_endpoint_auth_method must be client_secret_basic, client_secret_post, or none")
+			}
 		}
 		if provider.Type == AuthProviderTypeOpenIDConnect && provider.IssuerURL == "" {
 			errs = append(errs, prefix+".issuer_url is required when type = 'oidc'")
@@ -426,6 +452,12 @@ func (c *ChattoConfig) Validate() error {
 	}
 	if c.Core.ProjectionSnapshotRetention.Duration() < 0 {
 		errs = append(errs, "core.projection_snapshot_retention must be positive")
+	}
+	if c.Core.EVTReadCacheIdleTTL.Duration() < 0 {
+		errs = append(errs, "core.evt_read_cache_idle_ttl must be positive")
+	}
+	if c.Core.EVTReadCacheMaxBytes != nil && c.Core.EVTReadCacheMaxBytes.Bytes() != -1 && c.Core.EVTReadCacheMaxBytes.Bytes() <= 0 {
+		errs = append(errs, "core.evt_read_cache_max_bytes must be -1 (unlimited) or a positive size")
 	}
 
 	// Storage backend validation

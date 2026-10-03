@@ -1,9 +1,12 @@
 <script lang="ts">
+  import AccountName from '$lib/components/users/AccountName.svelte';
+  import AccountNameTokens from '$lib/components/users/AccountNameTokens.svelte';
+  import DirectMessageName from '$lib/components/users/DirectMessageName.svelte';
   import { untrack } from 'svelte';
   import UserAvatar from '$lib/components/UserAvatar.svelte';
   import { m } from '$lib/i18n/messages';
+  import { LoadingFog } from '$lib/ui';
   import { quickSwitcher } from '$lib/state/globals.svelte';
-  import SkeletonImg from '$lib/ui/SkeletonImg.svelte';
   import { getGradientForName } from '$lib/utils/gradients';
   import { QuickSwitcherModel, type QuickSwitcherAvatarUser } from './quickSwitcherModel.svelte';
 
@@ -57,7 +60,7 @@
   <UserAvatar {user} size="xs" useLiveProfile={false} />
 {/snippet}
 
-<!-- Outer wrapper replicates ContextMenu.svelte's container exactly -->
+<!-- The native dialog owns dismissal; command-palette owns the shared menu finish. -->
 <dialog
   {@attach syncQuickSwitcherDialog}
   onclose={() => quickSwitcher.close()}
@@ -74,12 +77,11 @@
   class="quick-switcher m-auto mt-[15vh] max-h-none max-w-none overflow-visible border-none bg-transparent p-0 text-inherit backdrop:bg-black/50"
 >
   {#if quickSwitcher.visible}
-    <div
-      class="flex w-140 max-w-[90vw] flex-col gap-1 rounded-lg border border-text/10 bg-surface p-1 text-sm shadow-xl"
-    >
+    <div class="command-palette">
       <div class="menu-section">
-        <div class="flex items-center gap-2 px-3 py-1.5">
-          <span class="iconify sidebar-icon icon-[uil--search] text-muted"></span>
+        <div class="flex min-h-10 items-center gap-2 px-3 py-1.5">
+          <span class="iconify sidebar-icon icon-[uil--search] text-muted" aria-hidden="true"
+          ></span>
           <input
             {@attach registerInput}
             value={model.query}
@@ -87,18 +89,24 @@
             onkeydown={handleKeydown}
             type="text"
             placeholder={m('quick_switcher.placeholder')}
-            class="flex-1 bg-transparent text-text outline-none placeholder:text-muted"
+            aria-label={m('quick_switcher.placeholder')}
+            class="min-w-0 flex-1 bg-transparent text-text outline-none placeholder:text-muted"
           />
           {#if model.loading}
-            <span class="iconify sidebar-icon icon-[uil--spinner-alt] animate-spin text-muted"
+            <span
+              class="iconify sidebar-icon icon-[uil--spinner-alt] animate-spin text-muted"
+              aria-hidden="true"
             ></span>
           {/if}
-          <kbd class="rounded border border-text/10 px-1.5 py-0.5 text-xs text-muted">Esc</kbd>
+          <kbd class="keycap">Esc</kbd>
         </div>
       </div>
 
-      <div class="max-h-80 overflow-y-auto menu-section">
+      <div class="max-h-[min(20rem,55dvh)] overflow-y-auto menu-section">
         <nav class="sidebar-nav">
+          {#if model.loading && model.filtered.length === 0}
+            <LoadingFog class="m-2 h-24" />
+          {/if}
           {#if model.filtered.length === 0 && !model.loading}
             <p class="px-3 py-6 text-center text-muted">
               {model.query.trim() === '?'
@@ -121,32 +129,31 @@
                 data-index={index}
                 type="button"
                 class={[
-                  'sidebar-item text-start',
-                  item.kind === 'message' ? 'items-start px-2 py-2' : '',
-                  index === model.selectedIndex ? 'bg-surface' : ''
+                  'command-palette-result',
+                  item.kind === 'message' ? 'items-start py-2' : '',
+                  index === model.selectedIndex ? 'command-palette-result-active' : ''
                 ]}
                 onclick={() => model.select(item)}
-                onpointerenter={() => model.selectIndex(index)}
+                onpointermove={() => model.selectIndex(index)}
               >
                 {#if item.kind === 'message'}
-                  <span
-                    class="iconify mt-0.5 sidebar-icon icon-[uil--comment-alt-message] shrink-0 text-muted"
-                  ></span>
-                {:else if item.kind === 'destination' && item.icon}
-                  <span class="iconify sidebar-icon text-muted {item.icon}"></span>
-                {:else if item.kind === 'user'}
-                  {@const user = item.participants?.[0] ?? null}
-                  <span class="sidebar-icon">
-                    {#if user}
-                      {@render avatar(user)}
-                    {:else}
-                      <span class="iconify sidebar-icon icon-[uil--user] text-muted"></span>
-                    {/if}
+                  <span class="command-palette-leading">
+                    <span
+                      class="iconify sidebar-icon icon-[uil--comment-alt-message]"
+                      aria-hidden="true"
+                    ></span>
                   </span>
+                {:else if item.kind === 'destination' && item.icon}
+                  <span class="command-palette-leading"
+                    ><span class="iconify sidebar-icon {item.icon}" aria-hidden="true"></span></span
+                  >
+                {:else if item.kind === 'user' && item.participants?.[0]}
+                  <span class="command-palette-leading">{@render avatar(item.participants[0])}</span
+                  >
                 {:else if item.kind === 'dm' && item.participants}
-                  <span class="sidebar-icon">
+                  <span class="command-palette-leading">
                     <span class="flex -space-x-2">
-                      {#each item.participants as participant (participant.id)}
+                      {#each item.participants.slice(0, 2) as participant (participant.id)}
                         {@render avatar(participant)}
                       {/each}
                     </span>
@@ -158,17 +165,21 @@
                     style:background={logo.logoUrl ? undefined : getGradientForName(logo.name)}
                   >
                     {#if logo.logoUrl}
-                      <SkeletonImg
+                      <img
                         src={logo.logoUrl}
                         alt={logo.name}
                         class="h-full w-full object-cover"
+                        onload={(event) =>
+                          ((event.currentTarget as HTMLImageElement).style.display = '')}
+                        onerror={(event) =>
+                          ((event.currentTarget as HTMLImageElement).style.display = 'none')}
                       />
                     {:else}
                       <span class="text-white">{logo.name[0]?.toUpperCase() ?? '?'}</span>
                     {/if}
                   </span>
                 {:else}
-                  <span class="sidebar-icon text-muted">#</span>
+                  <span class="command-palette-leading">#</span>
                 {/if}
 
                 {#if item.kind === 'message'}
@@ -182,22 +193,38 @@
                       <span
                         data-testid="message-search-provenance"
                         dir="auto"
-                        class="mt-0.5 block truncate text-muted">{item.detail}</span
+                        class="mt-0.5 block truncate text-muted"
+                        ><AccountNameTokens
+                          text={item.detail}
+                          accounts={item.message?.actor
+                            ? [
+                                {
+                                  name: item.message.actor.displayName || item.message.actor.login,
+                                  identity: item.message.actor
+                                }
+                              ]
+                            : []}
+                        /></span
                       >
                     {/if}
                   </span>
                 {:else}
                   <span class="min-w-0 flex-1 truncate">
-                    {#if item.kind === 'room'}<span class="text-muted">#</span>{/if}<bdi
-                      >{item.label}</bdi
-                    >{#if item.detail}<span class="text-muted"
+                    {#if item.kind === 'room'}<span class="text-muted">#</span
+                      >{/if}{#if item.kind === 'dm'}<DirectMessageName
+                        participants={item.participants ?? []}
+                        currentUserId={item.currentUserId}
+                      />{:else}<AccountName
+                        name={item.label}
+                        identity={item.kind === 'user' ? item.participants?.[0] : undefined}
+                      />{/if}{#if item.detail}<span class="text-muted"
                         >&nbsp;· <bdi>{item.detail}</bdi></span
                       >{/if}
                   </span>
                 {/if}
 
-                {#if !model.query.trim()}
-                  <span class="shrink-0 text-xs text-muted">{model.kindLabels[item.kind]}</span>
+                {#if index === model.selectedIndex}
+                  <span class="shrink-0 text-muted" aria-hidden="true">↵</span>
                 {/if}
               </button>
             {/each}

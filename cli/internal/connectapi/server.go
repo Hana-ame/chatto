@@ -12,6 +12,7 @@ import (
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/proto"
 	"hmans.de/chatto/internal/config"
+	"hmans.de/chatto/internal/core"
 	apiv1 "hmans.de/chatto/internal/pb/chatto/api/v1"
 	discoveryv1 "hmans.de/chatto/internal/pb/chatto/discovery/v1"
 )
@@ -31,11 +32,19 @@ func (s *serverDiscoveryService) GetServer(ctx context.Context, _ *connect.Reque
 	if err != nil {
 		return nil, err
 	}
+	setupRequired := false
+	if s.api.core != nil {
+		setupRequired, err = s.api.core.SetupRequired(ctx)
+		if err != nil {
+			return nil, connectInternalError(err)
+		}
+	}
 	directLoginEnabled := s.api.config.Auth.DirectLoginOrDefault()
 	response := &discoveryv1.GetServerResponse{
-		Profile: profile,
+		Profile:       profile,
+		SetupRequired: setupRequired,
 		Login: &apiv1.ServerLogin{
-			DirectRegistrationEnabled: s.api.config.Auth.DirectRegistrationOrDefault(),
+			DirectRegistrationEnabled: s.api.config.Auth.DirectRegistrationOrDefault() && !setupRequired,
 			DirectLoginEnabled:        &directLoginEnabled,
 			Providers:                 apiAuthProviders(s.api.config.Auth.PublicProviders()),
 			AuthorizeUrl:              "/oauth/authorize",
@@ -72,6 +81,52 @@ func (s *serverDiscoveryService) ListNeighbors(ctx context.Context, _ *connect.R
 		etag, err := discoveryResponseETag(response)
 		if err != nil {
 			return nil, connectInternalError(fmt.Errorf("marshal Neighbor discovery response for ETag: %w", err))
+		}
+		cacheHeaders := http.Header{"Cache-Control": []string{discoveryCacheControl}, "Etag": []string{etag}}
+		if ifNoneMatch(callInfo.RequestHeader().Get("If-None-Match"), etag) {
+			return nil, connect.NewNotModifiedError(cacheHeaders)
+		}
+		for name, values := range cacheHeaders {
+			callInfo.ResponseHeader()[name] = values
+		}
+	}
+	return connect.NewResponse(response), nil
+}
+
+func (s *serverDiscoveryService) ListNeighborhoodServers(ctx context.Context, _ *connect.Request[discoveryv1.ListNeighborhoodServersRequest]) (*connect.Response[discoveryv1.ListNeighborhoodServersResponse], error) {
+	directory, err := s.api.core.NeighborhoodDirectory(ctx)
+	if err != nil {
+		return nil, connectInternalError(err)
+	}
+	response := &discoveryv1.ListNeighborhoodServersResponse{
+		Servers:     make([]*discoveryv1.NeighborhoodServer, 0, len(directory.GetServers())),
+		RefreshedAt: directory.GetRefreshedAt(),
+	}
+	// Image URLs are server-relative paths, so they always name the origin
+	// that the client called, also one that the server does not configure. A
+	// client accepts a cached image only from the server that it called.
+	for _, record := range directory.GetServers() {
+		profile := &apiv1.ServerPublicProfile{Name: record.GetName(), Version: record.GetVersion()}
+		if description := record.GetDescription(); description != "" {
+			profile.Description = stringPtr(description)
+		}
+		if logo := record.GetLogo(); logo != nil {
+			profile.LogoUrl = stringPtr(core.NeighborhoodImagePath(logo.GetObjectName()))
+		}
+		if banner := record.GetBanner(); banner != nil {
+			profile.BannerUrl = stringPtr(core.NeighborhoodImagePath(banner.GetObjectName()))
+		}
+		response.Servers = append(response.Servers, &discoveryv1.NeighborhoodServer{
+			Origin:               record.GetOrigin(),
+			Profile:              profile,
+			DirectNeighbor:       record.GetDirectNeighbor(),
+			RecommendedByOrigins: record.GetRecommendedByOrigins(),
+		})
+	}
+	if callInfo, ok := connect.CallInfoForHandlerContext(ctx); ok && callInfo.HTTPMethod() == http.MethodGet {
+		etag, err := discoveryResponseETag(response)
+		if err != nil {
+			return nil, connectInternalError(fmt.Errorf("marshal Neighborhood discovery response for ETag: %w", err))
 		}
 		cacheHeaders := http.Header{"Cache-Control": []string{discoveryCacheControl}, "Etag": []string{etag}}
 		if ifNoneMatch(callInfo.RequestHeader().Get("If-None-Match"), etag) {
@@ -139,18 +194,18 @@ func (a *API) serverProfile(ctx context.Context, options serverProfileOptions) (
 		bw, bh := 1200, 630
 		if u, err := a.core.GetServerBannerURL(ctx, &bw, &bh, "cover"); err != nil {
 			if !options.tolerateErrors {
-				return nil, connectError(err)
+				return nil, err
 			}
 		} else if u != "" {
-			profile.BannerUrl = stringPtr(a.absolutizeAssetURL(ctx, u))
+			profile.BannerUrl = stringPtr(a.absolutizeServerURL(ctx, u))
 		}
 		lw, lh := 256, 256
 		if u, err := a.core.GetServerLogoURL(ctx, &lw, &lh, "cover"); err != nil {
 			if !options.tolerateErrors {
-				return nil, connectError(err)
+				return nil, err
 			}
 		} else if u != "" {
-			profile.LogoUrl = stringPtr(a.absolutizeAssetURL(ctx, u))
+			profile.LogoUrl = stringPtr(a.absolutizeServerURL(ctx, u))
 		}
 	}
 
@@ -180,11 +235,39 @@ func apiProviderMetadata(provider config.AuthProviderConfig) *apiv1.ProviderMeta
 	return metadata
 }
 
-func (a *API) absolutizeAssetURL(ctx context.Context, assetURL string) string {
-	return a.absolutizeServerURL(ctx, assetURL)
+// absolutizeMediaURL converts a server-relative attachment, HLS, or
+// link-preview URL to an absolute URL like absolutizeServerURL. Without
+// webserver.url, it keeps the server-relative path, as these URLs were before
+// core stopped adding an origin. The direct request scheme can be wrong behind
+// a TLS-terminating proxy, and media players reject mixed content.
+func (a *API) absolutizeMediaURL(ctx context.Context, mediaURL string) string {
+	if a.config.Webserver.URL == "" {
+		return mediaURL
+	}
+	return a.absolutizeServerURL(ctx, mediaURL)
 }
 
+// absolutizeServerURL converts a server-relative path to an absolute URL. It
+// prefers the request base URL, so a client that uses a configured hostname
+// alias receives URLs on that alias. Without a request base URL, it uses
+// webserver.url. Avatars and server branding use it, so they are absolute even
+// without webserver.url; clients and neighbor servers use them as is.
 func (a *API) absolutizeServerURL(ctx context.Context, value string) string {
+	if value == "" || strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://") {
+		return value
+	}
+	if requestBaseURL := requestBaseURLFromContext(ctx); requestBaseURL != "" {
+		return requestBaseURL + value
+	}
+	return a.canonicalServerURL(value)
+}
+
+// canonicalServerURL converts a server-relative path to an absolute URL on the
+// webserver.url origin and ignores the request origin. Use it for URLs that
+// other users receive, such as call participant metadata, so one client's
+// hostname alias does not leak to them. Without webserver.url, it returns the
+// value unchanged.
+func (a *API) canonicalServerURL(value string) string {
 	if value == "" || strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://") {
 		return value
 	}
@@ -193,9 +276,6 @@ func (a *API) absolutizeServerURL(ctx context.Context, value string) string {
 		if err == nil && base.Scheme != "" && base.Host != "" {
 			return base.Scheme + "://" + base.Host + value
 		}
-	}
-	if requestBaseURL := requestBaseURLFromContext(ctx); requestBaseURL != "" {
-		return requestBaseURL + value
 	}
 	return value
 }

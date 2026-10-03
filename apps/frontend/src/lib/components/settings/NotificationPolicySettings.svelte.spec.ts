@@ -1,50 +1,38 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
+import { page } from 'vitest/browser';
 import { flushSync } from 'svelte';
+import { Code, ConnectError } from '@connectrpc/connect';
+import { queryClient } from '$lib/query/client';
+import { settingsQueryKeys } from '$lib/query/settings';
+import {
+  refreshRegisteredServerQueries,
+  removeRegisteredServerQueries
+} from '$lib/query/cacheRegistry';
 import { loadLocaleMessages } from '$lib/i18n/messages';
 import { setReactiveLocale } from '$lib/i18n/state.svelte';
 import {
   NotificationDeliveryMode,
   notificationPolicyScopeKey,
-  type NotificationPolicyField,
   type NotificationPolicyScope,
   type ScopedNotificationPolicy
-} from '$lib/api-client/notifications';
+} from '@chatto/client/api/notifications';
+import { createTestServerScope, type TestServerScope } from '$lib/test-utils/serverScope.svelte';
 
-const { mocks } = vi.hoisted(() => ({
-  mocks: {
-    matrix: {
-      loading: false,
-      error: null as string | null,
-      errorKind: null as 'load' | 'save' | null,
-      load: vi.fn(),
-      update: vi.fn(),
-      policy: vi.fn(),
-      isPending: vi.fn((_scope: NotificationPolicyScope, _field: NotificationPolicyField) => false)
-    }
-  }
-}));
+vi.mock(
+  '$lib/state/server/scope.svelte',
+  async () => (await import('$lib/test-utils/serverScope.svelte')).serverScopeModule
+);
 
-vi.mock('$lib/state/server/scope.svelte', () => ({
-  useServerScope: () => ({
-    store: {
-      notifications: { notificationPolicies: mocks.matrix },
-      serverInfo: { name: 'Test Server' },
-      navigation: {
-        roomGroups: [{ id: 'group-1', name: 'Channels', roomIds: ['room-1', 'room-2'] }],
-        rooms: [
-          { id: 'room-1', name: 'general', viewerIsMember: true, type: 1 },
-          { id: 'room-2', name: 'private', viewerIsMember: false, type: 1 },
-          { id: 'dm-1', name: 'Taylor', viewerIsMember: true, type: 2 }
-        ]
-      }
-    }
-  })
-}));
+const mocks = { batch: vi.fn(), update: vi.fn() };
+let server: TestServerScope;
 
 import NotificationPolicySettings from './NotificationPolicySettings.svelte';
 
-function policy(scope: NotificationPolicyScope): ScopedNotificationPolicy {
+function policy(
+  scope: NotificationPolicyScope,
+  directMentions = NotificationDeliveryMode.PUSH_NOTIFICATION
+): ScopedNotificationPolicy {
   return {
     scope,
     overrides: {
@@ -62,7 +50,7 @@ function policy(scope: NotificationPolicyScope): ScopedNotificationPolicy {
     effective: {
       directMessages: NotificationDeliveryMode.PUSH_NOTIFICATION,
       roomMessages: NotificationDeliveryMode.UNREAD_BADGE,
-      directMentions: NotificationDeliveryMode.PUSH_NOTIFICATION,
+      directMentions,
       replies: NotificationDeliveryMode.PUSH_NOTIFICATION,
       roleMentions: NotificationDeliveryMode.PUSH_NOTIFICATION,
       hereMentions: NotificationDeliveryMode.PUSH_NOTIFICATION,
@@ -74,24 +62,69 @@ function policy(scope: NotificationPolicyScope): ScopedNotificationPolicy {
   };
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
 describe('NotificationPolicySettings', () => {
+  let queryScope = 0;
+  const scopes: NotificationPolicyScope[] = [
+    { kind: 'server' },
+    { kind: 'roomGroup', id: 'group-1' },
+    { kind: 'room', id: 'room-1' },
+    { kind: 'room', id: 'dm-1' }
+  ];
+
+  function seedPolicies(): void {
+    queryClient.setQueryData(
+      settingsQueryKeys.notificationPolicies(
+        'test-server',
+        server.scope.connection,
+        scopes.map(notificationPolicyScopeKey)
+      ),
+      Object.fromEntries(scopes.map((scope) => [notificationPolicyScopeKey(scope), policy(scope)]))
+    );
+  }
+
   beforeEach(async () => {
     vi.clearAllMocks();
+    queryClient.clear();
     await loadLocaleMessages('en-GB');
     setReactiveLocale('en-GB');
-    mocks.matrix.loading = false;
-    mocks.matrix.error = null;
-    mocks.matrix.errorKind = null;
-    mocks.matrix.load.mockResolvedValue(undefined);
-    mocks.matrix.update.mockResolvedValue(undefined);
-    mocks.matrix.isPending.mockReturnValue(false);
-    mocks.matrix.policy.mockImplementation((scope: NotificationPolicyScope) => policy(scope));
+    server = createTestServerScope({
+      queryScope: `test-${++queryScope}`,
+      serverId: 'test-server',
+      api: {
+        batchGetNotificationPolicies: mocks.batch,
+        updateScopedNotificationPolicy: mocks.update
+      },
+      serverInfo: { name: 'Test Server' },
+      store: {
+        navigation: {
+          roomGroups: [{ id: 'group-1', name: 'Channels', roomIds: ['room-1', 'room-2'] }],
+          rooms: [
+            { id: 'room-1', name: 'general', viewerIsMember: true, type: 1 },
+            { id: 'room-2', name: 'private', viewerIsMember: false, type: 1 },
+            { id: 'dm-1', name: 'Taylor', viewerIsMember: true, type: 2 }
+          ]
+        }
+      }
+    });
+    mocks.batch.mockImplementation(async (requested: NotificationPolicyScope[]) =>
+      requested.map((scope) => policy(scope))
+    );
+    mocks.update.mockImplementation(async (scope: NotificationPolicyScope) => policy(scope));
+    seedPolicies();
   });
 
   it('renders all causes and orders member-visible scopes by inheritance context', async () => {
     const { container } = render(NotificationPolicySettings);
 
-    await vi.waitFor(() => expect(mocks.matrix.load).toHaveBeenCalled());
+    await vi.waitFor(() => expect(mocks.batch).toHaveBeenCalled());
     expect(
       [...container.querySelectorAll('th[data-notification-scope]')].map((cell) =>
         cell.getAttribute('data-notification-scope')
@@ -105,10 +138,11 @@ describe('NotificationPolicySettings', () => {
     expect(container.textContent).not.toContain('Reset to defaults');
   });
 
-  it('explains every activity from its row heading instead of cell title popups', () => {
+  it.each([390, 1280])('explains every activity from its row heading at %ipx', async (width) => {
+    await page.viewport(width, 900);
     const { container } = render(NotificationPolicySettings);
     const helpButtons = container.querySelectorAll(
-      'tbody th[scope="row"] button[aria-label^="More information: "]'
+      'tbody th button[aria-label^="More information: "]'
     );
 
     expect(helpButtons).toHaveLength(9);
@@ -119,6 +153,7 @@ describe('NotificationPolicySettings', () => {
       'Messages that other members send in direct-message conversations.'
     );
     expect(container.querySelectorAll('td[data-notification-field] [title]')).toHaveLength(0);
+    await page.viewport(1280, 900);
   });
 
   it('marks direct messages as not applicable to room groups and channel rooms', () => {
@@ -213,10 +248,9 @@ describe('NotificationPolicySettings', () => {
       'td[data-notification-scope="server"][data-notification-field="directMessages"] button'
     ) as HTMLButtonElement;
     button.click();
-    expect(mocks.matrix.update).toHaveBeenCalledWith(
+    expect(mocks.update).toHaveBeenCalledWith(
       { kind: 'server' },
-      'directMessages',
-      NotificationDeliveryMode.OFF
+      { directMessages: NotificationDeliveryMode.OFF }
     );
     expect(button.ariaLabel).toContain('Default: Push notification');
     expect(button.ariaLabel).toContain('Activate to set Off');
@@ -242,8 +276,8 @@ describe('NotificationPolicySettings', () => {
 
   it('uses stable keys for every loaded scope', async () => {
     render(NotificationPolicySettings);
-    await vi.waitFor(() => expect(mocks.matrix.load).toHaveBeenCalled());
-    const loaded = mocks.matrix.load.mock.calls.at(-1)?.[0] as NotificationPolicyScope[];
+    await vi.waitFor(() => expect(mocks.batch).toHaveBeenCalled());
+    const loaded = mocks.batch.mock.calls.at(-1)?.[0] as NotificationPolicyScope[];
     expect(loaded.map(notificationPolicyScopeKey)).toEqual([
       'server',
       'roomGroup:group-1',
@@ -252,9 +286,87 @@ describe('NotificationPolicySettings', () => {
     ]);
   });
 
+  it('keeps the new filter result when the previous read finishes later', async () => {
+    queryClient.clear();
+    const first = deferred<ScopedNotificationPolicy[]>();
+    const second = deferred<ScopedNotificationPolicy[]>();
+    mocks.batch.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    const { container } = render(NotificationPolicySettings);
+    await vi.waitFor(() => expect(mocks.batch).toHaveBeenCalledTimes(1));
+
+    const input = container.querySelector(
+      '[data-testid="notification-scope-filter"] input, input[data-testid="notification-scope-filter"]'
+    ) as HTMLInputElement;
+    input.value = 'general';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    await vi.waitFor(() => expect(mocks.batch).toHaveBeenCalledTimes(2));
+    second.resolve(scopes.slice(0, 3).map((scope) => policy(scope, NotificationDeliveryMode.OFF)));
+    await vi.waitFor(() =>
+      expect(
+        container
+          .querySelector(
+            'td[data-notification-scope="room:room-1"][data-notification-field="directMentions"] button'
+          )
+          ?.getAttribute('aria-label')
+      ).toContain('Effective: Off')
+    );
+
+    first.resolve(scopes.map((scope) => policy(scope)));
+    await first.promise;
+    expect(
+      container
+        .querySelector(
+          'td[data-notification-scope="room:room-1"][data-notification-field="directMentions"] button'
+        )
+        ?.getAttribute('aria-label')
+    ).toContain('Effective: Off');
+    await vi.waitFor(() =>
+      expect(
+        queryClient.getQueryCache().find({
+          queryKey: settingsQueryKeys.notificationPolicies(
+            'test-server',
+            server.scope.connection,
+            scopes.map(notificationPolicyScopeKey)
+          ),
+          exact: true
+        })
+      ).toBeUndefined()
+    );
+  });
+
+  it('refreshes inherited policy values after a server update', async () => {
+    mocks.batch
+      .mockImplementationOnce(async (requested: NotificationPolicyScope[]) =>
+        requested.map((scope) => policy(scope))
+      )
+      .mockImplementation(async (requested: NotificationPolicyScope[]) =>
+        requested.map((scope) => policy(scope, NotificationDeliveryMode.OFF))
+      );
+    mocks.update.mockResolvedValue(policy({ kind: 'server' }, NotificationDeliveryMode.OFF));
+    const { container } = render(NotificationPolicySettings);
+    await vi.waitFor(() => expect(mocks.batch).toHaveBeenCalledTimes(1));
+    const button = container.querySelector(
+      'td[data-notification-scope="server"][data-notification-field="directMentions"] button'
+    ) as HTMLButtonElement;
+    button.click();
+
+    await vi.waitFor(() => expect(mocks.batch).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() =>
+      expect(
+        queryClient.getQueryData<Record<string, ScopedNotificationPolicy>>(
+          settingsQueryKeys.notificationPolicies(
+            'test-server',
+            server.scope.connection,
+            scopes.map(notificationPolicyScopeKey)
+          )
+        )?.['room:room-1']?.effective.directMentions
+      ).toBe(NotificationDeliveryMode.OFF)
+    );
+  });
+
   it('renders per-cell loading placeholders while the visible scopes load', () => {
-    mocks.matrix.loading = true;
-    mocks.matrix.policy.mockReturnValue(undefined);
+    queryClient.clear();
+    mocks.batch.mockReturnValue(new Promise(() => undefined));
 
     const { container } = render(NotificationPolicySettings);
 
@@ -268,10 +380,8 @@ describe('NotificationPolicySettings', () => {
   });
 
   it('keeps independent cells available while one update is pending', () => {
-    mocks.matrix.isPending.mockImplementation(
-      (scope: NotificationPolicyScope, field: NotificationPolicyField) =>
-        scope.kind === 'server' && field === 'directMessages'
-    );
+    const first = deferred<ScopedNotificationPolicy>();
+    mocks.update.mockReturnValueOnce(first.promise);
     const { container } = render(NotificationPolicySettings);
     const pending = container.querySelector(
       'td[data-notification-scope="server"][data-notification-field="directMessages"] button'
@@ -280,43 +390,97 @@ describe('NotificationPolicySettings', () => {
       'td[data-notification-scope="server"][data-notification-field="directMentions"] button'
     ) as HTMLButtonElement;
 
+    pending.click();
+    flushSync();
     expect(pending.disabled).toBe(false);
     expect(pending.getAttribute('aria-disabled')).toBe('true');
     expect(pending.querySelector('[class~="icon-[uil--spinner]"]')).not.toBeNull();
     pending.click();
-    expect(mocks.matrix.update).not.toHaveBeenCalled();
+    expect(mocks.update).toHaveBeenCalledTimes(1);
 
     expect(available.getAttribute('aria-disabled')).toBeNull();
     available.click();
-    expect(mocks.matrix.update).toHaveBeenCalledWith(
+    expect(mocks.update).toHaveBeenCalledWith(
       { kind: 'server' },
-      'directMentions',
-      NotificationDeliveryMode.OFF
+      { directMentions: NotificationDeliveryMode.OFF }
     );
+    first.resolve(policy({ kind: 'server' }));
   });
 
-  it('shows localized load and save errors without hiding the matrix', () => {
-    mocks.matrix.error = 'Policy service unavailable';
-    mocks.matrix.errorKind = 'load';
-    mocks.matrix.policy.mockReturnValue(undefined);
+  it('shows localized load and save errors without hiding the matrix', async () => {
+    queryClient.clear();
+    mocks.batch.mockRejectedValue(
+      new ConnectError('Policy service unavailable', Code.PermissionDenied)
+    );
     const loadFailure = render(NotificationPolicySettings);
 
-    expect(loadFailure.container.textContent).toContain(
-      'Failed to load notification policy: Policy service unavailable'
+    await vi.waitFor(() =>
+      expect(loadFailure.container.textContent).toContain('You do not have permission to do that.')
     );
     expect(loadFailure.container.querySelectorAll('[data-matrix-row]')).toHaveLength(9 * 4);
     loadFailure.unmount();
 
-    mocks.matrix.error = 'Update was rejected';
-    mocks.matrix.errorKind = 'save';
-    mocks.matrix.policy.mockImplementation((scope: NotificationPolicyScope) => policy(scope));
+    queryClient.clear();
+    seedPolicies();
+    mocks.batch.mockImplementation(async (requested: NotificationPolicyScope[]) =>
+      requested.map((scope) => policy(scope))
+    );
+    mocks.update.mockRejectedValue(new Error('Update was rejected'));
     const saveFailure = render(NotificationPolicySettings);
+    const button = saveFailure.container.querySelector(
+      'td[data-notification-scope="server"][data-notification-field="directMessages"] button'
+    ) as HTMLButtonElement;
+    button.click();
 
-    expect(saveFailure.container.textContent).toContain(
-      'Failed to save notification policy: Update was rejected'
+    await vi.waitFor(() =>
+      expect(saveFailure.container.textContent).toContain(
+        'Failed to save notification policy: Update was rejected'
+      )
     );
     expect(
       saveFailure.container.querySelectorAll('td[data-notification-field] button')
     ).toHaveLength(9 * 4 - 3);
+  });
+
+  it('does not restore a saved policy after the server cache is removed', async () => {
+    const save = deferred<ScopedNotificationPolicy>();
+    mocks.update.mockReturnValue(save.promise);
+    const { container } = render(NotificationPolicySettings);
+    const button = container.querySelector(
+      'td[data-notification-scope="server"][data-notification-field="directMessages"] button'
+    ) as HTMLButtonElement;
+    button.click();
+    expect(mocks.update).toHaveBeenCalledTimes(1);
+
+    removeRegisteredServerQueries('test-server');
+    save.resolve(policy({ kind: 'server' }));
+    await save.promise;
+    expect(
+      queryClient.getQueriesData({
+        queryKey: settingsQueryKeys.notificationPoliciesRoot('test-server', server.scope.connection)
+      })
+    ).toEqual([]);
+  });
+
+  it('keeps a new save pending when an old save finishes after a privacy refresh', async () => {
+    const oldSave = deferred<ScopedNotificationPolicy>();
+    const newSave = deferred<ScopedNotificationPolicy>();
+    mocks.update.mockReturnValueOnce(oldSave.promise).mockReturnValueOnce(newSave.promise);
+    const { container } = render(NotificationPolicySettings);
+    const button = () =>
+      container.querySelector(
+        'td[data-notification-scope="server"][data-notification-field="directMessages"] button'
+      ) as HTMLButtonElement;
+
+    button().click();
+    await refreshRegisteredServerQueries('test-server');
+    await vi.waitFor(() => expect(button()).not.toBeNull());
+    button().click();
+    expect(mocks.update).toHaveBeenCalledTimes(2);
+
+    oldSave.resolve(policy({ kind: 'server' }));
+    await oldSave.promise;
+    expect(button().getAttribute('aria-disabled')).toBe('true');
+    newSave.resolve(policy({ kind: 'server' }));
   });
 });

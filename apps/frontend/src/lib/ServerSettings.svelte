@@ -1,11 +1,11 @@
 <script lang="ts">
-  import { createMutation, createQuery } from '@tanstack/svelte-query';
+  import { errorMessage, toastError } from '$lib/utils/errorMessage';
   import { goto } from '$app/navigation';
   import { resolve } from '$app/paths';
   import { serverIdToSegment } from '$lib/navigation';
-  import { onDestroy, untrack } from 'svelte';
+  import { untrack } from 'svelte';
   import { useServerScope } from '$lib/state/server/scope.svelte';
-  import type { ServerConnection } from '$lib/state/server/serverConnection.svelte';
+  import { createSessionGuard, type SessionSnapshot } from '$lib/state/server/sessionGuard.svelte';
   import {
     deleteServerBanner,
     deleteServerLogo,
@@ -16,55 +16,39 @@
     type AuthenticatedServerState,
     type EditableServerConfig,
     type EditableServerProfile
-  } from '$lib/api-client/serverState';
+  } from '@chatto/client/api/serverState';
   import { adminQueryKeys } from '$lib/query/admin';
-  import { registerQueryCacheRemovalListener } from '$lib/query/cacheRegistry';
-  import { queryClient } from '$lib/query/client';
+  import { createMutation, createQuery, queryClient } from '$lib/query/client';
   import { m } from '$lib/i18n/messages';
 
-  import Panel from '$lib/ui/Panel.svelte';
-  import { TextInput, TextArea, Button } from '$lib/ui/form';
-  import FormError from '$lib/ui/form/FormError.svelte';
+  import { Panel, Hint, LoadingFog } from '$lib/ui';
+  import { TextInput, TextArea, Button, FormError } from '$lib/ui/form';
   import { toast } from '$lib/ui/toast';
-  import { dropZone } from '$lib/attachments/dropZone.svelte';
-  import DropZoneOverlay from '$lib/attachments/DropZoneOverlay.svelte';
+  import { dropZone } from '$lib/dom/dropZone.svelte';
+  import DropZoneOverlay from '$lib/dom/DropZoneOverlay.svelte';
 
   const MAX_SERVER_DESCRIPTION_BYTES = 500;
 
   const serverScope = useServerScope();
-  let privacyGeneration = 0;
-  const removeCacheRemovalListener = registerQueryCacheRemovalListener((serverId) => {
-    if (serverId === serverScope.serverId) privacyGeneration += 1;
-  });
+  const session = createSessionGuard(serverScope);
 
-  onDestroy(() => {
-    privacyGeneration += 1;
-    removeCacheRemovalListener();
-  });
-
-  type SettingsMutationScope = {
-    serverId: string;
-    connection: ServerConnection;
+  type SettingsMutationScope = SessionSnapshot & {
     queryKey: ReturnType<typeof adminQueryKeys.serverSettings>;
-    privacyGeneration: number;
   };
 
   type SaveVariables = SettingsMutationScope & { input: EditableServerConfig };
   type AssetOperation = 'upload-logo' | 'delete-logo' | 'upload-banner' | 'delete-banner';
   type AssetVariables = SettingsMutationScope & { operation: AssetOperation; file?: File };
 
-  const settingsQuery = createQuery(
-    () => {
-      const serverId = serverScope.serverId;
-      const connection = serverScope.connection;
-      return {
-        queryKey: adminQueryKeys.serverSettings(serverId, connection),
-        queryFn: ({ signal }) => getAuthenticatedServerState(connection.apiConfig, { signal }),
-        refetchOnMount: 'always' as const
-      };
-    },
-    () => queryClient
-  );
+  const settingsQuery = createQuery(() => {
+    const serverId = serverScope.serverId;
+    const connection = serverScope.connection;
+    return {
+      queryKey: adminQueryKeys.serverSettings(serverId, connection),
+      queryFn: ({ signal }) => getAuthenticatedServerState(connection.apiConfig, { signal }),
+      refetchOnMount: 'always' as const
+    };
+  });
 
   const snapshot = $derived(settingsQuery.data ?? null);
   const loading = $derived(settingsQuery.isPending && snapshot === null);
@@ -132,26 +116,11 @@
     goto(resolve('/chat/[serverId]', { serverId: serverIdToSegment(serverScope.serverId) }));
   });
 
-  function isCurrentSession(
-    variables: SettingsMutationScope | undefined
-  ): variables is SettingsMutationScope {
-    return (
-      variables !== undefined &&
-      serverScope.isCurrent() &&
-      variables.serverId === serverScope.serverId &&
-      variables.connection.queryScope === serverScope.connection.queryScope &&
-      variables.privacyGeneration === privacyGeneration
-    );
-  }
-
   function mutationScope(): SettingsMutationScope {
-    const serverId = serverScope.serverId;
-    const connection = serverScope.connection;
+    const snapshot = session.snapshot();
     return {
-      serverId,
-      connection,
-      queryKey: adminQueryKeys.serverSettings(serverId, connection),
-      privacyGeneration
+      ...snapshot,
+      queryKey: adminQueryKeys.serverSettings(snapshot.serverId, snapshot.connection)
     };
   }
 
@@ -170,34 +139,31 @@
       : current;
   }
 
-  const saveMutation = createMutation(
-    () => ({
-      mutationFn: ({ connection, input }: SaveVariables) =>
-        updateServerConfig(connection.apiConfig, input),
-      onSuccess: (profile, variables) => {
-        if (!isCurrentSession(variables)) return;
-        queryClient.setQueryData<AuthenticatedServerState>(variables.queryKey, (current) =>
-          mergeEditableProfile(current, profile)
-        );
+  const saveMutation = createMutation(() => ({
+    mutationFn: ({ connection, input }: SaveVariables) =>
+      updateServerConfig(connection.apiConfig, input),
+    onSuccess: (profile, variables) => {
+      if (!session.isCurrent(variables)) return;
+      queryClient.setQueryData<AuthenticatedServerState>(variables.queryKey, (current) =>
+        mergeEditableProfile(current, profile)
+      );
 
-        const nextDescription = profile.description ?? '';
-        const nextMotd = profile.motd ?? '';
-        const nextWelcomeMessage = profile.welcomeMessage ?? '';
-        if (name.trim() === variables.input.name) name = profile.name;
-        if (description.trim() === variables.input.description) description = nextDescription;
-        if (motd === variables.input.motd) motd = nextMotd;
-        if (welcomeMessage === variables.input.welcomeMessage) {
-          welcomeMessage = nextWelcomeMessage;
-        }
-        originalName = profile.name;
-        originalDescription = nextDescription;
-        originalMotd = nextMotd;
-        originalWelcomeMessage = nextWelcomeMessage;
-        toast.success(m('common.saved'));
+      const nextDescription = profile.description ?? '';
+      const nextMotd = profile.motd ?? '';
+      const nextWelcomeMessage = profile.welcomeMessage ?? '';
+      if (name.trim() === variables.input.name) name = profile.name;
+      if (description.trim() === variables.input.description) description = nextDescription;
+      if (motd === variables.input.motd) motd = nextMotd;
+      if (welcomeMessage === variables.input.welcomeMessage) {
+        welcomeMessage = nextWelcomeMessage;
       }
-    }),
-    () => queryClient
-  );
+      originalName = profile.name;
+      originalDescription = nextDescription;
+      originalMotd = nextMotd;
+      originalWelcomeMessage = nextWelcomeMessage;
+      toast.success(m('common.saved'));
+    }
+  }));
 
   function updateAssetSnapshot(variables: AssetVariables, profile: EditableServerProfile): void {
     queryClient.setQueryData<AuthenticatedServerState>(variables.queryKey, (current) => {
@@ -235,74 +201,63 @@
     }
   }
 
-  const assetMutation = createMutation(
-    () => ({
-      mutationFn: ({ connection, operation, file }: AssetVariables) => {
-        switch (operation) {
-          case 'upload-logo':
-            return uploadServerLogo(connection.apiConfig, file!);
-          case 'delete-logo':
-            return deleteServerLogo(connection.apiConfig);
-          case 'upload-banner':
-            return uploadServerBanner(connection.apiConfig, file!);
-          case 'delete-banner':
-            return deleteServerBanner(connection.apiConfig);
-        }
-      },
-      onSuccess: (profile, variables) => {
-        if (!isCurrentSession(variables)) return;
-        updateAssetSnapshot(variables, profile);
-        toast.success(assetSuccessMessage(variables.operation));
-      },
-      onError: (mutationError, variables) => {
-        if (!isCurrentSession(variables)) return;
-        toast.error(
-          mutationError instanceof Error
-            ? mutationError.message
-            : assetErrorMessage(variables.operation)
-        );
-      },
-      onSettled: (_profile, _error, variables) => {
-        if (!isCurrentSession(variables)) return;
-        if (variables.operation === 'upload-logo' && logoFileInput) logoFileInput.value = '';
-        if (variables.operation === 'upload-banner' && bannerFileInput) bannerFileInput.value = '';
+  const assetMutation = createMutation(() => ({
+    mutationFn: ({ connection, operation, file }: AssetVariables) => {
+      switch (operation) {
+        case 'upload-logo':
+          return uploadServerLogo(connection.apiConfig, file!);
+        case 'delete-logo':
+          return deleteServerLogo(connection.apiConfig);
+        case 'upload-banner':
+          return uploadServerBanner(connection.apiConfig, file!);
+        case 'delete-banner':
+          return deleteServerBanner(connection.apiConfig);
       }
-    }),
-    () => queryClient
-  );
+    },
+    onSuccess: (profile, variables) => {
+      if (!session.isCurrent(variables)) return;
+      updateAssetSnapshot(variables, profile);
+      toast.success(assetSuccessMessage(variables.operation));
+    },
+    onError: (mutationError, variables) => {
+      if (!session.isCurrent(variables)) return;
+      toastError(mutationError, assetErrorMessage(variables.operation));
+    },
+    onSettled: (_profile, _error, variables) => {
+      if (!session.isCurrent(variables)) return;
+      if (variables.operation === 'upload-logo' && logoFileInput) logoFileInput.value = '';
+      if (variables.operation === 'upload-banner' && bannerFileInput) bannerFileInput.value = '';
+    }
+  }));
 
   // Keep the form serialized even if a privacy generation fences the pending result.
   const saving = $derived(saveMutation.isPending);
   const uploadingLogo = $derived(
     assetMutation.isPending &&
-      isCurrentSession(assetMutation.variables) &&
+      session.isCurrent(assetMutation.variables) &&
       assetMutation.variables.operation === 'upload-logo'
   );
   const deletingLogo = $derived(
     assetMutation.isPending &&
-      isCurrentSession(assetMutation.variables) &&
+      session.isCurrent(assetMutation.variables) &&
       assetMutation.variables.operation === 'delete-logo'
   );
   const uploadingBanner = $derived(
     assetMutation.isPending &&
-      isCurrentSession(assetMutation.variables) &&
+      session.isCurrent(assetMutation.variables) &&
       assetMutation.variables.operation === 'upload-banner'
   );
   const deletingBanner = $derived(
     assetMutation.isPending &&
-      isCurrentSession(assetMutation.variables) &&
+      session.isCurrent(assetMutation.variables) &&
       assetMutation.variables.operation === 'delete-banner'
   );
   const error = $derived.by(() => {
     if (settingsQuery.error) {
-      return settingsQuery.error instanceof Error
-        ? settingsQuery.error.message
-        : m('server_settings.load_failed');
+      return errorMessage(settingsQuery.error, m('server_settings.load_failed'));
     }
-    if (saveMutation.isError && isCurrentSession(saveMutation.variables)) {
-      return saveMutation.error instanceof Error
-        ? saveMutation.error.message
-        : m('server_settings.save_failed');
+    if (saveMutation.isError && session.isCurrent(saveMutation.variables)) {
+      return errorMessage(saveMutation.error, m('server_settings.save_failed'));
     }
     return null;
   });
@@ -389,7 +344,7 @@
 </script>
 
 {#if loading}
-  <div class="text-muted">{m('server_settings.loading')}</div>
+  <LoadingFog class="h-64 w-full" label={m('server_settings.loading')} />
 {:else if loaded}
   <div class="flex flex-col gap-6">
     <!-- Server Details Form -->
@@ -442,7 +397,7 @@
             disabled={!changed || !name.trim() || !!nameError}
             loadingText={m('server_settings.saving')}
           >
-            <span class="iconify icon-[uil--check]"></span>
+            <span aria-hidden="true" class="iconify icon-[uil--check]"></span>
             {m('server_settings.save_button')}
           </Button>
         </div>
@@ -463,7 +418,7 @@
         />
         <!-- Logo Preview -->
         <div
-          class="flex h-24 w-24 items-center justify-center overflow-hidden rounded-xl bg-surface text-5xl font-black text-muted shadow-md"
+          class="flex h-24 w-24 items-center justify-center overflow-hidden rounded-xl bg-surface text-5xl font-black text-muted"
         >
           {#if logoUrl}
             <img
@@ -496,7 +451,7 @@
               loadingText={m('server_settings.uploading')}
             >
               <span class="inline-flex items-center gap-2">
-                <span class="iconify icon-[uil--image-upload]"></span>
+                <span aria-hidden="true" class="iconify icon-[uil--image-upload]"></span>
                 {logoUrl ? m('server_settings.logo_change') : m('server_settings.logo_upload')}
               </span>
             </Button>
@@ -509,7 +464,7 @@
                 loadingText={m('server_settings.removing')}
               >
                 <span class="inline-flex items-center gap-2">
-                  <span class="iconify icon-[uil--trash-alt]"></span>
+                  <span aria-hidden="true" class="iconify icon-[uil--trash-alt]"></span>
                   {m('server_settings.remove')}
                 </span>
               </Button>
@@ -534,7 +489,7 @@
         <!-- Banner Preview — capped width so the OG-aspect 1200×630 doesn't
              swallow the panel on wide layouts. -->
         {#if bannerUrl}
-          <div class="w-full max-w-md overflow-hidden rounded-lg bg-surface-emphasized shadow-md">
+          <div class="w-full max-w-md overflow-hidden rounded-lg bg-surface">
             <img
               src={bannerUrl}
               alt={m('server_settings.banner_alt')}
@@ -569,7 +524,7 @@
               loadingText={m('server_settings.uploading')}
             >
               <span class="inline-flex items-center gap-2">
-                <span class="iconify icon-[uil--image-upload]"></span>
+                <span aria-hidden="true" class="iconify icon-[uil--image-upload]"></span>
                 {bannerUrl
                   ? m('server_settings.banner_change')
                   : m('server_settings.banner_upload')}
@@ -584,7 +539,7 @@
                 loadingText={m('server_settings.removing')}
               >
                 <span class="inline-flex items-center gap-2">
-                  <span class="iconify icon-[uil--trash-alt]"></span>
+                  <span aria-hidden="true" class="iconify icon-[uil--trash-alt]"></span>
                   {m('server_settings.remove')}
                 </span>
               </Button>
@@ -595,5 +550,5 @@
     </Panel>
   </div>
 {:else if error}
-  <div class="text-danger">{error}</div>
+  <Hint tone="danger">{error}</Hint>
 {/if}

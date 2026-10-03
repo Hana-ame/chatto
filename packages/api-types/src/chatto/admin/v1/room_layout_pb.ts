@@ -4,43 +4,9 @@
 // @ts-nocheck
 
 import type { BinaryReadOptions, FieldList, JsonReadOptions, JsonValue, PartialMessage, PlainMessage } from "@bufbuild/protobuf";
-import { Message, proto3 } from "@bufbuild/protobuf";
+import { FieldMask, Message, proto3 } from "@bufbuild/protobuf";
 import { Room } from "../../api/v1/rooms_pb.js";
 import { SidebarLink } from "../../api/v1/room_directory_pb.js";
-
-/**
- * Sidebar item kind used in reorder requests.
- *
- * @generated from enum chatto.admin.v1.AdminRoomLayoutItemKind
- */
-export enum AdminRoomLayoutItemKind {
-  /**
-   * The item kind was not specified.
-   *
-   * @generated from enum value: ADMIN_ROOM_LAYOUT_ITEM_KIND_UNSPECIFIED = 0;
-   */
-  UNSPECIFIED = 0,
-
-  /**
-   * Channel room entry.
-   *
-   * @generated from enum value: ADMIN_ROOM_LAYOUT_ITEM_KIND_ROOM = 1;
-   */
-  ROOM = 1,
-
-  /**
-   * Sidebar link entry.
-   *
-   * @generated from enum value: ADMIN_ROOM_LAYOUT_ITEM_KIND_SIDEBAR_LINK = 2;
-   */
-  SIDEBAR_LINK = 2,
-}
-// Retrieve enum metadata with: proto3.getEnumType(AdminRoomLayoutItemKind)
-proto3.util.setEnumType(AdminRoomLayoutItemKind, "chatto.admin.v1.AdminRoomLayoutItemKind", [
-  { no: 0, name: "ADMIN_ROOM_LAYOUT_ITEM_KIND_UNSPECIFIED" },
-  { no: 1, name: "ADMIN_ROOM_LAYOUT_ITEM_KIND_ROOM" },
-  { no: 2, name: "ADMIN_ROOM_LAYOUT_ITEM_KIND_SIDEBAR_LINK" },
-]);
 
 /**
  * One ordered sidebar item in an admin room group layout.
@@ -444,24 +410,31 @@ export class ListRoomGroupsResponse extends Message<ListRoomGroupsResponse> {
 }
 
 /**
- * One item reference in a sidebar order replacement.
+ * One room or sidebar link reference in a move or order replacement.
  *
  * @generated from message chatto.admin.v1.AdminRoomLayoutItemInput
  */
 export class AdminRoomLayoutItemInput extends Message<AdminRoomLayoutItemInput> {
   /**
-   * Item kind.
-   *
-   * @generated from field: chatto.admin.v1.AdminRoomLayoutItemKind kind = 1;
+   * @generated from oneof chatto.admin.v1.AdminRoomLayoutItemInput.item
    */
-  kind = AdminRoomLayoutItemKind.UNSPECIFIED;
-
-  /**
-   * Room ID when kind is ROOM, sidebar link ID when kind is SIDEBAR_LINK.
-   *
-   * @generated from field: string id = 2;
-   */
-  id = "";
+  item: {
+    /**
+     * Channel room ID.
+     *
+     * @generated from field: string room_id = 3;
+     */
+    value: string;
+    case: "roomId";
+  } | {
+    /**
+     * Sidebar link ID.
+     *
+     * @generated from field: string sidebar_link_id = 4;
+     */
+    value: string;
+    case: "sidebarLinkId";
+  } | { case: undefined; value?: undefined } = { case: undefined };
 
   constructor(data?: PartialMessage<AdminRoomLayoutItemInput>) {
     super();
@@ -471,8 +444,8 @@ export class AdminRoomLayoutItemInput extends Message<AdminRoomLayoutItemInput> 
   static readonly runtime: typeof proto3 = proto3;
   static readonly typeName = "chatto.admin.v1.AdminRoomLayoutItemInput";
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
-    { no: 1, name: "kind", kind: "enum", T: proto3.getEnumType(AdminRoomLayoutItemKind) },
-    { no: 2, name: "id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "room_id", kind: "scalar", T: 9 /* ScalarType.STRING */, oneof: "item" },
+    { no: 4, name: "sidebar_link_id", kind: "scalar", T: 9 /* ScalarType.STRING */, oneof: "item" },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): AdminRoomLayoutItemInput {
@@ -610,6 +583,16 @@ export class UpdateRoomGroupRequest extends Message<UpdateRoomGroupRequest> {
    */
   description?: string;
 
+  /**
+   * Editable fields to apply or reset: name, description.
+   * Omit to infer populated fields; * selects all editable fields. An explicit
+   * empty mask is invalid. Unselected values are ignored. Selected absent values
+   * reset the field to its default, subject to field validation.
+   *
+   * @generated from field: google.protobuf.FieldMask update_mask = 4;
+   */
+  updateMask?: FieldMask;
+
   constructor(data?: PartialMessage<UpdateRoomGroupRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -621,6 +604,7 @@ export class UpdateRoomGroupRequest extends Message<UpdateRoomGroupRequest> {
     { no: 1, name: "group_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 2, name: "name", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
     { no: 3, name: "description", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
+    { no: 4, name: "update_mask", kind: "message", T: FieldMask },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): UpdateRoomGroupRequest {
@@ -728,13 +712,6 @@ export class DeleteRoomGroupRequest extends Message<DeleteRoomGroupRequest> {
  * @generated from message chatto.admin.v1.DeleteRoomGroupResponse
  */
 export class DeleteRoomGroupResponse extends Message<DeleteRoomGroupResponse> {
-  /**
-   * True when the room group was deleted.
-   *
-   * @generated from field: bool deleted = 1;
-   */
-  deleted = false;
-
   constructor(data?: PartialMessage<DeleteRoomGroupResponse>) {
     super();
     proto3.util.initPartial(data, this);
@@ -743,7 +720,6 @@ export class DeleteRoomGroupResponse extends Message<DeleteRoomGroupResponse> {
   static readonly runtime: typeof proto3 = proto3;
   static readonly typeName = "chatto.admin.v1.DeleteRoomGroupResponse";
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
-    { no: 1, name: "deleted", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): DeleteRoomGroupResponse {
@@ -1342,6 +1318,16 @@ export class UpdateSidebarLinkRequest extends Message<UpdateSidebarLinkRequest> 
    */
   url?: string;
 
+  /**
+   * Editable fields to apply or reset: label, url.
+   * Omit to infer populated fields; * selects all editable fields. An explicit
+   * empty mask is invalid. Unselected values are ignored. Selected absent values
+   * reset the field to its default, subject to field validation.
+   *
+   * @generated from field: google.protobuf.FieldMask update_mask = 4;
+   */
+  updateMask?: FieldMask;
+
   constructor(data?: PartialMessage<UpdateSidebarLinkRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -1353,6 +1339,7 @@ export class UpdateSidebarLinkRequest extends Message<UpdateSidebarLinkRequest> 
     { no: 1, name: "link_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 2, name: "label", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
     { no: 3, name: "url", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
+    { no: 4, name: "update_mask", kind: "message", T: FieldMask },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): UpdateSidebarLinkRequest {
@@ -1460,13 +1447,6 @@ export class DeleteSidebarLinkRequest extends Message<DeleteSidebarLinkRequest> 
  * @generated from message chatto.admin.v1.DeleteSidebarLinkResponse
  */
 export class DeleteSidebarLinkResponse extends Message<DeleteSidebarLinkResponse> {
-  /**
-   * True when the sidebar link was deleted.
-   *
-   * @generated from field: bool deleted = 1;
-   */
-  deleted = false;
-
   constructor(data?: PartialMessage<DeleteSidebarLinkResponse>) {
     super();
     proto3.util.initPartial(data, this);
@@ -1475,7 +1455,6 @@ export class DeleteSidebarLinkResponse extends Message<DeleteSidebarLinkResponse
   static readonly runtime: typeof proto3 = proto3;
   static readonly typeName = "chatto.admin.v1.DeleteSidebarLinkResponse";
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
-    { no: 1, name: "deleted", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): DeleteSidebarLinkResponse {

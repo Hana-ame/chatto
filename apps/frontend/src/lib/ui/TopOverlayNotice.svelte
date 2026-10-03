@@ -71,7 +71,7 @@ appears and disappears.
   <section class="pointer-events-auto w-full max-w-4xl menu" role="status" aria-live="polite">
     <div class="flex flex-col gap-3 menu-section px-3 py-2 md:flex-row md:items-center">
       <span
-        class={['mt-0.5 iconify shrink-0 text-lg md:mt-0', resolvedIcon, toneStyles[tone].icon]}
+        class={['iconify mt-0.5 shrink-0 text-lg md:mt-0', resolvedIcon, toneStyles[tone].icon]}
         aria-hidden="true"
       ></span>
 
@@ -108,7 +108,7 @@ appears and disappears.
                 class="size-4 animate-spin rounded-full border-2 border-current border-t-transparent"
               ></span>
             {:else if primaryAction.icon}
-              <span class={['iconify text-base', primaryAction.icon]}></span>
+              <span aria-hidden="true" class={['iconify text-base', primaryAction.icon]}></span>
             {/if}
             <span>{primaryAction.label}</span>
           </button>

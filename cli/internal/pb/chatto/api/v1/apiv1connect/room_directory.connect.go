@@ -55,10 +55,12 @@ const (
 
 // RoomDirectoryServiceClient is a client for the chatto.api.v1.RoomDirectoryService service.
 type RoomDirectoryServiceClient interface {
-	// Lists rooms visible to the current user. Channel rooms are non-archived
-	// rooms visible through membership or room.list. DM membership authorizes DM
-	// reads. Empty DMs are omitted. Results are returned as a finite navigation
-	// snapshot.
+	// Lists rooms visible to the current user. Defaults to active rooms; use
+	// archive_filter to discover archived rooms or include both states. Channel
+	// rooms require membership or room.list. DM membership exposes room and
+	// participant metadata. Message-derived DM state also requires current
+	// read permission. Accessible empty DMs are included. Returns up to 100 rooms
+	// ordered by ID ascending; the default page size is 50.
 	ListRooms(context.Context, *connect.Request[v1.ListRoomsRequest]) (*connect.Response[v1.ListRoomsResponse], error)
 	// Lists ordered channel room groups and sidebar items visible to the current
 	// user as a finite navigation snapshot. Hidden room entries are omitted.
@@ -177,10 +179,12 @@ func (c *roomDirectoryServiceClient) BatchGetRooms(ctx context.Context, req *con
 // RoomDirectoryServiceHandler is an implementation of the chatto.api.v1.RoomDirectoryService
 // service.
 type RoomDirectoryServiceHandler interface {
-	// Lists rooms visible to the current user. Channel rooms are non-archived
-	// rooms visible through membership or room.list. DM membership authorizes DM
-	// reads. Empty DMs are omitted. Results are returned as a finite navigation
-	// snapshot.
+	// Lists rooms visible to the current user. Defaults to active rooms; use
+	// archive_filter to discover archived rooms or include both states. Channel
+	// rooms require membership or room.list. DM membership exposes room and
+	// participant metadata. Message-derived DM state also requires current
+	// read permission. Accessible empty DMs are included. Returns up to 100 rooms
+	// ordered by ID ascending; the default page size is 50.
 	ListRooms(context.Context, *connect.Request[v1.ListRoomsRequest]) (*connect.Response[v1.ListRoomsResponse], error)
 	// Lists ordered channel room groups and sidebar items visible to the current
 	// user as a finite navigation snapshot. Hidden room entries are omitted.

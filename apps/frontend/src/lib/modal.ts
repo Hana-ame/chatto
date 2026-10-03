@@ -1,11 +1,5 @@
-/** One image shown by the history-backed attachment viewer. */
-export type ImageViewerItem = {
-  id?: string;
-  src: string;
-  originalSrc?: string;
-  alt?: string;
-  filename?: string;
-};
+import type { MessageAttachmentView } from '@chatto/client/timeline/messageAttachments';
+import type { ExpiringAssetUrl } from '@chatto/client/attachments/attachmentUrls';
 
 type RoomModalTarget = {
   serverId: string;
@@ -16,16 +10,32 @@ type RoomModalTarget = {
 export type ChatModal =
   | { type: 'logout' }
   | { type: 'aboutChatto' }
+  | { type: 'addServer' }
+  | { type: 'motd'; motd: string }
   | (RoomModalTarget & { type: 'leaveRoom'; roomName: string })
   | { type: 'removeServer'; serverId: string; spaceName: string }
   | (RoomModalTarget & { type: 'deleteMessage'; eventId: string })
   | (RoomModalTarget & { type: 'deleteAttachment'; eventId: string; attachmentId: string })
+  | (RoomModalTarget & {
+      type: 'editAttachmentDescription';
+      eventId: string;
+      attachmentId: string;
+      description: string;
+    })
   | (RoomModalTarget & { type: 'deleteLinkPreview'; eventId: string; previewUrl: string })
   | (RoomModalTarget & {
-      type: 'imageViewer';
+      type: 'attachmentViewer';
       eventId: string;
-      imageItems: ImageViewerItem[];
-      imageIndex: number;
+      items: MessageAttachmentView[];
+      index: number;
+    })
+  | (RoomModalTarget & {
+      type: 'htmlViewer';
+      eventId: string;
+      attachmentId: string;
+      filename: string;
+      contentType: string;
+      assetUrl: ExpiringAssetUrl | null;
     });
 
 export type LeaveRoomModalState = Extract<ChatModal, { type: 'leaveRoom' }>;
@@ -34,11 +44,11 @@ export type DeleteMessageContentModalState = Extract<
   ChatModal,
   { type: 'deleteMessage' | 'deleteAttachment' | 'deleteLinkPreview' }
 >;
-export type ImageViewerModalState = Extract<ChatModal, { type: 'imageViewer' }>;
+export type EditAttachmentDescriptionModalState = Extract<
+  ChatModal,
+  { type: 'editAttachmentDescription' }
+>;
+export type HtmlViewerModalState = Extract<ChatModal, { type: 'htmlViewer' }>;
 
-/** Identifies one modal interaction while allowing its render data to refresh in place. */
-export function chatModalKey(modal: ChatModal): ChatModal | string {
-  return modal.type === 'imageViewer'
-    ? JSON.stringify([modal.type, modal.serverId, modal.roomId, modal.eventId])
-    : modal;
-}
+/** One opening of the shared file viewer, including an optional image gallery. */
+export type AttachmentViewerModalState = Extract<ChatModal, { type: 'attachmentViewer' }>;

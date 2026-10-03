@@ -4,15 +4,20 @@
 Room-scoped file list for the room sidebar.
 -->
 <script lang="ts">
+  import { pushState } from '$app/navigation';
+  import { VideoProcessingStatus } from '@chatto/client/timeline/messageAttachments';
+  import { useLoadMoreWhenVisible } from '$lib/hooks/useLoadMoreWhenVisible.svelte';
   import type { RoomFileItem, RoomFilesStore } from '$lib/state/room';
-  import { assetUrlForServer } from '$lib/assets/assetUrls';
+  import { assetUrlForServer } from '@chatto/client/util/assetUrls';
   import { useExpiringAssetUrlRefresh } from '$lib/attachments/useExpiringAssetUrlRefresh.svelte';
   import { useServerScope } from '$lib/state/server/scope.svelte';
   import { fileDateGroup, formatDateTime, timeFormatSettingsFor } from '$lib/utils/formatTime';
   import { getLocale } from '$lib/i18n/runtime';
   import { m } from '$lib/i18n/messages';
-  import { serverStorageKey } from '$lib/storage/serverStorage';
-  import RoomGroupSection from '$lib/components/chat/RoomGroupSection.svelte';
+  import { serverStorageKey } from '@chatto/client/storage/serverStorage';
+  import VirtualGroupedList from '$lib/components/chat/VirtualGroupedList.svelte';
+  import type { VirtualListGroup } from '$lib/components/chat/groupedListItems';
+  import { EmptyState, LoadingFog } from '$lib/ui';
 
   type RoomFileListItem = {
     id: string;
@@ -30,13 +35,13 @@ Room-scoped file list for the room sidebar.
     serverId,
     roomId,
     fileGroupingNow,
-    onOpenFile
+    onOpenFileMessage
   }: {
     store: RoomFilesStore;
     serverId: string;
     roomId: string;
     fileGroupingNow?: Date;
-    onOpenFile?: (messageEventId: string, threadRootEventId: string | null) => void;
+    onOpenFileMessage?: (messageEventId: string, threadRootEventId: string | null) => void;
   } = $props();
 
   const serverScope = useServerScope();
@@ -47,18 +52,16 @@ Room-scoped file list for the room sidebar.
 
   const files = $derived(store.items);
   const fileGroups = $derived.by(() => groupFiles(files));
-  const fileSections = $derived(
+  const fileSections: VirtualListGroup<RoomFileListItem>[] = $derived(
     fileGroups.map((group) => ({
       ...group,
-      persistKey: serverStorageKey(
-        serverId,
-        `collapsible:room-files:${roomId}:${group.id}`
-      ),
+      persistKey: serverStorageKey(serverId, `collapsible:room-files:${roomId}:${group.id}`),
       testid: 'room-file-group-heading'
     }))
   );
   const loading = $derived(store.isInitialLoading);
   let failedThumbnailUrls = $state.raw(new Set<string>());
+  let scrollEl = $state<HTMLElement>();
 
   function groupFiles(items: RoomFileItem[]): RoomFileGroup[] {
     const groups: RoomFileGroup[] = [];
@@ -107,7 +110,32 @@ Room-scoped file list for the room sidebar.
   }
 
   function openFile(item: RoomFileItem): void {
-    onOpenFile?.(item.messageEventId, item.threadRootEventId ?? null);
+    const processing = item.attachment.videoProcessing;
+    pushState('', {
+      modal: {
+        type: 'attachmentViewer',
+        serverId,
+        roomId,
+        eventId: item.messageEventId,
+        items: [
+          {
+            ...item.attachment,
+            assetUrl: store.assetUrlFor(item),
+            videoProcessing: processing
+              ? {
+                  ...processing,
+                  status: {
+                    PROCESSING: VideoProcessingStatus.Processing,
+                    COMPLETED: VideoProcessingStatus.Completed,
+                    FAILED: VideoProcessingStatus.Failed
+                  }[processing.status]
+                }
+              : null
+          }
+        ],
+        index: 0
+      }
+    });
   }
 
   function handleThumbnailError(item: RoomFileItem, url: string): void {
@@ -115,21 +143,10 @@ Room-scoped file list for the room sidebar.
     void store.refreshUrlsForItem(item);
   }
 
-  function loadMoreWhenVisible(node: HTMLElement) {
-    if (typeof IntersectionObserver === 'undefined') return;
-
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (!entries.some((entry) => entry.isIntersecting)) return;
-        if (!store.hasMore || store.isLoadingMore) return;
-        void store.loadMore();
-      },
-      { rootMargin: '160px 0px' }
-    );
-    observer.observe(node);
-
-    return () => observer.disconnect();
-  }
+  const loadMoreWhenVisible = useLoadMoreWhenVisible({
+    getCursor: () => (store.hasMore ? store.items.length : null),
+    loadMore: () => store.loadMore()
+  });
 
   function formatTimestamp(value: string): string {
     return formatDateTime(value, userSettings, activeLocale);
@@ -147,15 +164,13 @@ Room-scoped file list for the room sidebar.
 {#snippet fileRow(entry: RoomFileListItem)}
   {@const item = entry.file}
   {@const thumb = usableThumbnailUrl(thumbnailUrl(item))}
-  <button
-    type="button"
-    class="sidebar-item min-h-14 w-full cursor-pointer gap-3 text-start"
-    onclick={() => openFile(item)}
-    title={m('room.sidebar.jump_to_file', { filename: item.attachment.filename })}
-    data-testid="room-file-row"
-  >
-    <span
-      class="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-md border border-border bg-surface text-muted"
+  <div class="sidebar-item min-h-14 min-w-0 gap-3" data-testid="room-file-row">
+    <button
+      type="button"
+      class="flex h-10 w-10 shrink-0 cursor-pointer items-center justify-center overflow-hidden rounded-md border border-border bg-surface text-muted"
+      onclick={() => openFile(item)}
+      aria-label={m('room.attachment.view_label', { filename: item.attachment.filename })}
+      title={m('room.attachment.view_label', { filename: item.attachment.filename })}
     >
       {#if thumb}
         <img
@@ -171,52 +186,68 @@ Room-scoped file list for the room sidebar.
           aria-hidden="true"
         ></span>
       {/if}
-    </span>
-    <span class="min-w-0 flex-1">
-      <bdi class="block truncate text-sm">{item.attachment.filename}</bdi>
+    </button>
+    <div class="min-w-0 flex-1">
+      <div class="flex min-w-0 items-center gap-1.5">
+        <button
+          type="button"
+          class="min-w-0 cursor-pointer text-start text-sm"
+          onclick={() => openFile(item)}
+          title={m('room.attachment.view_label', { filename: item.attachment.filename })}
+          data-testid="room-file-preview"
+          aria-describedby={item.attachment.description ? `${entry.id}-description` : undefined}
+        >
+          <bdi class="block truncate">{item.attachment.filename}</bdi>
+        </button>
+        {#if onOpenFileMessage}
+          <button
+            type="button"
+            class="mini-icon-action"
+            onclick={() => onOpenFileMessage?.(item.messageEventId, item.threadRootEventId ?? null)}
+            aria-label={m('room.sidebar.go_to_message')}
+            title={m('room.sidebar.go_to_message')}
+            data-testid="room-file-message"
+          >
+            <span
+              class="iconify icon-[mdi--arrow-right-circle] text-sm rtl:-scale-x-100"
+              aria-hidden="true"
+            ></span>
+          </button>
+        {/if}
+      </div>
+      {#if item.attachment.description}
+        <span id={`${entry.id}-description`} class="block truncate text-xs text-muted" dir="auto">
+          {item.attachment.description}
+        </span>
+      {/if}
       <span class="block truncate text-xs text-muted">{formatTimestamp(item.createdAt)}</span>
-    </span>
-  </button>
+    </div>
+  </div>
 {/snippet}
 
-<nav class="flex min-h-0 flex-1 flex-col overflow-y-auto" aria-label={m('room.sidebar.files')}>
+<nav
+  bind:this={scrollEl}
+  class="flex min-h-0 flex-1 flex-col overflow-y-auto"
+  data-testid="room-file-list"
+  aria-label={m('room.sidebar.files')}
+  aria-busy={loading}
+>
   {#if loading}
-    <ul role="list" class="space-y-1 p-2">
-      {#each Array(8) as _, i (i)}
-        <li class="flex items-center gap-3 rounded-md px-2 py-2">
-          <div class="skeleton h-10 w-10 shrink-0 rounded-md"></div>
-          <div class="min-w-0 flex-1 space-y-1">
-            <div class="skeleton h-3.5 w-32 rounded"></div>
-            <div class="skeleton h-3 w-24 rounded"></div>
-          </div>
-        </li>
-      {/each}
-    </ul>
+    <LoadingFog class="m-3 min-h-32 flex-1" label={m('room.sidebar.loading_files')} />
   {:else if files.length === 0}
-    <div
-      class="flex min-h-32 flex-1 items-center justify-center px-4 text-center text-sm text-muted"
-    >
-      {m('room.sidebar.no_files')}
-    </div>
+    <EmptyState icon="icon-[mdi--file-outline]" title={m('room.sidebar.no_files')} />
   {:else}
-    {#each fileSections as section, i (section.id)}
-      <RoomGroupSection
-        label={section.label}
-        items={section.items}
-        item={fileRow}
-        persistKey={section.persistKey}
-        testid={section.testid}
-        separated={i > 0}
-      />
-    {/each}
+    <VirtualGroupedList groups={fileSections} item={fileRow} scrollRef={scrollEl} itemSize={58} />
 
     {#if store.hasMore}
       <div
-        class="flex justify-center px-3 py-4 text-sm text-muted"
+        class="flex justify-center px-3 py-4"
         data-testid="room-files-load-more-sentinel"
         {@attach loadMoreWhenVisible}
       >
-        {store.isLoadingMore ? m('room.sidebar.loading_files') : ''}
+        {#if store.isLoadingMore}
+          <LoadingFog class="h-10 w-full" label={m('room.sidebar.loading_files')} />
+        {/if}
       </div>
     {/if}
   {/if}

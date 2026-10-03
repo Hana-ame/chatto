@@ -4,7 +4,7 @@ import { SvelteMap } from 'svelte/reactivity';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { RoomKind } from '@chatto/api-types/api/v1/rooms_pb';
-import { RoomThreadingMode } from '$lib/roomThreading';
+import { RoomThreadingMode } from '@chatto/client/util/roomThreading';
 import { useRoomData } from './useRoomData.svelte';
 
 const { mocks } = vi.hoisted(() => ({
@@ -12,8 +12,11 @@ const { mocks } = vi.hoisted(() => ({
     store: undefined as unknown as {
       realtimeSync: {
         phase: 'empty' | 'hydrating' | 'ready' | 'stale';
-        hasUsableProjection: boolean;
+        isRecoveringSnapshot: boolean;
+        hasDisplayableView: boolean;
       };
+      isAuthenticated: boolean;
+      viewerId: string;
       projection: { rooms: SvelteMap<string, unknown> };
       projectedMembersForRoom: ReturnType<typeof vi.fn>;
       currentUser: { user: { id: string } | undefined };
@@ -34,26 +37,25 @@ function projectedRoom(
   return {
     memberUserIds: [roomId],
     room: {
-      room: {
-        id: roomId,
-        name: roomId,
-        description: '',
-        kind,
-        threadingMode,
-        archived: false,
-        universal: false
-      },
-      viewerState: {
-        isMember: true,
-        hasUnread: false,
-        permissions: [
-          { permission: 'message.post', granted: true },
-          { permission: 'message.post-in-thread', granted: true },
-          { permission: 'message.read', granted: true },
-          { permission: 'message.attach', granted: true },
-          { permission: 'message.react', granted: true }
-        ]
-      }
+      id: roomId,
+      name: roomId,
+      description: '',
+      kind,
+      threadingMode,
+      archived: false,
+      universal: false
+    },
+    viewerState: {
+      isMember: true,
+      hasUnread: false,
+      permissions: [
+        { permission: 'message.post', granted: true },
+        { permission: 'message.post-in-thread', granted: true },
+        { permission: 'message.post-in-interactions', granted: true },
+        { permission: 'message.read', granted: true },
+        { permission: 'message.attach', granted: true },
+        { permission: 'message.react', granted: true }
+      ]
     }
   };
 }
@@ -73,12 +75,15 @@ describe('useRoomData projection selector', () => {
   beforeEach(() => {
     const realtimeSync = $state({
       phase: 'empty' as 'empty' | 'hydrating' | 'ready' | 'stale',
-      get hasUsableProjection() {
-        return this.phase === 'ready' || this.phase === 'stale';
+      isRecoveringSnapshot: false,
+      get hasDisplayableView() {
+        return this.phase === 'ready' || this.phase === 'stale' || this.isRecoveringSnapshot;
       }
     });
     mocks.store = {
       realtimeSync,
+      isAuthenticated: true,
+      viewerId: 'viewer',
       projection: { rooms: new SvelteMap() },
       projectedMembersForRoom: vi.fn((roomId: string) => [member(roomId)]),
       currentUser: { user: { id: 'viewer' } },
@@ -87,6 +92,65 @@ describe('useRoomData projection selector', () => {
   });
 
   afterEach(() => vi.restoreAllMocks());
+
+  it('renders the store projection and follows later permission changes', () => {
+    mocks.store.realtimeSync.phase = 'stale';
+    mocks.store.projection.rooms.set('channel', projectedRoom('channel', RoomKind.CHANNEL));
+    const destroy = $effect.root(() => {
+      const selected = useRoomData(() => ({ roomId: 'channel' }));
+      expect(selected.roomData).toMatchObject({
+        room: { name: 'channel' },
+        canReadMessages: true,
+        canPostMessage: true,
+        canReact: true,
+        canManageRoom: false
+      });
+      const live = projectedRoom('channel', RoomKind.CHANNEL);
+      mocks.store.projection.rooms.set('channel', live);
+      expect(selected.roomData).toMatchObject({
+        room: { name: 'channel' },
+        canReadMessages: true,
+        canPostMessage: true
+      });
+      live.viewerState.permissions = [{ permission: 'message.read', granted: false }];
+      mocks.store.projection.rooms.set('channel', { ...live });
+      expect(selected.roomData?.canReadMessages).toBe(false);
+    });
+    destroy();
+  });
+
+  it('reactively distinguishes limited, broad, denied, and unknown message access', () => {
+    mocks.store.realtimeSync.phase = 'ready';
+    let room!: ReturnType<typeof useRoomData>;
+    const destroy = $effect.root(() => {
+      room = useRoomData(() => ({ roomId: 'channel' }));
+    });
+
+    try {
+      for (const [broad, interactions, limited, readable] of [
+        [false, true, true, true],
+        [true, true, false, true],
+        [true, false, false, true],
+        [false, false, false, false],
+        [undefined, undefined, false, null]
+      ] as const) {
+        const entry = projectedRoom('channel', RoomKind.CHANNEL);
+        entry.viewerState.permissions = [
+          ...(broad === undefined ? [] : [{ permission: 'message.read', granted: broad }]),
+          ...(interactions === undefined
+            ? []
+            : [{ permission: 'message.read-interactions', granted: interactions }])
+        ];
+        mocks.store.projection.rooms.set('channel', entry);
+        flushSync();
+        expect(room.roomData?.hasLimitedMessageAccess).toBe(limited);
+        expect(room.roomData?.canReadMessages).toBe(readable);
+        expect(room.isRoomLoading).toBe(false);
+      }
+    } finally {
+      destroy();
+    }
+  });
 
   it('keeps the honest loading state until the server projection is usable', () => {
     let room!: ReturnType<typeof useRoomData>;
@@ -184,6 +248,49 @@ describe('useRoomData projection selector', () => {
     try {
       expect(known.roomData?.room.id).toBe('known');
       expect(missing.roomData).toBeUndefined();
+    } finally {
+      destroy();
+    }
+  });
+
+  it('keeps room and DM selectors readable while a warm snapshot hydrates', () => {
+    mocks.store.projection.rooms.set('dm-a', projectedRoom('dm-a'));
+    mocks.store.realtimeSync.phase = 'ready';
+    let room!: ReturnType<typeof useRoomData>;
+    const destroy = $effect.root(() => {
+      room = useRoomData(() => ({ roomId: 'dm-a' }));
+      flushSync();
+    });
+
+    try {
+      const retainedRoom = room.roomData;
+      mocks.store.realtimeSync.isRecoveringSnapshot = true;
+      mocks.store.realtimeSync.phase = 'hydrating';
+      flushSync();
+      expect(room.roomData?.room.id).toBe('dm-a');
+      expect(room.dmData?.participantIds).toEqual(['dm-a']);
+      expect(room.isRoomLoading).toBe(false);
+      expect(room.roomData).toEqual(retainedRoom);
+    } finally {
+      destroy();
+    }
+  });
+
+  it('keeps display grants stable before viewer verification; the connection gates commands', () => {
+    mocks.store.projection.rooms.set('channel', projectedRoom('channel', RoomKind.CHANNEL));
+    mocks.store.realtimeSync.phase = 'stale';
+    mocks.store.isAuthenticated = false;
+    let room!: ReturnType<typeof useRoomData>;
+    const destroy = $effect.root(() => {
+      room = useRoomData(() => ({ roomId: 'channel' }));
+      flushSync();
+    });
+
+    try {
+      expect(room.roomData?.room.id).toBe('channel');
+      expect(room.roomData?.canReadMessages).toBe(true);
+      expect(room.roomData?.canPostMessage).toBe(true);
+      expect(room.roomData?.canManageRoom).toBe(false);
     } finally {
       destroy();
     }

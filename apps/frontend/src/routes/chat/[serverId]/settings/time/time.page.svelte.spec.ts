@@ -3,13 +3,16 @@ import { TimeFormat } from '@chatto/api-types/api/v1/viewer_pb';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
 import { flushSync } from 'svelte';
-import { CurrentUserState, type CurrentUser } from '$lib/auth/currentUser.svelte';
+import { CurrentUserState, type CurrentUser } from '@chatto/client/auth/currentUser';
 import { q } from '$lib/test-utils';
 
 const mocks = vi.hoisted(() => ({
   currentUser: null as unknown as CurrentUserState,
   updateSettings: vi.fn()
 }));
+
+// Page titles are tested separately from this page's partial route/server fixtures.
+vi.mock('$lib/render/pageTitle', () => ({ formatPageTitle: () => 'Chatto' }));
 
 vi.mock('$lib/state/server/scope.svelte', () => ({
   useServerScope: () => ({

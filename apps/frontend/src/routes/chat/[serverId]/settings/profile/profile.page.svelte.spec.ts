@@ -3,71 +3,34 @@ import { render } from 'vitest-browser-svelte';
 import { flushSync } from 'svelte';
 import ProfilePage from './+page.svelte';
 import { q } from '$lib/test-utils';
+import { createTestServerScope, type TestServerScope } from '$lib/test-utils/serverScope.svelte';
+import { userPreferences } from '$lib/state/userPreferences.svelte';
 
 const avatarDataUrl = 'data:image/gif;base64,R0lGODlhAQABAAAAACwAAAAAAQABAAA=';
 
 const mocks = vi.hoisted(() => ({
-  query: vi.fn(),
-  mutation: vi.fn(),
   updateProfile: vi.fn(),
   uploadAvatar: vi.fn(),
-  deleteAvatar: vi.fn(),
-  supportsUserAvatars: true,
-  currentUser: {
-    user: {
-      id: 'user-1',
-      login: 'alice',
-      displayName: 'Alice',
-      avatarUrl: null,
-      bio: null,
-      viewerCanDeleteAccount: true,
-      lastLoginChange: null as string | null
-    },
-    loading: false
-  },
-  permissions: {
-    canAdminManageAccounts: false
-  }
+  deleteAvatar: vi.fn()
 }));
+
+// Page titles are tested separately from this page's partial route/server fixtures.
+vi.mock('$lib/render/pageTitle', () => ({ formatPageTitle: () => 'Chatto' }));
 
 vi.mock('$lib/state/activeServer.svelte', () => ({
   getActiveServer: () => 'origin'
 }));
 
-vi.mock('$lib/state/server/scope.svelte', () => ({
-  useServerScope: () => ({
-    serverId: 'origin',
-    store: {
-      currentUser: mocks.currentUser,
-      permissions: mocks.permissions,
-      serverInfo: {
-        supportsFeature: (feature: string) => feature !== 'userAvatars' || mocks.supportsUserAvatars
-      }
-    },
-    connection: {
-      isConnected: true,
-      showConnectionLostBanner: false,
-      connectBaseUrl: '/api/connect',
-      bearerToken: null,
-      getAPI: (factory: (config: never) => unknown) => factory({} as never),
-      client: {
-        query: mocks.query,
-        mutation: mocks.mutation,
-        subscription: vi.fn()
-      }
-    },
-    isCurrent: () => true
-  })
-}));
+vi.mock(
+  '$lib/state/server/scope.svelte',
+  async () => (await import('$lib/test-utils/serverScope.svelte')).serverScopeModule
+);
 
-vi.mock('$lib/api-client/account', () => ({
-  createAccountAPI: () => ({
-    updateProfile: mocks.updateProfile
-  })
-}));
+let server: TestServerScope;
 
-vi.mock('$lib/api-client/users', () => ({
+vi.mock('@chatto/client/api/users', () => ({
   createUserAPI: () => ({
+    updateUserProfile: (userId: string, input: unknown) => mocks.updateProfile(userId, input),
     uploadAvatar: mocks.uploadAvatar,
     deleteAvatar: mocks.deleteAvatar
   })
@@ -85,29 +48,41 @@ function setInputValue(input: HTMLInputElement | HTMLTextAreaElement, value: str
   flushSync();
 }
 
+async function pasteBio(container: HTMLElement, text: string) {
+  await expect.poll(() => q(container, '[data-testid="settings-bio"]')).not.toBeNull();
+  const input = q(container, '[data-testid="settings-bio"]') as HTMLElement;
+  const data = new DataTransfer();
+  data.setData('text/plain', text);
+  input.dispatchEvent(
+    new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: data })
+  );
+  flushSync();
+  return input;
+}
+
 describe('Profile settings page', () => {
   beforeEach(() => {
-    mocks.currentUser.user = {
-      id: 'user-1',
-      login: 'alice',
-      displayName: 'Alice',
-      avatarUrl: null,
-      bio: null,
-      viewerCanDeleteAccount: true,
-      lastLoginChange: null
-    };
-    mocks.query.mockReset();
-    mocks.permissions.canAdminManageAccounts = false;
-    mocks.supportsUserAvatars = true;
-    mocks.mutation.mockReset();
+    userPreferences.composerEditor = 'markdown';
+    server = createTestServerScope({
+      serverId: 'origin',
+      viewer: {
+        id: 'user-1',
+        login: 'alice',
+        displayName: 'Alice',
+        avatarUrl: null,
+        bio: null,
+        viewerCanDeleteAccount: true,
+        lastLoginChange: null
+      }
+    });
     mocks.updateProfile.mockReset();
-    mocks.updateProfile.mockImplementation((input) =>
+    mocks.updateProfile.mockImplementation((_userId, input) =>
       Promise.resolve({
         id: 'user-1',
-        displayName: input.displayName ?? mocks.currentUser.user!.displayName,
-        login: input.login ?? mocks.currentUser.user!.login,
-        avatarUrl: mocks.currentUser.user!.avatarUrl,
-        bio: input.bio ?? mocks.currentUser.user!.bio
+        displayName: input.displayName ?? server.currentUser.user!.displayName,
+        login: input.login ?? server.currentUser.user!.login,
+        avatarUrl: server.currentUser.user!.avatarUrl,
+        bio: input.bio ?? server.currentUser.user!.bio
       })
     );
     mocks.uploadAvatar.mockReset();
@@ -141,56 +116,100 @@ describe('Profile settings page', () => {
     expect(uploadButton).toHaveClass('btn-action');
   });
 
-  it('hides the avatar editor when the server does not support targeted avatars', async () => {
-    mocks.supportsUserAvatars = false;
-    const { container } = render(ProfilePage);
-    await settle();
+  it.each(['markdown', 'visual'] as const)(
+    'submits a display name with the %s bio editor',
+    async (editorKind) => {
+      userPreferences.composerEditor = editorKind;
+      const { container } = render(ProfilePage);
+      await settle();
+      await expect.poll(() => q(container, '[data-testid="settings-bio"]')).not.toBeNull();
 
-    expect(container.querySelector('input[type="file"]')).toBeNull();
-    expect(container.querySelectorAll('.panel-shell')).toHaveLength(1);
-  });
+      const displayNameInput = q(
+        container,
+        'input[placeholder="Enter your display name"]'
+      ) as HTMLInputElement;
+      setInputValue(displayNameInput, 'Ada Lovelace');
 
-  it('submits a valid display name through the account API', async () => {
-    const { container } = render(ProfilePage);
-    await settle();
+      const saveButton = q(container, 'button[type="submit"]') as HTMLButtonElement;
+      await expect.element(saveButton).toBeEnabled();
+      saveButton.click();
 
-    const displayNameInput = q(
-      container,
-      'input[placeholder="Enter your display name"]'
-    ) as HTMLInputElement;
-    setInputValue(displayNameInput, 'Ada Lovelace');
-
-    const saveButton = q(container, 'button[type="submit"]') as HTMLButtonElement;
-    await expect.element(saveButton).toBeEnabled();
-    saveButton.click();
-
-    await vi.waitFor(() => {
-      expect(mocks.updateProfile).toHaveBeenCalledWith({
-        displayName: 'Ada Lovelace',
-        login: undefined,
-        bio: undefined
+      await vi.waitFor(() => {
+        expect(mocks.updateProfile).toHaveBeenCalledWith('user-1', {
+          displayName: 'Ada Lovelace',
+          login: undefined,
+          bio: undefined
+        });
       });
-    });
-    await expect.element(q(container, 'form')).toHaveTextContent('Profile updated successfully');
-    await expect.element(displayNameInput).toHaveValue('Ada Lovelace');
-  });
+      await expect.element(q(container, 'form')).toHaveTextContent('Profile updated successfully');
+      await expect.element(displayNameInput).toHaveValue('Ada Lovelace');
+    }
+  );
 
   it('sends a trimmed sparse bio update', async () => {
     const { container } = render(ProfilePage);
     await settle();
 
-    const bioInput = q(container, '[data-testid="settings-bio"]') as HTMLTextAreaElement;
-    setInputValue(bioInput, '  I build analytical engines.  ');
+    const bioInput = await pasteBio(container, '  I build analytical engines.  ');
     (q(container, 'button[type="submit"]') as HTMLButtonElement).click();
 
     await vi.waitFor(() => {
-      expect(mocks.updateProfile).toHaveBeenCalledWith({
+      expect(mocks.updateProfile).toHaveBeenCalledWith('user-1', {
         displayName: undefined,
         login: undefined,
         bio: 'I build analytical engines.'
       });
     });
-    await expect.element(bioInput).toHaveValue('I build analytical engines.');
+    await expect.element(bioInput).toHaveTextContent('I build analytical engines.');
+  });
+
+  it('uses the preferred visual editor and saves Markdown', async () => {
+    userPreferences.composerEditor = 'visual';
+    const { container } = render(ProfilePage);
+    await settle();
+    await expect.poll(() => q(container, '[data-testid="settings-bio"]')).not.toBeNull();
+    (q(container, 'button[aria-label="Bold"]') as HTMLButtonElement).click();
+    const input = await pasteBio(container, 'Visual bio');
+    expect(input.classList.contains('tiptap')).toBe(true);
+    (q(container, 'button[type="submit"]') as HTMLButtonElement).click();
+    await vi.waitFor(() => {
+      expect(mocks.updateProfile).toHaveBeenCalledWith('user-1', {
+        displayName: undefined,
+        login: undefined,
+        bio: '**Visual bio**'
+      });
+    });
+  });
+
+  it('preserves an unsaved bio when the preferred editor changes', async () => {
+    const { container } = render(ProfilePage);
+    await settle();
+    await pasteBio(container, '**Keep this draft**');
+    userPreferences.composerEditor = 'visual';
+    await expect
+      .poll(() => q(container, '[data-testid="settings-bio"].tiptap strong')?.textContent)
+      .toBe('Keep this draft');
+    userPreferences.composerEditor = 'markdown';
+    await expect
+      .poll(() => q(container, '[data-testid="settings-bio"].cm-content')?.textContent)
+      .toBe('**Keep this draft**');
+    (q(container, 'button[type="submit"]') as HTMLButtonElement).click();
+    await vi.waitFor(() => {
+      expect(mocks.updateProfile).toHaveBeenCalledWith('user-1', {
+        displayName: undefined,
+        login: undefined,
+        bio: '**Keep this draft**'
+      });
+    });
+  });
+
+  it('rejects bio Markdown over the character limit without discarding the draft', async () => {
+    const { container } = render(ProfilePage);
+    await settle();
+    const input = await pasteBio(container, 'a'.repeat(1001));
+    (q(container, 'button[type="submit"]') as HTMLButtonElement).click();
+    await expect.element(input).toHaveTextContent('a'.repeat(1001));
+    expect(mocks.updateProfile).not.toHaveBeenCalled();
   });
 
   it('keeps the bio draft when saving fails', async () => {
@@ -198,14 +217,13 @@ describe('Profile settings page', () => {
     const { container } = render(ProfilePage);
     await settle();
 
-    const bioInput = q(container, '[data-testid="settings-bio"]') as HTMLTextAreaElement;
-    setInputValue(bioInput, 'Unsaved profile draft');
+    const bioInput = await pasteBio(container, 'Unsaved profile draft');
     (q(container, 'button[type="submit"]') as HTMLButtonElement).click();
 
     await expect
       .element(q(container, 'form'))
       .toHaveTextContent('Profile changed; reload and try again.');
-    await expect.element(bioInput).toHaveValue('Unsaved profile draft');
+    await expect.element(bioInput).toHaveTextContent('Unsaved profile draft');
   });
 
   it('shows client validation errors without calling the profile mutation', async () => {
@@ -246,7 +264,7 @@ describe('Profile settings page', () => {
     confirmButton?.click();
 
     await vi.waitFor(() => {
-      expect(mocks.updateProfile).toHaveBeenCalledWith({
+      expect(mocks.updateProfile).toHaveBeenCalledWith('user-1', {
         displayName: undefined,
         login: 'alice2',
         bio: undefined
@@ -255,21 +273,21 @@ describe('Profile settings page', () => {
   });
 
   it('keeps the username cooldown for a regular user', async () => {
-    mocks.currentUser.user.lastLoginChange = new Date().toISOString();
+    server.currentUser.user!.lastLoginChange = new Date().toISOString();
     const { container } = render(ProfilePage);
     await settle();
 
     const usernameInput = q(container, '[data-testid="settings-username"]') as HTMLInputElement;
     await expect.element(usernameInput).toBeDisabled();
-    await expect.element(q(container, 'form')).toHaveTextContent(
-      'You can change your username again in'
-    );
+    await expect
+      .element(q(container, 'form'))
+      .toHaveTextContent('You can change your username again in');
   });
 
   it('lets an account manager bypass their own username cooldown', async () => {
     const lastLoginChange = new Date().toISOString();
-    mocks.currentUser.user.lastLoginChange = lastLoginChange;
-    mocks.permissions.canAdminManageAccounts = true;
+    server.currentUser.user!.lastLoginChange = lastLoginChange;
+    server.permissions.canAdminManageAccounts = true;
     const { container } = render(ProfilePage);
     await settle();
 
@@ -296,13 +314,13 @@ describe('Profile settings page', () => {
     confirmButton?.click();
 
     await vi.waitFor(() => {
-      expect(mocks.updateProfile).toHaveBeenCalledWith({
+      expect(mocks.updateProfile).toHaveBeenCalledWith('user-1', {
         displayName: undefined,
         login: 'alice2',
         bio: undefined
       });
     });
-    expect(mocks.currentUser.user.lastLoginChange).toBe(lastLoginChange);
+    expect(server.currentUser.user!.lastLoginChange).toBe(lastLoginChange);
   });
 
   it('uploads an avatar through the targeted user API', async () => {
@@ -322,7 +340,7 @@ describe('Profile settings page', () => {
     await vi.waitFor(() => {
       expect(mocks.uploadAvatar).toHaveBeenCalledWith('user-1', file);
     });
-    expect(mocks.currentUser.user?.avatarUrl).toBe(avatarDataUrl);
+    expect(server.currentUser.user?.avatarUrl).toBe(avatarDataUrl);
     await vi.waitFor(() => {
       const img = container.querySelector('img') as HTMLImageElement | null;
       expect(img?.src).toBe(avatarDataUrl);

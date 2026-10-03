@@ -1,4 +1,4 @@
-import type { UserAvatarUserView } from '$lib/render/users';
+import type { UserAvatarUserView } from '@chatto/client/timeline/users';
 import type { RoomMember } from '$lib/state/room';
 
 export class MessageUserInteractionState {
@@ -6,20 +6,6 @@ export class MessageUserInteractionState {
   anchorRect = $state<DOMRect | null>(null);
 
   constructor(private readonly getMembers: () => RoomMember[]) {}
-
-  showUserFromEvent(user: UserAvatarUserView | RoomMember | null, event: MouseEvent): void {
-    if (!user) return;
-    const button = (event.target as HTMLElement).closest('button');
-    this.showUser(user, button?.getBoundingClientRect() ?? null);
-  }
-
-  showMember(userId: string, anchorRect: DOMRect): void {
-    const member = this.getMembers().find((candidate) => candidate.id === userId);
-    if (!member) return;
-
-    this.user = member;
-    this.anchorRect = anchorRect;
-  }
 
   showUser(user: UserAvatarUserView | RoomMember, anchorRect: DOMRect | null): void {
     this.user =
@@ -30,6 +16,7 @@ export class MessageUserInteractionState {
         displayName: user.displayName,
         deleted: user.deleted ?? false,
         isBot: user.isBot,
+        ...(user.bot ? { bot: { ownerUserId: user.bot.ownerUserId } } : {}),
         avatarUrl: user.avatarUrl,
         customStatus: user.customStatus,
         presenceStatus: user.presenceStatus

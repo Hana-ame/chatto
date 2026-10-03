@@ -1,7 +1,6 @@
 <script lang="ts">
-  import type { AdminAssetCleanupStatus } from '$lib/api-client/adminDiagnostics';
-  import Panel from '$lib/ui/Panel.svelte';
-  import { Pill } from '$lib/ui';
+  import type { AdminAssetCleanupStatus } from '$lib/api/adminDiagnostics';
+  import { Panel, Pill } from '$lib/ui';
   import { m } from '$lib/i18n/messages';
 
   let { status }: { status: AdminAssetCleanupStatus } = $props();
@@ -42,7 +41,6 @@
               ? m('admin.system.asset_cleanup_inactive_summary')
               : m('admin.system.asset_cleanup_unavailable_summary')
   );
-
 </script>
 
 <Panel title={m('admin.system.asset_cleanup')} icon="iconify icon-[uil--trash-alt]">

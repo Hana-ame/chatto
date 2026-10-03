@@ -1,62 +1,52 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { RealtimeProjectionUpdate } from '@chatto/client/realtime/eventBus';
 import { flushSync } from 'svelte';
 import { render } from 'vitest-browser-svelte';
-import { RoomGroup } from '@chatto/api-types/api/v1/room_directory_pb';
-import {
-  RealtimeProjectionEvent,
-  RealtimeProjectionOperation,
-  RealtimeProjectionRoomGroupsReplace
-} from '@chatto/api-types/realtime/v1/realtime_pb';
+import { ListRoomGroupsResponse, RoomGroup } from '@chatto/api-types/api/v1/room_directory_pb';
+import { RealtimeResourceUpdate } from '@chatto/client/api/realtimeResources';
 import { loadLocaleMessages } from '$lib/i18n/messages';
 import { setReactiveLocale } from '$lib/i18n/state.svelte';
 import { queryClient } from '$lib/query/client';
-import { roomGroupPageTestState, roomGroupTestPage } from './RoomGroupPageTestState.svelte';
+import { createTestServerScope } from '$lib/test-utils/serverScope.svelte';
 
 const mocks = vi.hoisted(() => ({
   getRoomGroup: vi.fn(),
   updateRoomGroup: vi.fn(),
   refreshLayout: vi.fn(),
-  projectionHandlers: [] as Array<(event: RealtimeProjectionEvent) => void>,
+  projectionHandlers: [] as Array<(event: RealtimeProjectionUpdate) => void>,
   success: vi.fn(),
   error: vi.fn()
 }));
 
-vi.mock('$app/state', () => ({ page: roomGroupTestPage }));
+// Page titles are tested separately from this page's partial route/server fixtures.
+// The store mock also carries the frontend UI state of its server.
+vi.mock(
+  '$lib/state/server/serverUi',
+  async () => (await import('$lib/test-utils/serverUiMock')).serverUiIsStore
+);
+
+vi.mock('$lib/render/pageTitle', () => ({ formatPageTitle: () => 'Chatto' }));
+
+vi.mock('$app/state', () => ({
+  page: {
+    get params() {
+      return { groupId: routeGroupId };
+    }
+  }
+}));
 
 vi.mock('$lib/hooks', () => ({
-  useProjectionEvent: (handler: (event: RealtimeProjectionEvent) => void) => {
+  useProjectionEvent: (handler: (event: RealtimeProjectionUpdate) => void) => {
     mocks.projectionHandlers.push(handler);
   }
 }));
 
-vi.mock('$lib/state/server/scope.svelte', () => ({
-  useServerScope: () => ({
-    get serverId() {
-      return roomGroupPageTestState.serverId;
-    },
-    get connection() {
-      const serverId = roomGroupPageTestState.serverId;
-      return {
-        queryScope: `${serverId}-query-scope`,
-        getAPI: (factory: (config: never) => unknown) =>
-          factory({
-            serverId,
-            baseUrl: `https://${serverId}.example.test/api/connect`,
-            bearerToken: `${serverId}-token`
-          } as never)
-      };
-    },
-    get store() {
-      return {
-        serverInfo: { supportsFeature: () => true },
-        adminRoomLayout: { refresh: mocks.refreshLayout }
-      };
-    },
-    isCurrent: () => true
-  })
-}));
+vi.mock(
+  '$lib/state/server/scope.svelte',
+  async () => (await import('$lib/test-utils/serverScope.svelte')).serverScopeModule
+);
 
-vi.mock('$lib/api-client/adminRoomLayout', () => ({
+vi.mock('$lib/api/adminRoomLayout', () => ({
   createAdminRoomLayoutAPI: ({ serverId }: { serverId: string }) => ({
     getRoomGroup: (groupId: string, options?: { signal?: AbortSignal }) =>
       mocks.getRoomGroup(serverId, groupId, options),
@@ -75,7 +65,9 @@ vi.mock('$lib/ui/toast', () => ({
 
 import RoomGroupPage from './+page.svelte';
 
-function managedGroup(name: string, groupId = roomGroupPageTestState.groupId) {
+let routeGroupId = $state('group-a');
+
+function managedGroup(name: string, groupId = routeGroupId) {
   return {
     group: {
       id: groupId,
@@ -106,17 +98,15 @@ function deferred<T>() {
 }
 
 function dispatchGroups(groupIds: string[]): void {
-  const event = new RealtimeProjectionEvent({
-    operations: [
-      new RealtimeProjectionOperation({
-        operation: {
-          case: 'roomGroupsReplace',
-          value: new RealtimeProjectionRoomGroupsReplace({
-            groups: groupIds.map((id) => new RoomGroup({ id, name: id }))
-          })
-        }
-      })
-    ]
+  const event = new RealtimeProjectionUpdate({
+    resource: new RealtimeResourceUpdate({
+      resource: {
+        case: 'roomGroups',
+        value: new ListRoomGroupsResponse({
+          groups: groupIds.map((id) => new RoomGroup({ id, name: id }))
+        })
+      }
+    })
   });
   for (const handler of mocks.projectionHandlers) handler(event);
 }
@@ -126,7 +116,11 @@ describe('room-group management query lifecycle', () => {
     queryClient.clear();
     vi.clearAllMocks();
     mocks.projectionHandlers = [];
-    roomGroupPageTestState.reset();
+    routeGroupId = 'group-a';
+    createTestServerScope({
+      serverId: 'server-a',
+      store: { adminRoomLayout: { refresh: mocks.refreshLayout } }
+    });
     mocks.getRoomGroup.mockResolvedValue(managedGroup('Lobby'));
     mocks.updateRoomGroup.mockResolvedValue(managedGroup('Projects').group);
     mocks.refreshLayout.mockResolvedValue(undefined);
@@ -159,7 +153,7 @@ describe('room-group management query lifecycle', () => {
     const { container } = render(RoomGroupPage);
     await settle();
 
-    roomGroupPageTestState.groupId = 'group-b';
+    routeGroupId = 'group-b';
     flushSync();
     await settle();
 

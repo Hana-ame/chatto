@@ -1,15 +1,16 @@
 <script lang="ts">
+  import AccountName from '$lib/components/users/AccountName.svelte';
   import {
     TimelineEventKind,
     timelineEventKind,
     type TimelineEventView
-  } from '$lib/render/timelineEvents';
-  import type { UserAvatarUserView } from '$lib/render/users';
+  } from '@chatto/client/timeline/timelineEvents';
+  import type { UserAvatarUserView } from '@chatto/client/timeline/users';
   import UserAvatar from '$lib/components/UserAvatar.svelte';
   import { getLiveDisplayName } from '$lib/state/userProfiles.svelte';
   import DeletedUserLabel from '$lib/components/DeletedUserLabel.svelte';
   import { m } from '$lib/i18n/messages';
-  import { RoomThreadingMode } from '$lib/roomThreading';
+  import { RoomThreadingMode } from '@chatto/client/util/roomThreading';
 
   let {
     event,
@@ -37,7 +38,7 @@
       return { id: actor.id, name: displayName(actor), user: actor };
     }
 
-    return { id: event?.actorId ?? 'unknown', name: 'Deleted User', user: null };
+    return { id: event?.actorId ?? 'unknown', name: m('common.deleted_user'), user: null };
   });
 
   const eventKind = $derived(timelineEventKind(event.event));
@@ -94,14 +95,14 @@
 </script>
 
 {#if eventKind === TimelineEventKind.CallEnded}
-  <div class="mt-4 flex items-center gap-4 px-2 md:px-4" data-event-id={event.id}>
+  <div class="mt-4 flex items-center gap-4 px-2 desktop-presentation:px-4" data-event-id={event.id}>
     <div class="flex w-11 shrink-0 items-center justify-center text-muted">
-      <span class="iconify icon-[uil--phone-slash] text-base"></span>
+      <span class="iconify icon-[uil--phone-slash] text-base" aria-hidden="true"></span>
     </div>
     <span class="text-sm text-muted">{m('room.system_events.call_ended')}</span>
   </div>
 {:else if action && !isDeletedJoinLeave}
-  <div class="mt-4 flex items-center gap-4 px-2 md:px-4" data-event-id={event.id}>
+  <div class="mt-4 flex items-center gap-4 px-2 desktop-presentation:px-4" data-event-id={event.id}>
     <!-- Avatar column (w-11 matches MessageEvent avatar width) -->
     <div class="flex w-11 shrink-0 items-center justify-center">
       {#if subject.user}
@@ -111,14 +112,14 @@
         <div
           class="flex h-5 w-5 items-center justify-center rounded-full bg-surface-emphasized text-muted"
         >
-          <span class="iconify icon-[uil--user-times] text-xs"></span>
+          <span class="iconify icon-[uil--user-times] text-xs" aria-hidden="true"></span>
         </div>
       {/if}
     </div>
 
     <span class="text-sm text-muted">
       {#if subject.user}
-        {subject.name}
+        <AccountName name={subject.name} identity={subject.user} badgeSize="md" />
       {:else}
         <DeletedUserLabel />
       {/if}

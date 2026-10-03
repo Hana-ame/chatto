@@ -72,7 +72,9 @@
     },
     "timeline": {
       "beginning": "זוהי תחילתה של השיחה הזו.",
-      "read_denied": "אין לך הרשאה לקרוא הודעות בחדר הזה."
+      "read_denied": "אין לך הרשאה לקרוא הודעות בחדר הזה.",
+      "limited_empty": "אין עדיין שיחות שניתן לקרוא.",
+      "loading": "טוען הודעות..."
     },
     "message": {
       "empty": "אין עדיין הודעות",
@@ -88,6 +90,7 @@
         "remove_reaction": "הסר את {emoji}",
         "add_reaction": "הוסף תגובה",
         "more_reactions": "תגובות נוספות",
+        "reactions": "תגובות",
         "reply": "תגובה",
         "reply_room": "מענה בחדר",
         "reply_thread": "תשובה בשרשור",
@@ -97,9 +100,18 @@
         "edit_short": "עריכה",
         "copy_text": "העתק טקסט",
         "copy_text_failed": "נכשל בהעתקת טקסט",
-        "copy_link": "העתק קישור"
+        "copy_link": "העתק קישור",
+        "copy_message_link": "העתק קישור להודעה",
+        "copy_image": "העתק תמונה",
+        "link_copied": "הקישור הועתק",
+        "message_link_copied": "קישור ההודעה הועתק",
+        "copy_link_failed": "העתקת הקישור נכשלה",
+        "image_copied": "התמונה הועתקה",
+        "copy_image_failed": "העתקת התמונה נכשלה"
       },
       "meta": {
+        "echo": "הד",
+        "edited_short": "נערכה",
         "pinned": "הודעה מוצמדת",
         "thread": "שרשור",
         "edited": "הודעה נערכה",
@@ -146,6 +158,14 @@
       },
       "show_less": "להראות פחות"
     },
+    "typing": {
+      "one": "{name} מקליד/ת",
+      "two": "{first} ו{second} מקלידים",
+      "many_count": {
+        "other": "{names} ועוד {count} מקלידים",
+        "one": "{names} ועוד {count} מקלידים"
+      }
+    },
     "attachment": {
       "delete_title": "מחק קובץ מצורף",
       "delete_prompt": "האם אתה בטוח שברצונך למחוק את הקובץ המצורף הזה? לא ניתן לבטל זאת.",
@@ -154,7 +174,27 @@
       "view_label": "הצג {filename}",
       "download_label": "הורד את {filename}",
       "image_refresh_failed": "לא ניתן לרענן את הקישור לתמונה",
-      "download_refresh_failed": "לא ניתן לרענן את קישור ההורדה"
+      "download_refresh_failed": "לא ניתן לרענן את קישור ההורדה",
+      "add_description": "הוספת תיאור",
+      "edit_description": "עריכת התיאור",
+      "description_title": "תיאור הקובץ המצורף",
+      "description_label": "תיאור (רשות)",
+      "description_help": "תארו את הקובץ המצורף עבור אנשים שאינם יכולים לראות או לשמוע אותו.",
+      "description_too_long": "התיאור יכול להכיל עד {max} תווים.",
+      "description_update_failed": "עדכון תיאור הקובץ המצורף נכשל",
+      "html_viewer": {
+        "download": "הורדה",
+        "show_preview": "הצגת תצוגה מקדימה",
+        "warning": "מסמך זה עשוי לטעון תוכן מאתרים חיצוניים. אתרים אלה יכולים לראות את כתובת ה-IP שלך.",
+        "preview_title": "תצוגה מקדימה של {filename}",
+        "preview_failed": "לא ניתן לטעון את התצוגה המקדימה. אפשר לנסות שוב.",
+        "document_type": "סוג מסמך",
+        "html_document": "מסמך HTML",
+        "xhtml_document": "מסמך XHTML",
+        "file_size": "גודל הקובץ",
+        "unavailable": "לא זמין",
+        "no_preview": "אין תצוגה מקדימה לקובץ הזה. ניתן להוריד אותו כדי לשמור אותו."
+      }
     },
     "link_preview": {
       "delete_title": "מחק תצוגה מקדימה של קישור",
@@ -162,6 +202,7 @@
       "delete_failed": "נכשל מחיקת התצוגה המקדימה של הקישור"
     },
     "sidebar": {
+      "go_to_message": "מעבר להודעה",
       "extras": "תוספות חדרים",
       "resize": "שינוי גודל חלונית תוספות לחדר",
       "hide": "הסתר תוספות לחדר",
@@ -174,24 +215,25 @@
       "clear_member_search": "נקה חיפוש חברים",
       "no_members": "לא נמצאו חברים.",
       "online": "באינטרנט ({count})",
+      "bots": "בוטים ({count})",
       "offline": "במצב לא מקוון ({count})",
       "no_files": "עדיין אין קבצים בחדר הזה.",
       "files": "קבצים",
       "pins": "הודעות מוצמדות",
-      "call": "התקשר",
+      "call": "שיחה",
       "jump_to_file": "קפוץ אל {filename}",
       "loading_files": "טוען קבצים...",
+      "loading_members": "טוען חברים...",
       "calls_unavailable": "שיחות אינן זמינות בשרת זה.",
       "view_profile": "הצג את הפרופיל של {name}",
       "in_voice_call": "בשיחה קולית",
       "in_video_call": "בשיחת וידאו",
-      "ban_failed": "לא הצליח לחסום חבר מהחדר",
-      "ban_success": "נאסר {name} מהחדר"
+      "remove_failed": "לא ניתן להסיר את המשתמש מהחדר",
+      "remove_success": "{name} הוסר מהחדר",
+      "search": "חיפוש"
     },
     "pins": {
-      "show": "הצגת הודעות מוצמדות",
       "unseen": "הודעות מוצמדות חדשות",
-      "hide": "הסתרת הודעות מוצמדות",
       "pin": "הצמדת הודעה",
       "unpin": "ביטול הצמדת הודעה",
       "unpin_prompt": "האם להסיר את ההצמדה של הודעה זו?",

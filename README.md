@@ -1,5 +1,4 @@
 [![CI](https://github.com/chattocorp/chatto/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/chattocorp/chatto/actions/workflows/ci.yml?query=branch%3Amain)
-[![Release](https://github.com/chattocorp/chatto/actions/workflows/release.yml/badge.svg)](https://github.com/chattocorp/chatto/actions/workflows/release.yml)
 [![Latest release](https://img.shields.io/github/v/release/chattocorp/chatto?include_prereleases&sort=semver)](https://github.com/chattocorp/chatto/releases)
 [![License: AGPL-3.0-or-later with Apache-2.0 exceptions](https://img.shields.io/badge/license-AGPL--3.0--or--later%20with%20Apache--2.0%20exceptions-blue.svg)](LICENSE)
 
@@ -14,81 +13,30 @@ A really good chat application for teams and communities, free and easy to self-
 - [Official Chatto Community](https://chat.chatto.run/)
 - [Releases](https://github.com/chattocorp/chatto/releases)
 - [Security Policy](SECURITY.md)
-- [Contributing](CONTRIBUTING.md)
 
-This repository temporarily incubates the early
-[Authling](authling/README.md) identity-provider module. Authling is developed
-and released independently from Chatto and is intended to move to its own
-repository once it no longer needs frequent atomic changes with the shared
-[event-sourcing framework](pkg/events/README.md),
-[embedded NATS runtime](pkg/natsruntime/README.md),
-[data-cryptography primitives](pkg/datacrypto/README.md), and
-[application-configuration loader](pkg/appconfig/README.md).
+Chatto is built with the help of coding agents. Read [Chatto is Robots](https://www.hmans.dev/blog/chatto-is-robots) to learn more.
 
-## Local Development Stack
+## What Is in This Repository
 
-Run the local Chatto backend and Vite frontend, Authling, Mailpit, and LiveKit:
+- **Chatto**: the chat server, CLI, and bundled web frontend.
+- **[Runling](packages/runling/README.md)**: an independent workflow and agent orchestrator, published to npm as `runling`.
+- **[Authling](authling/README.md)**: an independent identity provider. It is here temporarily and will move to its own repository.
+- **Shared framework modules**: [events](pkg/events/README.md), [natsruntime](pkg/natsruntime/README.md), [datacrypto](pkg/datacrypto/README.md), and [appconfig](pkg/appconfig/README.md).
+
+## Development
 
 ```sh
-mise trust
-mise install
-mise setup
-(cd authling && mise trust && mise install && mise deps)
 mise dev
 ```
 
-`mise dev` runs the services in one supervised process group. Vite reloads
-frontend changes. Restart it after you change Chatto or Authling Go code.
-`mise setup` builds the shared API types and Lingua packages.
-
-[Portless](https://portless.sh/) provides HTTPS routes for browser-facing
-services. In Conductor, replace `<workspace>` with the workspace name:
-
-- Chatto: `https://chatto.<workspace>.localhost:42444`
-- Authling: `https://authling.<workspace>.localhost:42444`
-- Mailpit: `https://mailpit.<workspace>.localhost:42444`
-- LiveKit: `https://livekit.<workspace>.localhost:42444`
-
-Outside Conductor, Portless uses the `local` route suffix. Services listen on
-loopback ports from base port `4000` (or `$CONDUCTOR_PORT` in Conductor).
-
-Create an Authling account, read its verification code in Mailpit, then choose
-**Authling** on the Chatto login screen. Chatto asks for a username at first
-login. The stack also creates Chatto owner `alice` and member `bob`; both use
-the development-only password `foobar123`.
-
-Chatto uses Authling as its development OIDC provider. Chatto stores embedded
-NATS data in `cli/data/nats/` and search data in `cli/data/search/`. Authling
-identity data is in
-`.context/dev-portless/<workspace>/nested/authling/`.
-
-These credentials and accounts are for local development only. Stop `mise dev`
-to stop the services and unregister the routes. With the stack stopped, remove
-`cli/data/` to reset Chatto, or remove the Authling identity directory to reset
-Authling. A new Conductor workspace name also creates a new Authling issuer and
-state directory.
-
-If a worktree has NATS data in the former `cli/data/jetstream/` location, use
-the migration steps in [CONTRIBUTING.md](CONTRIBUTING.md#local-chatto-data).
-
-Portless creates and trusts a development CA on its first run. If macOS cannot
-show its authorization prompt, run this command once in an interactive terminal:
-
-```sh
-mise x node@24 npm:portless@0.15.5 -- portless trust
-```
+This installs all tools and dependencies, then starts the development stack. Open `http://chatto.local.localhost:4000` and sign in as `alice` with the password `foobar123`. See [CONTRIBUTING.md](CONTRIBUTING.md) for the complete development guide.
 
 ## License
 
-Chatto is licensed under `AGPL-3.0-or-later` by default. The independently
-versioned shared framework modules, standalone frontend, integration surfaces,
-documentation, and examples use Apache-2.0. See
-[LICENSING.md](LICENSING.md) and [REUSE.toml](REUSE.toml) for the exact
-boundary.
+Chatto uses `AGPL-3.0-or-later` by default. The shared framework modules, standalone frontend, integration surfaces, documentation, and examples use Apache-2.0. Runling uses MIT. See [LICENSING.md](LICENSING.md) and [REUSE.toml](REUSE.toml) for the exact boundary.
 
-The project licenses do not grant permission to use Chatto names or logos as
-official branding for a fork or modified version; see [NOTICE](NOTICE).
+The licenses do not give permission to use Chatto names or logos as official branding for a fork or modified version. See [NOTICE](NOTICE).
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for local development notes. This project is **not accepting outside contributions** at this time.
+This project does **not accept outside contributions** at this time. See [CONTRIBUTING.md](CONTRIBUTING.md) for bug reports and development notes.

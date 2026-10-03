@@ -1,8 +1,14 @@
 {
   "chat": {
+    "privileged_mode": {
+      "enable": "啟用特權模式",
+      "disable": "停用特權模式",
+      "confirmation": "這會在 15 分鐘內啟用你在此伺服器上獲得的額外權限。"
+    },
     "notifications": {
       "title": "通知",
       "subtitle": "最新消息",
+      "list_title": "最近動態",
       "clear_read": "清除已讀",
       "empty_title": "沒有通知",
       "empty_body": "所有通知都已查看！",
@@ -42,40 +48,96 @@
       "send_message": "傳送訊息",
       "view_profile": "查看個人資料",
       "profile_requires_direct_message": "需要有私訊對話才能查看此個人資料。",
+      "manage_bot": "管理機器人",
       "view_in_admin": "在伺服器管理中檢視",
       "copy_user_id": "複製使用者 ID"
     },
     "server_gutter": {
       "add_server": "新增伺服器",
+      "log_in": "登入此伺服器",
+      "sign_out": "登出此伺服器",
       "version": "版本 {version}",
-      "version_unknown": "版本不明",
       "unreachable": "無法連線至伺服器",
+      "connection_unavailable": "連線無法使用",
       "compatibility_server_too_old": "此伺服器必須升級至 Chatto 0.5 或更新版本，此應用程式才能連線。",
-      "compatibility_unknown": "此應用程式無法根據伺服器版本判斷相容性。"
+      "compatibility_unknown": "此應用程式無法根據伺服器版本判斷相容性。",
+      "go_to_notifications_count": {
+        "one": "前往 {count} 則通知",
+        "other": "前往 {count} 則通知"
+      },
+      "go_to_notification": "前往通知",
+      "go_to_first_unread": "前往第一個未讀聊天室",
+      "notifications_count": {
+        "one": "{count} 則通知",
+        "other": "{count} 則通知"
+      }
+    },
+    "server_unavailable": {
+      "too_old_title": "需要升級伺服器",
+      "too_old_body": "此伺服器執行的 Chatto 版本已不再受此應用程式支援。請讓伺服器管理員升級 Chatto。",
+      "unknown_title": "未知的伺服器版本",
+      "unknown_body": "此應用程式無法辨識此伺服器的 Chatto 版本，因此無法連線。",
+      "unreachable_body": "此應用程式無法連線到此伺服器。請檢查你的網路連線，或稍後再試。",
+      "server_version": "伺服器版本",
+      "required_version": "所需版本",
+      "required_version_value": "{version} 或更新版本",
+      "check_again": "重新檢查"
+    },
+    "server_signed_out": {
+      "title": "你已登出此伺服器",
+      "body": "登入後即可在此伺服器上閱讀和傳送訊息。"
     },
     "threads": {
       "title": "我的討論串",
       "subtitle": "你追蹤的討論串",
+      "list_title": "追蹤的討論串",
       "filter_label": "篩選討論串",
       "filter_all": "全部",
       "filter_unread": "未讀",
       "empty_title": "沒有追蹤的討論串",
       "empty_body": "你追蹤的討論串會顯示在這裡。你參與的討論串會自動追蹤。",
-      "no_unread_loaded": "未載入任何未讀討論串",
       "all_caught_up": "全部已讀",
-      "loaded_summary": "已載入 {total} 個追蹤討論串中的 {loaded} 個。",
       "load_more": "載入更多",
       "no_unread": "目前沒有未讀討論串。",
       "message_missing": "訊息已無法使用",
       "in_room": "位於",
-      "in_room_capitalized": "位於"
+      "in_room_capitalized": "位於",
+      "load_failed": "無法載入討論串",
+      "notifications_count": {
+        "one": "{count} 則通知",
+        "other": "{count} 則通知"
+      }
     },
     "profile": {
       "title": "個人資料",
       "fallback_title": "個人資料",
       "not_found": "找不到該使用者",
       "bot": "機器人",
-      "local_time": "當地時間 {time}（{zone}）"
+      "local_time": "當地時間 {time}（{zone}）",
+      "permissions": {
+        "title": "它能做什麼",
+        "empty": "沒有對你可見的有效權限。",
+        "error": "無法載入此機器人的權限。",
+        "inactive_title": "未生效的授權",
+        "inactive_note": "這些授權已儲存，但擁有者目前的權限不允許使用。",
+        "read": "讀取所有訊息",
+        "interactions": "讀取它建立的或被直接提及的討論串",
+        "post": "發布新訊息",
+        "room": "#{name}",
+        "group": "群組：{name}",
+        "dm": "它參與的私訊",
+        "joined_rooms": "它已加入的房間",
+        "all_rooms": "房間",
+        "server": "此伺服器",
+        "list_rooms": "瀏覽房間",
+        "echo": "在房間時間軸中顯示討論串回覆",
+        "start_calls": "發起通話",
+        "browse_join": "瀏覽並加入房間",
+        "reply": "在討論串中回覆",
+        "manage_messages": "管理訊息"
+      },
+      "owned_by": "擁有者",
+      "open_card": "開啟 {name} 的個人資料卡"
     }
   }
 }

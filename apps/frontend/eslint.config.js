@@ -50,6 +50,43 @@ export default ts.config(
     }
   },
   {
+    // Show failed operations through $lib/utils/errorMessage. It localizes
+    // access, network, and conflict errors and removes the ConnectError code
+    // prefix. An inline `error.message` conversion bypasses both.
+    files: ['src/**/*.ts', 'src/**/*.svelte'],
+    ignores: ['src/**/*.spec.ts', 'src/**/*.test.ts', 'src/lib/utils/errorMessage.ts'],
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector:
+            "ConditionalExpression[test.operator='instanceof'][test.right.name='Error'][consequent.property.name='message']",
+          message: 'Use errorMessage() or toastError() from $lib/utils/errorMessage.'
+        }
+      ]
+    }
+  },
+  {
+    // Queries and mutations use the shared client that $lib/query/client binds.
+    files: ['src/**/*.ts', 'src/**/*.svelte'],
+    ignores: ['src/lib/query/client.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: [
+            {
+              name: '@tanstack/svelte-query',
+              importNames: ['createQuery', 'createInfiniteQuery', 'createMutation'],
+              message:
+                'Import createQuery, createInfiniteQuery, and createMutation from $lib/query/client.'
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
     // Playwright parses the first parameter's source text to determine which
     // fixtures a test needs, and rejects an Identifier (e.g. `_`) at runtime
     // with "First argument must use the object destructuring pattern".

@@ -11,7 +11,7 @@ option go_package = "hmans.de/chatto/internal/pb/chatto/core/evt/v1;evtv1";
 // USER EVENTS
 //
 // Top-level Event oneof tags owned by this file:
-//   - 700-727: durable user aggregate events on evt.user.{userId}.*
+//   - 700-728: durable user aggregate events on evt.user.{userId}.*
 //
 // Keep these tags coordinated with event.proto. Message-internal field numbers
 // are local to each message and do not consume top-level Event tag space.
@@ -126,7 +126,7 @@ message UserDisplayNameChangedEvent {
 }
 
 // UserBioChangedEvent is the authoritative durable fact for a change to a
-// user's self-authored bio. An empty encrypted value clears the bio. Bio text
+// user's bio. An empty encrypted value clears the bio. Bio text
 // is user PII and stays encrypted at rest.
 message UserBioChangedEvent {
   string user_id = 1;
@@ -148,6 +148,17 @@ message UserAvatarClearedEvent {
 message UserVerifiedEmailAddedEvent {
   string user_id = 1;
   EncryptedUserString encrypted_email = 10;
+}
+
+// UserPrimaryEmailChangedEvent selects one of the user's verified email
+// addresses for account-directed email. The event ID is the stable identity
+// of that encrypted email record during replay. The encrypted bytes are not a
+// stable identity, and storing the address or its lookup digest here would
+// duplicate user PII. A projection accepts the reference only when the event
+// belongs to a current verified email for the same user.
+message UserPrimaryEmailChangedEvent {
+  string user_id = 1;
+  string verified_email_event_id = 2;
 }
 
 message UserPasswordHashChangedEvent {
@@ -191,6 +202,9 @@ message UserExternalIdentityUnlinkedEvent {
   // Stable one-way identity hash previously written by
   // UserExternalIdentityLinkedEvent or legacy UserOIDCSubjectLinkedEvent.
   string subject_hash = 2;
+  // Keep established sessions valid. Absent on historical events, which
+  // revoked credentials and must retain that behavior during replay.
+  bool preserve_existing_credentials = 3;
 }
 
 message UserServerPreferencesChangedEvent {

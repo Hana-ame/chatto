@@ -46,8 +46,11 @@ type projectedUser struct {
 	shredded      bool
 	avatar        *evtv1.AssetRecord
 	verifiedEmail map[string]projectedVerifiedEmail
-	preferences   *evtv1.ServerUserPreferences
-	loginChanged  time.Time
+	// primaryVerifiedEmailEventID identifies one entry in verifiedEmail without
+	// retaining another plaintext or digest copy.
+	primaryVerifiedEmailEventID string
+	preferences                 *evtv1.ServerUserPreferences
+	loginChanged                time.Time
 }
 
 // projectedUserPII retains only the encrypted field and the event context
@@ -139,6 +142,8 @@ func (p *UserProjection) Apply(event *evtv1.Event, seq uint64) error {
 		p.applyAssetDeleted(e.AssetDeleted)
 	case *evtv1.Event_UserVerifiedEmailAdded:
 		return p.applyVerifiedEmailAdded(event.GetId(), e.UserVerifiedEmailAdded, event.GetCreatedAt())
+	case *evtv1.Event_UserPrimaryEmailChanged:
+		p.applyPrimaryEmailChanged(e.UserPrimaryEmailChanged)
 	case *evtv1.Event_UserServerPreferencesChanged:
 		p.applyServerPreferencesChanged(e.UserServerPreferencesChanged)
 	case *evtv1.Event_UserLoginCooldownStarted:
@@ -248,6 +253,8 @@ func (p *UserProjection) applyPreparedContentEvent(event *evtv1.Event, seq uint6
 		if prepared.lookupReady && prepared.lookupValue != "" {
 			p.applyVerifiedEmailAddedWithEmail(event.GetId(), value.UserVerifiedEmailAdded, event.GetCreatedAt(), prepared.lookupValue)
 		}
+	case *evtv1.Event_UserPrimaryEmailChanged:
+		p.applyPrimaryEmailChanged(value.UserPrimaryEmailChanged)
 	case *evtv1.Event_UserServerPreferencesChanged:
 		p.applyServerPreferencesChanged(value.UserServerPreferencesChanged)
 	case *evtv1.Event_UserLoginCooldownStarted:
@@ -467,6 +474,7 @@ func (p *UserProjection) applyVerifiedEmailAdded(eventID string, e *evtv1.UserVe
 func (p *UserProjection) applyVerifiedEmailAddedWithEmail(eventID string, e *evtv1.UserVerifiedEmailAddedEvent, envelopeCreatedAt *timestamppb.Timestamp, email string) {
 	hash := emailHash(email)
 	u := p.ensureUserLocked(e.GetUserId())
+	previous, replacesExisting := u.verifiedEmail[hash]
 	verifiedAt := time.Now()
 	if envelopeCreatedAt != nil {
 		verifiedAt = envelopeCreatedAt.AsTime()
@@ -475,7 +483,23 @@ func (p *UserProjection) applyVerifiedEmailAddedWithEmail(eventID string, e *evt
 		pii:        newProjectedUserPII(eventID, evtstream.EventUserVerifiedEmailAdded, "email", e.GetEncryptedEmail()),
 		verifiedAt: verifiedAt,
 	}
+	if u.primaryVerifiedEmailEventID == "" || (replacesExisting && previous.pii != nil && previous.pii.eventID == u.primaryVerifiedEmailEventID) {
+		u.primaryVerifiedEmailEventID = eventID
+	}
 	p.emailIndex[hash] = e.GetUserId()
+}
+
+func (p *UserProjection) applyPrimaryEmailChanged(e *evtv1.UserPrimaryEmailChangedEvent) {
+	if e == nil || e.GetUserId() == "" || e.GetVerifiedEmailEventId() == "" {
+		return
+	}
+	u := p.ensureUserLocked(e.GetUserId())
+	for _, email := range u.verifiedEmail {
+		if email.pii != nil && email.pii.eventID == e.GetVerifiedEmailEventId() {
+			u.primaryVerifiedEmailEventID = e.GetVerifiedEmailEventId()
+			return
+		}
+	}
 }
 
 func (p *UserProjection) applyServerPreferencesChanged(e *evtv1.UserServerPreferencesChangedEvent) {
@@ -552,6 +576,7 @@ func (p *UserProjection) applyAccountDeleted(e *evtv1.UserAccountDeletedEvent) {
 	u.displayName = nil
 	u.bio = nil
 	u.verifiedEmail = make(map[string]projectedVerifiedEmail)
+	u.primaryVerifiedEmailEventID = ""
 	u.loginChanged = time.Time{}
 	delete(p.dekEvents, e.GetUserId())
 }
@@ -579,6 +604,7 @@ func (p *UserProjection) applyKeyShredded(userID string) {
 	u.bio = nil
 	u.preferences = nil
 	u.verifiedEmail = make(map[string]projectedVerifiedEmail)
+	u.primaryVerifiedEmailEventID = ""
 	u.loginChanged = time.Time{}
 }
 
@@ -704,6 +730,8 @@ type projectedUserSnapshot struct {
 	login       *projectedPIISnapshot
 	displayName *projectedPIISnapshot
 	bio         *projectedPIISnapshot
+	avatar      *evtv1.AssetRecord
+	preferences *evtv1.ServerUserPreferences
 	deleted     bool
 	shredded    bool
 }
@@ -742,14 +770,73 @@ func (p *UserProjection) userSnapshotLocked(userID string, u *projectedUser) *pr
 	if u.user != nil {
 		user = proto.Clone(u.user).(*evtv1.User)
 	}
+	var avatar *evtv1.AssetRecord
+	if u.avatar != nil {
+		avatar = proto.Clone(u.avatar).(*evtv1.AssetRecord)
+	}
+	var preferences *evtv1.ServerUserPreferences
+	if u.preferences != nil {
+		preferences = proto.Clone(u.preferences).(*evtv1.ServerUserPreferences)
+	}
 	return &projectedUserSnapshot{
 		user:        user,
 		login:       p.piiSnapshotLocked(userID, u.login),
 		displayName: p.piiSnapshotLocked(userID, u.displayName),
 		bio:         p.piiSnapshotLocked(userID, u.bio),
+		avatar:      avatar,
+		preferences: preferences,
 		deleted:     u.deleted,
 		shredded:    u.shredded,
 	}
+}
+
+func (p *UserProjection) contentSnapshot(userID string) *projectedUserSnapshot {
+	p.RLock()
+	defer p.RUnlock()
+	return p.userSnapshotLocked(userID, p.users[userID])
+}
+
+func cloneProjectedUserSnapshot(source *projectedUserSnapshot) *projectedUserSnapshot {
+	if source == nil {
+		return nil
+	}
+	clonePII := func(value *projectedPIISnapshot) *projectedPIISnapshot {
+		if value == nil {
+			return nil
+		}
+		clone := &projectedPIISnapshot{}
+		if value.value != nil {
+			clone.value = &projectedUserPII{
+				eventID:   value.value.eventID,
+				eventType: value.value.eventType,
+				purpose:   value.value.purpose,
+			}
+			if value.value.encrypted != nil {
+				clone.value.encrypted = proto.Clone(value.value.encrypted).(*evtv1.EncryptedUserString)
+			}
+		}
+		if value.dekEvent != nil {
+			clone.dekEvent = proto.Clone(value.dekEvent).(*evtv1.UserDEKGeneratedEvent)
+		}
+		return clone
+	}
+	clone := &projectedUserSnapshot{
+		login:       clonePII(source.login),
+		displayName: clonePII(source.displayName),
+		bio:         clonePII(source.bio),
+		deleted:     source.deleted,
+		shredded:    source.shredded,
+	}
+	if source.user != nil {
+		clone.user = proto.Clone(source.user).(*evtv1.User)
+	}
+	if source.avatar != nil {
+		clone.avatar = proto.Clone(source.avatar).(*evtv1.AssetRecord)
+	}
+	if source.preferences != nil {
+		clone.preferences = proto.Clone(source.preferences).(*evtv1.ServerUserPreferences)
+	}
+	return clone
 }
 
 func (p *UserProjection) decryptPIISnapshot(ctx context.Context, userID string, snapshot *projectedPIISnapshot) (string, bool, error) {
@@ -840,12 +927,60 @@ func (p *UserProjection) GetReferenceContext(ctx context.Context, userID string)
 	return nil, false, nil
 }
 
-func (p *UserProjection) GetReference(userID string) (*evtv1.User, bool) {
-	user, ok, _ := p.GetReferenceContext(context.Background(), userID)
-	return user, ok
+// ActiveIDs filters membership references using lifecycle metadata only. It
+// does not decrypt profiles or resolve encryption keys.
+func (p *UserProjection) ActiveIDs(userIDs []string) []string {
+	p.RLock()
+	defer p.RUnlock()
+	ids := make([]string, 0, len(userIDs))
+	for _, id := range userIDs {
+		if user := p.users[id]; user != nil && !user.deleted && !user.shredded {
+			ids = append(ids, id)
+		}
+	}
+	return ids
 }
 
-// GetReferences returns public user references aligned with userIDs. Unknown users are nil.
+// AllActiveIDs returns active account IDs without reading encrypted profiles.
+func (p *UserProjection) AllActiveIDs() []string {
+	p.RLock()
+	defer p.RUnlock()
+	ids := make([]string, 0, len(p.users))
+	for id, user := range p.users {
+		if !user.deleted && !user.shredded {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+// UserDirectoryMetadata contains only the lifecycle fields needed to order an
+// admin member page. It does not retain decrypted profile data.
+type UserDirectoryMetadata struct {
+	ID        string
+	CreatedAt *timestamppb.Timestamp
+}
+
+// ActiveDirectoryMetadata returns detached creation metadata without resolving
+// encryption keys. Deleted and shredded accounts are excluded.
+func (p *UserProjection) ActiveDirectoryMetadata() []UserDirectoryMetadata {
+	p.RLock()
+	defer p.RUnlock()
+	entries := make([]UserDirectoryMetadata, 0, len(p.users))
+	for id, user := range p.users {
+		if user == nil || user.deleted || user.shredded || user.user == nil {
+			continue
+		}
+		entry := UserDirectoryMetadata{ID: id}
+		if created := user.user.GetCreatedAt(); created != nil {
+			entry.CreatedAt = proto.Clone(created).(*timestamppb.Timestamp)
+		}
+		entries = append(entries, entry)
+	}
+	return entries
+}
+
+// GetReferencesContext returns public user references aligned with userIDs. Unknown users are nil.
 func (p *UserProjection) GetReferencesContext(ctx context.Context, userIDs []string) ([]*evtv1.User, error) {
 	p.RLock()
 	snapshots := make([]*projectedUserSnapshot, len(userIDs))
@@ -985,12 +1120,7 @@ func (p *UserProjection) ExternalIdentityOwnerID(issuer, subject string) (string
 }
 
 func (p *UserProjection) PasswordHash(userID string) ([]byte, bool) {
-	hash, _, ok := p.PasswordHashWithSetAt(userID)
-	return hash, ok
-}
-
-func (p *UserProjection) PasswordHashWithSetAt(userID string) ([]byte, time.Time, bool) {
-	return p.auth.PasswordHashWithSetAt(userID)
+	return p.auth.PasswordHash(userID)
 }
 
 func (p *UserProjection) AuthGeneration(userID string) (uint64, bool) {
@@ -1072,12 +1202,14 @@ func (p *UserProjection) VerifiedEmailsContext(ctx context.Context, userID strin
 	type emailSnapshot struct {
 		pii        *projectedPIISnapshot
 		verifiedAt time.Time
+		primary    bool
 	}
 	snapshots := make([]emailSnapshot, 0, len(u.verifiedEmail))
 	for _, email := range u.verifiedEmail {
 		snapshots = append(snapshots, emailSnapshot{
 			pii:        p.piiSnapshotLocked(userID, email.pii),
 			verifiedAt: email.verifiedAt,
+			primary:    email.pii != nil && email.pii.eventID == u.primaryVerifiedEmailEventID,
 		})
 	}
 	p.RUnlock()
@@ -1092,7 +1224,7 @@ func (p *UserProjection) VerifiedEmailsContext(ctx context.Context, userID strin
 		if !ok || email == "" {
 			continue
 		}
-		out = append(out, VerifiedEmail{Email: email, VerifiedAt: snapshot.verifiedAt})
+		out = append(out, VerifiedEmail{Email: email, VerifiedAt: snapshot.verifiedAt, Primary: snapshot.primary})
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if !out[i].VerifiedAt.Equal(out[j].VerifiedAt) {
@@ -1101,6 +1233,30 @@ func (p *UserProjection) VerifiedEmailsContext(ctx context.Context, userID strin
 		return strings.ToLower(out[i].Email) < strings.ToLower(out[j].Email)
 	})
 	return out, nil
+}
+
+func (p *UserProjection) verifiedEmailEventID(userID, email string) (string, bool) {
+	p.RLock()
+	defer p.RUnlock()
+	u := p.users[userID]
+	if u == nil || u.deleted || u.shredded {
+		return "", false
+	}
+	verified, ok := u.verifiedEmail[emailHash(email)]
+	if !ok || verified.pii == nil || verified.pii.eventID == "" {
+		return "", false
+	}
+	return verified.pii.eventID, true
+}
+
+func (p *UserProjection) primaryVerifiedEmailEventID(userID string) string {
+	p.RLock()
+	defer p.RUnlock()
+	u := p.users[userID]
+	if u == nil || u.deleted || u.shredded {
+		return ""
+	}
+	return u.primaryVerifiedEmailEventID
 }
 
 func (p *UserProjection) VerifiedEmails(userID string) []VerifiedEmail {
@@ -1113,10 +1269,6 @@ func (p *UserProjection) HasVerifiedEmail(userID string) bool {
 	defer p.RUnlock()
 	u := p.users[userID]
 	return u != nil && !u.deleted && len(u.verifiedEmail) > 0
-}
-
-func (p *UserProjection) HasVerifiedFactor(userID string) bool {
-	return p.HasVerifiedEmail(userID) || p.auth.HasExternalIdentity(userID)
 }
 
 func (p *UserProjection) HasOAuthConsent(userID, redirectOrigin string) bool {

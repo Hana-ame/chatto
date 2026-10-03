@@ -82,6 +82,31 @@ func TestGetPermissionMetadata(t *testing.T) {
 	})
 }
 
+func TestPermissionMetadata_PrivilegedModeClassification(t *testing.T) {
+	elevated := map[Permission]bool{
+		PermServerManage:          true,
+		PermServerManageNeighbors: true,
+		PermRoomCreate:            true,
+		PermRoomManage:            true,
+		PermRoomMemberRemove:      true,
+		PermMessageManage:         true,
+		PermRoleManage:            true,
+		PermRoleAssign:            true,
+		PermAdminUsersView:        true,
+		PermAdminAuditView:        true,
+		PermUserInvite:            true,
+		PermUserDeleteAny:         true,
+		PermUserManageAccounts:    true,
+		PermUserManagePermissions: true,
+		PermBotManage:             true,
+	}
+	for _, metadata := range AllPermissions() {
+		if got, want := metadata.RequiresPrivilegedMode, elevated[metadata.Permission]; got != want {
+			t.Errorf("permission %s RequiresPrivilegedMode = %v, want %v", metadata.Permission, got, want)
+		}
+	}
+}
+
 // ============================================================================
 // ValidatePermission Tests
 // ============================================================================
@@ -161,8 +186,8 @@ func TestPermissionAppliesAtScope(t *testing.T) {
 		{"room.join at room", PermRoomJoin, ScopeRoom, true},
 		{"room.manage at server", PermRoomManage, ScopeServer, true},
 		{"room.manage at room", PermRoomManage, ScopeRoom, true},
-		{"room.ban-member at server", PermRoomMemberBan, ScopeServer, true},
-		{"room.ban-member at room", PermRoomMemberBan, ScopeRoom, true},
+		{"room.remove-member at server", PermRoomMemberRemove, ScopeServer, true},
+		{"room.remove-member at room", PermRoomMemberRemove, ScopeRoom, true},
 		{"message.manage at room", PermMessageManage, ScopeRoom, true},
 		{"room.create at server", PermRoomCreate, ScopeServer, true},
 		{"room.create at group", PermRoomCreate, ScopeGroup, true},
@@ -212,8 +237,8 @@ func TestPermissionsForScope(t *testing.T) {
 		if !found(PermRoomManage) {
 			t.Error("Expected room.manage in room permissions")
 		}
-		if !found(PermRoomMemberBan) {
-			t.Error("Expected room.ban-member in room permissions")
+		if !found(PermRoomMemberRemove) {
+			t.Error("Expected room.remove-member in room permissions")
 		}
 		if found(PermAdminUsersView) {
 			t.Error("admin.view-users should NOT be in room permissions")
@@ -297,6 +322,7 @@ func TestDefaultEveryonePermissions(t *testing.T) {
 		PermMessageReact,
 		PermMessageEcho,
 		PermBotCreate,
+		PermCallStart, PermCallJoin, PermCallVoice, PermCallCamera, PermCallScreenShare,
 	}
 	if !slices.Equal(DefaultEveryonePermissions(), want) {
 		t.Errorf("everyone server defaults = %v, want %v", DefaultEveryonePermissions(), want)
@@ -394,7 +420,7 @@ func TestValidatePermissionCatalog(t *testing.T) {
 func TestDefaultModeratorPermissions(t *testing.T) {
 	want := []Permission{
 		PermMessageManage,
-		PermRoomMemberBan,
+		PermRoomMemberRemove,
 	}
 	if !slices.Equal(DefaultModeratorPermissions(), want) {
 		t.Errorf("moderator server defaults = %v, want %v", DefaultModeratorPermissions(), want)
@@ -465,7 +491,7 @@ func TestPermissionConsistency(t *testing.T) {
 			PermRoomJoin,
 			PermRoomList,
 			PermRoomManage,
-			PermRoomMemberBan,
+			PermRoomMemberRemove,
 			PermMessageManage,
 			PermRoleManage,
 			PermRoleAssign,

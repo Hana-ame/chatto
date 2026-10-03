@@ -7,6 +7,11 @@ authorization, live events, backup and restore, and backend tests.
 
 - Chatto can run in more than one replica. Never use process-local
   serialization for correctness.
+- Replicas can run different versions during a rolling upgrade. When you add or
+  tighten a rule for credentials or sessions, such as a lifetime, a renewal
+  limit, or client acceptance, enforce it where Chatto validates the record, not
+  only where it issues or renews the record. An older replica can still write a
+  record that does not obey the new rule.
 - NATS JetStream/KV is the primary data store. Use JetStream OCC or KV
   `Create`/revision `Update` for uniqueness and cross-replica invariants.
 - Durable domain state belongs in `EVT`; latest-value runtime state belongs in
@@ -44,8 +49,12 @@ authorization, live events, backup and restore, and backend tests.
 
 - Public RPC API surface lives in ConnectRPC/protobuf or the planned wire
   protocol.
-- Keep ConnectRPC transport thin: authenticate, decode, map errors/responses,
-  and delegate policy/domain work to shared services.
+- Keep ConnectRPC transport thin: authenticate, decode, build responses, and
+  delegate policy/domain work to shared services.
+- Handlers return core errors directly. A shared interceptor maps them to
+  Connect codes through the `connectError` table; do not call `connectError`
+  in handlers. Code or tests that call a handler directly and inspect the code
+  must use `errorCode`, because direct calls skip the interceptor.
 - Keep projected read hydration out of ConnectRPC handlers. Put per-response
   batching, bounded concurrency, include-map construction, and protobuf response
   assembly in small `*_assembler.go` helpers near the service that owns the
@@ -77,6 +86,15 @@ authorization, live events, backup and restore, and backend tests.
   reach the local watcher before returning when read-your-writes matters.
   Watchers belong to the process lifecycle, never to a request, user, or
   WebSocket goroutine.
+- Give each KV watcher on `RUNTIME_STATE` exactly one key filter. JetStream
+  scans every message block for a watcher with more than one filter. The
+  bucket gets many writes and has thousands of sparse blocks. Thus, a
+  multi-filter watcher can delay startup by seconds. Use one wildcard for all
+  the necessary key families. Alternatively, use `watchKeyFilters`, which
+  merges one single-filter watcher for each family.
+- Do not rewrite a `RUNTIME_STATE` key with an unchanged value, unless the
+  write intentionally refreshes the key's TTL. Each write adds a stream
+  sequence and deletes the previous one.
 - Projection-backed decisions need OCC tokens for the same event-log prefix as
   the projected state. Do not decide from a projection and publish against an
   unrelated stream tail.
@@ -141,11 +159,11 @@ authorization, live events, backup and restore, and backend tests.
   envelope-aware effect consumers belong in `internal/evtstream`.
   The framework lives in the independently versioned `../pkg/events` module.
   It remains an unstable incubation surface and must not import Chatto
-  protobufs or `internal/evtstream`. Keep its production imports limited to
-  the Go standard library and `github.com/nats-io/nats.go`; application-wide
-  helpers must not become hidden extraction dependencies. Keep its tests
-  portable too: test infrastructure may add `nats-server/v2`, but must not
-  borrow other Chatto packages or unrelated third-party helpers.
+  protobufs or `internal/evtstream`. Keep its production imports within the
+  reviewed allowlist in `../pkg/events/AGENTS.md`; application-wide helpers
+  must not become hidden extraction dependencies. Keep its tests portable too:
+  test infrastructure may add `nats-server/v2`, but must not borrow other
+  Chatto packages or unrelated third-party helpers.
 - Drive reusable framework API changes from external-package consumer
   contracts with non-Chatto envelopes. Do not add generic framework surface
   merely to shorten Chatto wiring.
@@ -195,8 +213,8 @@ authorization, live events, backup and restore, and backend tests.
   contract-scoped generation, while an old binary retains its own schema and
   namespace. Bump the manual token when `Apply`, replay, cutoff, or restore
   semantics change without a schema change.
-- Most current snapshot contracts use semantic token `v1`; Assets and user
-  profile use `v2`, while Room Timeline uses `v3`. Keep password
+- Each codec declares its semantic token in its `snapshotContractID("vN", ...)`
+  call. Read the current token there before you bump it. Keep password
   verifiers, auth generations, external identity subjects, and OAuth consent in
   the independently cold-replayed `UserAuthProjection`; never add them to a
   profile snapshot schema or codec.
@@ -225,46 +243,67 @@ authorization, live events, backup and restore, and backend tests.
   potentially valid checkpoint. Define backup exclusion, deletion, and
   plaintext/privacy behavior for each checkpointed feature.
 
-## Live Events
+## Realtime Event Sources
 
 - Durable facts publish to `evt.>` through `EventPublisher`; JetStream republish
   exposes committed facts on `live.evt.>`.
-- Transient UI sync publishes `livev1.LiveEvent` on `live.sync.>` through
-  `publishLiveEvent`.
+- Non-durable pubsub activity publishes `pubsubv1.PubSubEvent` values on
+  `live.sync.>` through `publishUserPubSubEvent`,
+  `publishRoomPubSubEvent`, or a typed batch of the same scopes. Do not let a
+  caller supply an arbitrary pubsub subject. The publisher must derive the
+  subject from the payload type and verify all scope IDs.
+- A `live.sync.>` consumer must verify that the subject family, scope, suffix,
+  and payload IDs agree before it performs authorization. Reject wildcards,
+  extra tokens, unknown suffixes, and cross-user or cross-room mismatches.
 - Pick one delivery path per conceptual update. Do not double-publish both a
-  durable event and a transient live event for the same UI change.
+  durable event and a pubsub event for the same UI change.
 - Do not publish from projector `Apply` methods; every replica runs projectors.
 - Do not use a locally published NATS message as a global ordering fence for
   JetStream republish or messages from other replicas. Tie projection snapshots
   and stale-event suppression to authoritative EVT stream sequences.
 - `StreamMyEvents` is the authorized gate for realtime delivery. It waits for
   projection readiness and filters per subscriber before publishing events.
-- New live event types usually require protobuf, publishing, authorization,
-  realtime mapping, frontend subscription handling, and tests. If a visible room
-  timeline event is added, update the Connect timeline assembler and mapping
-  tests.
+- New client-visible event types require a dedicated payload in
+  `proto/chatto/realtime/v1/events.proto`, a matching `RealtimeEvent` union
+  member, authorization and mapping coverage, frontend subscription handling,
+  generated clients, documentation, and tests. Public names and compact field
+  numbers must not expose whether the source is `Event` or `PubSubEvent`.
+  Client-facing `PubSubEvent` variants must reference the public payload
+  directly, while the explicit mapper keeps the private union as the allow-list
+  for cursorless events. If a visible room timeline event is added, also update
+  the Connect timeline assembler and mapping tests.
 
 ## Authorization And RBAC
 
 - Core authorization source of truth lives around `cli/internal/core/permissions.go`,
-  `permission_resolver.go`, `can.go`, and FDR-001/ADR-040.
+  `permission_resolver.go`, `can.go`, FDR-001, ADR-040, ADR-096, and ADR-105.
 - Users are server-scoped. Spaces and rooms may be discoverable, but room
   message access requires room membership.
-- For non-owners, each direct-user or explicitly assigned role contributes its
-  nearest room/group/server decision. Denies win across those subjects. The
-  implicit `everyone` role supplies the scoped baseline: a named allow overrides
-  an everyone deny only at the same or a nearer scope. Effective owners bypass
-  normal permission decisions.
+- Each direct-user or explicitly assigned role contributes its nearest
+  room/group/server decision. Denies win across those subjects. The implicit
+  `everyone` role supplies the scoped baseline: a named allow overrides an
+  everyone deny only at the same or a nearer scope.
 - Effective owner means durable `owner` role or verified email matching
-  `owners.emails`.
-- DM rooms have an explicit privacy boundary; owners/admins/moderators do not
-  get moderation visibility into DM contents.
-- DM membership is the complete DM content-read boundary. `message.read`
-  applies only to channel rooms. Do not add a second DM read gate.
+  `owners.emails`. Owners are entitled to every permission, but the owner
+  override is effective only while the owner's session has active privileged
+  mode. Without it, owners resolve through the rules above like other users.
+  Entitlement paths (bot owner ceilings, delegation, privileged-mode
+  availability) keep the override.
+- Every transport that authorizes a human must attach the verified runtime
+  credential with `authctx.WithCredential` before it calls core. A context
+  without a credential counts as internal work and gets entitlement semantics,
+  including the owner override and elevation-required permissions.
+- Work that outlives its request, such as realtime fan-out, call connections,
+  notifications, and alerts, must choose its privileged-mode state explicitly.
+  Use the state of the receiving session, or the unprivileged view when no
+  single session applies. Use `withPrivilegedModeEvaluation` for a fixed state.
+- DM membership is mandatory for all DM access. The DM scope then controls all
+  `message.*` permissions. Owners do not bypass membership. Operators who are
+  not participants cannot read or manage a DM.
 - A bot must never start or fetch a DM through `RoomService.StartDM`, even when
   it has `message.post` or the DM already exists. A human must start the DM.
-  After that, the bot can read it through membership and can use its normal
-  message permissions inside it.
+  After that, the bot needs membership, an explicit bot grant, and sufficient
+  current authority from its owner.
 - Permission strings are opaque, stable identifiers. Punctuation helps humans
   recognize current identifiers, but it does not define authorization.
 - Define permission inclusion explicitly in the Go permission catalog. Validate
@@ -272,7 +311,7 @@ authorization, live events, backup and restore, and backend tests.
   metadata. Currently, `message.read` includes
   `message.read-interactions`.
 - Add permissions in Go first, regenerate frontend mirrors, and test scope and
-  DM-boundary behavior.
+  DM-scope behavior.
 - Targeted operations are permission-gated, not rank-gated: role assignment uses
   `role.assign`, direct user permissions use `user.manage-permissions`, room
   bans use `room.ban-member`. A non-owner's role assignment authority is bounded
@@ -350,6 +389,11 @@ mise x -- go test -tags test_endpoints ./internal/http_server -run TestName -tim
 ```
 
 - Always set a timeout for targeted Go tests.
+- Run `mise lint-cli` before you push backend changes. CI runs it. It runs
+  `go vet` and a staticcheck U1000 check over every build tag set. Delete
+  unused code; do not silence the check.
+- Do not keep production code that only tests call. The U1000 check counts
+  test usage, so it does not find this code.
 - Use table-driven tests where practical.
 - Treat fixture and setup errors as fatal before using returned values. Never
   discard an error from helpers such as `CreateRoom` or `CreateUser` and then
@@ -367,6 +411,47 @@ mise x -- go test -tags test_endpoints ./internal/http_server -run TestName -tim
   `//go:build test_endpoints`.
 - Use `go-smtp-mock` with `MultipleMessageReceiving: true` and
   `WaitForMessages` to avoid email-test races.
+
+## Multi-Server Smoke Tests
+
+Unit tests with `httptest` can miss integration faults between real servers,
+such as the ConnectRPC `/api/connect` mount prefix. When a feature makes one
+Chatto server contact another, run a local smoke test with more than one
+server.
+
+- Build a test binary from `cli/`. The `bootstrap` tag seeds accounts. The
+  `test_endpoints` tag lets the SSRF-guarded outbound client connect to
+  loopback addresses:
+
+  ```sh
+  CGO_ENABLED=0 mise x -- go build -tags 'bootstrap nomsgpack test_endpoints' \
+    -o ../.context/e2e/chatto .
+  ```
+
+  To test the bundled client in a browser, run `mise build-frontend` first.
+  The binary embeds the frontend build.
+- Give each server its own directory under `.context/e2e/`. Run
+  `../chatto init -c chatto.toml` there. Then set a unique `webserver.port`,
+  the matching `webserver.url` such as `http://localhost:4510`, and
+  `nats.embedded.http_port = 0` so that the monitoring ports do not collide.
+- Add a `[bootstrap]` section with one human user and one bot. Do not use a
+  reserved login such as `owner`. Give the bot the permissions that the
+  scenario needs and a `credential_file`. The bot's API key authenticates
+  admin RPCs without privileged mode:
+
+  ```sh
+  curl -s -X POST -H 'Content-Type: application/json' \
+    -H "Authorization: Bearer $(cat a/bot.key)" \
+    -d '{"origin":"http://localhost:4520"}' \
+    http://localhost:4510/api/connect/chatto.admin.v1.AdminServerService/CreateNeighbor
+  ```
+
+- Start a server only after the servers that it contacts at boot are
+  listening. Otherwise its first background pass can fail.
+- Sign in as the bootstrap user in Chrome DevTools MCP to verify client
+  behavior. Use the network request list to verify which origins the client
+  contacts.
+- Stop every server process before you hand control back to the user.
 
 ## Local Profiling
 
@@ -387,6 +472,17 @@ mise x -- go test -tags test_endpoints ./internal/http_server -run TestName -tim
   tool, not a production RSS model. Confirm meaningful wins against a restored
   real EVT history before shipping them. If the fixture event mix changes,
   bump its version so results from different workloads are not compared.
+- Run `mise bench-projections-store` to measure retained heap, request-path
+  reads, and replay against a real EVT history. Set
+  `CHATTO_BENCH_EVT_STORE_DIR` to a copy of a NATS data directory under
+  `.context/bench/`. Use an absolute path or a path relative to `cli/`. Never
+  use a live server's directory. The copy holds real user data; delete it
+  after use.
+- A projection memory change must not make request-path reads or replay
+  noticeably slower. Before you ship one, run `mise bench-projections-store`
+  on the target base and on the branch with the same data. Alternate the runs
+  and compare them with `benchstat`. Check read latency and allocations, not
+  only retained heap. Use a temporary `git worktree` for the base checkout.
 - For realtime connection-memory work, negotiate production WebSocket
   compression and use an external load generator so client allocations do not
   enter the server profile.

@@ -10,6 +10,8 @@ type Member = {
   avatarUrl: string | null;
   roles: string[];
   createdAt: string;
+  verifiedEmails?: string[];
+  primaryVerifiedEmail?: string | null;
   isBot?: boolean;
 };
 
@@ -71,6 +73,9 @@ class MockIntersectionObserver implements IntersectionObserver {
   }
 }
 
+// Page titles are tested separately from this page's partial route/server fixtures.
+vi.mock('$lib/render/pageTitle', () => ({ formatPageTitle: () => 'Chatto' }));
+
 vi.mock('$app/navigation', () => ({
   goto: mocks.goto,
   pushState: vi.fn(),
@@ -92,21 +97,16 @@ vi.mock('$lib/state/server/scope.svelte', () => ({
   })
 }));
 
-vi.mock('$lib/state/presenceCache.svelte', () => ({
-  getPresenceCache: () => ({ get: (_key: unknown, fallback: unknown) => fallback })
-}));
-
 vi.mock('$lib/state/userProfiles.svelte', () => ({
-    getLiveBio: () => null,
-    getLiveTimezone: () => null,
+  getLiveBotOwnerUserId: (_userId: string, fallback: string | null) => fallback,
+  getLiveBio: () => null,
+  getLiveTimezone: () => null,
   getLiveAvatarUrl: (_userId: string, avatarUrl: string | null) => avatarUrl,
   getLiveCustomStatus: () => null
 }));
 
-vi.mock('$lib/api-client/adminUsers', async () => {
-  const actual = await vi.importActual<typeof import('$lib/api-client/adminUsers')>(
-    '$lib/api-client/adminUsers'
-  );
+vi.mock('$lib/api/adminUsers', async () => {
+  const actual = await vi.importActual<typeof import('$lib/api/adminUsers')>('$lib/api/adminUsers');
   return {
     ...actual,
     createAdminUserManagementAPI: () => ({
@@ -130,6 +130,7 @@ function result(users: Member[], totalCount = users.length, hasMore = false) {
   return {
     roles: [{ name: 'admin', displayName: 'Admin' }],
     users,
+    consumedCount: users.length,
     totalCount,
     hasMore
   };
@@ -212,6 +213,34 @@ describe('server admin members pagination', () => {
     expect(container.textContent).toContain('Showing 21 of 21 member(s)');
   });
 
+  it('advances past a page whose IDs all disappeared before hydration', async () => {
+    queueResults({ ...result([], 21, true), consumedCount: 20 }, result([member(20)], 21));
+    const { container } = render(MembersPage);
+    await settle();
+    expect(observers).toHaveLength(1);
+    observers[0].trigger(true);
+    await settle();
+    expect(mocks.listMembers).toHaveBeenLastCalledWith(
+      { search: null, limit: 20, offset: 20 },
+      expect.anything()
+    );
+    expect(container.textContent).toContain('@member20');
+  });
+
+  it('keeps role labels when the final ID page is empty', async () => {
+    queueResults(result([{ ...member(0), roles: ['admin'] }], 21, true), {
+      ...result([], 1),
+      roles: []
+    });
+    const { container } = render(MembersPage);
+    await settle();
+    expect(container.textContent).toContain('Admin');
+    observers[0].trigger(true);
+    await settle();
+    expect(mocks.listMembers).toHaveBeenCalledTimes(2);
+    expect(container.textContent).toContain('Admin');
+  });
+
   it('searches from offset zero and hides load-more when the filtered page is complete', async () => {
     mocks.listMembers.mockImplementation((input: { search: string | null }) =>
       Promise.resolve(
@@ -258,5 +287,23 @@ describe('server admin members pagination', () => {
     await settle();
 
     expect(container.querySelector('[data-testid="bot-badge"]')).toBeTruthy();
+  });
+
+  it('shows only the explicitly selected primary email', async () => {
+    queueResults(
+      result([
+        {
+          ...member(0),
+          verifiedEmails: ['first@example.test', 'primary@example.test'],
+          primaryVerifiedEmail: 'primary@example.test'
+        }
+      ])
+    );
+
+    const { container } = render(MembersPage);
+    await settle();
+
+    expect(container.textContent).toContain('primary@example.test');
+    expect(container.textContent).not.toContain('first@example.test');
   });
 });

@@ -134,7 +134,7 @@ func (s *HTTPServer) setupOAuthRoutes() {
 			if errors.Is(err, core.ErrOAuthClientBlocked) {
 				c.JSON(http.StatusBadRequest, gin.H{
 					"error":             "invalid_client",
-					"error_description": "The OAuth client is blocked by this server",
+					"error_description": oauthClientBlockedDescription(client.ClientID),
 				})
 				return
 			}
@@ -254,7 +254,7 @@ func (s *HTTPServer) setupOAuthRoutes() {
 
 			credentials, userID, err := s.core.ExchangeAuthCodeForClientResourceSession(ctx, req.Code, req.CodeVerifier, req.RedirectURI, req.ClientID, strings.TrimSpace(req.Resource))
 			if err != nil {
-				writeOAuthCodeExchangeError(c, err)
+				writeOAuthCodeExchangeError(c, err, req.ClientID)
 				return
 			}
 			response := oauthBearerSessionResponse(credentials)
@@ -459,7 +459,7 @@ func oauthBearerSessionResponse(credentials core.BearerSessionCredentials) gin.H
 	}
 }
 
-func writeOAuthCodeExchangeError(c *gin.Context, err error) {
+func writeOAuthCodeExchangeError(c *gin.Context, err error, clientID string) {
 	status := http.StatusBadRequest
 	oauthErr := "invalid_grant"
 	desc := "Authorization code is invalid or has expired"
@@ -473,7 +473,7 @@ func writeOAuthCodeExchangeError(c *gin.Context, err error) {
 		desc = "client_id does not match the authorization request"
 	case errors.Is(err, core.ErrOAuthClientBlocked):
 		oauthErr = "invalid_client"
-		desc = "The OAuth client is blocked by this server"
+		desc = oauthClientBlockedDescription(clientID)
 	default:
 		status = http.StatusInternalServerError
 		oauthErr = "server_error"
@@ -485,6 +485,7 @@ func writeOAuthCodeExchangeError(c *gin.Context, err error) {
 
 func writeOAuthRefreshError(c *gin.Context, err error) {
 	if errors.Is(err, core.ErrRefreshRequestIDInvalid) {
+		log.Warn("OAuth token refresh rejected", "reason", "invalid_request_id")
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error":             "invalid_request",
 			"error_description": "refresh_request_id is invalid",
@@ -495,6 +496,16 @@ func writeOAuthRefreshError(c *gin.Context, err error) {
 		errors.Is(err, core.ErrRefreshTokenReused) ||
 		errors.Is(err, core.ErrRefreshTokenClientMismatch) ||
 		errors.Is(err, core.ErrOAuthClientBlocked) {
+		reason := "token_not_found"
+		switch {
+		case errors.Is(err, core.ErrRefreshTokenReused):
+			reason = "token_reuse"
+		case errors.Is(err, core.ErrRefreshTokenClientMismatch):
+			reason = "client_mismatch"
+		case errors.Is(err, core.ErrOAuthClientBlocked):
+			reason = "client_blocked"
+		}
+		log.Warn("OAuth token refresh rejected", "reason", reason)
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error":             "invalid_grant",
 			"error_description": "Refresh token is invalid, expired, or revoked",
@@ -632,7 +643,7 @@ func (s *HTTPServer) completeOAuthAuthorizeParamsURL(c *gin.Context, userID stri
 		if errors.Is(err, core.ErrOAuthClientBlocked) {
 			c.JSON(http.StatusBadRequest, gin.H{
 				"error":             "invalid_client",
-				"error_description": "The OAuth client is blocked by this server",
+				"error_description": oauthClientBlockedDescription(params.ClientID),
 			})
 			return "", false
 		}
@@ -644,7 +655,7 @@ func (s *HTTPServer) completeOAuthAuthorizeParamsURL(c *gin.Context, userID stri
 		return "", false
 	}
 	source := evtv1.OAuthClientSource_OAUTH_CLIENT_SOURCE_CIMD
-	if params.ClientID == config.ChattoDesktopOrigin {
+	if config.IsBuiltInOAuthClientID(params.ClientID) {
 		source = evtv1.OAuthClientSource_OAUTH_CLIENT_SOURCE_BUILT_IN
 	}
 	redirectOrigin, ok := s.pendingOAuthRedirectOrigin(params)
@@ -667,19 +678,25 @@ func (s *HTTPServer) completeOAuthAuthorizeParamsURL(c *gin.Context, userID stri
 		})
 		return "", false
 	}
+	// The loopback client's callback origins are members' local development
+	// addresses. Keep them out of the administrator inventory.
+	inventoryRedirectOrigin := redirectOrigin
+	if params.ClientID == config.ChattoLoopbackClientID {
+		inventoryRedirectOrigin = ""
+	}
 	code, err := s.core.CreateOAuthClientAuthorizationCodeForGrant(ctx, core.OAuthClientAuthorization{
 		UserID:         userID,
 		ClientID:       params.ClientID,
 		ClientName:     params.ClientName,
 		ClientOrigin:   params.ClientURI,
-		RedirectOrigin: redirectOrigin,
+		RedirectOrigin: inventoryRedirectOrigin,
 		Source:         source,
 	}, params.Resource, params.Scopes, params.RedirectURI, params.CodeChallenge, params.CodeChallengeMethod, authGeneration)
 	if err != nil {
 		if errors.Is(err, core.ErrOAuthClientBlocked) {
 			c.JSON(http.StatusBadRequest, gin.H{
 				"error":             "invalid_client",
-				"error_description": "The OAuth client is blocked by this server",
+				"error_description": oauthClientBlockedDescription(params.ClientID),
 			})
 			return "", false
 		}
@@ -761,6 +778,15 @@ func canonicalOrigin(u *url.URL) string {
 		host = "[" + hostname + "]"
 	}
 	return scheme + "://" + host
+}
+
+// oauthClientBlockedDescription explains a rejected authorization. The
+// loopback client is also rejected when the server does not enable it.
+func oauthClientBlockedDescription(clientID string) string {
+	if clientID == config.ChattoLoopbackClientID {
+		return "This server does not accept sign-in from clients on a local address"
+	}
+	return "The OAuth client is blocked by this server"
 }
 
 func isLoopbackOAuthRedirectHost(host string) bool {

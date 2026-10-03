@@ -1,6 +1,7 @@
-import { SvelteMap } from 'svelte/reactivity';
+import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 import { useServerScope } from '$lib/state/server/scope.svelte';
-import { createRoomCommandAPI } from '$lib/api-client/rooms';
+import { createRoomCommandAPI } from '@chatto/client/api/rooms';
+import { createMemberDirectoryAPI } from '@chatto/client/api/memberDirectory';
 import { useTypingEvent, type TypingEventData } from './useEvent.svelte';
 
 /** How long to display typing indicator after receiving an event (ms) */
@@ -25,23 +26,21 @@ interface TypingIndicatorConfig {
  * Typing indicator hook for a room or thread.
  * MUST be called during component initialization (uses getContext).
  *
- * Accepts a getter that returns the current config. The getter is called
- * inside an $effect, so reactive values read within it are automatically
- * tracked.
+ * Accepts a getter that returns the current config. Its room and thread values
+ * are tracked by an effect; the viewer ID is tracked by a derived value.
  */
 export function createTypingIndicator(getConfig: () => TypingIndicatorConfig) {
   const serverScope = useServerScope();
 
-  /** Current configuration snapshot */
+  /** Current room and thread snapshot, plus the reactive viewer ID. */
   let configRoomId: string | null = null;
   let configThreadRootEventId: string | null = null;
-  let configCurrentUserId: string | null = null;
+  const configCurrentUserId = $derived(getConfig().currentUserId);
 
   /** Map of userId -> TypingUser for users currently typing */
   const typingUsers = new SvelteMap<string, TypingUser>();
-
-  /** Version counter to force reactivity updates */
-  const state = $state({ version: 0 });
+  /** Limit missing-profile reads to one attempt during each typing burst. */
+  const profileReadAttempts = new SvelteSet<string>();
 
   /** Timestamp of last sent typing indicator */
   let lastSentAt = 0;
@@ -65,20 +64,28 @@ export function createTypingIndicator(getConfig: () => TypingIndicatorConfig) {
       userId: data.userId,
       lastTypingAt: Date.now()
     });
-    state.version++;
+    const profiles = serverScope.store.projection.users;
+    if (
+      !profiles.has(data.userId) &&
+      !profiles.isDeleted(data.userId) &&
+      !profileReadAttempts.has(data.userId)
+    ) {
+      profileReadAttempts.add(data.userId);
+      void serverScope.connection
+        .getAPI(createMemberDirectoryAPI)
+        .batchGetUsers([data.userId])
+        // Typing is transient. A later burst can retry without failing this one.
+        .catch(() => undefined);
+    }
   }
 
   function cleanupExpired() {
     const now = Date.now();
-    let changed = false;
     for (const [userId, user] of typingUsers) {
       if (now - user.lastTypingAt >= TYPING_TIMEOUT_MS) {
         typingUsers.delete(userId);
-        changed = true;
+        profileReadAttempts.delete(userId);
       }
-    }
-    if (changed) {
-      state.version++;
     }
   }
 
@@ -96,11 +103,11 @@ export function createTypingIndicator(getConfig: () => TypingIndicatorConfig) {
       (configRoomId !== config.roomId || configThreadRootEventId !== config.threadRootEventId)
     ) {
       typingUsers.clear();
+      profileReadAttempts.clear();
     }
 
     configRoomId = config.roomId;
     configThreadRootEventId = config.threadRootEventId;
-    configCurrentUserId = config.currentUserId;
   });
 
   // Cleanup on destroy
@@ -108,13 +115,13 @@ export function createTypingIndicator(getConfig: () => TypingIndicatorConfig) {
     return () => {
       clearInterval(cleanupInterval);
       typingUsers.clear();
+      profileReadAttempts.clear();
     };
   });
 
   return {
     /** Reactive list of user IDs currently typing (excludes current user) */
     get userIds(): string[] {
-      void state.version;
       if (!configCurrentUserId) return [];
       return Array.from(typingUsers.keys()).filter((id) => id !== configCurrentUserId);
     },
@@ -123,7 +130,7 @@ export function createTypingIndicator(getConfig: () => TypingIndicatorConfig) {
     removeTypingUser(userId: string) {
       if (typingUsers.has(userId)) {
         typingUsers.delete(userId);
-        state.version++;
+        profileReadAttempts.delete(userId);
       }
     },
 
@@ -143,7 +150,7 @@ export function createTypingIndicator(getConfig: () => TypingIndicatorConfig) {
       try {
         await serverScope.connection
           .getAPI(createRoomCommandAPI)
-          .updateTypingIndicator(configRoomId, configThreadRootEventId);
+          .refreshTypingIndicator(configRoomId, configThreadRootEventId);
       } catch (err) {
         console.debug('Failed to send typing indicator:', err);
       }

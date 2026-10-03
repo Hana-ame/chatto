@@ -5,6 +5,7 @@ import {
   test,
   type APIRequestContext,
   type Browser,
+  type Page,
   type TestInfo
 } from '@playwright/test';
 import { connectPost } from '../e2e/fixtures/connectHelpers';
@@ -27,8 +28,14 @@ interface PerformanceFixtureManifest {
 }
 
 interface ListMembersResponse {
-  members?: Array<{ user?: { login?: string } }>;
+  userIds?: string[];
+  // CI also runs this test against the base revision's pre-0.5 response.
+  members?: Array<{ user?: { id?: string; login?: string } }>;
   page?: { totalCount?: number | string; hasMore?: boolean };
+}
+
+interface BatchGetMembersResponse {
+  members?: Array<{ user?: { id?: string; login?: string } }>;
 }
 
 interface PerformanceMeasurements {
@@ -45,6 +52,7 @@ interface PerformanceMeasurements {
   membersPageMs: number;
   roomPageMs: number;
   realtimeDeliveryMs: number;
+  realtimeSnapshotBytes?: number;
 }
 
 interface PerformanceSample {
@@ -69,7 +77,7 @@ const sampledMetricNames = [
   'realtimeDeliveryMs'
 ] as const;
 
-const performanceMeasurementVersion = 'large-e2e-median-v1';
+const performanceMeasurementVersion = 'large-e2e-median-v3';
 
 const syntheticUsers = integerEnvironment('CHATTO_E2E_PERF_USERS', 2048);
 const messages = integerEnvironment('CHATTO_E2E_PERF_MESSAGES', 50_000);
@@ -83,7 +91,11 @@ const ceilings = {
   memberSearchApiMs: integerEnvironment('CHATTO_E2E_PERF_MAX_MEMBER_SEARCH_API_MS', 15_000),
   membersPageMs: integerEnvironment('CHATTO_E2E_PERF_MAX_MEMBERS_PAGE_MS', 30_000),
   roomPageMs: integerEnvironment('CHATTO_E2E_PERF_MAX_ROOM_PAGE_MS', 30_000),
-  realtimeDeliveryMs: integerEnvironment('CHATTO_E2E_PERF_MAX_REALTIME_MS', 15_000)
+  realtimeDeliveryMs: integerEnvironment('CHATTO_E2E_PERF_MAX_REALTIME_MS', 15_000),
+  realtimeSnapshotBytes: integerEnvironment(
+    'CHATTO_E2E_PERF_MAX_REALTIME_SNAPSHOT_BYTES',
+    2_000_000
+  )
 };
 
 test('large loaded server stays responsive across directory, timeline, and realtime', async ({
@@ -104,6 +116,12 @@ test('large loaded server stays responsive across directory, timeline, and realt
       samples.push(await measureLargeServer(browser, server, fixture, sample));
     }
     const statistics = summarizeSamples(samples);
+    const realtimeSnapshotBytes = await readServerMetric(
+      request,
+      server,
+      'chatto_realtime_snapshot_bytes',
+      booleanEnvironment('CHATTO_E2E_PERF_ALLOW_MISSING_REALTIME_SNAPSHOT_METRIC', false)
+    );
     const measurements: PerformanceMeasurements = {
       measurementVersion: performanceMeasurementVersion,
       sampleCount,
@@ -117,7 +135,8 @@ test('large loaded server stays responsive across directory, timeline, and realt
       memberSearchApiMs: statistics.memberSearchApiMs.median,
       membersPageMs: statistics.membersPageMs.median,
       roomPageMs: statistics.roomPageMs.median,
-      realtimeDeliveryMs: statistics.realtimeDeliveryMs.median
+      realtimeDeliveryMs: statistics.realtimeDeliveryMs.median,
+      realtimeSnapshotBytes
     };
     await attachMeasurements(testInfo, measurements, samples, statistics);
     await attachServerMetrics(request, testInfo, server);
@@ -142,6 +161,12 @@ test('large loaded server stays responsive across directory, timeline, and realt
       measurements.realtimeDeliveryMs,
       'receiver-visible realtime message'
     ).toBeLessThanOrEqual(ceilings.realtimeDeliveryMs);
+    if (measurements.realtimeSnapshotBytes !== undefined) {
+      expect(
+        measurements.realtimeSnapshotBytes,
+        'serialized realtime snapshot'
+      ).toBeLessThanOrEqual(ceilings.realtimeSnapshotBytes);
+    }
   } finally {
     await stopServer(server, testInfo);
   }
@@ -212,7 +237,7 @@ async function measureLargeServer(
     const memberListApiMs = performance.now() - memberListStarted;
     const totalMembers = Number(members.page?.totalCount ?? 0);
     expect(totalMembers).toBeGreaterThanOrEqual(fixture.syntheticUsers + 1);
-    expect(members.members?.length).toBe(Math.min(100, totalMembers));
+    expect((members.userIds ?? members.members)?.length).toBe(Math.min(100, totalMembers));
 
     const memberSearchStarted = performance.now();
     const memberSearch = await connectPost<ListMembersResponse>(
@@ -222,19 +247,28 @@ async function measureLargeServer(
     );
     const memberSearchApiMs = performance.now() - memberSearchStarted;
     expect(Number(memberSearch.page?.totalCount)).toBe(1);
-    expect(memberSearch.members?.[0]?.user?.login).toBe(fixture.lastUserLogin);
+    const searchIds =
+      memberSearch.userIds ?? memberSearch.members?.map((member) => member.user?.id);
+    expect(searchIds).toHaveLength(1);
+    // Keep the list timing separate from hydration, as in the admin client.
+    const hydratedSearch = await connectPost<BatchGetMembersResponse>(
+      page,
+      'chatto.admin.v1.AdminUserService/BatchGetMembers',
+      { userIds: searchIds }
+    );
+    expect(hydratedSearch.members?.[0]?.user?.login).toBe(fixture.lastUserLogin);
 
     const membersPageStarted = performance.now();
     await page.goto(routes.serverAdminMembers);
-    await expect(page.getByRole('heading', { name: 'Members', exact: true })).toBeVisible();
-    await expect(page.getByText(`@${fixture.firstUserLogin}`, { exact: true })).toBeVisible();
+    await waitForVisibleElement(page, 'h1, h2, h3, [role="heading"]', 'Members', { exact: true });
+    await waitForVisibleElement(page, 'body *', `@${fixture.firstUserLogin}`, { exact: true });
     const membersPageMs = performance.now() - membersPageStarted;
 
     const roomPageStarted = performance.now();
     await page.goto(routes.room(fixture.roomId));
-    const senderRoom = new RoomPage(page);
-    await senderRoom.expectMessageVisible(fixture.lastMessageBody);
+    await waitForVisibleElement(page, '[role="article"]', fixture.lastMessageBody);
     const roomPageMs = performance.now() - roomPageStarted;
+    const senderRoom = new RoomPage(page);
 
     const receiverPage = await receiverContext.newPage();
     await loginAsAdmin(receiverPage);
@@ -242,11 +276,22 @@ async function measureLargeServer(
     const receiverRoom = new RoomPage(receiverPage);
     await receiverRoom.expectMessageVisible(fixture.lastMessageBody);
 
+    // A room resource can render before the initial realtime reconciliation is
+    // complete. Measure steady-state delivery after both clients finish their
+    // current resource reads, not the remaining bootstrap work.
+    await Promise.all([
+      page.waitForLoadState('networkidle'),
+      receiverPage.waitForLoadState('networkidle')
+    ]);
+
     const liveBody = `Performance live delivery sample ${sample} ${Date.now()}`;
     const realtimeStarted = performance.now();
-    await senderRoom.sendMessage(liveBody);
-    await receiverRoom.expectMessageVisible(liveBody);
-    const realtimeDeliveryMs = performance.now() - realtimeStarted;
+    let realtimeDeliveredAt = 0;
+    const receiverDelivery = waitForRenderedMessage(receiverPage, liveBody).then(() => {
+      realtimeDeliveredAt = performance.now();
+    });
+    await Promise.all([senderRoom.sendMessage(liveBody), receiverDelivery]);
+    const realtimeDeliveryMs = realtimeDeliveredAt - realtimeStarted;
 
     return {
       memberListApiMs,
@@ -318,6 +363,63 @@ async function attachServerMetrics(
     body: await response.body(),
     contentType: 'text/plain'
   });
+}
+
+async function readServerMetric(
+  request: APIRequestContext,
+  server: ServerInfo,
+  name: string,
+  allowMissing = false
+): Promise<number | undefined> {
+  if (!server.metricsURL) throw new Error('server metrics are required for performance tests');
+  const response = await request.get(`${server.metricsURL}/metrics`);
+  if (!response.ok()) throw new Error(`metrics request failed: ${response.status()}`);
+  const match = (await response.text()).match(new RegExp(`^${name} ([0-9.eE+-]+)$`, 'm'));
+  if (!match && allowMissing) return undefined;
+  if (!match) throw new Error(`metric ${name} is missing`);
+  return Number(match[1]);
+}
+
+async function waitForRenderedMessage(page: Page, body: string): Promise<void> {
+  await page.waitForFunction(
+    (messageBody) =>
+      [...document.querySelectorAll('[role="article"]')].some((article) =>
+        article.textContent?.includes(messageBody)
+      ),
+    body,
+    { polling: 'raf' }
+  );
+}
+
+/**
+ * Waits until an element that matches `selector` shows `text` and is visible.
+ *
+ * Timed waits must use this helper, not `expect(...).toBeVisible()`. Playwright
+ * retries locator assertions after about 0, 300, and 800 ms, then every 500 ms.
+ * A timing that ends with such an assertion is therefore rounded up to the next
+ * retry. The samples then split into clusters about 500 ms apart, and a small
+ * change in load time can move the median from one cluster to the next. This
+ * helper checks on each animation frame instead.
+ */
+async function waitForVisibleElement(
+  page: Page,
+  selector: string,
+  text: string,
+  options: { exact?: boolean } = {}
+): Promise<void> {
+  await page.waitForFunction(
+    ({ selector, text, exact }) =>
+      [...document.querySelectorAll(selector)].some((element) => {
+        const content = element.textContent?.trim() ?? '';
+        const matches = exact ? content === text : content.includes(text);
+        if (!matches || !element.checkVisibility({ visibilityProperty: true })) return false;
+        // Match Playwright's definition of visible: a non-empty box, at any opacity.
+        const box = element.getBoundingClientRect();
+        return box.width > 0 && box.height > 0;
+      }),
+    { selector, text, exact: options.exact ?? false },
+    { polling: 'raf' }
+  );
 }
 
 function integerEnvironment(name: string, fallback: number): number {

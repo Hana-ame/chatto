@@ -2,11 +2,16 @@
 
 **Date:** 2026-03-01
 
+**Updated:** 2026-09-28. [ADR-111](ADR-111-move-client-state-into-chatto-client.md)
+moves the event caches into `@chatto/client`, which uses its own signals
+instead of runes. The signals also compare by reference, so this decision
+still applies to `signal`, `ReactiveMap`, and `ReactiveSet`.
+
 ## Context
 
 Chatto's frontend uses Svelte 5 runes (`$state`, `$derived`) for reactive state management. The room event stores receive realtime events and projected timeline refreshes, then cache renderable events for child components to consume.
 
-A performance investigation revealed that pushing *any* item to a `$state` array triggers every `$derived` expression that reads it. Even if downstream `$derived` chains immediately filter the item out (e.g., filtering by room ID), the entire chain re-evaluates because `.filter()` always produces a new array reference. This caused CPU spikes when high-frequency events like typing indicators were added to the cache.
+A performance investigation revealed that pushing _any_ item to a `$state` array triggers every `$derived` expression that reads it. Even if downstream `$derived` chains immediately filter the item out (e.g., filtering by room ID), the entire chain re-evaluates because `.filter()` always produces a new array reference. This caused CPU spikes when high-frequency events like typing indicators were added to the cache.
 
 The initial approach used a blacklist: cache everything, then filter out unwanted event types downstream. This failed because the damage (triggering the reactive chain) was already done by the time the filter ran.
 

@@ -2,38 +2,17 @@ syntax = "proto3";
 
 package chatto.api.v1;
 
+import "google/protobuf/field_mask.proto";
+import "google/protobuf/timestamp.proto";
 import "buf/validate/validate.proto";
 import "chatto/api/v1/external_identities.proto";
 import "chatto/api/v1/presence.proto";
 import "chatto/api/v1/user_status.proto";
 import "chatto/api/v1/users.proto";
 import "chatto/api/v1/viewer.proto";
-import "google/protobuf/descriptor.proto";
-
-// Request to update the authenticated user's profile. Human and bot accounts
-// use this same self-service operation. At least one field must be present.
-message UpdateProfileRequest {
-  // New display name, when changing it. Empty clears the explicit display
-  // name. The server also rejects control and confusing invisible characters.
-  optional string display_name = 1 [(buf.validate.field).string.max_len = 32];
-  // New login identifier, when changing it. The server accepts ASCII letters,
-  // digits, period, underscore, and hyphen, starting with a letter or digit.
-  optional string login = 2 [(buf.validate.field).string = {
-    min_len: 2
-    max_len: 32
-  }];
-  // New Markdown biography, when changing it. Empty clears the bio.
-  optional string bio = 3 [(buf.validate.field).string.max_len = 1000];
-}
-
-// Result of a profile update.
-message UpdateProfileResponse {
-  // Updated user profile.
-  User user = 1;
-}
 
 // Request to update or add the authenticated user's password.
-message UpdatePasswordRequest {
+message ChangePasswordRequest {
   // New password. The server applies the same password policy as registration
   // and password reset.
   string password = 1 [(buf.validate.field).string = {
@@ -46,20 +25,97 @@ message UpdatePasswordRequest {
 }
 
 // Result of updating or adding the authenticated account password.
-message UpdatePasswordResponse {
+message ChangePasswordResponse {
   // Current authenticated user profile after the password update.
   User user = 1;
 }
 
-// Request to update the authenticated user's display preferences. Omitted
-// fields are left unchanged. An empty timezone clears the explicit timezone.
+// One email address that the authenticated user has proved they control.
+message VerifiedEmail {
+  // Normalized email address.
+  string email = 1;
+  // Time at which the address was verified.
+  google.protobuf.Timestamp verified_at = 2;
+  // Whether account-directed email is sent to this address.
+  bool primary = 3;
+}
+
+// Request the authenticated user's verified email addresses. expected_user_id
+// binds the request to the account state that the client currently displays.
+// The server returns FAILED_PRECONDITION if the authenticated account changed.
+message ListVerifiedEmailsRequest {
+  // User ID that the client expects to be authenticated.
+  string expected_user_id = 1 [(buf.validate.field).string.min_len = 1];
+}
+
+// Verified email addresses for the authenticated user.
+message ListVerifiedEmailsResponse {
+  repeated VerifiedEmail verified_emails = 1;
+}
+
+// Request a short-lived verification code for an email address.
+message RequestEmailVerificationRequest {
+  // New address to verify and add to the authenticated user's account.
+  string email = 1 [(buf.validate.field).string = {email: true, max_len: 254}];
+  // User ID that the client expects to be authenticated.
+  string expected_user_id = 2 [(buf.validate.field).string.min_len = 1];
+}
+
+// Result of requesting an email verification code.
+message RequestEmailVerificationResponse {}
+
+// Confirm control of an email address with a verification code.
+message ConfirmEmailVerificationRequest {
+  // Address that received the verification code.
+  string email = 1 [(buf.validate.field).string = {email: true, max_len: 254}];
+  // Six-digit code that the server sent to the address.
+  string code = 2 [(buf.validate.field).string = {min_len: 1, max_len: 32}];
+  // User ID that the client expects to be authenticated.
+  string expected_user_id = 3 [(buf.validate.field).string.min_len = 1];
+}
+
+// Verified email addresses after a successful confirmation.
+message ConfirmEmailVerificationResponse {
+  repeated VerifiedEmail verified_emails = 1;
+}
+
+// Select a verified email for account-directed email.
+message SetPrimaryEmailRequest {
+  // Verified address to select as primary.
+  string email = 1 [(buf.validate.field).string = {email: true, max_len: 254}];
+  // User ID that the client expects to be authenticated.
+  string expected_user_id = 2 [(buf.validate.field).string.min_len = 1];
+}
+
+// Verified email addresses after the primary address changes.
+message SetPrimaryEmailResponse {
+  repeated VerifiedEmail verified_emails = 1;
+}
+
+// Request the authenticated user's display preferences. Human and bot accounts
+// use the same operation; no target account ID is accepted.
+message GetSettingsRequest {}
+
+// Current display preferences, with defaults for settings not yet saved.
+message GetSettingsResponse {
+  // The same settings resource returned by UpdateSettings and GetViewer.
+  UserSettings settings = 1;
+}
+
+// Request to patch the authenticated user's display preferences. update_mask
+// selects fields to apply or reset. Resetting timezone clears the override.
 message UpdateSettingsRequest {
   // IANA timezone override. Empty clears the override.
   optional string timezone = 1;
-  // Preferred time format.
-  optional TimeFormat time_format = 2;
+  // Preferred time format. UNSPECIFIED restores the automatic format.
+  optional TimeFormat time_format = 2 [(buf.validate.field).enum.defined_only = true];
   // Whether the stored time zone may appear on the user's public profile.
   optional bool share_timezone = 3;
+  // Editable fields to apply or reset: timezone, time_format, share_timezone.
+  // Omit to infer populated fields; * selects all editable fields. An explicit
+  // empty mask is invalid. Unselected values are ignored. Selected absent values
+  // reset the field to its default, subject to field validation.
+  google.protobuf.FieldMask update_mask = 4;
 }
 
 // Result of updating display preferences.
@@ -86,18 +142,44 @@ message DeleteMyAccountRequest {
 
 // Result of deleting the authenticated account.
 message DeleteMyAccountResponse {
-  // True when the account was deleted.
-  bool deleted = 1;
+  reserved 1;
+  reserved "deleted";
 }
 
-// Self-service account, profile, display preference, presence,
-// custom-status, external identity, and account lifecycle commands for the
-// authenticated user.
+// Self-service account, display preference, presence, custom-status,
+// external identity, and account lifecycle commands for the authenticated
+// user. Public profile and avatar changes use UserService.
 service MyAccountService {
-  // Updates the authenticated user's login, display name, and/or bio.
-  rpc UpdateProfile(UpdateProfileRequest) returns (UpdateProfileResponse);
   // Updates or adds the authenticated user's password.
-  rpc UpdatePassword(UpdatePasswordRequest) returns (UpdatePasswordResponse);
+  rpc ChangePassword(ChangePasswordRequest) returns (ChangePasswordResponse);
+  // Lists the authenticated user's verified email addresses and primary choice.
+  // Returns FAILED_PRECONDITION when the authenticated account does not match
+  // expected_user_id.
+  rpc ListVerifiedEmails(ListVerifiedEmailsRequest) returns (ListVerifiedEmailsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // Sends a six-digit code to an email address that the authenticated user
+  // wants to add. The code expires after the server-configured email OTP
+  // lifetime. The client can request a new code after expiry. The server must
+  // have transactional email enabled. Returns ALREADY_EXISTS when the address
+  // is already verified for the user, RESOURCE_EXHAUSTED after too many code
+  // requests or attempts, and UNAVAILABLE when email delivery is disabled or
+  // fails. Returns FAILED_PRECONDITION when the authenticated account does not
+  // match expected_user_id.
+  rpc RequestEmailVerification(RequestEmailVerificationRequest) returns (RequestEmailVerificationResponse);
+  // Confirms a verification code and adds the address to the account. Returns
+  // INVALID_ARGUMENT when the code is invalid or expired, and ALREADY_EXISTS
+  // when another user already controls the address. Returns FAILED_PRECONDITION
+  // when the authenticated account does not match expected_user_id.
+  rpc ConfirmEmailVerification(ConfirmEmailVerificationRequest) returns (ConfirmEmailVerificationResponse);
+  // Selects one verified address for future account-directed email. Returns
+  // NOT_FOUND when the address is not verified for the authenticated user, and
+  // FAILED_PRECONDITION when the authenticated account does not match
+  // expected_user_id.
+  rpc SetPrimaryEmail(SetPrimaryEmailRequest) returns (SetPrimaryEmailResponse);
+  // Reads the authenticated user's display preferences without changing them.
+  // Returns default settings when none have been saved.
+  rpc GetSettings(GetSettingsRequest) returns (GetSettingsResponse);
   // Updates the authenticated user's display preferences.
   rpc UpdateSettings(UpdateSettingsRequest) returns (UpdateSettingsResponse);
   // Lists configured external identity providers and identities linked to the
@@ -109,13 +191,24 @@ service MyAccountService {
   rpc StartExternalIdentityLink(StartExternalIdentityLinkRequest) returns (StartExternalIdentityLinkResponse);
   // Disconnects a provider identity from the authenticated account.
   rpc DisconnectExternalIdentity(DisconnectExternalIdentityRequest) returns (DisconnectExternalIdentityResponse);
-  // Updates the current user's live presence status. This state is transient:
-  // clients should refresh it periodically while visible, and should stop
-  // calling this RPC when the user chooses to appear offline.
-  rpc UpdatePresence(UpdatePresenceRequest) returns (UpdatePresenceResponse);
-  // Updates or replaces the current user's custom status. Emoji and text are
-  // required, and expires_at must be omitted or in the future.
-  rpc UpdateCustomStatus(UpdateCustomStatusRequest) returns (UpdateCustomStatusResponse);
+  // Legacy live presence report, expiring after 60 seconds without refresh.
+  // A saved private choice overrides this report, including user_selected.
+  // New clients use SetPresencePreference for choices and RefreshPresence
+  // every 30 seconds for liveness.
+  rpc SetPresence(SetPresenceRequest) returns (SetPresenceResponse);
+
+  // Reads the authenticated account's private saved availability choice.
+  rpc GetPresencePreference(GetPresencePreferenceRequest) returns (GetPresencePreferenceResponse);
+  // Saves a choice for all devices on this server. A stale revision returns ABORTED.
+  // OFFLINE suppresses public presence and typing; the choice survives disconnects.
+  rpc SetPresencePreference(SetPresencePreferenceRequest) returns (SetPresencePreferenceResponse);
+  // Refreshes connection liveness without changing the saved choice. Clients call
+  // every 30 seconds; liveness expires after 60 seconds without a refresh.
+  // Accounts with a saved OFFLINE choice may refresh without public presence signals.
+  rpc RefreshPresence(RefreshPresenceRequest) returns (RefreshPresenceResponse);
+  // Sets the current user's complete custom status. Emoji and text are required.
+  // Omit expires_at for no expiry, or supply a future time.
+  rpc SetCustomStatus(SetCustomStatusRequest) returns (SetCustomStatusResponse);
   // Deletes the current user's custom status. The call is idempotent and returns
   // the resulting empty status state.
   rpc DeleteCustomStatus(DeleteCustomStatusRequest) returns (DeleteCustomStatusResponse) {

@@ -7,6 +7,7 @@ import type { BinaryReadOptions, FieldList, JsonReadOptions, JsonValue, PartialM
 import { Message, proto3, Timestamp } from "@bufbuild/protobuf";
 import { PermissionGrant } from "./permissions_pb.js";
 import { Room } from "./rooms_pb.js";
+import { PageInfo, PageRequest } from "./pagination_pb.js";
 
 /**
  * Room kinds to include in directory responses.
@@ -15,14 +16,14 @@ import { Room } from "./rooms_pb.js";
  */
 export enum RoomDirectoryScope {
   /**
-   * Include visible channel rooms and readable active DM rooms.
+   * Include visible channel rooms and the caller's DM rooms.
    *
    * @generated from enum value: ROOM_DIRECTORY_SCOPE_UNSPECIFIED = 0;
    */
   UNSPECIFIED = 0,
 
   /**
-   * Include visible channel rooms and readable active DM rooms.
+   * Include visible channel rooms and the caller's DM rooms.
    *
    * @generated from enum value: ROOM_DIRECTORY_SCOPE_ALL = 1;
    */
@@ -36,7 +37,7 @@ export enum RoomDirectoryScope {
   CHANNELS = 2,
 
   /**
-   * Include the caller's readable active DM rooms only.
+   * Include the caller's DM rooms only.
    *
    * @generated from enum value: ROOM_DIRECTORY_SCOPE_DMS = 3;
    */
@@ -48,6 +49,48 @@ proto3.util.setEnumType(RoomDirectoryScope, "chatto.api.v1.RoomDirectoryScope", 
   { no: 1, name: "ROOM_DIRECTORY_SCOPE_ALL" },
   { no: 2, name: "ROOM_DIRECTORY_SCOPE_CHANNELS" },
   { no: 3, name: "ROOM_DIRECTORY_SCOPE_DMS" },
+]);
+
+/**
+ * Archive state to include in room directory responses.
+ *
+ * @generated from enum chatto.api.v1.RoomArchiveFilter
+ */
+export enum RoomArchiveFilter {
+  /**
+   * Include active rooms only.
+   *
+   * @generated from enum value: ROOM_ARCHIVE_FILTER_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * Include active rooms only.
+   *
+   * @generated from enum value: ROOM_ARCHIVE_FILTER_ACTIVE = 1;
+   */
+  ACTIVE = 1,
+
+  /**
+   * Include archived rooms only.
+   *
+   * @generated from enum value: ROOM_ARCHIVE_FILTER_ARCHIVED = 2;
+   */
+  ARCHIVED = 2,
+
+  /**
+   * Include both active and archived rooms.
+   *
+   * @generated from enum value: ROOM_ARCHIVE_FILTER_ALL = 3;
+   */
+  ALL = 3,
+}
+// Retrieve enum metadata with: proto3.getEnumType(RoomArchiveFilter)
+proto3.util.setEnumType(RoomArchiveFilter, "chatto.api.v1.RoomArchiveFilter", [
+  { no: 0, name: "ROOM_ARCHIVE_FILTER_UNSPECIFIED" },
+  { no: 1, name: "ROOM_ARCHIVE_FILTER_ACTIVE" },
+  { no: 2, name: "ROOM_ARCHIVE_FILTER_ARCHIVED" },
+  { no: 3, name: "ROOM_ARCHIVE_FILTER_ALL" },
 ]);
 
 /**
@@ -138,6 +181,22 @@ export class RoomWithViewerState extends Message<RoomWithViewerState> {
    */
   viewerState?: RoomViewerState;
 
+  /**
+   * Complete participant user IDs for a DM, including participants whose
+   * accounts were deleted. Clients show those as deleted users. Empty for
+   * channel rooms.
+   *
+   * @generated from field: repeated string member_user_ids = 15;
+   */
+  memberUserIds: string[] = [];
+
+  /**
+   * Whether this DM has received a root message. Absent for channel rooms.
+   *
+   * @generated from field: optional bool has_message_history = 16;
+   */
+  hasMessageHistory?: boolean;
+
   constructor(data?: PartialMessage<RoomWithViewerState>) {
     super();
     proto3.util.initPartial(data, this);
@@ -148,6 +207,8 @@ export class RoomWithViewerState extends Message<RoomWithViewerState> {
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
     { no: 1, name: "room", kind: "message", T: Room },
     { no: 14, name: "viewer_state", kind: "message", T: RoomViewerState },
+    { no: 15, name: "member_user_ids", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+    { no: 16, name: "has_message_history", kind: "scalar", T: 8 /* ScalarType.BOOL */, opt: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): RoomWithViewerState {
@@ -407,6 +468,21 @@ export class ListRoomsRequest extends Message<ListRoomsRequest> {
    */
   scope = RoomDirectoryScope.UNSPECIFIED;
 
+  /**
+   * Archive state to include. Defaults to ACTIVE. Combined with scope; this
+   * filter does not grant access to hidden rooms.
+   *
+   * @generated from field: chatto.api.v1.RoomArchiveFilter archive_filter = 2;
+   */
+  archiveFilter = RoomArchiveFilter.UNSPECIFIED;
+
+  /**
+   * Defaults to 50 rooms, capped at 100. Rooms are ordered by ID ascending.
+   *
+   * @generated from field: chatto.api.v1.PageRequest page = 3;
+   */
+  page?: PageRequest;
+
   constructor(data?: PartialMessage<ListRoomsRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -416,6 +492,8 @@ export class ListRoomsRequest extends Message<ListRoomsRequest> {
   static readonly typeName = "chatto.api.v1.ListRoomsRequest";
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
     { no: 1, name: "scope", kind: "enum", T: proto3.getEnumType(RoomDirectoryScope) },
+    { no: 2, name: "archive_filter", kind: "enum", T: proto3.getEnumType(RoomArchiveFilter) },
+    { no: 3, name: "page", kind: "message", T: PageRequest },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListRoomsRequest {
@@ -436,17 +514,25 @@ export class ListRoomsRequest extends Message<ListRoomsRequest> {
 }
 
 /**
- * Finite snapshot of rooms visible to the current user.
+ * One live page of rooms visible to the current user. Changes between requests
+ * can shift offsets. Follow page.has_more to read the complete directory.
  *
  * @generated from message chatto.api.v1.ListRoomsResponse
  */
 export class ListRoomsResponse extends Message<ListRoomsResponse> {
   /**
-   * Rooms matching the requested scope.
+   * Visible rooms matching both the room-kind scope and archive filter.
    *
    * @generated from field: repeated chatto.api.v1.RoomWithViewerState rooms = 1;
    */
   rooms: RoomWithViewerState[] = [];
+
+  /**
+   * Count after visibility, scope, and archive filters, before pagination.
+   *
+   * @generated from field: chatto.api.v1.PageInfo page = 2;
+   */
+  page?: PageInfo;
 
   constructor(data?: PartialMessage<ListRoomsResponse>) {
     super();
@@ -457,6 +543,7 @@ export class ListRoomsResponse extends Message<ListRoomsResponse> {
   static readonly typeName = "chatto.api.v1.ListRoomsResponse";
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
     { no: 1, name: "rooms", kind: "message", T: RoomWithViewerState, repeated: true },
+    { no: 2, name: "page", kind: "message", T: PageInfo },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListRoomsResponse {

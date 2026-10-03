@@ -24,6 +24,70 @@ import { TIMEOUTS } from './constants';
  */
 
 test.describe('Direct Messages (room-shaped)', () => {
+  test('Send message navigates before creating a hidden DM and delivers its first message', async ({
+    page,
+    chatPage,
+    roomPage,
+    browser,
+    serverURL
+  }) => {
+    const userA = await createAndLoginTestUser(page);
+    await chatPage.goto();
+    await chatPage.enterRoom('general');
+    const errors: string[] = [];
+    page.on('pageerror', (error) => errors.push(error.message));
+
+    await withServerUser(
+      browser,
+      serverURL,
+      async ({ page: peer, user: userB, chatPage: peerChat, roomPage: peerRoom }) => {
+        await peerChat.enterRoom('general');
+        const greeting = `DM context target ${Date.now()}`;
+        await peerRoom.sendMessage(greeting);
+        await roomPage.expectMessageVisible(greeting);
+        let release!: () => void;
+        const gate = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        let requestedAt = '';
+        await page.route('**/chatto.api.v1.RoomService/StartDM', async (route) => {
+          requestedAt = new URL(page.url()).pathname;
+          await gate;
+          await route.continue();
+        });
+        try {
+          const article = page.getByRole('article').filter({ hasText: greeting });
+          await article.locator('button').first().click({ button: 'right' });
+          const profile = page.getByRole('dialog', { name: 'User profile' });
+          await expect(profile).toBeVisible();
+          expect(requestedAt).toBe('');
+          await profile.getByRole('button', { name: 'Send Message', exact: true }).click();
+          await expect(page).toHaveURL(new RegExp(`/chat/-/dm/${userB.id}$`));
+          await expect.poll(() => requestedAt).toBe(`/chat/-/dm/${userB.id}`);
+          await expect(page.getByRole('status', { name: 'Loading...', exact: true })).toBeVisible();
+        } finally {
+          release();
+        }
+        await expect(roomPage.messageInput).toBeVisible();
+        await page.waitForURL(routes.patterns.anyRoom);
+        const canonicalURL = page.url();
+        await new DMPage(page).expectConversationNotVisible(userB.displayName);
+        await new DMPage(peer).expectConversationNotVisible(userA.displayName);
+        const body = `First context DM ${Date.now()}`;
+        await roomPage.sendMessage(body);
+        await new DMPage(page).expectConversationVisible(userB.displayName);
+        await new DMPage(peer).expectConversationVisible(userA.displayName);
+        const recipientRoom = await new DMPage(peer).openConversation(userA.displayName);
+        await recipientRoom.expectMessageVisible(body);
+        await expect(page).toHaveURL(canonicalURL);
+        await page.reload();
+        await expect(roomPage.messageInput).toBeVisible();
+        await expect(page).toHaveURL(canonicalURL);
+        expect(errors).toEqual([]);
+      }
+    );
+  });
+
   test('an empty DM stays hidden until its first attachment-only message', async ({
     page,
     browser,
@@ -67,20 +131,18 @@ test.describe('Direct Messages (room-shaped)', () => {
       await page.goto(routes.room(conversationId));
       await page.waitForURL(routes.patterns.anyRoom);
 
-      // Bug #1 (the silent post): ServerPresenceSync must subscribe to
-      // DM events too, so MessagePostedEvent reaches RoomEventsPane
+      // Bug #1 (the silent post): the server's realtime subscription must
+      // carry DM events too, so MessagePostedEvent reaches the room timeline
       // and the new message renders without a reload.
       const roomA = new RoomPage(page);
       const postedBody = `dm round-trip ${Date.now()}`;
       const postedMessage = await roomA.sendMessage(postedBody);
 
-      // DMs support flat reply attribution, but threads are a channel-room-only
-      // capability. The server-provided room capability must suppress thread
-      // actions on both desktop and mobile surfaces.
+      // DMs use fixed Enabled threading behavior. Both reply types are
+      // available on the normal message action surface.
       await postedMessage.revealHoverToolbar();
       await expect(postedMessage.hoverToolbar.getByLabel('Reply', { exact: true })).toBeVisible();
-      await expect(postedMessage.hoverToolbar.getByLabel('Reply in thread')).toHaveCount(0);
-      await expect(postedMessage.hoverToolbar.getByLabel('Open thread')).toHaveCount(0);
+      await expect(postedMessage.hoverToolbar.getByLabel('Reply in thread')).toBeVisible();
 
       // Bug #2 (the reload-redirect): on reload the rooms store is briefly
       // unloaded — the layout must wait for it before resolving spaceId,
@@ -160,8 +222,10 @@ test.describe('Direct Messages (room-shaped)', () => {
           page.locator('nav a.sidebar-item').filter({
             has: page.getByText(new RegExp(`^(${userB.displayName}|${userC.displayName})$`))
           });
-        const initial = await dmRows().allTextContents();
-        expect(initial[0]).toContain(userB.displayName);
+        // Navigation can show saved activity before realtime catch-up completes.
+        await expect(dmRows().first()).toContainText(userB.displayName, {
+          timeout: TIMEOUTS.REALTIME_EVENT
+        });
 
         // User C posts into their existing DM with A. A's sidebar should bump
         // C's row to the top and mark it unread — both arrive over the
@@ -333,7 +397,7 @@ test.describe('Direct Messages (room-shaped)', () => {
     });
   });
 
-  test('message.read denial does not hide a DM from its participant', async ({
+  test('message.read denial hides DM message content from its participant', async ({
     page,
     browser,
     serverURL
@@ -356,9 +420,9 @@ test.describe('Direct Messages (room-shaped)', () => {
       const dmRoomId = (await startResp.json()).room.id as string;
       await postMessageViaConnect(page, dmRoomId, 'seed');
 
-      // Deny both permissions before the regular user navigates. message.post
-      // must stop creating DMs and sending messages, while message.read is
-      // inapplicable to DM reads.
+      // Deny both permissions before the regular user navigates. Membership
+      // still exposes the conversation identity, but it does not bypass either
+      // message permission.
       const denyPostRole = await denyUserPermission(page, regularUser.id!, 'message.post');
       const denyReadRole = await denyUserPermission(page, regularUser.id!, 'message.read');
       try {
@@ -387,35 +451,19 @@ test.describe('Direct Messages (room-shaped)', () => {
           timeout: TIMEOUTS.UI_STANDARD
         });
 
-        // DM read access is membership-based, so the seeded DM still appears
-        // while message.post and message.read are denied.
-        await expect(regularPage.getByRole('button', { name: /direct messages/i })).toBeVisible({
-          timeout: TIMEOUTS.UI_STANDARD
-        });
-
         await regularPage.goto(routes.room(dmRoomId));
         await regularPage.waitForURL(routes.patterns.anyRoom);
 
         const roomPage = new RoomPage(regularPage);
-        await expect(roomPage.getMessage('seed').locator).toBeVisible({
-          timeout: TIMEOUTS.UI_STANDARD
-        });
+        await expect(
+          regularPage.getByText('You do not have permission to read messages in this room.')
+        ).toBeVisible({ timeout: TIMEOUTS.UI_STANDARD });
+        await expect(roomPage.getMessage('seed').locator).toBeHidden();
         const liveBody = `live DM after message.read denial ${Date.now()}`;
         await postMessageViaConnect(page, dmRoomId, liveBody);
-        await expect(roomPage.getMessage(liveBody).locator).toBeVisible({
-          timeout: TIMEOUTS.REALTIME_EVENT
-        });
+        await expect(roomPage.getMessage(liveBody).locator).toBeHidden();
         await expect(roomPage.messageInput).toHaveAttribute('contenteditable', 'false');
         await expect(roomPage.sendButton).toBeDisabled();
-
-        await roomPage
-          .getMessage('seed')
-          .locator.getByRole('button', { name: adminUser.displayName })
-          .click();
-
-        const profileDialog = regularPage.getByRole('dialog', { name: 'User profile' });
-        await expect(profileDialog).toBeVisible({ timeout: TIMEOUTS.UI_STANDARD });
-        await expect(profileDialog.getByRole('button', { name: 'Send Message' })).toBeHidden();
       } finally {
         await clearUserPermissionOverride(page, regularUser.id!, 'message.read', denyReadRole);
         await clearUserPermissionOverride(page, regularUser.id!, 'message.post', denyPostRole);

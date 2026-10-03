@@ -1,8 +1,8 @@
 import { toast } from '$lib/ui/toast';
-import { resolveFileMimeType } from '$lib/attachments/mimeTypes';
+import { m } from '$lib/i18n/messages';
 import { prepareFiles } from '$lib/attachments/prepareFiles';
 
-export type FileWithUrl = { file: File; url: string };
+export type FileWithUrl = { file: File; url: string; description: string };
 
 export type AttachmentLimits = {
   videoProcessingEnabled: boolean;
@@ -26,6 +26,12 @@ export class AttachmentsState {
     return this.filesWithUrls.map((f) => f.file);
   }
 
+  get descriptions() {
+    return this.filesWithUrls.flatMap(({ file, description }) =>
+      description.trim() ? [{ file, description }] : []
+    );
+  }
+
   restore(files: FileWithUrl[]): void {
     this.filesWithUrls = files;
   }
@@ -34,22 +40,20 @@ export class AttachmentsState {
     const limits = this.getLimits();
     const accepted: File[] = [];
     for (const file of files) {
-      // 【本地改动 2026-09-12】这里必须用 resolveFileMimeType 而不是
-      // file.type:上传方声明的 MIME 不可信(来自操作系统扩展名注册表),
-      // 直接按声明判视频会在 prepareFiles 纠正类型之前就把图片以
-      // "视频已禁用"拒掉,或让它占用视频体积上限。
-      // 顺序上 validateFiles 必须先于 prepareFiles——现有测试断言被拒文件
-      // 不触发 prepareFilesMock。
-      const isVideo = resolveFileMimeType(file).startsWith('video/');
+      const isVideo = file.type.startsWith('video/');
       if (isVideo && !limits.videoProcessingEnabled) {
-        toast.error('Video uploads are disabled on this server.');
+        toast.error(m('composer.upload.video_disabled'));
         continue;
       }
 
       const limit = isVideo ? limits.maxVideoUploadSize : limits.maxUploadSize;
       if (file.size > limit) {
         toast.error(
-          `${file.name} is too large (${formatFileSize(file.size)}). Maximum is ${formatFileSize(limit)}.`
+          m('composer.upload.too_large', {
+            filename: file.name,
+            size: formatFileSize(file.size),
+            limit: formatFileSize(limit)
+          })
         );
       } else {
         accepted.push(file);
@@ -61,7 +65,8 @@ export class AttachmentsState {
   filesToPreviewItems(files: File[]): FileWithUrl[] {
     return files.map((file) => ({
       file,
-      url: URL.createObjectURL(file)
+      url: URL.createObjectURL(file),
+      description: ''
     }));
   }
 
@@ -77,7 +82,7 @@ export class AttachmentsState {
       }
     } catch (err) {
       console.error('Error preparing attachment files:', err);
-      toast.error('Failed to prepare attachment');
+      toast.error(m('composer.upload.prepare_failed'));
     } finally {
       this.pendingCount -= validFiles.length;
     }
@@ -87,6 +92,12 @@ export class AttachmentsState {
     const removed = this.filesWithUrls[index];
     if (removed) URL.revokeObjectURL(removed.url);
     this.filesWithUrls = this.filesWithUrls.filter((_, i) => i !== index);
+  }
+
+  setDescription(index: number, description: string): void {
+    const attachment = this.filesWithUrls[index];
+    if (!attachment) return;
+    attachment.description = description.trim();
   }
 
   clear(): void {

@@ -1,11 +1,11 @@
 <script lang="ts">
   import { resolve } from '$app/paths';
-  import Panel from '$lib/ui/Panel.svelte';
+  import { Panel } from '$lib/ui';
   import { m } from '$lib/i18n/messages';
   import { serverIdToSegment } from '$lib/navigation';
   import { Checkbox } from '$lib/ui/form';
   import { toast } from '$lib/ui/toast';
-  import type { AdminMemberDetails } from '$lib/api-client/adminUsers';
+  import type { AdminMemberDetails } from '$lib/api/adminUsers';
 
   type Props = {
     details: AdminMemberDetails;

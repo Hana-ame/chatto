@@ -1,10 +1,14 @@
+import '../../../../app.css';
 import { ImageFitMode } from '@chatto/api-types/api/v1/common_pb';
 import { tick } from 'svelte';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
 import MessageAttachments from './MessageAttachments.svelte';
-import { VideoProcessingStatus, type MessageAttachmentView } from '$lib/render/messageAttachments';
-import type { RefreshedAttachmentUrls } from '$lib/attachments/attachmentUrls';
+import {
+  VideoProcessingStatus,
+  type MessageAttachmentView
+} from '@chatto/client/timeline/messageAttachments';
+import type { RefreshedAttachmentUrls } from '@chatto/client/attachments/attachmentUrls';
 
 const attachmentMocks = vi.hoisted(() => ({
   pushState: vi.fn(),
@@ -18,8 +22,8 @@ vi.mock('$app/navigation', () => ({
   replaceState: vi.fn()
 }));
 
-vi.mock('$lib/api-client/attachments', async (importActual) => ({
-  ...(await importActual<typeof import('$lib/api-client/attachments')>()),
+vi.mock('@chatto/client/api/attachments', async (importActual) => ({
+  ...(await importActual<typeof import('@chatto/client/api/attachments')>()),
   createAttachmentAPI: vi.fn(() => ({
     refreshAssetUrls: attachmentMocks.refreshAssetUrls
   }))
@@ -123,7 +127,7 @@ function hlsVideoAttachment(overrides: Partial<MessageAttachmentView> = {}): Mes
 
 function renderAttachments(
   attachments: MessageAttachmentView[],
-  options: { canDeleteAttachment?: boolean } = {}
+  options: { canDeleteAttachment?: boolean; canEditAttachmentDescription?: boolean } = {}
 ) {
   return render(MessageAttachments, {
     props: {
@@ -138,7 +142,7 @@ function renderAttachments(
 
 function renderAttachment(
   attachment: MessageAttachmentView,
-  options: { canDeleteAttachment?: boolean } = {}
+  options: { canDeleteAttachment?: boolean; canEditAttachmentDescription?: boolean } = {}
 ) {
   return renderAttachments([attachment], options);
 }
@@ -158,6 +162,162 @@ describe('MessageAttachments', () => {
     attachmentMocks.videoPlayerModuleLoaded.mockReset();
     attachmentMocks.refreshAssetUrls.mockResolvedValue(new Map());
   });
+
+  it.each([
+    'text/html',
+    'TEXT/HTML; charset=UTF-8',
+    'application/xhtml+xml',
+    ' Application/XHTML+XML ; charset=utf-8'
+  ])('opens %s in the HTML viewer without fetching the document', async (contentType) => {
+    const attachment = fileAttachment({ filename: 'report.html', contentType });
+    const view = renderAttachment(attachment);
+    await view.getByRole('button', { name: 'View report.html' }).click();
+    expect(attachmentMocks.pushState).toHaveBeenCalledWith('', {
+      modal: {
+        type: 'attachmentViewer',
+        serverId: 'server_1',
+        roomId: 'room_1',
+        eventId: 'event_1',
+        items: [
+          expect.objectContaining({ id: attachment.id, filename: attachment.filename, contentType })
+        ],
+        index: 0
+      }
+    });
+    expect(attachmentMocks.refreshAssetUrls).not.toHaveBeenCalled();
+    expect(view.container.querySelector('iframe')).toBeNull();
+  });
+
+  it.each(['audio/mpeg', 'video/mp4'])(
+    'pauses only the selected %s before opening its viewer',
+    async (contentType) => {
+      const attachment = fileAttachment({ filename: 'selected-media', contentType });
+      const view = renderAttachments([
+        attachment,
+        fileAttachment({ id: 'other', filename: 'other.mp3', contentType: 'audio/mpeg' })
+      ]);
+      const [selected, other] = view.container.querySelectorAll<HTMLMediaElement>('audio, video');
+      const pause = vi.spyOn(selected, 'pause');
+      const otherPause = vi.spyOn(other, 'pause');
+      await view.getByRole('button', { name: 'View selected-media', exact: true }).click();
+      expect(pause).toHaveBeenCalledOnce();
+      expect(otherPause).not.toHaveBeenCalled();
+      expect(attachmentMocks.pushState).toHaveBeenCalledWith('', {
+        modal: expect.objectContaining({
+          type: 'attachmentViewer',
+          index: 0,
+          items: [expect.objectContaining({ id: attachment.id })]
+        })
+      });
+    }
+  );
+
+  it.each([
+    hlsVideoAttachment(),
+    hlsVideoAttachment({ filename: 'loop.gif', contentType: 'image/gif' }),
+    fileAttachment({ filename: 'raw.mp4', contentType: 'video/mp4' }),
+    fileAttachment({ filename: 'voice.mp3', contentType: 'audio/mpeg' })
+  ])(
+    'opens $filename through an icon with an accessible filename and tooltip',
+    async (attachment) => {
+      const view = renderAttachment(attachment);
+      const button = view.getByRole('button', { name: `View ${attachment.filename}`, exact: true });
+      await expect.element(button).toHaveAttribute('title', `View ${attachment.filename}`);
+      await expect.element(button).toHaveTextContent('');
+      expect(view.container.querySelector('bdi')).toBeNull();
+      await button.click();
+      expect(attachmentMocks.pushState).toHaveBeenCalledWith('', {
+        modal: expect.objectContaining({
+          type: 'attachmentViewer',
+          items: [expect.objectContaining({ id: attachment.id })]
+        })
+      });
+    }
+  );
+
+  it.each([
+    [false, false],
+    [true, false],
+    [false, true],
+    [true, true]
+  ])(
+    'keeps audio actions compact and visible (delete: %s, edit: %s)',
+    async (canDeleteAttachment, canEditAttachmentDescription) => {
+      const { container } = renderAttachment(
+        fileAttachment({ filename: 'voice.mp3', contentType: 'audio/mpeg' }),
+        { canDeleteAttachment, canEditAttachmentDescription }
+      );
+      const buttons = [...container.querySelectorAll<HTMLButtonElement>('button')];
+      expect(buttons.map((button) => button.getAttribute('aria-label'))).toEqual([
+        ...(canDeleteAttachment ? ['Delete attachment'] : []),
+        'View voice.mp3',
+        ...(canEditAttachmentDescription ? ['Add description'] : [])
+      ]);
+      const audio = container.querySelector('audio')!;
+      const frame = audio.closest<HTMLElement>('[data-attachment-media]')!;
+      for (const width of [240, 120, 640]) {
+        container.style.width = `${width}px`;
+        await expect.poll(() => container.scrollWidth).toBeLessThanOrEqual(width);
+        const frameBounds = frame.getBoundingClientRect();
+        const audioBounds = audio.getBoundingClientRect();
+        for (const [index, button] of buttons.entries()) {
+          const bounds = button.getBoundingClientRect();
+          expect(bounds.left >= audioBounds.right || bounds.top >= audioBounds.bottom).toBe(true);
+          expect(bounds.left).toBeGreaterThanOrEqual(frameBounds.left);
+          expect(bounds.right).toBeLessThanOrEqual(frameBounds.right);
+          expect(bounds.bottom).toBeLessThanOrEqual(frameBounds.bottom);
+          expect(getComputedStyle(button.parentElement!).opacity).toBe('1');
+          if (width === 640) {
+            expect(frameBounds.height).toBeLessThanOrEqual(70);
+            if (index > 0) {
+              expect(bounds.left - buttons[index - 1].getBoundingClientRect().right).toBe(4);
+            }
+          }
+        }
+      }
+    }
+  );
+
+  it('uses equal padding around audio and file card contents', () => {
+    const { container } = renderAttachments(
+      [
+        fileAttachment({ id: 'audio', filename: 'voice.mp3', contentType: 'audio/mpeg' }),
+        fileAttachment({ id: 'file', filename: 'report.pdf' })
+      ],
+      { canDeleteAttachment: true, canEditAttachmentDescription: true }
+    );
+    container.style.width = '640px';
+    const cards = [...container.querySelectorAll<HTMLElement>('.attachment-card')];
+    expect(cards).toHaveLength(2);
+    for (const card of cards) {
+      const frame = card.getBoundingClientRect();
+      const first = card.firstElementChild!.getBoundingClientRect();
+      const last = card.lastElementChild!.getBoundingClientRect();
+      const border = parseFloat(getComputedStyle(card).borderTopWidth);
+      expect(first.left - frame.left - border).toBe(12);
+      expect(frame.right - last.right - border).toBe(12);
+      for (const child of [first, last]) {
+        expect(child.top - frame.top - border).toBe(12);
+        expect(frame.bottom - child.bottom - border).toBe(12);
+      }
+    }
+    expect(cards[0].getBoundingClientRect().height).toBe(cards[1].getBoundingClientRect().height);
+  });
+
+  it.each(['text/plain', 'application/pdf', 'application/xml'])(
+    'opens %s in the shared viewer',
+    async (contentType) => {
+      const view = renderAttachment(fileAttachment({ filename: 'report.html', contentType }));
+      await view.getByRole('button', { name: 'View report.html' }).click();
+      expect(attachmentMocks.pushState).toHaveBeenCalledWith('', {
+        modal: expect.objectContaining({
+          type: 'attachmentViewer',
+          items: [expect.objectContaining({ contentType })],
+          index: 0
+        })
+      });
+    }
+  );
 
   it('keeps the video player module out of non-video attachment rendering', async () => {
     renderAttachment(fileAttachment({}));
@@ -181,6 +341,7 @@ describe('MessageAttachments', () => {
 
     expect(button.getAttribute('style')).toContain('width: 40px');
     expect(button.getAttribute('style')).toContain('aspect-ratio: 40 / 200');
+    expect(button.getBoundingClientRect().height).toBeLessThanOrEqual(202);
     expect(image.className).toContain('object-contain');
     expect(image.className).not.toContain('object-cover');
     expect(image.className).toContain('h-full');
@@ -224,7 +385,179 @@ describe('MessageAttachments', () => {
     expect(image.className).toContain('w-full');
   });
 
-  it('uses a subtle attachment remove control when deletion is allowed', () => {
+  it('keeps a stable fog frame until an image without recorded dimensions loads', async () => {
+    const { container } = renderAttachment(
+      imageAttachment({ filename: 'unknown-size.jpg', width: 0, height: 0 })
+    );
+    const { image, button } = imageFrame(container, 'unknown-size.jpg');
+
+    expect(button.style.width).toBe('320px');
+    expect(button.style.aspectRatio).toBe('320 / 200');
+    expect(button.getBoundingClientRect().height).toBeCloseTo(200, 0);
+    expect(image.className).toContain('object-contain');
+    expect(button.querySelector('[data-loading-fog]')).not.toBeNull();
+
+    image.dispatchEvent(new Event('load'));
+    await vi.waitFor(() => expect(button.querySelector('[data-loading-fog]')).toBeNull());
+    expect(button.getBoundingClientRect().height).toBeCloseTo(200, 0);
+  });
+
+  it('scales a single image with the message width and preserves its proportions', async () => {
+    const { container } = renderAttachment(
+      imageAttachment({ filename: 'wide.jpg', width: 1600, height: 800 })
+    );
+    const { button } = imageFrame(container, 'wide.jpg');
+
+    for (const width of [240, 120, 640]) {
+      container.style.width = `${width}px`;
+      await vi.waitFor(() => {
+        const bounds = button.getBoundingClientRect();
+        expect(bounds.width).toBe(Math.min(width, 400));
+        expect(bounds.height).toBeCloseTo(bounds.width / 2, 0);
+        expect(container.scrollWidth).toBe(container.clientWidth);
+      });
+    }
+    expect(container.querySelector('[data-testid="message-image-gallery"]')).toBeNull();
+  });
+
+  it.each([true, false])(
+    'keeps video attachments and long filenames inside the message (processed: %s)',
+    async (processed) => {
+      const attachment = hlsVideoAttachment();
+      attachment.filename =
+        'A very long video attachment filename that must not widen the message.mp4';
+      if (!processed) {
+        attachment.videoProcessing = null;
+        attachment.assetUrl = {
+          url: 'https://chat.example.test/clip.mp4',
+          expiresAt: '2099-01-01T00:00:00Z'
+        };
+      }
+      const { container } = renderAttachment(attachment);
+      await expect
+        .poll(() =>
+          container.querySelector(
+            processed ? '[data-testid="message-attachments-video-player"]' : 'video'
+          )
+        )
+        .toBeTruthy();
+      const player = container.querySelector<HTMLElement>(
+        processed ? '[data-testid="message-attachments-video-player"]' : 'video'
+      )!;
+      const wrapper = player.parentElement!;
+      for (const width of [240, 120, 640]) {
+        container.style.width = `${width}px`;
+        await expect.poll(() => wrapper.getBoundingClientRect().width).toBeLessThanOrEqual(width);
+        expect(player.getBoundingClientRect().width).toBeLessThanOrEqual(width);
+        expect(container.scrollWidth).toBeLessThanOrEqual(width);
+      }
+    }
+  );
+
+  it.each([true, false])(
+    'keeps actions clear of playback controls on narrow videos (processed: %s)',
+    async (processed) => {
+      const attachment = processed
+        ? hlsVideoAttachment()
+        : fileAttachment({ filename: 'raw.mp4', contentType: 'video/mp4' });
+      const { container } = renderAttachment(attachment, {
+        canDeleteAttachment: true,
+        canEditAttachmentDescription: true
+      });
+      const playerSelector = processed
+        ? '[data-testid="message-attachments-video-player"]'
+        : 'video';
+      await expect.poll(() => container.querySelector(playerSelector)).toBeTruthy();
+      const player = container.querySelector<HTMLElement>(playerSelector)!;
+      const edit = container.querySelector<HTMLElement>('[aria-label="Add description"]')!;
+      for (const width of [120, 240, 320]) {
+        container.style.width = `${width}px`;
+        await expect.poll(() => player.getBoundingClientRect().width).toBeLessThanOrEqual(width);
+        expect(
+          player.getBoundingClientRect().bottom - edit.getBoundingClientRect().bottom
+        ).toBeGreaterThanOrEqual(48);
+      }
+    }
+  );
+
+  it('uses descriptions as image alt text and sends them to the image viewer', async () => {
+    const description = 'A chart with a rising blue line.';
+    const { container } = renderAttachment(imageAttachment({ description }));
+    const image = container.querySelector<HTMLImageElement>(`img[alt="${description}"]`)!;
+
+    expect(image).not.toBeNull();
+    expect(container.querySelector('button[aria-label="Show description"]')).toBeNull();
+    expect(image.closest('button')?.getAttribute('aria-describedby')).toBe(
+      'attachment-description-event_1-att_1'
+    );
+    image.closest('button')!.click();
+
+    await vi.waitFor(() => {
+      expect(attachmentMocks.pushState).toHaveBeenCalledWith('', {
+        modal: {
+          type: 'attachmentViewer',
+          serverId: 'server_1',
+          roomId: 'room_1',
+          eventId: 'event_1',
+          items: [expect.objectContaining({ id: 'att_1', filename: 'image.jpg', description })],
+          index: 0
+        }
+      });
+    });
+  });
+
+  it('stacks delete before edit and uses a file-edit icon for descriptions', () => {
+    const { container } = renderAttachment(imageAttachment({ description: 'A chart.' }), {
+      canDeleteAttachment: true,
+      canEditAttachmentDescription: true
+    });
+    const edit = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Edit description"]'
+    )!;
+    const remove = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Delete attachment"]'
+    )!;
+
+    expect([
+      ...container.querySelectorAll(
+        'button[aria-label="Delete attachment"], button[aria-label="Edit description"]'
+      )
+    ]).toEqual([remove, edit]);
+    expect(remove.getBoundingClientRect().bottom).toBeLessThanOrEqual(
+      edit.getBoundingClientRect().top
+    );
+    expect(edit.querySelector('span')?.classList.contains('icon-[uil--file-edit-alt]')).toBe(true);
+  });
+
+  it('associates file controls with descriptions and opens the edit dialog', () => {
+    const description = 'Quarterly results in PDF format.';
+    const { container } = renderAttachment(fileAttachment({ description }), {
+      canEditAttachmentDescription: true
+    });
+    const download = container.querySelector<HTMLButtonElement>(
+      'button[aria-label^="View document"]'
+    )!;
+
+    expect(download.getAttribute('aria-describedby')).toBe('attachment-description-event_1-file_1');
+    expect(container.querySelector('button[aria-label="Show description"]')).toBeNull();
+    const edit = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Edit description"]'
+    )!;
+    edit.click();
+
+    expect(attachmentMocks.pushState).toHaveBeenCalledWith('', {
+      modal: {
+        type: 'editAttachmentDescription',
+        serverId: 'server_1',
+        roomId: 'room_1',
+        eventId: 'event_1',
+        attachmentId: 'file_1',
+        description
+      }
+    });
+  });
+
+  it('uses the same management controls for images and ordinary files', () => {
     const { container } = renderAttachments(
       [
         imageAttachment({
@@ -232,7 +565,7 @@ describe('MessageAttachments', () => {
         }),
         fileAttachment({ filename: 'delete-me.pdf' })
       ],
-      { canDeleteAttachment: true }
+      { canDeleteAttachment: true, canEditAttachmentDescription: true }
     );
 
     const deleteControls = container.querySelectorAll<HTMLElement>(
@@ -240,11 +573,21 @@ describe('MessageAttachments', () => {
     );
 
     expect(deleteControls).toHaveLength(2);
-    expect(deleteControls[0].tagName).toBe('SPAN');
+    expect(deleteControls[0].tagName).toBe('BUTTON');
     expect(deleteControls[1].tagName).toBe('BUTTON');
     expect(deleteControls[1].getAttribute('title')).toBe('Delete attachment');
-    expect(deleteControls[1].className).toContain('attachment-remove-button');
-    expect(deleteControls[1].className).not.toContain('embed-control-button');
+    expect(deleteControls[1].className).toBe(deleteControls[0].className);
+    expect(getComputedStyle(deleteControls[1].parentElement!).opacity).toBe('1');
+    const editControls = container.querySelectorAll<HTMLElement>('[aria-label="Add description"]');
+    expect(editControls).toHaveLength(2);
+    expect(editControls[1].className).toBe(editControls[0].className);
+    expect(editControls[1].parentElement).toBe(deleteControls[1].parentElement);
+    expect(deleteControls[1].getBoundingClientRect().right).toBeLessThanOrEqual(
+      editControls[1].getBoundingClientRect().left
+    );
+    for (const control of deleteControls) {
+      expect(control.querySelector('span')?.classList.contains('icon-[uil--trash-alt]')).toBe(true);
+    }
 
     deleteControls[1].click();
     expect(attachmentMocks.pushState).toHaveBeenCalledWith('', {
@@ -271,7 +614,6 @@ describe('MessageAttachments', () => {
     const { container } = renderAttachments([gif, hlsVideoAttachment()]);
 
     await vi.waitFor(() => {
-      expect(attachmentMocks.videoPlayerModuleLoaded).toHaveBeenCalledOnce();
       expect(
         container.querySelectorAll('[data-testid="message-attachments-video-player"]')
       ).toHaveLength(2);
@@ -370,82 +712,48 @@ describe('MessageAttachments', () => {
     });
   });
 
-  it('does not open a different gallery image when the clicked image URL is cleared', async () => {
-    attachmentMocks.refreshAssetUrls.mockResolvedValue(
-      new Map([['cleared', emptyRefreshedUrls()]])
-    );
-    const { container } = renderAttachments([
-      imageAttachment({
-        id: 'cleared',
-        filename: 'cleared.jpg'
-      }),
-      imageAttachment({
-        id: 'kept',
-        filename: 'kept.jpg'
-      })
+  it('opens the requested image and preserves the complete gallery for the viewer', async () => {
+    const view = renderAttachments([
+      imageAttachment({ id: 'first', filename: 'first.jpg' }),
+      imageAttachment({ id: 'second', filename: 'second.jpg' }),
+      fileAttachment({ id: 'pdf', filename: 'report.pdf' })
     ]);
-
-    const { button } = imageFrame(container, 'cleared.jpg');
-    button.click();
-
-    await vi.waitFor(() => {
-      expect(attachmentMocks.refreshAssetUrls).toHaveBeenCalled();
+    await view.getByRole('button', { name: 'View second.jpg' }).click();
+    expect(attachmentMocks.pushState).toHaveBeenCalledWith('', {
+      modal: {
+        type: 'attachmentViewer',
+        serverId: 'server_1',
+        roomId: 'room_1',
+        eventId: 'event_1',
+        items: [
+          expect.objectContaining({ id: 'first' }),
+          expect.objectContaining({ id: 'second' })
+        ],
+        index: 1
+      }
     });
-    await vi.waitFor(() => {
-      expect(container.querySelector('img[alt="cleared.jpg"]')).toBeNull();
-    });
-    expect(attachmentMocks.pushState).not.toHaveBeenCalled();
+    expect(attachmentMocks.refreshAssetUrls).not.toHaveBeenCalled();
   });
 
-  it('opens the lightbox with a compressed display URL and a separate original URL', async () => {
-    attachmentMocks.refreshAssetUrls.mockResolvedValue(
-      new Map([
-        [
-          'att_1',
-          {
-            assetUrl: {
-              url: 'https://cdn.example.test/original.jpg',
-              expiresAt: '2027-05-29T15:00:00Z'
-            },
-            thumbnailAssetUrl: {
-              url: 'https://cdn.example.test/lightbox.jpg',
-              expiresAt: '2027-05-29T15:00:00Z'
-            },
-            videoThumbnailAssetUrl: null,
-            variantAssetUrls: new Map()
-          }
-        ]
-      ])
-    );
-    const { container } = renderAttachment(imageAttachment({ filename: 'large.jpg' }));
-
-    imageFrame(container, 'large.jpg').button.click();
-
-    await vi.waitFor(() => {
-      expect(attachmentMocks.refreshAssetUrls).toHaveBeenCalledWith('room_1', ['att_1'], {
-        width: 2048,
-        height: 2048,
-        fit: ImageFitMode.CONTAIN
-      });
-      expect(attachmentMocks.pushState).toHaveBeenCalledWith('', {
-        modal: {
-          type: 'imageViewer',
-          serverId: 'server_1',
-          roomId: 'room_1',
-          eventId: 'event_1',
-          imageItems: [
-            {
-              id: 'att_1',
-              src: 'https://cdn.example.test/lightbox.jpg',
-              originalSrc: 'https://cdn.example.test/original.jpg',
-              alt: 'large.jpg',
-              filename: 'large.jpg'
-            }
-          ],
-          imageIndex: 0
-        }
-      });
-    });
+  it('updates gallery fades as its viewport scrolls and resizes', async () => {
+    const { container } = renderAttachments([
+      imageAttachment({ id: 'first', width: 1600, height: 900 }),
+      imageAttachment({ id: 'second', width: 1600, height: 900 })
+    ]);
+    const gallery = container.querySelector<HTMLElement>('[data-testid="message-image-gallery"]')!;
+    const fades = () =>
+      ['start', 'end'].map(
+        (edge) =>
+          !container
+            .querySelector(`[data-testid="message-image-gallery-${edge}-fade"]`)!
+            .classList.contains('opacity-0')
+      );
+    gallery.style.width = '200px';
+    await vi.waitFor(() => expect(fades()).toEqual([false, true]));
+    gallery.scrollLeft = gallery.scrollWidth;
+    await vi.waitFor(() => expect(fades()).toEqual([true, false]));
+    gallery.style.width = '1000px';
+    await vi.waitFor(() => expect(fades()).toEqual([false, false]));
   });
 
   it('renders multiple images inside a horizontal gallery with equal-height frames', () => {
@@ -468,15 +776,15 @@ describe('MessageAttachments', () => {
     expect(gallery).not.toBeNull();
     expect(gallery!.className).toContain('overflow-x-auto');
     expect(gallery!.className).toContain('overscroll-x-contain');
-    expect(gallery!.className).toContain('gap-3');
-    expect(gallery!.className).toContain('p-1');
+    expect(gallery!.firstElementChild!.className).toContain('gap-3');
+    expect(gallery!.firstElementChild!.className).toContain('p-1');
     expect(gallery!.parentElement?.className).toContain('w-full');
     expect(gallery!.parentElement?.getAttribute('style')).toBeNull();
     expect(
-      container.querySelector('[data-testid="message-image-gallery-left-fade"]')
+      container.querySelector('[data-testid="message-image-gallery-start-fade"]')
     ).not.toBeNull();
     expect(
-      container.querySelector('[data-testid="message-image-gallery-right-fade"]')
+      container.querySelector('[data-testid="message-image-gallery-end-fade"]')
     ).not.toBeNull();
 
     const buttons = Array.from(gallery!.querySelectorAll<HTMLButtonElement>('button'));
@@ -603,7 +911,7 @@ describe('MessageAttachments', () => {
 
     const gallery = container.querySelector<HTMLElement>('[data-testid="message-image-gallery"]');
     const downloadButton = container.querySelector<HTMLButtonElement>(
-      'button[aria-label^="Download"]'
+      'button[aria-label^="View document"]'
     );
 
     expect(gallery).not.toBeNull();

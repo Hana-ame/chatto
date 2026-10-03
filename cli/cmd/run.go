@@ -6,14 +6,9 @@ import (
 	"fmt"
 	"hmans.de/chatto/internal/pb/chatto/core/notification/v1"
 	"hmans.de/chatto/internal/pb/chatto/core/runtime_state/v1"
-	// 【本地改动 92d33bff】bind_address 支持需要 net.JoinHostPort 拼监听地址；
-	// 2026-08-29 合并 upstream 时本地导入与 upstream 新增的两个 pb 导入同处冲突，
-	// 两者都保留（upstream 侧 notificationv1/runtimestatev1 均为有效引用）。
 	"net"
-	"net/url"
 	"os"
 	"os/signal"
-	"strconv"
 	"strings"
 	"time"
 
@@ -174,6 +169,7 @@ func runServer(configPath string) {
 	// Create Chatto core
 	cfg.Core.AuthTokenTTL = cfg.Auth.TokenTTLOrDefault()
 	cfg.Core.AuthAccessTokenTTL = cfg.Auth.AccessTokenTTLOrDefault()
+	cfg.Core.AuthLoopbackClientEnabled = cfg.Auth.LoopbackClientEnabled
 	cfg.Core.EmailOTP = cfg.Auth.EmailOTP
 	cfg.Core.Replicas = cfg.NATS.ReplicasOrDefault()
 	cfg.Core.Limits = cfg.Limits
@@ -186,41 +182,11 @@ func runServer(configPath string) {
 		exitCode = 1
 		return
 	}
-	// Set asset base URL for absolute asset URLs (required for cross-origin clients)
-	if cfg.Webserver.URL != "" {
-		if parsed, err := url.Parse(cfg.Webserver.URL); err == nil {
-			chattoCore.AssetBaseURL = parsed.Scheme + "://" + parsed.Host
-		}
-	}
-
 	// Set video upload limit if video processing is enabled
 	if cfg.Video.Enabled {
 		chattoCore.VideoMaxUploadSize = int64(cfg.Video.MaxUploadSizeOrDefault())
-		// 【本地改动 2026-09-12】fork 不再把视频送进转码管线:视频原样存、
-		// 原样发。这里刻意不设 VideoUploadsEnabled=true,于是
-		// AssetUploadModel 不会给附件打 needs_video_processing,
-		// PostMessage 也不会发 AssetProcessingStarted,durable worker 全程
-		// 空转。上游的行为(生成 mp4 变体 + HLS + 缩略图)在 fork 里被停用,
-		// 但 video.enabled 仍然决定视频能不能上传、体积上限是多少。
-		// 为什么停用:衍生视频让"上传即见"变成"等 worker",worker 一旦没
-		// 跑起来用户就只能看到永远转圈的附件;fork 是自用单实例,原样发
-		// mp4/webm 浏览器都能直接播,不需要多档码率。
+		chattoCore.VideoUploadsEnabled = true
 	}
-
-	// ffmpeg 重编码上传的附件图片为原尺寸 AVIF。优先用配置的路径;为空则从
-	// PATH 查找;ffmpeg 缺失时保持原图字节。
-	// 【背景 2026-08-14】合并 upstream main 后,上游把 ffmpeg 配置从
-	// VideoConfig 移到了 AssetProcessingConfig(上游把视频处理改成
-	// durable worker 架构),这里跟着改读取位置,否则编译不过。
-	// 【本地改动 2026-09-02】存储格式从 AVIF 改为 WebP,字段曾改为
-	// WebPEnabledOrDefault。
-	chattoCore.FFmpegPath = cfg.AssetProcessing.FFmpegPath
-	// avif_enabled = false(或已废弃的 webp_enabled = false)时保持原图,
-	// 且完全不探测/不调用 ffmpeg。只影响 room 附件(头像/branding/链接预览
-	// 始终是 Go 直出的 WebP)。
-	chattoCore.WebPEnabled = cfg.AssetProcessing.WebPEnabledOrDefault()
-	// 【本地改动 2026-09-12】存储格式回到 AVIF:上传路径的唯一重编码开关。
-	chattoCore.AVIFEnabled = cfg.AssetProcessing.AVIFEnabledOrDefault()
 
 	if err := chattoCore.EnableLiveKitCallReconciliation(cfg.LiveKit); err != nil {
 		log.Error("Failed to configure LiveKit call-state reconciliation", "error", err)
@@ -268,6 +234,11 @@ func runServer(configPath string) {
 
 	// Run dev startup hook (auto-bootstrap in dev builds, no-op in prod)
 	devStartupHook(ctx, chattoCore, cfg)
+	if err := chattoCore.CompleteBootstrappedSetup(ctx); err != nil {
+		log.Error("Failed to complete bootstrapped setup", "error", err)
+		exitCode = 1
+		return
+	}
 
 	unitRegistrations := runtimeUnitRegistrations()
 	if err := runtimeunit.ValidateRegistrations(unitRegistrations); err != nil {
@@ -292,11 +263,10 @@ func runServer(configPath string) {
 	}
 
 	// Create and run HTTP server
-	// 【本地改动 92d33bff】支持配置 webserver 监听地址 bind_address。
-	// 【目的】cloudcone 部署时通过 nginx 反代,chatto 只需监听
-	// 127.0.0.1,不暴露公网端口。上游只有 :port 一种写法(绑定全部
-	// 接口),本地加了 BindAddressOrDefault():未配置时返回 ":" 保持
-	// 上游行为不变;配置了则用 net.JoinHostPort 拼地址。
+	// 【本地改动 92d33bff】支持配置 webserver 监听地址 bind_address（cloudcone
+	// 部署：nginx 反代 + 只监听 127.0.0.1，不暴露公网端口）。上游只有 :port
+	// 一种写法（绑定全部接口）。BindAddressOrDefault() 未配置时返回 ":"，保持
+	// 上游行为不变；配置了则用 net.JoinHostPort 拼地址。
 	bind := cfg.Webserver.BindAddressOrDefault()
 	var addr string
 	if bind == ":" {
@@ -465,7 +435,7 @@ func setupPushNotifications(chattoCore *core.ChattoCore, cfg config.ChattoConfig
 			return &push.Payload{
 				Title: "Test notification",
 				Body:  "Push notifications are working.",
-				URL:   push.NavigationBaseURL(subscription, cfg.Webserver.URL),
+				URL:   push.NavigationBaseURL(subscription, cfg.Webserver.URL, cfg.Webserver.ServerOrigins()...),
 				Icon:  "/icons/icon-192.png",
 				Badge: "/icons/icon-192.png",
 				Tag:   "push-test",
@@ -527,10 +497,6 @@ func notificationAlertHandler(chattoCore *core.ChattoCore, cfg config.ChattoConf
 			}
 		}
 		payloadCtx := fetchOccurrencePayloadContext(ctx, chattoCore, occurrence, logger)
-		appBadge := ""
-		if count, countErr := chattoCore.NotificationOccurrences().UnreadCount(ctx, occurrence.GetRecipientId()); countErr == nil {
-			appBadge = strconv.Itoa(count)
-		}
 
 		// Revalidate after hydration so a concurrent delete or visibility purge
 		// cannot overtake a slow alert preparation.
@@ -569,8 +535,8 @@ func notificationAlertHandler(chattoCore *core.ChattoCore, cfg config.ChattoConf
 				cfg.Webserver.URL,
 				subscription,
 				payloadCtx,
+				cfg.Webserver.ServerOrigins()...,
 			)
-			payload.AppBadge = appBadge
 			payload.DeliveryDeadline = alertDeadline
 			return payload
 		})

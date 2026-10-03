@@ -2,7 +2,12 @@
 
 **Date:** 2026-08-10
 
-**Updated:** 2026-08-30
+> **Amended 2026-09-27:** [ADR-109](ADR-109-compute-badge-attention-from-projections.md)
+> replaces the stored Badge marker. Badge attention is computed from the
+> notification decision projection, the read boundary, and the visibility
+> boundary when it is read. The materializer no longer writes Badge state.
+
+**Updated:** 2026-09-05
 
 ## Context
 
@@ -186,7 +191,8 @@ Room/thread read reconciliation, visibility-loss boundaries, and Badge output
 remain bounded latest-value records in `RUNTIME_STATE`. The boundary records
 are cross-stream coordination state, not notification history. A Badge record
 stores only the latest source needed to compute neutral unread attention. One
-process-wide filtered KV watcher indexes all three families; successful local
+process-wide index watches the three families, with one single-filter KV
+watcher for each family; successful local
 writes wait for their exact KV
 revision to enter that index before dependent work continues. Badge marker
 keys use bounded concurrent OCC writes and one collective applied-revision
@@ -212,17 +218,16 @@ root event, in addition to advancing the Message Read Cursor. This operation
 makes older Badge attention inactive and uses the same repair handshake as an
 explicit room read.
 
-Realtime `NotificationOccurrencesInvalidated` messages are transient hints.
-They can carry one opaque sound-candidate notification ID but never expose
-JetStream coordinates. The receiving replica fences the notification
-projection, revalidates any candidate, and sends an authoritative finite
-replacement plus a positive `play_notification_sound` instruction. The legacy
-alert-candidate field remains for older replicas and is set only for a
-push-eligible occurrence. Missing or reordered invalidations cannot play a
-sound across the current policy, DND, visibility, read, or removal boundary.
-Clients deduplicate the one-shot sound by projection-event ID and quietly
-reconcile the authoritative first page once per minute. This reconciliation
-bounds stale counts when a best-effort invalidation is lost.
+Realtime `NotificationOccurrencesChanged` messages are transient hints.
+Each creation hint contains its notification ID, including creations during
+Do Not Disturb or with an initial Read state. Updates and removals omit the ID.
+The public payload does not expose JetStream coordinates or direct sound playback.
+The client reads current notification state and decides whether to play a sound.
+The bundled frontend checks its local Do Not Disturb setting and the retained
+unread occurrence. It remembers 256 creation IDs per server subscription and
+plays at most once per completed read batch. Failed reads and missing rows stay
+silent. Quiet reconciliation once per minute bounds stale counts after a lost
+hint; it does not play old sounds. Web Push retains its server-side delivery checks.
 
 ### Retention and automatic expiry
 

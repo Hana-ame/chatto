@@ -1,12 +1,10 @@
 <script lang="ts">
   import { PresenceStatus } from '@chatto/api-types/api/v1/presence_pb';
   import { untrack } from 'svelte';
+  import type { UserAvatarUserView } from '@chatto/client/timeline/users';
   import { m } from '$lib/i18n/messages';
-  import type { UserAvatarUserView } from '$lib/render/users';
   import { getLiveAvatarUrl, getLiveCustomStatus } from '$lib/state/userProfiles.svelte';
-  import { getPresenceCache } from '$lib/state/presenceCache.svelte';
   import { getAvatarInitials } from '$lib/utils/initials';
-  import SkeletonImg from '$lib/ui/SkeletonImg.svelte';
   import UserCustomStatusBadge from './UserCustomStatusBadge.svelte';
 
   type AvatarUser = Omit<UserAvatarUserView, 'deleted'> & { deleted?: boolean };
@@ -66,7 +64,7 @@
   };
   let {
     user,
-    serverId,
+    presence: livePresence,
     size = 'md',
     showPresence = false,
     showStatus = false,
@@ -74,12 +72,12 @@
     class: className = ''
   }: {
     user: AvatarUser;
-    /** Server identity for live presence. Omit when only static avatar data is rendered. */
-    serverId?: string;
+    /** Current presence from the owner's server store. Default: the presence in `user`. */
+    presence?: PresenceStatus;
     size?: Size;
     showPresence?: boolean;
     showStatus?: boolean;
-    /** Disable app-context profile/presence lookups for static directory renderers. */
+    /** Disable app-context profile lookups for static directory renderers. */
     useLiveProfile?: boolean;
     class?: string;
   } = $props();
@@ -87,7 +85,6 @@
   // Context capture is an initialization concern; callers do not switch one
   // mounted avatar between static and live modes.
   const liveProfileEnabled = untrack(() => useLiveProfile);
-  const presenceCache = liveProfileEnabled ? getPresenceCache() : null;
   // Guard all derived computations against null user — during tab resume/reconnect,
   // fragment data can be transiently null. An unguarded crash here poisons Svelte 5's
   // reactive graph and deadlocks the entire UI.
@@ -100,16 +97,11 @@
         : (user.avatarUrl ?? null)
       : null
   );
+  let failedAvatarUrl = $state<string | null>(null);
 
-  // Use live presence from global cache if available, otherwise fall back to the initial value.
-  // The global cache is populated by ServerPresenceSync, so all UserAvatar instances — including
-  // newly-mounted ones like popovers — see the latest presence immediately.
-  const presence = $derived.by(() => {
-    if (!user || user.deleted) return undefined;
-    return serverId && presenceCache
-      ? presenceCache.get({ serverId, userId: user.id }, user.presenceStatus)
-      : user.presenceStatus;
-  });
+  const presence = $derived(
+    !user || user.deleted ? undefined : (livePresence ?? user.presenceStatus)
+  );
 
   const customStatus = $derived(
     user && !user.deleted
@@ -119,9 +111,18 @@
       : null
   );
   const showCustomStatusBadge = $derived(!!user && showStatus && !user.deleted);
-  const showPresenceDot = $derived(!!presence && showPresence && size !== 'xs');
-  const showBotBadge = $derived(!!user && !user.deleted && user.isBot === true);
-  const hasOverlay = $derived(showCustomStatusBadge || showPresenceDot || showBotBadge);
+  // A bot's public Offline state does not reveal whether it set a presence choice.
+  // Show a bot dot only while it has an active public presence state.
+  const showPresenceDot = $derived(
+    !!presence &&
+      showPresence &&
+      size !== 'xs' &&
+      (!user?.isBot ||
+        presence === PresenceStatus.ONLINE ||
+        presence === PresenceStatus.AWAY ||
+        presence === PresenceStatus.DO_NOT_DISTURB)
+  );
+  const hasOverlay = $derived(showCustomStatusBadge || showPresenceDot);
   const wrapperClass = $derived(
     [sizeClasses[size], 'inline-grid shrink-0 rounded-full', hasOverlay && 'relative', className]
       .filter(Boolean)
@@ -151,44 +152,36 @@
 
 {#if user}
   <div class={wrapperClass}>
-    {#if avatarUrl}
-      <SkeletonImg
+    {#if avatarUrl && failedAvatarUrl !== avatarUrl}
+      <img
         loading="lazy"
         src={avatarUrl}
         alt={user.login}
         class="{avatarClass} object-cover"
+        onerror={() => (failedAvatarUrl = avatarUrl)}
       />
+    {:else if user.deleted}
+      <div class={placeholderClass} role="img" aria-label={m('common.deleted_user')}>
+        <span class="iconify icon-[uil--user-times]" aria-hidden="true"></span>
+      </div>
     {:else}
       <div class={placeholderClass} role="img" aria-label={user.login}>
         {initials}
       </div>
-    {/if}
-    {#if showBotBadge}
-      <span
-        class={[
-          size === 'xs' ? 'h-3 w-3 text-[8px]' : 'h-4 w-4 text-[11px]',
-          'pointer-events-none absolute top-0 left-0 grid -translate-x-1/4 -translate-y-1/4 place-items-center rounded-full border border-surface bg-neutral-action text-on-neutral-action shadow-sm'
-        ]}
-        data-testid="bot-badge"
-        role="img"
-        aria-label={m('settings.bots.singular')}
-      >
-        <span class="iconify icon-[uil--robot]" aria-hidden="true"></span>
-      </span>
     {/if}
     {#if showCustomStatusBadge}
       <UserCustomStatusBadge
         status={customStatus}
         class="{customStatusTextSizeClasses[
           size
-        ]} pointer-events-none absolute top-0 right-0 translate-x-1/4 -translate-y-1/4 [text-shadow:0_1px_2px_rgb(0_0_0_/_0.9),0_0_1px_rgb(0_0_0_/_0.95)]"
+        ]} pointer-events-none absolute end-0 top-0 translate-x-1/4 -translate-y-1/4 [text-shadow:0_1px_2px_rgb(0_0_0_/_0.9),0_0_1px_rgb(0_0_0_/_0.95)] rtl:-translate-x-1/4"
       />
     {/if}
     {#if showPresenceDot && presence}
       <span
         class={[
           presenceDotShellSizeClasses[size],
-          'pointer-events-none absolute right-0 bottom-0 grid translate-x-0.5 translate-y-0.5 place-items-center rounded-full border-2 border-surface bg-surface'
+          'pointer-events-none absolute end-0 bottom-0 grid translate-x-0.5 translate-y-0.5 place-items-center rounded-full border-2 border-surface bg-surface rtl:-translate-x-0.5'
         ]}
         role="img"
         aria-label={presenceLabel}

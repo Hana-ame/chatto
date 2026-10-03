@@ -6,8 +6,7 @@ preview-card styling. Its parent owns shared link-preview actions.
 -->
 <script lang="ts">
   import { m } from '$lib/i18n/messages';
-  import type { SocialPostPreviewView } from '$lib/render/linkPreviews';
-  import SkeletonImg from '$lib/ui/SkeletonImg.svelte';
+  import type { SocialPostPreviewView } from '@chatto/client/timeline/linkPreviews';
 
   let {
     url,
@@ -51,8 +50,22 @@ preview-card styling. Its parent owns shared link-preview actions.
   function displayHandle(post: SocialPostPreviewView) {
     return post.author?.handle ? `@${post.author.handle.replace(/^@/, '')}` : '';
   }
+
+  /** Keep social images at a measured height before their bytes arrive. */
+  function imageAspectRatio(image: SocialPostPreviewView['images'][number]): string {
+    return image.width && image.height ? `${image.width} / ${image.height}` : '16 / 9';
+  }
+
+  function showImage(event: Event): void {
+    (event.currentTarget as HTMLImageElement).style.visibility = '';
+  }
+
+  function hideImage(event: Event): void {
+    (event.currentTarget as HTMLImageElement).style.visibility = 'hidden';
+  }
 </script>
 
+<!-- Context menu only. The same actions stay available from the message action menu. -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
   class="group/preview relative embed-frame flex w-full max-w-md flex-col gap-3 p-3"
@@ -63,14 +76,16 @@ preview-card styling. Its parent owns shared link-preview actions.
   <!-- eslint-disable svelte/no-navigation-without-resolve -- url is a third-party social-post URL -->
   <a href={url} target="_blank" rel="noopener noreferrer" class="flex min-w-0 items-center gap-2.5">
     {#if post.author?.avatarUrl}
-      <SkeletonImg
+      <img
         src={post.author.avatarUrl}
         alt=""
         class="h-10 w-10 shrink-0 rounded-full object-cover"
+        onload={showImage}
+        onerror={hideImage}
       />
     {:else}
       <div
-        class="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-surface-strong"
+        class="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-surface-emphasized"
       >
         {#if post.provider === 'bluesky'}
           <span class="iconify icon-[logos--bluesky] text-xl" aria-hidden="true"></span>
@@ -123,7 +138,14 @@ preview-card styling. Its parent owns shared link-preview actions.
         ]}
       >
         {#each post.images as image (image.url)}
-          <SkeletonImg src={image.url} alt={image.alt || ''} class="max-h-72 w-full object-cover" />
+          <img
+            src={image.url}
+            alt={image.alt || ''}
+            class="block max-h-72 w-full object-cover"
+            style:aspect-ratio={imageAspectRatio(image)}
+            onload={showImage}
+            onerror={hideImage}
+          />
         {/each}
       </div>
     {/if}
@@ -134,14 +156,16 @@ preview-card styling. Its parent owns shared link-preview actions.
         href={post.externalLink.url}
         target="_blank"
         rel="noopener noreferrer"
-        class="flex min-w-0 gap-3 overflow-hidden surface-box p-2 transition-[background-color] hover:bg-surface-emphasized"
+        class="flex min-w-0 gap-3 overflow-hidden surface-box p-2 transition-[background-color] feedback-quick hover:bg-surface-emphasized"
         onclick={(event) => event.stopPropagation()}
       >
         {#if post.externalLink.imageUrl}
-          <SkeletonImg
+          <img
             src={post.externalLink.imageUrl}
             alt=""
             class="h-20 w-28 shrink-0 rounded-sm object-cover"
+            onload={showImage}
+            onerror={hideImage}
           />
         {/if}
         <div class="flex min-w-0 flex-1 flex-col justify-center gap-0.5">
@@ -171,10 +195,12 @@ preview-card styling. Its parent owns shared link-preview actions.
           class="flex min-w-0 items-center gap-2"
         >
           {#if post.quotedPost.author?.avatarUrl}
-            <SkeletonImg
+            <img
               src={post.quotedPost.author.avatarUrl}
               alt=""
               class="h-7 w-7 shrink-0 rounded-full object-cover"
+              onload={showImage}
+              onerror={hideImage}
             />
           {:else}
             <div class="h-7 w-7 shrink-0 rounded-full bg-surface-strong"></div>
@@ -219,10 +245,13 @@ preview-card styling. Its parent owns shared link-preview actions.
             >
               {#each post.quotedPost.images as image (image.url)}
                 <a href={post.quotedPost.url} target="_blank" rel="noopener noreferrer">
-                  <SkeletonImg
+                  <img
                     src={image.url}
                     alt={image.alt || ''}
-                    class="max-h-60 w-full object-cover"
+                    class="block max-h-60 w-full object-cover"
+                    style:aspect-ratio={imageAspectRatio(image)}
+                    onload={showImage}
+                    onerror={hideImage}
                   />
                 </a>
               {/each}
@@ -236,10 +265,12 @@ preview-card styling. Its parent owns shared link-preview actions.
               class="flex min-w-0 gap-2 overflow-hidden rounded-sm bg-surface-strong p-2"
             >
               {#if post.quotedPost.externalLink.imageUrl}
-                <SkeletonImg
+                <img
                   src={post.quotedPost.externalLink.imageUrl}
                   alt=""
                   class="h-14 w-20 shrink-0 rounded-sm object-cover"
+                  onload={showImage}
+                  onerror={hideImage}
                 />
               {/if}
               <div class="min-w-0 self-center">
@@ -270,10 +301,10 @@ preview-card styling. Its parent owns shared link-preview actions.
         event.stopPropagation();
         onDismiss?.();
       }}
-      class="embed-control-button md:group-hover/preview:opacity-100"
+      class="embed-control-button"
       aria-label={m('preview.dismiss')}
     >
-      <span class="iconify icon-[uil--times] text-sm"></span>
+      <span aria-hidden="true" class="iconify icon-[uil--times] text-sm"></span>
     </button>
   {:else if onDelete}
     <button
@@ -283,10 +314,10 @@ preview-card styling. Its parent owns shared link-preview actions.
         event.stopPropagation();
         onDelete();
       }}
-      class="embed-control-button md:group-hover/preview:opacity-100"
+      class="embed-control-button"
       aria-label={m('preview.delete')}
     >
-      <span class="iconify icon-[uil--times] text-sm"></span>
+      <span aria-hidden="true" class="iconify icon-[uil--times] text-sm"></span>
     </button>
   {/if}
 </div>

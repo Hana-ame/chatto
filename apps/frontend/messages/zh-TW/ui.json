@@ -16,7 +16,6 @@
       "remote_title": "{server} 需要登入",
       "remote_message": "此伺服器拒絕已儲存的登入資訊。請重新連線，以恢復即時更新及操作。",
       "remote_action": "重新連線",
-      "remote_failed": "無法開始重新連線",
       "sidebar_reauth": "{server} 需要登入"
     },
     "access_denied": {
@@ -48,7 +47,8 @@
       "complete": "Chatto 已重建。最終得分：{count} 分"
     },
     "pane_header": {
-      "back": "返回"
+      "back": "返回",
+      "actions": "面板操作"
     },
     "sidebar_nav": {
       "back_to_chat": "返回聊天"
@@ -67,7 +67,12 @@
     "image_modal": {
       "previous": "上一張圖片",
       "next": "下一張圖片",
-      "fallback_alt": "圖片"
+      "fallback_alt": "圖片",
+      "zoom_in": "放大",
+      "zoom_out": "縮小",
+      "fit": "符合視窗",
+      "details": "詳細資料",
+      "file_type": "檔案類型"
     },
     "toast": {
       "dismiss": "關閉通知"
@@ -78,11 +83,9 @@
       "clear": "清除"
     },
     "expiry": {
-      "label": "到期時間",
       "24h": "24 小時",
       "7d": "7 天",
       "30d": "30 天",
-      "indefinite": "永不過期",
       "custom": "自訂",
       "custom_label": "自訂到期時間",
       "error_required": "請選擇到期日期。",

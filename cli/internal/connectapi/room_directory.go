@@ -19,21 +19,45 @@ func (s *roomDirectoryService) ListRooms(ctx context.Context, req *connect.Reque
 	if err != nil {
 		return nil, err
 	}
+	archiveFilter, err := coreRoomArchiveFilter(req.Msg.GetArchiveFilter())
+	if err != nil {
+		return nil, err
+	}
 
-	rooms, err := s.api.core.RoomDirectoryReads().ListRooms(ctx, caller.UserID, core.RoomDirectoryListOptions{
+	limit, offset := apiPagination(req.Msg.GetPage(), 50, 100)
+	page, err := s.api.core.RoomDirectoryReads().ListRoomsPage(ctx, caller.UserID, core.RoomDirectoryListOptions{
 		IncludeChannels: roomDirectoryScopeIncludesChannels(req.Msg.GetScope()),
 		IncludeDMs:      roomDirectoryScopeIncludesDMs(req.Msg.GetScope()),
-	})
+		IncludeEmptyDMs: true,
+		ArchiveFilter:   archiveFilter,
+	}, limit, offset)
 	if err != nil {
-		return nil, connectError(err)
+		return nil, err
 	}
 
-	apiRooms := make([]*apiv1.RoomWithViewerState, 0, len(rooms))
-	for _, room := range rooms {
-		apiRooms = append(apiRooms, apiRoomWithViewerState(room))
+	apiRooms := make([]*apiv1.RoomWithViewerState, 0, len(page.Rooms))
+	for _, room := range page.Rooms {
+		apiRoom, err := s.api.apiRoomWithViewerState(ctx, caller.UserID, room)
+		if err != nil {
+			return nil, err
+		}
+		apiRooms = append(apiRooms, apiRoom)
 	}
 
-	return connect.NewResponse(&apiv1.ListRoomsResponse{Rooms: apiRooms}), nil
+	return connect.NewResponse(&apiv1.ListRoomsResponse{Rooms: apiRooms, Page: apiPageInfo(page.TotalCount, page.HasMore)}), nil
+}
+
+func coreRoomArchiveFilter(filter apiv1.RoomArchiveFilter) (core.RoomArchiveFilter, error) {
+	switch filter {
+	case apiv1.RoomArchiveFilter_ROOM_ARCHIVE_FILTER_UNSPECIFIED, apiv1.RoomArchiveFilter_ROOM_ARCHIVE_FILTER_ACTIVE:
+		return core.RoomArchiveActive, nil
+	case apiv1.RoomArchiveFilter_ROOM_ARCHIVE_FILTER_ARCHIVED:
+		return core.RoomArchiveArchived, nil
+	case apiv1.RoomArchiveFilter_ROOM_ARCHIVE_FILTER_ALL:
+		return core.RoomArchiveAll, nil
+	default:
+		return 0, core.ErrInvalidArgument
+	}
 }
 
 func (s *roomDirectoryService) ListRoomGroups(ctx context.Context, req *connect.Request[apiv1.ListRoomGroupsRequest]) (*connect.Response[apiv1.ListRoomGroupsResponse], error) {
@@ -44,7 +68,7 @@ func (s *roomDirectoryService) ListRoomGroups(ctx context.Context, req *connect.
 
 	groups, err := s.api.core.RoomDirectoryReads().ListRoomGroups(ctx, caller.UserID, core.RoomDirectoryGroupOptions{})
 	if err != nil {
-		return nil, connectError(err)
+		return nil, err
 	}
 
 	apiGroups := make([]*apiv1.RoomGroup, 0, len(groups))
@@ -62,7 +86,7 @@ func (s *roomDirectoryService) GetRoomGroup(ctx context.Context, req *connect.Re
 
 	group, err := s.api.core.RoomDirectoryReads().GetRoomGroup(ctx, caller.UserID, req.Msg.GetGroupId(), core.RoomDirectoryGroupOptions{})
 	if err != nil {
-		return nil, connectError(err)
+		return nil, err
 	}
 	return connect.NewResponse(&apiv1.GetRoomGroupResponse{Group: apiRoomGroup(group)}), nil
 }
@@ -75,7 +99,7 @@ func (s *roomDirectoryService) BatchGetRoomGroups(ctx context.Context, req *conn
 
 	groups, err := s.api.core.RoomDirectoryReads().BatchGetRoomGroups(ctx, caller.UserID, req.Msg.GetGroupIds(), core.RoomDirectoryGroupOptions{})
 	if err != nil {
-		return nil, connectError(err)
+		return nil, err
 	}
 
 	apiGroups := make([]*apiv1.RoomGroup, 0, len(groups))
@@ -93,9 +117,13 @@ func (s *roomDirectoryService) GetRoom(ctx context.Context, req *connect.Request
 
 	room, err := s.api.core.RoomDirectoryReads().GetRoom(ctx, caller.UserID, req.Msg.GetRoomId())
 	if err != nil {
-		return nil, connectError(err)
+		return nil, err
 	}
-	return connect.NewResponse(&apiv1.GetRoomResponse{Room: apiRoomWithViewerState(room)}), nil
+	apiRoom, err := s.api.apiRoomWithViewerState(ctx, caller.UserID, room)
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(&apiv1.GetRoomResponse{Room: apiRoom}), nil
 }
 
 func (s *roomDirectoryService) BatchGetRooms(ctx context.Context, req *connect.Request[apiv1.BatchGetRoomsRequest]) (*connect.Response[apiv1.BatchGetRoomsResponse], error) {
@@ -106,12 +134,16 @@ func (s *roomDirectoryService) BatchGetRooms(ctx context.Context, req *connect.R
 
 	rooms, err := s.api.core.RoomDirectoryReads().BatchGetRooms(ctx, caller.UserID, req.Msg.GetRoomIds())
 	if err != nil {
-		return nil, connectError(err)
+		return nil, err
 	}
 
 	apiRooms := make([]*apiv1.RoomWithViewerState, 0, len(rooms))
 	for _, room := range rooms {
-		apiRooms = append(apiRooms, apiRoomWithViewerState(room))
+		apiRoom, err := s.api.apiRoomWithViewerState(ctx, caller.UserID, room)
+		if err != nil {
+			return nil, err
+		}
+		apiRooms = append(apiRooms, apiRoom)
 	}
 	return connect.NewResponse(&apiv1.BatchGetRoomsResponse{Rooms: apiRooms}), nil
 }
@@ -125,18 +157,25 @@ func apiRoomWithViewerState(room *core.DirectoryRoom) *apiv1.RoomWithViewerState
 		IsMember:  state.IsMember,
 		HasUnread: state.HasUnread,
 		Permissions: permissionGrants(
+			permissionGrant(core.PermCallStart, state.CallPermissions.Start),
+			permissionGrant(core.PermCallJoin, state.CallPermissions.Join),
+			permissionGrant(core.PermCallVoice, state.CallPermissions.Voice),
+			permissionGrant(core.PermCallCamera, state.CallPermissions.Camera),
+			permissionGrant(core.PermCallScreenShare, state.CallPermissions.ScreenShare),
+
 			permissionGrant(core.PermRoomList, state.CanListRoom),
 			permissionGrant(core.PermRoomJoin, state.CanJoinRoom),
 			permissionGrant(core.PermMessageRead, state.CanReadMessages),
 			permissionGrant(core.PermMessageReadInteractions, state.CanReadInteractions),
 			permissionGrant(core.PermMessagePost, state.CanPostMessage),
 			permissionGrant(core.PermMessagePostInThread, state.CanPostInThread),
+			permissionGrant(core.PermMessagePostInInteractions, state.CanPostInteractions),
 			permissionGrant(core.PermMessageAttach, state.CanAttach),
 			permissionGrant(core.PermMessageReact, state.CanReact),
 			permissionGrant(core.PermMessageEcho, state.CanEchoMessage),
 			permissionGrant(core.PermMessageManage, state.CanManageOthersMessage),
 			permissionGrant(core.PermRoomManage, state.CanManageRoom),
-			permissionGrant(core.PermRoomMemberBan, state.CanBanRoomMembers),
+			permissionGrant(core.PermRoomMemberRemove, state.CanBanRoomMembers),
 		),
 	}
 	if !state.SlowModeNextPostAt.IsZero() {
@@ -146,6 +185,30 @@ func apiRoomWithViewerState(room *core.DirectoryRoom) *apiv1.RoomWithViewerState
 		Room:        apiRoom(room.Room),
 		ViewerState: viewerState,
 	}
+}
+
+// apiRoomWithViewerState returns the canonical public room resource. DM
+// participant IDs and history state are part of this resource in every API
+// that returns it.
+func (a *API) apiRoomWithViewerState(ctx context.Context, userID string, room *core.DirectoryRoom) (*apiv1.RoomWithViewerState, error) {
+	result := apiRoomWithViewerState(room)
+	if room == nil || room.Room == nil || core.KindOfRoom(room.Room) != core.KindDM || !room.ViewerState.IsMember {
+		return result, nil
+	}
+
+	_, _, exists, err := a.core.GetRoomLastEvent(ctx, core.KindDM, room.Room.GetId())
+	if err != nil {
+		return nil, err
+	}
+	result.HasMessageHistory = &exists
+
+	// DM participants include deleted accounts; clients show them as deleted
+	// users.
+	result.MemberUserIds, err = a.core.ListRoomMemberIDsForList(ctx, userID, room.Room.GetId())
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 func apiRoomGroup(group *core.DirectoryRoomGroup) *apiv1.RoomGroup {

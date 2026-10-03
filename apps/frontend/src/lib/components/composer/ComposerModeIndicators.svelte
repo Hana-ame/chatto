@@ -1,18 +1,31 @@
+<!--
+@component
+Reply and edit context inside the message composer. The text follows the
+draft's inset, with a quiet cancel control for pointer and keyboard users.
+-->
 <script lang="ts">
+  import AccountName from '$lib/components/users/AccountName.svelte';
+  import type { AccountNameIdentity } from '@chatto/client/timeline/accountName';
   import { m } from '$lib/i18n/messages';
+  import { CompactActionButton } from '$lib/ui';
 
   let {
     inReplyTo,
     replyDisplayName,
+    replyIdentity,
     replyExcerpt,
     isEditing,
+    expandedDraft,
     oncancelreply,
     oncanceledit
   }: {
     inReplyTo?: string;
     replyDisplayName?: string;
+    replyIdentity?: AccountNameIdentity;
     replyExcerpt?: string;
     isEditing: boolean;
+    /** Match the draft's full-width layout when it grows beyond one line. */
+    expandedDraft: boolean;
     oncancelreply: () => void;
     oncanceledit: () => void;
   } = $props();
@@ -21,49 +34,58 @@
 {#if inReplyTo && replyDisplayName}
   <div
     data-testid="reply-indicator"
-    class="flex items-center justify-between rounded-md bg-surface-emphasized px-3 py-2 text-sm"
+    class={[
+      'relative flex min-w-0 items-center gap-2 ps-0.5 text-xs text-muted',
+      !expandedDraft && '@min-[560px]/composer:ps-8.5'
+    ]}
   >
-    <span class="min-w-0 truncate text-text">
-      {m('composer.replying_to')} <strong>{replyDisplayName}</strong>
+    <span
+      aria-hidden="true"
+      class={[
+        'iconify absolute start-1 icon-[uil--corner-up-left] hidden rtl:-scale-x-100',
+        !expandedDraft && '@min-[560px]/composer:block'
+      ]}
+    ></span>
+    <span class="min-w-0 flex-1 truncate">
+      {m('composer.replying_to')}
+      <strong class="inline-flex max-w-full min-w-0 font-semibold"
+        ><AccountName name={replyDisplayName} identity={replyIdentity} /></strong
+      >
       {#if replyExcerpt}
-        <span class="text-muted"> &mdash; {replyExcerpt}</span>
+        <bdi> · {replyExcerpt}</bdi>
       {/if}
     </span>
-    <button
-      type="button"
-      onclick={oncancelreply}
-      class="hidden shrink-0 cursor-pointer items-center gap-1 text-muted transition-colors hover:text-text sm:flex"
-    >
-      <kbd class="rounded bg-surface-strong px-1.5 py-0.5 text-xs">Esc</kbd>
-      {m('composer.esc_to_cancel')}
-    </button>
-    <button
-      type="button"
-      onclick={oncancelreply}
-      class="shrink-0 cursor-pointer rounded bg-surface-strong px-2.5 py-1 text-xs font-medium text-text transition-colors hover:bg-surface-selected sm:hidden"
-    >
-      {m('common.cancel')}
-    </button>
+    {@render cancel(oncancelreply)}
   </div>
 {/if}
 
 {#if isEditing}
-  <div class="flex items-center justify-between rounded-md bg-surface-emphasized px-3 py-2 text-sm">
-    <span class="text-text">{m('composer.editing')}</span>
-    <button
-      type="button"
-      onclick={oncanceledit}
-      class="hidden cursor-pointer items-center gap-1 text-muted transition-colors hover:text-text sm:flex"
-    >
-      <kbd class="rounded bg-surface-strong px-1.5 py-0.5 text-xs">Esc</kbd>
-      {m('composer.esc_to_cancel')}
-    </button>
-    <button
-      type="button"
-      onclick={oncanceledit}
-      class="cursor-pointer rounded bg-surface-strong px-2.5 py-1 text-xs font-medium text-text transition-colors hover:bg-surface-selected sm:hidden"
-    >
-      {m('common.cancel')}
-    </button>
+  <div
+    data-testid="edit-indicator"
+    class={[
+      'relative flex min-w-0 items-center gap-2 ps-0.5 text-xs text-muted',
+      !expandedDraft && '@min-[560px]/composer:ps-8.5'
+    ]}
+  >
+    <span
+      aria-hidden="true"
+      class={[
+        'iconify absolute start-1 icon-[uil--pen] hidden',
+        !expandedDraft && '@min-[560px]/composer:block'
+      ]}
+    ></span>
+    <span class="min-w-0 flex-1">{m('composer.editing')}</span>
+    {@render cancel(oncanceledit)}
   </div>
 {/if}
+
+{#snippet cancel(onclick: () => void)}
+  <CompactActionButton
+    label={m('common.cancel')}
+    title={`Esc ${m('composer.esc_to_cancel')}`}
+    {onclick}
+    touchFriendly
+  >
+    <span aria-hidden="true" class="iconify icon-[uil--times]"></span>
+  </CompactActionButton>
+{/snippet}

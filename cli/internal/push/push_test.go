@@ -124,7 +124,6 @@ func TestPayloadMarshal(t *testing.T) {
 			Tag:            "test-tag",
 			NotificationID: "notif-123",
 			URL:            "/chat/room/123",
-			AppBadge:       "7",
 		}
 
 		data, err := json.Marshal(payload)
@@ -153,8 +152,8 @@ func TestPayloadMarshal(t *testing.T) {
 		if result["mutable"] != true {
 			t.Errorf("Expected mutable true, got %v", result["mutable"])
 		}
-		if result["app_badge"] != "7" {
-			t.Errorf("Expected top-level app_badge '7', got %v", result["app_badge"])
+		if _, exists := result["app_badge"]; exists {
+			t.Error("Push payload must not set a numeric app badge")
 		}
 
 		notification, ok := result["notification"].(map[string]interface{})
@@ -173,8 +172,8 @@ func TestPayloadMarshal(t *testing.T) {
 		if notification["tag"] != "test-tag" {
 			t.Errorf("Expected declarative tag 'test-tag', got %v", notification["tag"])
 		}
-		if notification["app_badge"] != "7" {
-			t.Errorf("Expected declarative app_badge '7', got %v", notification["app_badge"])
+		if _, exists := notification["app_badge"]; exists {
+			t.Error("Declarative notification must not set a numeric app badge")
 		}
 
 		notificationData, ok := notification["data"].(map[string]interface{})
@@ -308,6 +307,36 @@ func optionalString(value string) *string {
 
 func TestBuildPayloadFromOccurrence(t *testing.T) {
 	baseURL := "https://chatto.example.com"
+	t.Run("preserves attention for legacy and declarative workers", func(t *testing.T) {
+		for _, test := range []struct {
+			level notificationv1.NotificationAttentionLevel
+			want  string
+		}{
+			{notificationv1.NotificationAttentionLevel_NOTIFICATION_ATTENTION_LEVEL_IMPORTANT, "important"},
+			{notificationv1.NotificationAttentionLevel_NOTIFICATION_ATTENTION_LEVEL_AMBIENT, "ambient"},
+			{notificationv1.NotificationAttentionLevel(99), ""},
+		} {
+			notif := notificationOccurrenceForTest("notification", "recipient", "actor", "room", "event", "", notificationTestSignalReaction)
+			notif.AttentionLevel = test.level
+			payload := BuildPayloadFromOccurrence(notif, "Actor", baseURL, nil)
+			encoded, err := json.Marshal(payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var decoded struct {
+				AttentionLevel string
+				Notification   struct {
+					Data struct{ AttentionLevel string }
+				}
+			}
+			if err := json.Unmarshal(encoded, &decoded); err != nil {
+				t.Fatal(err)
+			}
+			if decoded.AttentionLevel != test.want || decoded.Notification.Data.AttentionLevel != test.want {
+				t.Fatalf("attention level %v: payload = %+v, want %q in both formats", test.level, decoded, test.want)
+			}
+		}
+	})
 
 	t.Run("builds DM message payload without context", func(t *testing.T) {
 		notif := notificationOccurrenceForTest("notif-123", "user-1", "user-2", "dm-room-456", "event-789", "", notificationTestSignalDirectMessage)
@@ -592,8 +621,37 @@ func TestNavigationBaseURL(t *testing.T) {
 		name          string
 		subscription  *runtimestatev1.PushSubscription
 		serverBaseURL string
+		serverOrigins []string
 		want          string
 	}{
+		{
+			name:          "custom domain uses bundled client route",
+			subscription:  &runtimestatev1.PushSubscription{ClientHost: "custom.example.com"},
+			serverBaseURL: "https://chat.example.com",
+			serverOrigins: []string{"https://chat.example.com", "https://custom.example.com"},
+			want:          "https://custom.example.com/chat/-",
+		},
+		{
+			name:          "alias uses configured HTTP scheme and default port",
+			subscription:  &runtimestatev1.PushSubscription{ClientHost: "CUSTOM.EXAMPLE.COM:80"},
+			serverBaseURL: "https://chat.example.com",
+			serverOrigins: []string{"http://custom.example.com"},
+			want:          "http://custom.example.com:80/chat/-",
+		},
+		{
+			name:          "different alias port remains a remote client",
+			subscription:  &runtimestatev1.PushSubscription{ClientHost: "custom.example.com:8443"},
+			serverBaseURL: "https://chat.example.com",
+			serverOrigins: []string{"https://custom.example.com"},
+			want:          "https://custom.example.com:8443/chat/chat.example.com",
+		},
+		{
+			name:          "unrelated client remains remote with aliases configured",
+			subscription:  &runtimestatev1.PushSubscription{ClientHost: "app.example.com"},
+			serverBaseURL: "https://chat.example.com",
+			serverOrigins: []string{"https://custom.example.com"},
+			want:          "https://app.example.com/chat/chat.example.com",
+		},
 		{
 			name:          "legacy subscription uses bundled client",
 			subscription:  &runtimestatev1.PushSubscription{},
@@ -664,7 +722,7 @@ func TestNavigationBaseURL(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if got := NavigationBaseURL(test.subscription, test.serverBaseURL); got != test.want {
+			if got := NavigationBaseURL(test.subscription, test.serverBaseURL, test.serverOrigins...); got != test.want {
 				t.Fatalf("NavigationBaseURL() = %q, want %q", got, test.want)
 			}
 		})
@@ -1190,5 +1248,34 @@ func newTestPushSubscription(t *testing.T, endpoint string) *runtimestatev1.Push
 		Endpoint: endpoint,
 		P256Dh:   base64.RawURLEncoding.EncodeToString(elliptic.Marshal(elliptic.P256(), x, y)),
 		Auth:     base64.RawURLEncoding.EncodeToString(auth),
+	}
+}
+
+func TestOccurrencePayloadCleanupIdentity(t *testing.T) {
+	occurrence := notificationOccurrenceForTest("occurrence", "recipient", "actor", "room", "event", "", notificationTestSignalDirectMessage)
+	payload := BuildPayloadFromOccurrence(occurrence, "", "https://chat.example.com/", nil)
+	if payload.ServerOrigin != "https://chat.example.com" || payload.RecipientID != "recipient" {
+		t.Fatal("payload must identify the source server and recipient")
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded struct {
+		ServerOrigin string `json:"serverOrigin"`
+		RecipientID  string `json:"recipientId"`
+		Notification struct {
+			Data struct {
+				ServerOrigin string `json:"serverOrigin"`
+				RecipientID  string `json:"recipientId"`
+			} `json:"data"`
+		} `json:"notification"`
+	}
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.ServerOrigin != payload.ServerOrigin || decoded.Notification.Data.ServerOrigin != payload.ServerOrigin ||
+		decoded.RecipientID != payload.RecipientID || decoded.Notification.Data.RecipientID != payload.RecipientID {
+		t.Fatal("legacy and declarative payloads must carry identical cleanup identity")
 	}
 }

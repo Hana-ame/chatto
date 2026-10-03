@@ -5,16 +5,27 @@ User notification preferences across server, room-group, and room scopes.
 Rows are notification causes. Columns follow the current navigation layout.
 -->
 <script lang="ts">
-  import Panel from '$lib/ui/Panel.svelte';
+  import { errorMessage } from '$lib/utils/errorMessage';
+  import { serverUi } from '$lib/state/server/serverUi';
+  import { onDestroy } from 'svelte';
+  import { SvelteSet } from 'svelte/reactivity';
+  import { Panel, HelpTooltip, Hint } from '$lib/ui';
   import { MatrixCellButton, MatrixTable } from '$lib/ui/matrix';
-  import { HelpTooltip, Hint } from '$lib/ui';
   import { ShortcutTextInput } from '$lib/ui/form';
   import { m } from '$lib/i18n/messages';
   import { useServerScope } from '$lib/state/server/scope.svelte';
   import {
     NotificationDeliveryMode,
-    type NotificationPolicyField
-  } from '$lib/api-client/notifications';
+    notificationPolicyScopeKey,
+    type NotificationPolicyField,
+    type NotificationPolicyPatch,
+    type NotificationPolicyScope,
+    type ScopedNotificationPolicy
+  } from '@chatto/client/api/notifications';
+  import { createNotificationAPI } from '@chatto/client/api/notifications';
+  import { registerQueryCacheRemovalListener } from '$lib/query/cacheRegistry';
+  import { createQuery, queryClient } from '$lib/query/client';
+  import { settingsQueryKeys } from '$lib/query/settings';
   import NotificationPolicyCell from './NotificationPolicyCell.svelte';
   import {
     notificationPolicyCellApplicable,
@@ -33,9 +44,21 @@ Rows are notification causes. Columns follow the current navigation layout.
   };
 
   const serverScope = useServerScope();
-  const notificationStore = $derived(serverScope.store.notifications);
-  const matrixState = $derived(notificationStore.notificationPolicies);
   let scopeFilter = $state('');
+  let saveError = $state<string | null>(null);
+  const pendingCells = new SvelteSet<string>();
+  // Cache removal can outlive a pending save; its generation fences the result.
+  let privacyGeneration = 0;
+  const removeCacheRemovalListener = registerQueryCacheRemovalListener((serverId) => {
+    if (serverId !== serverScope.serverId) return;
+    privacyGeneration++;
+    pendingCells.clear();
+    saveError = null;
+  });
+  onDestroy(() => {
+    privacyGeneration++;
+    removeCacheRemovalListener();
+  });
 
   const rows = $derived<NotificationPolicyRow[]>([
     {
@@ -88,14 +111,83 @@ Rows are notification causes. Columns follow the current navigation layout.
   const columns = $derived(
     notificationPolicyColumns(
       serverScope.store.serverInfo.name,
-      serverScope.store.navigation.roomGroups,
-      serverScope.store.navigation.rooms,
+      serverUi(serverScope.store).navigation.roomGroups,
+      serverUi(serverScope.store).navigation.rooms,
       scopeFilter
     )
   );
-  $effect(() => {
-    void matrixState.load(columns.map((item) => item.scope));
+  const policiesQuery = createQuery(() => {
+    const serverId = serverScope.serverId;
+    const connection = serverScope.connection;
+    const scopes = columns.map((column) => column.scope);
+    return {
+      queryKey: settingsQueryKeys.notificationPolicies(
+        serverId,
+        connection,
+        scopes.map(notificationPolicyScopeKey)
+      ),
+      queryFn: async ({ signal }) => {
+        const policies = await connection
+          .getAPI(createNotificationAPI)
+          .batchGetNotificationPolicies(scopes, { signal });
+        return Object.fromEntries(
+          policies.map((policy) => [notificationPolicyScopeKey(policy.scope), policy])
+        ) as Record<string, ScopedNotificationPolicy>;
+      },
+      refetchOnMount: 'always' as const,
+      // A changed visible scope list must not retain policies for lost rooms.
+      gcTime: 0
+    };
   });
+  const loadError = $derived(policiesQuery.error ? errorMessage(policiesQuery.error) : null);
+
+  function policy(scope: NotificationPolicyScope): ScopedNotificationPolicy | undefined {
+    return policiesQuery.data?.[notificationPolicyScopeKey(scope)];
+  }
+
+  function cellKey(scope: NotificationPolicyScope, field: NotificationPolicyField): string {
+    return `${notificationPolicyScopeKey(scope)}::${field}`;
+  }
+
+  /** Save one cell, then read all visible scopes to refresh inherited values. */
+  async function update(
+    scope: NotificationPolicyScope,
+    field: NotificationPolicyField,
+    value: NotificationPolicyPatch[NotificationPolicyField]
+  ): Promise<void> {
+    const key = cellKey(scope, field);
+    if (pendingCells.has(key)) return;
+    const serverId = serverScope.serverId;
+    const connection = serverScope.connection;
+    const generation = privacyGeneration;
+    const queryRoot = settingsQueryKeys.notificationPoliciesRoot(serverId, connection);
+    const isCurrent = () => generation === privacyGeneration && serverScope.isCurrent();
+
+    pendingCells.add(key);
+    saveError = null;
+    try {
+      const updated = await connection
+        .getAPI(createNotificationAPI)
+        .updateScopedNotificationPolicy(scope, { [field]: value });
+      if (!isCurrent()) return;
+      // An older read cannot replace the updated cell or its inherited values.
+      await queryClient.cancelQueries({ queryKey: queryRoot });
+      if (!isCurrent()) return;
+      queryClient.setQueriesData<Record<string, ScopedNotificationPolicy>>(
+        { queryKey: queryRoot },
+        (current) =>
+          current ? { ...current, [notificationPolicyScopeKey(updated.scope)]: updated } : current
+      );
+      await queryClient.invalidateQueries(
+        { queryKey: queryRoot, refetchType: 'active' },
+        { cancelRefetch: false }
+      );
+    } catch (error) {
+      if (isCurrent()) saveError = errorMessage(error);
+    } finally {
+      if (generation === privacyGeneration) pendingCells.delete(key);
+    }
+  }
 
   function columnClass(column: NotificationPolicyColumn): string {
     if (column.kind === 'server') return 'bg-surface-emphasized/40';
@@ -155,12 +247,12 @@ Rows are notification causes. Columns follow the current navigation layout.
     {/each}
   </div>
 
-  {#if matrixState.error}
+  {#if loadError || saveError}
     <div class="px-4 pt-3">
       <Hint tone="danger">
-        {matrixState.errorKind === 'save'
+        {saveError
           ? m('settings.notifications.policy.save_failed')
-          : m('settings.notifications.policy.load_failed')}: {matrixState.error}
+          : m('settings.notifications.policy.load_failed')}: {saveError ?? loadError}
       </Hint>
     </div>
   {/if}
@@ -179,8 +271,8 @@ Rows are notification causes. Columns follow the current navigation layout.
     })}
     isCellInteractive={(row, column) =>
       notificationPolicyCellApplicable(row.field, column) &&
-      Boolean(matrixState.policy(column.scope)) &&
-      !matrixState.isPending(column.scope, row.field)}
+      Boolean(policy(column.scope)) &&
+      !pendingCells.has(cellKey(column.scope, row.field))}
     spacerTestId="notification-matrix-spacer"
   >
     {#snippet leadingHeader()}
@@ -219,24 +311,24 @@ Rows are notification causes. Columns follow the current navigation layout.
           ariaLabel={label}
           onActivate={() => undefined}
         />
-      {:else if matrixState.policy(column.scope)}
-        {@const policy = matrixState.policy(column.scope)!}
+      {:else if policy(column.scope)}
+        {@const currentPolicy = policy(column.scope)!}
         <NotificationPolicyCell
           field={row.field}
           causeLabel={row.label}
           scope={column.scope}
           scopeLabel={column.label}
-          override={policy.overrides[row.field]}
-          effective={policy.effective[row.field]}
-          loading={matrixState.isPending(column.scope, row.field)}
-          onChange={(next) => void matrixState.update(column.scope, row.field, next)}
+          override={currentPolicy.overrides[row.field]}
+          effective={currentPolicy.effective[row.field]}
+          loading={pendingCells.has(cellKey(column.scope, row.field))}
+          onChange={(next) => void update(column.scope, row.field, next)}
         />
       {:else}
         <span
           class="inline-flex h-10 w-10 items-center justify-center"
-          role={matrixState.loading ? 'status' : undefined}
+          role={policiesQuery.isPending ? 'status' : undefined}
         >
-          {#if matrixState.loading}
+          {#if policiesQuery.isPending}
             <span class="iconify icon-[uil--spinner] animate-spin text-muted" aria-hidden="true"
             ></span>
             <span class="sr-only">{m('common.loading')}</span>

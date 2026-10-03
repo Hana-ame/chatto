@@ -130,7 +130,9 @@ func buildMessageNotificationDecisions(
 		// deliveries conservatively omit only the ambiguous mention kind.
 	}
 
-	if roomKind == KindDM {
+	// Root activity has one room-kind base cause. Thread replies use followed
+	// thread activity in both channel rooms and DMs.
+	if roomKind == KindDM && message.GetInThread() == "" {
 		for _, userID := range snapshot.roomMemberIDs(roomID) {
 			add(userID, &notificationv1.NotificationSignal{Kind: &notificationv1.NotificationSignal_DirectMessageReceived{DirectMessageReceived: &notificationv1.DirectMessageReceived{Message: proto.Clone(reference).(*notificationv1.NotificationMessageReference)}}})
 		}
@@ -150,7 +152,7 @@ func buildMessageNotificationDecisions(
 		for _, userID := range snapshot.threadFollowerIDs(roomID, threadRootEventID) {
 			add(userID, &notificationv1.NotificationSignal{Kind: &notificationv1.NotificationSignal_FollowedThreadActivity{FollowedThreadActivity: &notificationv1.FollowedThreadActivity{Message: proto.Clone(reference).(*notificationv1.NotificationMessageReference)}}})
 		}
-		if snapshot.replyCounts[threadRootEventID] == 1 {
+		if snapshot.threadReplyCount(threadRootEventID) == 1 {
 			if threadRootActorID != "" && snapshot.threadFollowState(threadRootActorID, roomID, threadRootEventID) == ThreadFollowStateNone {
 				add(threadRootActorID, &notificationv1.NotificationSignal{Kind: &notificationv1.NotificationSignal_FollowedThreadActivity{FollowedThreadActivity: &notificationv1.FollowedThreadActivity{Message: proto.Clone(reference).(*notificationv1.NotificationMessageReference)}}})
 			}

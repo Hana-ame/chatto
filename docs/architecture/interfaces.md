@@ -1,5 +1,27 @@
 # Interface Inventory
 
+The internal [`@chatto/client`](../../packages/chatto-client/README.md) package
+is the Chatto client. The bundled frontend, ChattoBot, and the local Runling
+bot use it. It owns the ConnectRPC facades, sessions, the realtime transport
+and projection, the server data, and the Store boundary events. It does not
+add server endpoints or depend on Runling or a UI framework. Hosts retain
+their UI state, credential loading, webhook handling, and conversation state;
+see [ADR-111](../adr/ADR-111-move-client-state-into-chatto-client.md).
+
+The client also owns what bots need: servers with fixed API keys, an
+ordered message loop with a context per addressed message, message splitting,
+thread history, reactions, typing refresh, addressing recognition, reply
+context, conversation keys, and accepted-delivery tracking. It has no Runling
+dependency. ChattoBot retains routing, inboxes, cancellation, and
+configuration reload state.
+
+The official mobile client uses the built-in OAuth identity `eu.chattocorp.chatto.mobile`
+and exact callback `eu.chattocorp.chatto.mobile:/oauth/callback`. System authentication
+returns the callback to the client; token exchange and bearer-authenticated
+API requests use the existing HTTP interfaces. Older servers without this
+registration cannot complete mobile sign-in. See
+[ADR-099](../adr/ADR-099-capacitor-mobile-client.md).
+
 Key files: [`cli/internal/connectapi/api.go`](../../cli/internal/connectapi/api.go),
 [`cli/internal/http_server/connect.go`](../../cli/internal/http_server/connect.go),
 [`cli/internal/http_server/auth.go`](../../cli/internal/http_server/auth.go),
@@ -20,79 +42,104 @@ Related decisions: [ADR-044](../adr/ADR-044-connectrpc-service-conventions.md),
 [ADR-084](../adr/ADR-084-separate-internal-protobufs-by-storage-contract.md), and
 [ADR-085](../adr/ADR-085-agent-integration-through-mcp.md).
 
+`MyAccountService.SetCustomStatus` replaces the complete custom status through
+the existing core status command. All public resource `Update*` requests use
+field masks under [ADR-044](../adr/ADR-044-connectrpc-service-conventions.md).
+The Connect interceptor removes unselected values before protobuf validation;
+direct handlers use the same normalization and validation. Selected absent
+values reset, subject to domain rules. The core receives sparse selected inputs
+and owns authorization and concurrency. Profile fields and any login cooldown
+fact append in one atomic batch of existing EVT events.
+
 ## Transport boundaries
 
-| Surface | Mount | Contract | Access boundary |
-| ------- | ----- | -------- | --------------- |
-| Public ConnectRPC | `/api/connect/chatto.{auth,discovery,api,admin}.v1.*` | Unary Connect, gRPC, and gRPC-Web services | Explicit per-service public or authenticated-user policy; method-level authorization remains inside operation models |
-| Browser authentication | `GET /auth/browser/csrf`, `POST /auth/browser/login`, `POST /auth/browser/register/complete`, `POST /auth/browser/logout`, `POST /auth/browser/session/migrate`, `POST /auth/browser/session/renew`, `POST /auth/browser/revoke-bearer-session` | Bound CSRF-proof repair, cookie-only password/registration authentication, one-time 0.4 typed-cookie migration, logout, stable-handle session renewal, and removal of stored origin bearer authority | Every mutation requires JSON and an exact same-origin request. A browser-auth mode header, if present, must select cookies. Browser routes treat an absent header as cookie mode. Renewal and logout also require signed double-submit CSRF proof while a valid cookie authority exists. Migration uses the independent browser-route proof because it runs before a current cookie session exists. Logout can clear invalid session cookies with the same proof. The safe CSRF route requires a valid cookie session. These routes do not return bearer credentials. |
-| Programmatic authentication | `POST /auth/login`, `POST /auth/register/complete`, `POST /auth/logout`, `POST /oauth/token` | First-party bearer issuance, stable bearer-session revocation, and OAuth code/refresh exchange | JSON is required for direct login and registration. These routes do not create, read, or clear ambient browser authentication cookies. OAuth token exchange also accepts the documented form encoding. |
-| Realtime WebSocket | `GET /api/realtime` | Binary `chatto.realtime.v1.Realtime*` frames | Bearer access token in the hello frame or same-origin cookie; exact human credentials are revalidated before subscription and once per minute; bearer expiry and cookie renewal thresholds request reconnects, while OAuth-client blocks terminate matching established sessions |
-| Bot incoming webhook | `POST /webhooks/incoming/{credential}` with optional `room_id` query parameter | Slack-compatible plain-text JSON subset with Chatto aliases and optional thread creation | Action-limited bot webhook credential; the handler posts through the normal message operation and does not accept the bot API key |
-| Server OIDC client metadata | `GET /oauth/client-metadata.json` | CIMD public-client identity and exact callbacks for Chatto server login | Public; mounted only when an OIDC provider uses this deployment's metadata URL as its client ID |
-| Frontend OAuth client metadata | `GET /oauth/frontend-client-metadata.json` | CIMD public-client identity and exact popup callback for connecting the bundled frontend to Chatto servers | Public; always mounted, but publishes metadata only when the request host matches `webserver.url` or an exact non-wildcard `webserver.allowed_origins` entry |
-| Chatto client authorization | `GET /oauth/authorize`, `POST /oauth/token` | Authorization Code with S256 PKCE plus rotating refresh grant for a client application connecting to a Chatto server; browser clients use a CIMD URL `client_id`, Desktop uses its built-in identity, native clients can use registered local callbacks, and an optional `provider_id` hint can start one server-configured login provider | Public authorization start and CORS token/refresh exchange; the validated client identity and callback are bound through code exchange, local callbacks require consent for each authorization, refresh remains client-bound, and provider hints cannot supply an issuer or endpoint |
-| OAuth authorization-server metadata | `GET /.well-known/oauth-authorization-server` on the public listener | RFC 8414 discovery for Chatto OAuth, including PKCE, CIMD, the authorization-response issuer, refresh, and enabled MCP scopes | Public metadata with wildcard read-only CORS |
-| Network MCP | `/mcp` on the public HTTP listener; `GET /.well-known/oauth-protected-resource/mcp` publishes RFC 9728 metadata when `[mcp].enabled = true` | MCP `2026-07-28` stateless Streamable HTTP with `get_server_info`, `get_current_user`, `list_rooms`, `list_room_messages`, `post_message`, `join_room`, and `leave_room`; the canonical origin and exact non-wildcard server aliases each publish a separate MCP resource, while `webserver.url` remains the OAuth issuer | Resource-bound OAuth bearer for the exact requested origin with the current room and message read/write MCP scopes, or a current bot API key; every tool call also uses the normal operation authorization model and confirmed missing RBAC permissions are returned as tool errors |
-| Protected attachments | `GET /assets/files/{assetId}` and image transform variants | Per-user URLs use hourly issuance buckets with 23–24 hours of remaining validity; Chatto streams full responses, while passive S3-backed video, audio, and large files can redirect to short-lived presigned URLs | Signed `access` ticket, authenticated cookie, or bearer token; every request rechecks room membership before resolving storage or exposing binary bytes |
-| Protected HLS video | `GET /assets/hls/{assetId}/master.m3u8`, rendition playlists, and segments | Master and media playlists are generated from the durable manifest; segments are complete bounded responses from NATS or S3 | Domain-separated source-video `access` ticket; every request rechecks room membership and every segment ID/role against the durable HLS manifest |
-| Operator ConnectRPC | `/api/connect/chatto.operator.v1.*` on the configured Unix socket | Root-equivalent local unary services | Unix-socket filesystem permissions; never mounted on the public listener |
-| Trusted NATS services | `svc.chatto.>` and `svc.chatto_ext.>` | Versioned protobuf request/reply through NATS micro services | NATS account permissions; extension providers receive only their configured service and upstream Core subjects |
-| Reflection | `/api/connect/grpc.reflection.v1*` and `v1alpha*` | Public service descriptors | Public; restricted resolver excludes internal `chatto.core.*` types |
+The server recognizes the official mobile OAuth client
+`eu.chattocorp.chatto.mobile` with the exact callback
+`eu.chattocorp.chatto.mobile:/oauth/callback`. This built-in registration needs
+no operator configuration. It uses the existing authorization and token
+endpoints, client policy, consent, and PKCE checks. No public or persisted
+protobuf schema changes are required. See
+[FDR-023](../fdr/FDR-023-authentication-and-sessions.md).
 
-<!-- 【本地改动 2026-09-12 + 2026-09-13】fork 的附件接口面比上面这行描述的小一层。
+When `auth.loopback_client_enabled` is set, the server also recognizes the
+built-in loopback browser client `chatto://loopback`. It accepts the callback
+`/servers/callback?mode=popup` on each HTTP or HTTPS loopback origin, with any
+port. The bundled frontend uses this identity when it runs on a loopback origin
+and signs in to a server that is not local, because that server cannot retrieve
+a CIMD document from the frontend origin. Sessions of this client have a fixed
+window of at most 24 hours.
 
-     1. **URL 生成层（主）**：`MediaModel.Get*TransformedAttachmentAssetURL` 直接
-        忽略 width/height/fit，回原图链接（公开版 `/assets/files/{id}/{fn.ext}`，
-        ticket 版 `/assets/files/{id}?access=…`）。access ticket 里也不再带
-        transform 参数，客户端根本拿不到 `/image/{w}x{h}/{fit}` 链接。两个调用点
-        是 connectapi 的 apiAsset.ThumbnailAssetUrl 与时间线装配。
-     2. **HTTP 层（兜底）**：已经发出去的旧 `/assets/files/{id}/image/{w}x{h}/{fit}`
-        链接（旧客户端缓存、CDN、被粘贴到别处的 URL）仍然可用，但直接返回存储的
-        那一份字节，响应头 `X-Cache: BYPASS`，不缩放、不重编码、不读写
-        ASSET_CACHE。实现见 cli/internal/http_server/assets.go 的
-        transformRequest.BypassTransform 与 serveBypassedOriginalAsset。
-
-     【2026-09-13】服务端资产（头像/logo/banner/链接预览）的接口面也缩到了同一
-     层：
-
-     1. **URL 生成层**：`MediaModel.GetTransformedServerAssetURLWithFilename`
-        忽略 width/height/fit，override 成原档链接
-        `/assets/server/{key}[/{fn.ext}]`，不再生成带 HMAC 签名的 `/t/{sig}` 路径。
-        调用点是 core 的 serverAssetURL 与头像 URL、前端 /favicon 与
-        /apple-touch-icon 重定向（两个尺寸现在指向同一条原档链接）、以及 PWA
-        manifest 的 192x512 图标。
-     2. **上传期压缩**：四条服务端资产路径（assets 的
-        ProcessAvatarImageWithConfig / ProcessLogoImageWithConfig /
-        ProcessBannerImageWithConfig / ProcessLinkPreviewImageWithConfig）共用
-        processServerAssetImage：缩放到各自上限后用 ffmpeg libwebp 压成**有损
-        WebP**（-q:v 85）。所以请求期没有第二份更小的字节可给，浏览器自己降采样。
-     3. **HTTP 层**：旧的 `/assets/server/{key}/t/{sig}` 链接同样走 BYPASS，
-        返回存储的原字节 + `X-Cache: BYPASS`。
-
-     所以上面这行的 "image transform variants" 在 fork 里只是遗留兼容面，不是
-     功能面；ASSET_CACHE 的两个命名空间（attachment-stable-v2.* 与 server.*）
-     都永远不被写入。
-
-     背景与取舍见 cli/internal/core/attachments.go 的 override 注释和
-     docs/fdr/FDR-008 的 fork 说明块。合并 upstream 时这两层都要人工恢复。 -->
+| Surface                             | Mount                                                                                                                                                                                                                                           | Contract                                                                                                                                                                                                                                                                                                                                   | Access boundary                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Public ConnectRPC                   | `/api/connect/chatto.{auth,discovery,api,admin}.v1.*`                                                                                                                                                                                           | Unary Connect, gRPC, and gRPC-Web services; every authenticated unary procedure honors `Chatto-Realtime-Minimum-Cursor`                                                                                                                                                                                                                    | Explicit per-service public or authenticated-user policy; method-level authorization remains inside operation models                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Browser authentication              | `GET /auth/browser/csrf`, `POST /auth/browser/login`, `POST /auth/browser/register/complete`, `POST /auth/browser/logout`, `POST /auth/browser/session/migrate`, `POST /auth/browser/session/renew`, `POST /auth/browser/revoke-bearer-session` | Bound CSRF-proof repair, cookie-only password/registration authentication, one-time 0.4 typed-cookie migration, logout, stable-handle session renewal, and removal of stored origin bearer authority                                                                                                                                       | Every mutation requires JSON and an exact same-origin request. A browser-auth mode header, if present, must select cookies. Browser routes treat an absent header as cookie mode. Renewal and logout also require signed double-submit CSRF proof while a valid cookie authority exists. Migration uses the independent browser-route proof because it runs before a current cookie session exists. Logout can clear invalid session cookies with the same proof. The safe CSRF route requires a valid cookie session. These routes do not return bearer credentials. |
+| Password-manager discovery          | `GET` and `HEAD /.well-known/change-password`                                                                                                                                                                                                   | Temporary redirect to `/chat/-/settings/account` for the origin server                                                                                                                                                                                                                                                                     | Public and query-free. Unknown `/.well-known` resources return `404` and do not use the frontend fallback.                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| Programmatic authentication         | `POST /auth/login`, `POST /auth/register/complete`, `POST /auth/logout`, `POST /oauth/token`                                                                                                                                                    | First-party bearer issuance, stable bearer-session revocation, and OAuth code/refresh exchange                                                                                                                                                                                                                                             | JSON is required for direct login and registration. These routes do not create, read, or clear ambient browser authentication cookies. OAuth token exchange also accepts the documented form encoding.                                                                                                                                                                                                                                                                                                                                                                |
+| Realtime WebSocket                  | `GET /api/realtime`                                                                                                                                                                                                                             | One binary `RealtimeSubscribe` message, then binary snapshot, event, caught-up, heartbeat, and close frames; large, paginated, and targeted resources stay in ConnectRPC                                                                                                                                                                   | Bearer access token in the subscription or same-origin cookie; exact human credentials are revalidated before subscription and once per minute; bearer expiry and cookie renewal thresholds request reconnects, while OAuth-client blocks terminate matching established sessions                                                                                                                                                                                                                                                                                     |
+| Bot incoming webhook                | `POST /webhooks/incoming/{credential}` with optional `room_id` query parameter                                                                                                                                                                  | Slack-compatible plain-text JSON subset with Chatto aliases and Grafana `message` and optional thread creation                                                                                                                                                                                                                             | Action-limited bot webhook credential; the handler posts through the normal message operation and does not accept the bot API key                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| Server OIDC client metadata         | `GET /oauth/client-metadata.json`                                                                                                                                                                                                               | CIMD public-client identity and exact callbacks for Chatto server login                                                                                                                                                                                                                                                                    | Public; mounted only when an OIDC provider uses this deployment's metadata URL as its client ID                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| Frontend OAuth client metadata      | `GET /oauth/frontend-client-metadata.json`                                                                                                                                                                                                      | CIMD public-client identity and exact popup callback for connecting the bundled frontend to Chatto servers                                                                                                                                                                                                                                 | Public; always mounted, but publishes metadata only when the request host matches `webserver.url` or an exact non-wildcard `webserver.allowed_origins` entry                                                                                                                                                                                                                                                                                                                                                                                                          |
+| Chatto client authorization         | `GET /oauth/authorize`, `POST /oauth/token`                                                                                                                                                                                                     | Authorization Code with S256 PKCE plus rotating refresh grant for a client application connecting to a Chatto server; browser clients use a CIMD URL `client_id`, Desktop uses its built-in identity, native clients can use registered local callbacks, and an optional `provider_id` hint can start one server-configured login provider | Public authorization start and CORS token/refresh exchange; the validated client identity and callback are bound through code exchange, local callbacks require consent for each authorization, refresh remains client-bound, and provider hints cannot supply an issuer or endpoint                                                                                                                                                                                                                                                                                  |
+| OAuth authorization-server metadata | `GET /.well-known/oauth-authorization-server` on the public listener                                                                                                                                                                            | RFC 8414 discovery for Chatto OAuth, including PKCE, CIMD, the authorization-response issuer, refresh, and enabled MCP scopes                                                                                                                                                                                                              | Public metadata with wildcard read-only CORS                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| Network MCP                         | `/mcp` on the public HTTP listener; `GET /.well-known/oauth-protected-resource/mcp` publishes RFC 9728 metadata when `[mcp].enabled = true`                                                                                                     | MCP `2026-07-28` stateless Streamable HTTP with `get_server_info`, `get_current_user`, `list_rooms`, `list_room_messages`, `post_message`, `join_room`, and `leave_room`; the canonical origin and exact non-wildcard server aliases each publish a separate MCP resource, while `webserver.url` remains the OAuth issuer                  | Resource-bound OAuth bearer for the exact requested origin with the current room and message read/write MCP scopes, or a current bot API key; every tool call also uses the normal operation authorization model and confirmed missing RBAC permissions are returned as tool errors                                                                                                                                                                                                                                                                                   |
+| Neighborhood images                 | `GET /assets/neighborhood/{sha256}`                                                                                                                                                                                                             | Immutable WebP copy of a Neighborhood logo or banner from `NEIGHBORHOOD_IMAGES`                                                                                                                                                                                                                                                            | Public; the handler accepts only a lowercase 64-character hexadecimal name and reads only the dedicated bucket                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| Protected attachments               | `GET /assets/files/{assetId}` and image transform variants                                                                                                                                                                                      | Per-user URLs use hourly issuance buckets with 23–24 hours of remaining validity; Chatto streams full responses, while passive S3-backed video, audio, and large files can redirect to short-lived presigned URLs                                                                                                                          | Signed `access` ticket, authenticated cookie, or bearer token; every request rechecks room membership before resolving storage or exposing binary bytes                                                                                                                                                                                                                                                                                                                                                                                                               |
+| Protected HLS video                 | `GET /assets/hls/{assetId}/master.m3u8`, rendition playlists, and segments                                                                                                                                                                      | Master and media playlists are generated from the durable manifest; segments are complete bounded responses from NATS or S3                                                                                                                                                                                                                | Domain-separated source-video `access` ticket; every request rechecks room membership and every segment ID/role against the durable HLS manifest                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| Operator ConnectRPC                 | `/api/connect/chatto.operator.v1.*` on the configured Unix socket                                                                                                                                                                               | Root-equivalent local unary services                                                                                                                                                                                                                                                                                                       | Unix-socket filesystem permissions; never mounted on the public listener                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| Trusted NATS services               | `svc.chatto.>` and `svc.chatto_ext.>`                                                                                                                                                                                                           | Versioned protobuf request/reply through NATS micro services                                                                                                                                                                                                                                                                               | NATS account permissions; extension providers receive only their configured service and upstream Core subjects                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| Reflection                          | `/api/connect/grpc.reflection.v1*` and `v1alpha*`                                                                                                                                                                                               | Public service descriptors                                                                                                                                                                                                                                                                                                                 | Public; restricted resolver excludes internal `chatto.core.*` types                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 
 The public HTTP edge mounts every handler returned by `connectapi.API.Handlers`.
 Authenticated services are wrapped with `connectrpc.com/authn` before protobuf
 decoding and validation. `ExternalIdentityAuthService`,
-`PushSubscriptionCleanupService`, `ServerDiscoveryService`, and reflection are
+`PushSubscriptionCleanupService`, `ServerSetupService`, `ServerDiscoveryService`, and reflection are
 public; all other public-listener services require an authenticated user. The Operator API uses
 `connectapi.API.OperatorHandlers` and is mounted only on the configured Unix
 socket.
 
 ## Mounted public services
 
-| Package | Public services | Auth policy |
-| ------- | --------------- | ----------- |
-| `chatto.auth.v1` | `ExternalIdentityAuthService`, `PushSubscriptionCleanupService` | Public capability-token flows |
-| `chatto.discovery.v1` | `ServerDiscoveryService` | Public discovery |
-| `chatto.api.v1` | `AssetService`, `AssetUploadService`, `BotService`, `MessageSearchService`, `MessageService`, `MyAccountService`, `NotificationPolicyService`, `NotificationService`, `PushNotificationService`, `RoleService`, `RoomDirectoryService`, `RoomService`, `ServerService`, `ThreadService`, `UserService`, `ViewerService`, `VoiceCallService` | Authenticated user |
-| `chatto.admin.v1` | `AdminDiagnosticsService`, `AdminEventLogService`, `AdminInviteLinkService`, `AdminOAuthClientService`, `AdminPermissionService`, `AdminRoleService`, `AdminRoomLayoutService`, `AdminServerService`, `AdminUserService` | Authenticated user; methods enforce administrative permissions |
+| Package               | Public services                                                                                                                                                                                                                                                                                                                                                  | Auth policy                                                                                                |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `chatto.auth.v1`      | `ExternalIdentityAuthService`, `PushSubscriptionCleanupService`                                                                                                                                                                                                                                                                                                  | Public capability-token flows                                                                              |
+| `chatto.discovery.v1` | `ServerDiscoveryService`                                                                                                                                                                                                                                                                                                                                         | Public discovery                                                                                           |
+| `chatto.api.v1`       | `AssetService`, `AssetUploadService`, `BotService`, `MessageSearchService`, `MessageService`, `MyAccountService`, `NotificationPolicyService`, `NotificationService`, `PermissionService`, `PushNotificationService`, `RoleService`, `RoomDirectoryService`, `RoomService`, `ServerService`, `ThreadService`, `UserService`, `ViewerService`, `VoiceCallService` | Authenticated user; `ViewerService` also reports and changes privileged mode for the current human session |
+| `chatto.admin.v1`     | `AdminDiagnosticsService`, `AdminEventLogService`, `AdminInviteLinkService`, `AdminOAuthClientService`, `AdminPermissionService`, `AdminRoleService`, `AdminRoomLayoutService`, `AdminServerService`, `AdminUserService`                                                                                                                                         | Authenticated user; methods enforce administrative permissions                                             |
+
+`MyAccountService.GetPresencePreference` and `SetPresencePreference` read and
+change the caller's private availability across devices. `RefreshPresence`
+refreshes liveness without changing this choice. Legacy `SetPresence` cannot
+override a saved choice.
+
+`MyAccountService.GetSettings` exposes caller-owned display preferences using
+the same settings resource as updates and the combined viewer response.
+`MyAccountService` also lists the caller's verified emails, sends and confirms
+email-verification codes, and selects the primary email. These methods do not
+accept a caller-selected target account. They require the caller's expected
+account ID as a stale-session assertion and reject a different authenticated
+account before reading or changing email state. Verification delivery uses the
+server's configured transactional email sender.
+
+`MessageService` and `ThreadService` expose complete, paginated reaction-user
+and reply-author references in addition to bounded message previews.
+`MessageService.UpdateMessage` permits an author or a user with effective
+`message.manage` to remove a thread reply's channel echo. Enabling an echo
+remains author-only and requires `message.echo` and `message.post`. Clients omit
+unchanged echo state. Removal uses the existing atomic room edit and retraction.
+Hydrated messages include optional `viewer_state.can_reply_in_thread` authority
+for their canonical thread, including roots without an established thread.
+The shared posting check combines membership, room policy,
+read access, and broad or interaction-scoped write authority. The write model
+repeats this check inside the room aggregate's OCC attempt. Interaction posting
+uses the existing thread projection; it adds no durable events or runtime keys.
+`MessageService.CreateMessage` accepts attachment descriptions keyed by an asset
+ID in the same request. `MessageService.SetAttachmentDescription` replaces or
+clears one current description with message-edit authorization. Hydrated message
+attachments and room-file wrappers expose the description; the base `Asset`
+resource remains description-free.
+`RoomService` and `ThreadService` expose caller-owned read markers through
+singular and bounded batch reads. These reads use existing message-read
+authorization and do not initialize or advance markers.
 
 `AdminInviteLinkService` requires `user.invite`. Its resource includes the
 full, deterministically reconstructed invite link so authorised operators can
@@ -102,30 +149,114 @@ ID in the signed browser session, and immediately redirects to registration.
 
 `AdminServerService` provides CRUD operations for Neighbor resources. These
 methods require `server.manage-neighbors`. `ServerDiscoveryService.ListNeighbors`
-returns canonical origins without a session or an ordering contract. The
-server does not contact the advertised origins.
+returns canonical origins without a session or an ordering contract. Neighbor
+writes do not contact the advertised origins.
+`ServerDiscoveryService.ListNeighborhoodServers` returns the cached result of
+background Neighborhood discovery without a session. The call reads
+`neighborhood.directory` from `MEMORY_CACHE` and never contacts another server.
+Its logo and banner URLs are server-relative `/assets/neighborhood/{sha256}`
+paths.
+See [ADR-106](../adr/ADR-106-server-side-neighborhood-discovery.md).
 
-`UserService` provides user reads and the canonical target-aware avatar upload
-and delete operations. Self-targeting is available to human and bot callers. A
-cross-human target requires `user.manage-accounts`. A cross-bot target permits
+Public `User` resources expose `bot: BotInfo` for active bots in ordinary
+reads, administrator lists, and realtime snapshot hydration. The bot profile
+refreshes this reference every 30 seconds and loads the owner's public identity
+through `UserService.BatchGetUsers`. No credentials or management rights are
+exposed by the reference.
+
+`UserService` provides user reads and the canonical target-aware operations
+that update profiles and upload or delete avatars. Self-targeting is available
+to human and bot callers. A cross-human target requires
+`user.manage-accounts`. A cross-bot target permits
 the bot owner, `user.manage-accounts`, or `bot.manage`. A bot cannot target
 another account. These operations validate stable request-time authorization
 inputs, use OCC on the target user aggregate, and then return the ready user
 projection.
 
+`AdminPermissionService` uses the same scope pagination for role/user matrix
+and decision reads. The core selects at most 100 scopes before cell evaluation
+and loads parent-group rules independently of the page. Scope enumeration still
+scans the directory. Bot reads filter room visibility before pagination and
+counts. See [permission scope selection](../../cli/internal/core/permission_scope_page.go).
+
+`RoomService.ListMembers` returns active membership IDs in stable ID order.
+An empty search reads lifecycle and membership metadata without profile
+decryption. Name searches hydrate profiles to match login and display name.
+An optional presence-status filter uses the shared watcher snapshot before
+pagination. Counts describe the filtered set. It does not read per-user KV keys.
+`UserService.BatchGetUsers` assembles requested profiles with bounded concurrency
+and one request-scoped encryption-key cache. See
+[FDR-025](../fdr/FDR-025-user-search-and-member-directory.md).
+
+`AdminUserService.ListMembers` returns ordered IDs and page metadata. Empty
+searches read lifecycle and creation metadata; only legacy accounts without a
+creation time need login hydration for sorting. Name searches read profiles.
+`BatchGetMembers` checks admin access again, returns private rows and role
+summaries, and reads presence once from the shared watcher. Singular reads and
+mutation responses retain their KV-backed presence reads. The frontend caches
+rows and their role summaries together under server/session-scoped admin query
+keys. Permission loss, logout, and account deletion cancel older reads and clear
+private snapshots. Pagination advances by returned IDs, not hydrated rows.
+
+`AdminRoleService` separates role details from explicit membership pages.
+Its `ListMembers` gates each request with `role.assign`; it selects assignment IDs
+before bounded user-profile hydration. It does not require `admin.view-users`.
+See [role operations](../../cli/internal/core/role_management.go) and the
+[role member assembler](../../cli/internal/connectapi/role_member_assembler.go).
+
 `BotService` exposes bot lifecycle, administrator-initiated owner reassignment,
 and create and revoke operations for as many as 20 named API keys and 20 named
-incoming webhooks for each bot. Bot
-permission reads and writes use `AdminPermissionService`'s canonical user
-permission operations with the bot's user ID as the target. Human owners can
+incoming webhooks for each bot. Bot permission configuration reads and writes
+use `AdminPermissionService`'s canonical user permission operations with the
+bot's user ID as the target. Human owners can
 manage their own bots; `bot.manage` allows global management. A human with
-`user.manage-accounts` can list and read all bots for avatar administration,
-but this visibility does not grant bot credential, permission, ownership, or
-lifecycle authority.
+`user.manage-accounts` can list and read all bots for profile and avatar
+administration, but this visibility does not grant bot credential, permission,
+ownership, or lifecycle authority. Bot reads include the start of the bot's
+username cooldown from the user projection.
+
+`chatto.api.v1.PermissionService.ListEffectivePermissions` is a read-only,
+complete effective permission read without pagination or truncation. Authenticated members can inspect
+bot targets; human targets require `user.manage-permissions`. Core evaluates
+the existing resolver in one server content view, including bot owner limits.
+The response retains inherited and included grants. Child coverage metadata
+accounts for hidden rooms before room identities are filtered. The client
+combines grants for display. Stored overrides and inactive grants remain in
+the existing admin matrix API, with its management checks. Neither effective
+permission scopes nor their coverage metadata expose individual DM participants.
 
 Owner reassignment validates stable request-time authorization inputs and uses
 user-family OCC. This boundary serializes reassignment with deletion of the bot
 or either human owner.
+
+`RoomDirectoryService.ListRooms` intersects the room-kind scope with an archive
+filter. The default returns active rooms; callers can select archived rooms or
+both states. The read uses the existing room catalog, visibility checks, and
+canonical room response. It filters room identities before pagination, orders
+them by ID, and hydrates viewer state only for the selected page. Archive discovery does not change membership or
+permissions. Room-group and realtime navigation snapshots keep their default
+active-room scope.
+
+`RoomService.AddMember` and `RemoveMember` accept room managers, account
+managers, bot owners, and human bot managers. `room.manage` for the room or
+`user.manage-accounts` overrides the target account's missing `room.join`.
+Without either override, a bot manager needs the bot's effective `room.join`,
+including its owner's ceiling. Suspensions and archived rooms prevent adding.
+Removal does not require join permission and works in archived rooms.
+Both operations recheck authorization within room aggregate OCC retries and
+reuse the existing membership and audit events. Neither changes grants.
+`RoomMemberAdded` and `RoomMemberRemoved` identify the acting manager in
+`actor_id` and the target account in their payload. Each audit record commits
+atomically with its membership transition, including permission overrides.
+
+`RoomService.GetMember` and `BatchGetMembers` read the requested accounts'
+effective membership, including universal membership. Account managers can
+read channel membership without joining. Bot managers can read only their
+target bots through this additional gate; they cannot list other members.
+DM reads still require caller membership. The account permission matrix UI
+composes these reads with `RoomDirectoryService.BatchGetRooms`; membership is
+not part of the permission API. Client reads use batches of at most 100 rooms
+and at most six concurrent member lookups.
 
 Matrix room metadata is limited to rooms visible to both the bot owner and the
 managing caller; group metadata follows the room directory's complete group
@@ -139,7 +270,9 @@ API-key creation returns the raw key once. Safe metadata includes its stable
 ID, manager-defined name, creation time, and best-effort last-use telemetry.
 Revocation closes only established realtime connections that used the selected
 key.
-Incoming webhook creation returns the complete URL once. A manager replaces a
+Incoming webhook creation returns the complete URL once. The frontend can add
+the selected destination as a `room_id` query parameter. This does not change
+the credential scope or store a default room. A manager replaces a
 webhook when the manager creates a new credential, moves the caller, and
 revokes the old credential. Each webhook can be revoked without a change to
 other webhooks. Safe metadata includes the creation time and best-effort
@@ -148,9 +281,9 @@ realtime requests.
 
 `NotificationPolicyService` provides explicit server, room-group, and room
 policy scopes. Its batch read accepts at most 100 scopes, removes duplicates in
-first-seen order, and omits missing or inaccessible resource scopes. The
-existing `NotificationService` policy methods remain available for server and
-room integrations.
+first-seen order, and omits missing or inaccessible resource scopes.
+`NotificationService` owns occurrence reads and triage only; policy reads and
+writes use `NotificationPolicyService`.
 
 `AdminDiagnosticsService.GetSystemInfo` is owner-only and includes
 broker-derived status for Chatto's known durable worker queues. The additive
@@ -163,9 +296,23 @@ system diagnostics or turn unavailable metrics into healthy-looking zeroes.
 
 ## Mounted operator services
 
-| Package | Service | Access policy |
-| ------- | ------- | ------------- |
-| `chatto.operator.v1` | `OperatorUserService` | Root-equivalent access over the private Unix socket |
+| Package              | Service                  | Access policy                                                                                      |
+| -------------------- | ------------------------ | -------------------------------------------------------------------------------------------------- |
+| `chatto.operator.v1` | `OperatorUserService`    | Root-equivalent access over the private Unix socket                                                |
+| `chatto.operator.v1` | `OperatorRoomService`    | Root-equivalent channel lookup, creation, and explicit membership add over the private Unix socket |
+| `chatto.operator.v1` | `OperatorAssetService`   | Root-equivalent attachment upload for a mapped author over the private Unix socket                 |
+| `chatto.operator.v1` | `OperatorMessageService` | Root-equivalent historical message import over the private Unix socket                             |
+| `chatto.operator.v1` | `OperatorSeedService`    | Private Unix socket; compiled only with `bootstrap` or `test_endpoints`                            |
+
+The [synthetic data generator](../../cli/internal/core/seed_development.go) uses
+existing account, channel, membership, and message operations. Its CLI is
+`chatto operator seed`. It adds no event types, streams, or projections and waits
+for serving projections before success. The
+[test-only HTTP wrapper](../../cli/internal/http_server/seed_test_endpoint.go)
+also mounts `POST /auth/test/seed` and `POST /auth/test/create-session` in
+`test_endpoints` builds. Session creation accepts an existing human account ID
+and returns a normal cookie session with CSRF state. The fixed
+`/auth/test/seed-performance` fixture remains independent.
 
 ## Trusted NATS services
 
@@ -185,7 +332,27 @@ current member-room set. It then uses
 `MessageSearchReadModel` and the normal timeline hydrator to recheck room
 membership, current body availability, and message/room identity before
 returning canonical `Message` resources. Public cursors encrypt and authenticate
-the provider cursor and bind it to the viewer and complete public request.
+the continuation and bind it to the viewer and complete public request.
+
+`MessageSearchService.SearchMessages` accepts independent `FOLLOWED_THREADS`
+scope and `THREAD` grouping. Message search retains its defaults. All modes
+share parsing, structured filters, availability, and cursor sealing.
+`MessageSearchReadModel` sends the complete followed-root set when requested.
+For groups it validates matching body revisions, excludes resolved roots on
+subsequent queries, and restarts the provider cursor when exclusions change.
+This avoids scanning every matching reply. Provider pages contain at most 100
+hits and the complete grouped operation has a 30-second deadline. Exact totals
+and activity sorting require enumeration of all matching groups.
+The model rechecks current follow state and access before group pagination.
+Relevance and newest order use the best valid matching message; activity order
+uses current thread metadata. Both modes return `MessageSearchResult`: a
+matching message and score, plus `ThreadSearchContext` for grouped results.
+The context reports actual viewer follow state. A root without replies is a group.
+The sealed group cursor carries a distinct-thread offset; message cursors carry
+the provider continuation. Neither pins a snapshot across pages.
+Providers must acknowledge applied thread inclusion and exclusion filters;
+older providers fail closed for unsupported filters. Thread filters do not
+contribute to relevance scores.
 
 The bundled provider runs under `chatto run` when
 `search_provider.enabled = true`; the same unit runs standalone through
@@ -195,8 +362,8 @@ ready, degraded, and unavailable states without affecting other APIs. Exact
 provider replay counts stay on the trusted NATS contract and in operator logs;
 the authenticated public status does not expose server-wide event-log scale.
 
-`ServerDiscoveryService.GetServer` and `ListNeighbors` support side-effect-free
-GET. They also receive wildcard public CORS and conditional-response caching.
+`ServerDiscoveryService.GetServer`, `ListNeighbors`, and
+`ListNeighborhoodServers` support side-effect-free GET. They also receive wildcard public CORS and conditional-response caching.
 Other bundled-client Connect traffic uses POST.
 
 The discovery response includes the server software version as public
@@ -204,9 +371,10 @@ pre-authentication state, along with configured provider metadata and the
 independently configured direct-registration and direct-login capabilities.
 The direct-login capability uses scalar presence so a new client treats an
 older server that omits it as enabled. The bundled client refreshes discovery
-per server and owns an internal feature-to-minimum-server-version table for compatibility gates.
-The 0.5 client requires the 0.5 server baseline before opening realtime
-protocol 2, the only accepted behavioral version. The
+per server and owns one minimum supported server version. It does not gate
+individual features by server version. The 0.5 client requires a server at
+`0.5.0-beta.9` or newer before opening realtime protocol 4, the only accepted
+behavioral version. The
 `chatto.realtime.v1` suffix remains the protobuf namespace.
 
 Public server discovery includes each OIDC provider's issuer for clients that
@@ -214,14 +382,35 @@ need to identify or present configured login options. Authling has no special
 frontend trust path: a Chatto server uses it only when the operator configures
 it as an ordinary OIDC provider.
 
+OIDC provider login selects token authentication before one code exchange.
+`token_endpoint_auth_method` overrides discovery; otherwise confidential
+clients prefer advertised Basic, then POST, with Basic as the default only
+when metadata omits the methods field. Public clients send their ID in the
+request body. Current and legacy callback routes share this behavior and PKCE.
+Missing names or a missing requested email trigger UserInfo. Its subject must
+match the verified ID token before missing fields are filled. Email and its
+verification flag come from the same response. Unavailable or malformed
+UserInfo leaves ID-token claims intact. Token-exchange diagnostics record only
+provider ID, authentication method, status, and allow-listed OAuth error codes.
+The verifier's key-fetch transport removes unsupported JWK types and curves
+from mixed key sets, with a 1 MiB response limit. Supported keys still use the
+OIDC library's validation, signature verification, and rotating-key cache.
+
 `MessageSearchService.GetStatus` remains the authority for configured search
 availability and transient provider readiness. Viewer permissions remain the
 authority for authenticated feature access.
 
-Public URL generation prefers the configured `webserver.url`. Without it, the
-HTTP edge uses only the direct request TLS state and host; forwarded protocol
-headers are not implicitly trusted. `webserver.trusted_proxies` affects client
-IP attribution and realtime same-origin comparison, not public URL authority.
+Absolute URLs in API responses use the public origin of the request. When the
+request host matches `webserver.url` or an exact `webserver.allowed_origins`
+entry, that configured origin applies. Other hosts get `webserver.url`. Without
+it, the HTTP edge uses only the direct request TLS state and host. The HTTP
+edge does not trust forwarded protocol headers. `webserver.trusted_proxies`
+controls client IP attribution and realtime same-origin comparison. It does not
+control public URLs. Core returns server-relative asset URLs. The API layer makes
+them absolute for each request, so asset URLs use the same origin as the other
+URLs in the response. Without `webserver.url`, attachment and link-preview URLs
+stay server-relative. Call participant metadata always uses the `webserver.url`
+origin because other participants read it.
 
 Chatto-streamed protected attachments are sequential full responses. They
 advertise `Accept-Ranges: none` and ignore `Range`, returning `200` with the
@@ -229,7 +418,58 @@ complete object. NATS-backed video is therefore not seekable. Passive S3-backed
 media redirects after authorization to a presigned object URL whose storage
 backend provides byte-range delivery.
 
+`GET /assets/files/{assetId}?download=1` forces an original-file download. It
+uses the same access ticket or authenticated credentials and current read
+checks as the inline response. Chatto streams this mode on both storage
+backends and sets `Content-Disposition: attachment` with the stored filename,
+with path components and control characters removed and MIME encoding applied.
+It preserves the private cache policy, `nosniff`, and active-document sandbox
+headers. The optional query parameter does not change stored data or tickets.
+
 Processed videos can instead expose HLS. Six-second MPEG-TS segments make
 seeking and adaptive rendition switching independent of byte-range support.
 HLS child responses remain behind Chatto so membership loss revokes an already
 issued playlist ticket on its next playlist or segment request.
+
+## Outbound bot endpoint management
+
+`BotService.ListBotOutboundWebhooks`, `GetBotOutboundWebhook`,
+`CreateBotOutboundWebhook`, `UpdateBotOutboundWebhook`, and
+`RevokeBotOutboundWebhook`, and `ListBotWebhookFailures` require the bot owner or `bot.manage`.
+Account-manager visibility alone does not grant access. Lists return the full
+bounded collection of at most 20 endpoints. Reads expose names, saved URLs,
+enabled state, creation time, and the latest recorded failure per endpoint.
+`BotWebhookFailure` represents a recorded failure; `latest_failure` is absent
+when no failure is retained. Success and skip statuses are not exposed.
+Names and signing secrets are fixed; creation returns a signing secret once.
+Update selects enabled, URL, and Authorization fields with an update mask.
+Unselected fields keep their current values. Selected absent or empty
+Authorization removes the header; a selected URL must remain valid.
+Destination edits preserve creation time and cancel queued deliveries. Revocation removes one endpoint permanently.
+Later successes do not clear a recorded failure. The delivery worker sends
+JSON HTTP POST requests to external destinations; it mounts no new route.
+
+`BotService.ListBotWebhookFailures` reads retained LOG records for one current
+endpoint. Pages contain complete records in recording order, oldest first.
+The cursor is encrypted and bound to the viewer, endpoint, and LOG incarnation.
+Page size defaults to 20 and is limited to 100. A captured tail excludes later
+appends from the current pagination session. Expired records are omitted.
+
+## First-run setup
+
+`chatto.auth.v1.ServerSetupService.CompleteSetup` is public only while the core
+setup operation permits the claim. `ServerDiscoveryService.GetServer` returns
+`setup_required`. The command creates a local owner and settings without an
+email flow. It returns no credential; the client uses normal login afterward.
+Account validation errors include `Chatto-Error-Field` response metadata with
+`login`, `display_name`, or `password`. Clients use it to place the error below
+the affected field. Errors without this metadata apply to the form.
+The `[core] skip_setup_wizard` flag suppresses the command and discovery state.
+See [FDR-047](../fdr/FDR-047-first-run-setup.md).
+
+The call credential APIs require room membership and `call.join`. Starting a
+call also requires `call.start`. Tokens encode `call.voice`, `call.camera`, and
+`call.screenshare` as source restrictions; native companion credentials require
+`call.screenshare`. Member-only observer reads and leaving do not require these
+permissions. Room viewer-state permission rows expose the five actions through
+existing room reads and realtime reconciliation.

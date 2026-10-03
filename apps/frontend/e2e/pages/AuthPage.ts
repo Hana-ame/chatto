@@ -75,7 +75,7 @@ export class AuthPage {
 
   /** Link to login page from registration */
   get signInLink(): Locator {
-    return this.page.getByRole('link', { name: 'Sign in' });
+    return this.page.getByRole('link', { name: 'Sign In', exact: true });
   }
 
   /** Link to registration page from login */
@@ -346,13 +346,12 @@ export class AuthPage {
   }
 
   /**
-   * Open the logout confirmation dialog. Idempotent: if the dialog is already
-   * open, this is a no-op. Otherwise it clicks the Sign Out button and retries
-   * the click if the first attempt didn't open the dialog (Svelte hydration
-   * race: actionability checks pass before onclick is attached, so the first
-   * click can be dropped).
+   * Open the logout confirmation dialog without choosing a sign-out action.
+   * Cold page initialization and lazy-loaded dialog code can delay opening.
+   * Retry only this idempotent open action; never repeat a sign-out mutation.
+   * If the dialog is already visible, leave it open.
    */
-  private async openLogoutDialog(): Promise<void> {
+  async openLogoutDialog(): Promise<void> {
     await expect(async () => {
       if (!(await this.logoutDialog.isVisible())) {
         await this.logoutButton.click();
@@ -478,12 +477,13 @@ export class AuthPage {
   }
 
   /**
-   * Request a password reset by filling and submitting the forgot password form.
+   * Request a password reset and wait for the server confirmation before returning.
    */
   async requestPasswordReset(email: string): Promise<void> {
     await this.gotoForgotPassword();
     await this.fillForgotPasswordForm(email);
     await this.submitForgotPassword();
+    await expect(this.page.getByText(/check your email/i)).toBeVisible();
   }
 
   /**
@@ -587,6 +587,7 @@ export class AuthPage {
     loginHint?: string;
     displayNameHint?: string;
     boundUserId?: string;
+    redirectPath?: string;
   }): Promise<{ token: string; confirmUrl: string }> {
     const response = await this.page.request.post('/auth/test/external-identity-flow', {
       data: input

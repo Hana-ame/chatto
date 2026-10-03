@@ -15,6 +15,7 @@ type MessagePostInput struct {
 	RoomID                  string
 	Body                    string
 	AttachmentAssetIDs      []string
+	AttachmentDescriptions  []MessageAttachmentDescriptionInput
 	HasPendingAttachments   bool
 	VideoProcessingAssetIDs []string
 	ThreadRootEventID       string
@@ -23,6 +24,13 @@ type MessagePostInput struct {
 	CreateThread            bool
 	LinkPreview             *evtv1.LinkPreview
 	automaticThreadCreation bool
+}
+
+// MessageAttachmentDescriptionInput associates one attachment asset with
+// user-provided descriptive text.
+type MessageAttachmentDescriptionInput struct {
+	AssetID     string
+	Description string
 }
 
 // MessagePostAuthorizationInput describes the authorization preflight for a
@@ -85,6 +93,16 @@ type MessageAttachmentDeleteInput struct {
 	AttachmentID string
 }
 
+// MessageAttachmentDescriptionSetInput describes one attachment-description
+// replacement. An empty normalized description clears the current value.
+type MessageAttachmentDescriptionSetInput struct {
+	ActorID      string
+	RoomID       string
+	EventID      string
+	AttachmentID string
+	Description  string
+}
+
 // MessageLinkPreviewDeleteInput describes removal of one link preview from a
 // message body.
 type MessageLinkPreviewDeleteInput struct {
@@ -127,9 +145,9 @@ type MessageModel struct {
 
 // PostMessage posts a message as actorID and returns the committed event.
 // Authorization: actor must be a room member and must have message.post or
-// message.post-in-thread. Explicit thread creation requires both posting
-// permissions, except that a REQUIRED room establishes a root thread as an
-// automatic consequence of message.post. Echoing a thread reply additionally
+// message.post-in-thread, or message.post-in-interactions with a relationship to
+// the target thread. Replies also require read access. Explicit thread creation
+// requires message.post. Echoing a thread reply additionally
 // requires message.echo and message.post.
 func (s *MessageModel) PostMessage(ctx context.Context, input MessagePostInput) (*MessagePostResult, error) {
 	preparedInput, err := s.applyAutomaticThreadCreation(ctx, input)
@@ -145,6 +163,13 @@ func (s *MessageModel) PostMessage(ctx context.Context, input MessagePostInput) 
 	kind := preflight.Authorization.Kind
 
 	options := make([]PostMessageOption, 0, 2)
+	descriptions, err := normalizeAttachmentDescriptionInputs(input.AttachmentAssetIDs, input.AttachmentDescriptions)
+	if err != nil {
+		return nil, err
+	}
+	if len(descriptions) > 0 {
+		options = append(options, withAttachmentDescriptions(descriptions))
+	}
 	if videoProcessingAssetIDs := s.videoProcessingAssetIDsForPost(input); len(videoProcessingAssetIDs) > 0 {
 		options = append(options, WithVideoProcessingAssets(videoProcessingAssetIDs...))
 	}
@@ -163,6 +188,35 @@ func (s *MessageModel) PostMessage(ctx context.Context, input MessagePostInput) 
 
 	s.core.NotifyRoomMarkedAsRead(ctx, input.ActorID, kind, room.Id)
 	return &MessagePostResult{Event: event}, nil
+}
+
+// SetAttachmentDescription sets or clears one description. Authorization:
+// actor must be able to read the message. Authors may edit within the message
+// edit window; effective message.manage bypasses the window and permits edits
+// to other authors' messages.
+func (s *MessageModel) SetAttachmentDescription(ctx context.Context, input MessageAttachmentDescriptionSetInput) (*evtv1.Event, RoomKind, error) {
+	room, kind, err := s.core.requireMessageReader(ctx, input.ActorID, input.RoomID, input.EventID)
+	if err != nil {
+		return nil, KindChannel, err
+	}
+	if strings.TrimSpace(input.EventID) == "" {
+		return nil, kind, invalidArgument("event_id is required")
+	}
+	if strings.TrimSpace(input.AttachmentID) == "" {
+		return nil, kind, invalidArgument("attachment_id is required")
+	}
+	event, err := s.requireMessagePostedEvent(ctx, kind, room.Id, input.EventID)
+	if err != nil {
+		return nil, kind, err
+	}
+	description, err := normalizeAttachmentDescription(input.Description)
+	if err != nil {
+		return nil, kind, err
+	}
+	if err := s.core.SetAttachmentDescription(ctx, input.ActorID, kind, room.Id, input.EventID, input.AttachmentID, description); err != nil {
+		return nil, kind, err
+	}
+	return event, kind, nil
 }
 
 func (s *MessageModel) applyAutomaticThreadCreation(ctx context.Context, input MessagePostInput) (MessagePostInput, error) {
@@ -216,9 +270,6 @@ func (s *MessageModel) validatePostBeforeUpload(ctx context.Context, input Messa
 		targetMessage := targetEvent.GetMessagePosted()
 		if targetMessage == nil {
 			return invalidArgument("in_reply_to target is not a message event")
-		}
-		if authorization.Kind == KindDM && targetMessage.GetInThread() != "" {
-			return ErrDMThreadsUnsupported
 		}
 	}
 
@@ -287,17 +338,26 @@ func (s *MessageModel) AuthorizePost(ctx context.Context, input MessagePostAutho
 	if !isMember {
 		return nil, ErrNotRoomMember
 	}
-	if kind == KindDM && (strings.TrimSpace(input.ThreadRootEventID) != "" || input.CreateThread) {
-		return nil, ErrDMThreadsUnsupported
-	}
-	if kind == KindChannel {
-		if err := s.validateRoomThreadingPolicy(ctx, room, input); err != nil {
+	// Match the commit path's inference for replies to a thread reply or echo.
+	// Attribution to a room root remains a room post unless a thread is explicit.
+	if input.ThreadRootEventID == "" && input.InReplyTo != "" {
+		target, err := s.core.GetRoomEventByEventID(ctx, kind, room.Id, input.InReplyTo)
+		if err != nil {
 			return nil, err
 		}
+		if posted := target.GetMessagePosted(); posted != nil {
+			input.ThreadRootEventID = posted.GetInThread()
+			if input.ThreadRootEventID == "" && posted.GetEchoOfEventId() != "" {
+				input.ThreadRootEventID = posted.GetEchoFromThreadRootEventId()
+			}
+		}
+	}
+	if err := s.validateRoomThreadingPolicy(ctx, room, input); err != nil {
+		return nil, err
 	}
 
 	if input.ThreadRootEventID != "" {
-		can, err := s.core.CanPostInThread(ctx, input.ActorID, kind, room.Id)
+		can, err := s.core.CanReplyInThread(ctx, input.ActorID, kind, room.Id, input.ThreadRootEventID)
 		if err != nil {
 			return nil, err
 		}
@@ -311,15 +371,6 @@ func (s *MessageModel) AuthorizePost(ctx context.Context, input MessagePostAutho
 		}
 		if !can {
 			return nil, ErrPermissionDenied
-		}
-		if input.CreateThread && !input.automaticThreadCreation {
-			can, err := s.core.CanPostInThread(ctx, input.ActorID, kind, room.Id)
-			if err != nil {
-				return nil, err
-			}
-			if !can {
-				return nil, ErrPermissionDenied
-			}
 		}
 	}
 
@@ -376,7 +427,7 @@ func (s *MessageModel) validateRoomThreadingPolicy(ctx context.Context, room *ev
 			return fmt.Errorf("%w: threads are disabled in this room", ErrRoomThreadingPolicy)
 		}
 		if inReplyTo != "" {
-			target, err := s.core.GetRoomEventByEventID(ctx, KindChannel, room.GetId(), inReplyTo)
+			target, err := s.core.GetRoomEventByEventID(ctx, KindOfRoom(room), room.GetId(), inReplyTo)
 			if err != nil {
 				return fmt.Errorf("resolve reply target for threading policy: %w", err)
 			}
@@ -455,12 +506,12 @@ func (s *MessageModel) slowModeNextPostAt(room *evtv1.Room, actorID string, bypa
 }
 
 // UpdateMessage edits an existing message. Authorization: actor must be a room
-// member. Channel-room edits also require message.read. DM membership
-// authorizes the DM read. Authors may edit their own messages within the core
-// edit window. Effective message.manage bypasses the window and permits edits
-// to other authors' messages. Changing a thread reply's channel echo state is
-// author-only and, when enabling the echo, additionally requires message.echo
-// and message.post.
+// member and authorized to read the message. Authors may edit their own
+// messages within the core edit window. Effective message.manage bypasses the
+// window and permits edits to other authors' messages. A thread reply's
+// room-timeline echo can be removed by the author or with effective
+// message.manage. Enabling the echo is author-only and additionally requires
+// message.echo and message.post.
 func (s *MessageModel) UpdateMessage(ctx context.Context, input MessageUpdateInput) (*evtv1.Event, RoomKind, error) {
 	room, kind, err := s.core.requireMessageReader(ctx, input.ActorID, input.RoomID, input.EventID)
 	if err != nil {
@@ -500,7 +551,7 @@ func (s *MessageModel) UpdateMessage(ctx context.Context, input MessageUpdateInp
 		editOptions = append(editOptions, withPreservedMessageBody())
 	}
 	if input.AlsoSendToChannel != nil {
-		if body.AuthorId != input.ActorID {
+		if *input.AlsoSendToChannel && body.AuthorId != input.ActorID {
 			return nil, kind, ErrNotMessageAuthor
 		}
 		if *input.AlsoSendToChannel {
@@ -548,7 +599,7 @@ func (s *MessageModel) DeleteMessage(ctx context.Context, input MessageDeleteInp
 		return err
 	}
 
-	authorID := event.GetActorId()
+	authorID := messageAuthorID(event)
 	if authorID != "" && authorID != input.ActorID {
 		can, err := s.core.CanManageOthersMessage(ctx, input.ActorID, kind, room.Id)
 		if err != nil {
@@ -607,14 +658,21 @@ func (s *MessageModel) DeleteLinkPreview(ctx context.Context, input MessageLinkP
 }
 
 // SendTypingIndicator publishes a live-only typing indicator. Authorization:
-// actor must be a room member; there is intentionally no message-posting
-// permission check.
+// actor must be a room member and must be authorized to read the destination
+// timeline. There is intentionally no message-posting permission check.
 func (s *MessageModel) SendTypingIndicator(ctx context.Context, input TypingIndicatorInput) error {
-	room, kind, err := s.core.requireRoomMember(ctx, input.ActorID, input.RoomID)
+	var room *evtv1.Room
+	var kind RoomKind
+	var err error
+	if input.ThreadRootEventID == nil {
+		room, kind, err = s.core.requireRoomMessageReader(ctx, input.ActorID, input.RoomID)
+	} else {
+		room, kind, err = s.core.requireThreadMessageReader(ctx, input.ActorID, input.RoomID, *input.ThreadRootEventID)
+	}
 	if err != nil {
 		return err
 	}
-	if kind == KindChannel && input.ThreadRootEventID != nil && EffectiveRoomThreadingMode(room) == evtv1.RoomThreadingMode_ROOM_THREADING_MODE_DISABLED {
+	if input.ThreadRootEventID != nil && EffectiveRoomThreadingMode(room) == evtv1.RoomThreadingMode_ROOM_THREADING_MODE_DISABLED {
 		return fmt.Errorf("%w: thread replies are disabled in this room", ErrRoomThreadingPolicy)
 	}
 	return s.core.PublishTypingIndicator(ctx, input.ActorID, kind, room.Id, input.ThreadRootEventID)

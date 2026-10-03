@@ -3,10 +3,10 @@ import type {
   DirectoryMember,
   MemberDirectoryAPI,
   MemberDirectoryPage
-} from '$lib/api-client/memberDirectory';
-import type { ServerConnection } from '$lib/state/server/serverConnection.svelte';
-import { registerRoomMemberQueryCache } from './cacheRegistry';
-import { queryClient } from './client';
+} from '@chatto/client/api/memberDirectory';
+import type { ServerConnection } from '@chatto/client/server/serverConnection';
+import { queryCaches } from './cacheRegistry';
+import { queryClient } from './queryClient';
 import { directoryQueryKeys } from './directory';
 
 type RoomMemberQueryConnection = Pick<ServerConnection, 'queryScope'>;
@@ -25,7 +25,7 @@ export function roomMembersQueryPage(
   page: MemberDirectoryPage,
   pageParam: number
 ): RoomMembersQueryPage {
-  return { ...page, nextOffset: pageParam + page.members.length };
+  return { ...page, nextOffset: pageParam + (page.consumedCount ?? page.members.length) };
 }
 
 export function nextRoomMembersPageParam(
@@ -178,12 +178,6 @@ function purgeRoomMemberQueriesAcrossSessions(serverId: string, roomId: string):
   purgeMatchingRoomMemberQueries((queryKey) => isRoomMemberQuery(queryKey, serverId, roomId));
 }
 
-function invalidateRoomMemberQueriesAcrossSessions(serverId: string, roomId: string): void {
-  void queryClient.invalidateQueries({
-    predicate: (query) => isRoomMemberQuery(query.queryKey, serverId, roomId)
-  });
-}
-
 function scrubRoomMemberUserAcrossSessions(serverId: string, userId: string): void {
   const predicate = (queryKey: QueryKey) => isAnyRoomMemberQuery(queryKey, serverId);
   const queries = queryClient.getQueryCache().findAll({
@@ -224,8 +218,7 @@ function scrubRoomMemberUserAcrossSessions(serverId: string, userId: string): vo
     );
 }
 
-registerRoomMemberQueryCache({
-  invalidateRoom: invalidateRoomMemberQueriesAcrossSessions,
+queryCaches.roomMembers = {
   purgeRoom: purgeRoomMemberQueriesAcrossSessions,
   scrubUser: scrubRoomMemberUserAcrossSessions
-});
+};

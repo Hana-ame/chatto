@@ -63,11 +63,15 @@ test.describe('Notification policy', () => {
     await directMessages.click();
     await expect(directMessages).toHaveAttribute('aria-label', /Override: Off/);
 
+    // The label updates before the inherited-policy refresh enables the cell.
+    await expect(directMessages).toBeEnabled();
     await directMessages.press('Enter');
     await expect(directMessages).toHaveAttribute('aria-label', /Override: Badge/);
 
+    await expect(directMessages).toBeEnabled();
     await directMessages.press('Enter');
     await expect(directMessages).toHaveAttribute('aria-label', /Override: Notification/);
+    await expect(directMessages).toBeEnabled();
 
     await page.reload();
     await expect(directMessages).toHaveAttribute('aria-label', /Override: Notification/);
@@ -110,6 +114,7 @@ test.describe('Notification policy', () => {
     await expect(unreadDot).toBeVisible({ timeout: 10_000 });
     await expect(unreadDot).toHaveClass(/bg-neutral-action/);
     await expect(roomLink.getByTestId('room-notification-badge')).not.toBeVisible();
+    await expect(roomLink.getByTestId('room-ambient-notification-badge')).not.toBeVisible();
     await notificationsPage.expectBellIndicatorNotVisible();
     await notificationsPage.goto();
     await notificationsPage.expectEmptyState();
@@ -140,9 +145,13 @@ test.describe('Notification policy', () => {
     await chatPage.enterRoom('announcements');
 
     const newMessage = `No Badge, cursor retained ${Date.now()}`;
-    const newMessageEventId = await withServerUser(browser!, serverURL, async ({ page: actorPage }) => {
-      return postMessageViaConnect(actorPage, roomId, newMessage);
-    });
+    const newMessageEventId = await withServerUser(
+      browser!,
+      serverURL,
+      async ({ page: actorPage }) => {
+        return postMessageViaConnect(actorPage, roomId, newMessage);
+      }
+    );
 
     // Observe the source through this viewer's room timeline while the room is
     // still closed. This proves that the following absence checks run after

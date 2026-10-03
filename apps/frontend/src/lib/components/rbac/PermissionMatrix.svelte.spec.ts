@@ -1,10 +1,12 @@
 import '../../../app.css';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { page } from 'vitest/browser';
 import { render } from 'vitest-browser-svelte';
 import { flushSync } from 'svelte';
 import PermissionMatrix from './PermissionMatrix.svelte';
 import { adminQueryKeys } from '$lib/query/admin';
 import { queryClient } from '$lib/query/client';
+import { refreshRegisteredServerQueries } from '$lib/query/cacheRegistry';
 
 type TierRoles = {
   applicablePermissions: string[];
@@ -64,7 +66,7 @@ const permissionMocks = vi.hoisted(() => ({
   setRolePermission: vi.fn()
 }));
 
-vi.mock('$lib/api-client/permissions', () => ({
+vi.mock('@chatto/client/api/permissions', () => ({
   createPermissionAPI: vi.fn(() => ({
     getRolePermissionTierMatrix: permissionMocks.getRolePermissionTierMatrix,
     setRolePermission: permissionMocks.setRolePermission
@@ -83,7 +85,8 @@ vi.mock('$lib/state/server/scope.svelte', () => ({
   })
 }));
 
-beforeEach(() => {
+beforeEach(async () => {
+  await page.viewport(1280, 900);
   nextTierRoles = HAPPY_TIER_ROLES;
   permissionMocks.getRolePermissionTierMatrix.mockReset();
   permissionMocks.getRolePermissionTierMatrix.mockImplementation(async () => nextTierRoles);
@@ -101,6 +104,44 @@ async function settle() {
 }
 
 describe('PermissionMatrix', () => {
+  it('keeps its filter and rejects late cell updates after reauthorization', async () => {
+    let finishMutation!: () => void;
+    permissionMocks.setRolePermission.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finishMutation = resolve;
+        })
+    );
+    const { container } = render(PermissionMatrix);
+    await expect
+      .poll(() => container.querySelector('td[data-role="moderator"] button'))
+      .toBeTruthy();
+    const filter = container.querySelector<HTMLInputElement>('[data-testid="permission-filter"]')!;
+    filter.value = 'message';
+    filter.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    container
+      .querySelector<HTMLButtonElement>(
+        'td[data-role="moderator"][data-permission="message.post"] button'
+      )!
+      .click();
+    await settle();
+    const key = adminQueryKeys.permissionTier(
+      'server-test',
+      { queryScope: 'permission-matrix-test' },
+      null,
+      null
+    );
+    await refreshRegisteredServerQueries('server-test');
+    await expect.poll(() => queryClient.getQueryData(key)).toBeTruthy();
+    const fresh = queryClient.getQueryData(key);
+    finishMutation();
+    await settle();
+    expect(queryClient.getQueryData(key)).toBe(fresh);
+    expect(container.querySelector('[data-testid="permission-filter"]')).toBe(filter);
+    expect(filter.value).toBe('message');
+  });
+
   it('renders one compact permission matrix with category dividers', async () => {
     const { container } = render(PermissionMatrix, { props: { spaceId: 'space-1' } });
     await settle();
@@ -134,10 +175,24 @@ describe('PermissionMatrix', () => {
         (permission) => permission.textContent
       )
     ).toEqual(['room.manage', 'server.manage', 'user.delete-any', 'user.delete-self']);
-    expect(
-      container.querySelector('[data-testid="permission-name"]')?.getAttribute('title')
-    ).toBe("Edit a room's settings and permissions, and delete rooms");
-    expect(container.querySelector('button[aria-label^="About "]')).toBeNull();
+  });
+
+  it('explains a permission in a help dialog from its row', async () => {
+    const { container } = render(PermissionMatrix, { props: { spaceId: 'space-1' } });
+    await settle();
+
+    // A DOM click keeps the pointer from hovering rows in later tests.
+    (
+      container.querySelector('button[aria-label="About room.create"]') as HTMLButtonElement
+    ).click();
+
+    const help = page.getByTestId('permission-help');
+    await expect.element(help).toHaveTextContent('Create new rooms');
+    await expect.element(help).toHaveTextContent('At Room group scope');
+    await expect.element(help).toHaveTextContent('Needs privileged mode');
+    expect(container.querySelector('[data-testid="permission-name"]')?.hasAttribute('title')).toBe(
+      false
+    );
   });
 
   it('shows that message.read includes the nested interaction permission', async () => {
@@ -210,7 +265,7 @@ describe('PermissionMatrix', () => {
     await settle();
 
     const filter = container.querySelector<HTMLInputElement>('[data-testid="permission-filter"]')!;
-    filter.value = 'root messages';
+    filter.value = 'messages and thread replies';
     filter.dispatchEvent(new Event('input', { bubbles: true }));
     flushSync();
 
@@ -294,7 +349,7 @@ describe('PermissionMatrix', () => {
     const stickyBody = panel.querySelector('tbody th[scope="row"].sticky') as HTMLElement;
     const surfaceColor = getComputedStyle(panel).backgroundColor;
     const headerColor = getComputedStyle(tableHeader).backgroundColor;
-    const viewport = panel.querySelector('table')?.parentElement?.parentElement as HTMLElement;
+    const viewport = panel.querySelector<HTMLElement>('.data-table-viewport')!;
     const inset = panel.querySelector(':scope > div:last-child > div') as HTMLElement;
     const frame = inset.parentElement as HTMLElement;
 
@@ -309,10 +364,10 @@ describe('PermissionMatrix', () => {
     expect(frame.className).toContain('pb-1');
     expect(viewport.className).toContain('data-table-viewport');
     expect(viewport.className).not.toContain('rounded-md');
-    expect((panel.querySelector('table')?.parentElement as HTMLElement).className).toContain(
+    expect((viewport.querySelector('.overflow-y-auto') as HTMLElement).className).toContain(
       'overflow-y-auto'
     );
-    expect((panel.querySelector('table')?.parentElement as HTMLElement).className).toContain(
+    expect((viewport.querySelector('.overflow-y-auto') as HTMLElement).className).toContain(
       'overflow-x-auto'
     );
     expect(getComputedStyle(tableHeader).backgroundColor).toBe(headerColor);

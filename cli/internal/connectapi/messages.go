@@ -22,22 +22,32 @@ func (s *messageService) CreateMessage(ctx context.Context, req *connect.Request
 
 	linkPreview, err := s.api.core.ResolveLinkPreviewToken(ctx, req.Msg.GetLinkPreviewToken())
 	if err != nil {
-		return nil, connectError(err)
+		return nil, err
 	}
 
+	descriptions := make([]core.MessageAttachmentDescriptionInput, 0, len(req.Msg.GetAttachmentDescriptions()))
+	for _, description := range req.Msg.GetAttachmentDescriptions() {
+		if description == nil {
+			continue
+		}
+		descriptions = append(descriptions, core.MessageAttachmentDescriptionInput{
+			AssetID: description.GetAssetId(), Description: description.GetDescription(),
+		})
+	}
 	result, err := s.api.core.Messages().PostMessage(ctx, core.MessagePostInput{
-		ActorID:            caller.UserID,
-		RoomID:             req.Msg.RoomId,
-		Body:               req.Msg.Body,
-		AttachmentAssetIDs: append([]string(nil), req.Msg.GetAttachmentAssetIds()...),
-		ThreadRootEventID:  req.Msg.ThreadRootEventId,
-		InReplyTo:          req.Msg.InReplyTo,
-		AlsoSendToChannel:  req.Msg.AlsoSendToChannel,
-		CreateThread:       req.Msg.CreateThread,
-		LinkPreview:        linkPreview,
+		ActorID:                caller.UserID,
+		RoomID:                 req.Msg.RoomId,
+		Body:                   req.Msg.Body,
+		AttachmentAssetIDs:     append([]string(nil), req.Msg.GetAttachmentAssetIds()...),
+		AttachmentDescriptions: descriptions,
+		ThreadRootEventID:      req.Msg.ThreadRootEventId,
+		InReplyTo:              req.Msg.InReplyTo,
+		AlsoSendToChannel:      req.Msg.AlsoSendToChannel,
+		CreateThread:           req.Msg.CreateThread,
+		LinkPreview:            linkPreview,
 	})
 	if err != nil {
-		return nil, connectError(err)
+		return nil, err
 	}
 	if result == nil {
 		return nil, connectInternalError(errors.New("message create returned no result"))
@@ -53,15 +63,43 @@ func (s *messageService) CreateMessage(ctx context.Context, req *connect.Request
 	}
 	apiEvent, err := s.hydratePostedEvent(ctx, caller.UserID, kind, result.Event)
 	if err != nil {
-		return nil, connectError(err)
+		return nil, err
 	}
 	return connect.NewResponse(&apiv1.CreateMessageResponse{
 		Message: messageFromTimelineEvent(apiEvent),
 	}), nil
 }
 
+func (s *messageService) SetAttachmentDescription(ctx context.Context, req *connect.Request[apiv1.SetAttachmentDescriptionRequest]) (*connect.Response[apiv1.SetAttachmentDescriptionResponse], error) {
+	caller, err := requireCaller(ctx)
+	if err != nil {
+		return nil, err
+	}
+	event, kind, err := s.api.core.Messages().SetAttachmentDescription(ctx, core.MessageAttachmentDescriptionSetInput{
+		ActorID:      caller.UserID,
+		RoomID:       req.Msg.RoomId,
+		EventID:      req.Msg.EventId,
+		AttachmentID: req.Msg.AttachmentId,
+		Description:  req.Msg.Description,
+	})
+	if err != nil {
+		return nil, err
+	}
+	apiEvent, err := s.hydratePostedEvent(ctx, caller.UserID, kind, event)
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(&apiv1.SetAttachmentDescriptionResponse{
+		Message: messageFromTimelineEvent(apiEvent),
+	}), nil
+}
+
 func (s *messageService) UpdateMessage(ctx context.Context, req *connect.Request[apiv1.UpdateMessageRequest]) (*connect.Response[apiv1.UpdateMessageResponse], error) {
 	caller, err := requireCaller(ctx)
+	if err != nil {
+		return nil, err
+	}
+	req.Msg, err = normalizeUpdateMask(req.Msg)
 	if err != nil {
 		return nil, err
 	}
@@ -74,11 +112,11 @@ func (s *messageService) UpdateMessage(ctx context.Context, req *connect.Request
 		AlsoSendToChannel: req.Msg.AlsoSendToChannel,
 	})
 	if err != nil {
-		return nil, connectError(err)
+		return nil, err
 	}
 	apiEvent, err := s.hydratePostedEvent(ctx, caller.UserID, kind, event)
 	if err != nil {
-		return nil, connectError(err)
+		return nil, err
 	}
 	return connect.NewResponse(&apiv1.UpdateMessageResponse{
 		Message: messageFromTimelineEvent(apiEvent),
@@ -96,9 +134,9 @@ func (s *messageService) DeleteMessage(ctx context.Context, req *connect.Request
 		RoomID:  req.Msg.RoomId,
 		EventID: req.Msg.EventId,
 	}); err != nil {
-		return nil, connectError(err)
+		return nil, err
 	}
-	return connect.NewResponse(&apiv1.DeleteMessageResponse{Deleted: true}), nil
+	return connect.NewResponse(&apiv1.DeleteMessageResponse{}), nil
 }
 
 func (s *messageService) DeleteAttachment(ctx context.Context, req *connect.Request[apiv1.DeleteAttachmentRequest]) (*connect.Response[apiv1.DeleteAttachmentResponse], error) {
@@ -113,9 +151,9 @@ func (s *messageService) DeleteAttachment(ctx context.Context, req *connect.Requ
 		EventID:      req.Msg.EventId,
 		AttachmentID: req.Msg.AttachmentId,
 	}); err != nil {
-		return nil, connectError(err)
+		return nil, err
 	}
-	return connect.NewResponse(&apiv1.DeleteAttachmentResponse{Deleted: true}), nil
+	return connect.NewResponse(&apiv1.DeleteAttachmentResponse{}), nil
 }
 
 func (s *messageService) DeleteLinkPreview(ctx context.Context, req *connect.Request[apiv1.DeleteLinkPreviewRequest]) (*connect.Response[apiv1.DeleteLinkPreviewResponse], error) {
@@ -130,9 +168,9 @@ func (s *messageService) DeleteLinkPreview(ctx context.Context, req *connect.Req
 		EventID: req.Msg.EventId,
 		URL:     req.Msg.Url,
 	}); err != nil {
-		return nil, connectError(err)
+		return nil, err
 	}
-	return connect.NewResponse(&apiv1.DeleteLinkPreviewResponse{Deleted: true}), nil
+	return connect.NewResponse(&apiv1.DeleteLinkPreviewResponse{}), nil
 }
 
 func (s *messageService) hydratePostedEvent(ctx context.Context, viewerID string, kind core.RoomKind, event *evtv1.Event) (*apiv1.RoomTimelineEvent, error) {
@@ -149,11 +187,7 @@ func (s *messageService) hydratePostedEvent(ctx context.Context, viewerID string
 		userIDs:              make(map[string]struct{}),
 		thumbnail:            defaultTimelineAttachmentThumbnail(),
 	}
-	apiEvent, err := h.event(ctx, &core.RoomEvent{Event: event})
-	if err != nil {
-		return nil, err
-	}
-	return apiEvent, nil
+	return h.event(ctx, &core.RoomEvent{Event: event})
 }
 
 func messageFromTimelineEvent(event *apiv1.RoomTimelineEvent) *apiv1.Message {

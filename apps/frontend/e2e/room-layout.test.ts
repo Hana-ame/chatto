@@ -194,7 +194,7 @@ async function updateRoomLayoutViaAPI(page: Page, groups: RoomGroup[]): Promise<
     if (same) continue;
     await connectPost(page, 'chatto.admin.v1.AdminRoomLayoutService/ReorderSidebarItemsInGroup', {
       groupId: targetId,
-      items: desired.map((id) => ({ kind: 'ADMIN_ROOM_LAYOUT_ITEM_KIND_ROOM', id }))
+      items: desired.map((id) => ({ roomId: id }))
     });
   }
 
@@ -207,12 +207,12 @@ async function updateRoomLayoutViaAPI(page: Page, groups: RoomGroup[]): Promise<
     if (desiredSet.has(g.id)) continue;
     const fresh = refreshedRooms.get(g.id) ?? [];
     if (fresh.length > 0) continue;
-    const response = await connectPost<{ deleted?: boolean }>(
+    const response = await connectPost<Record<string, never>>(
       page,
       'chatto.admin.v1.AdminRoomLayoutService/DeleteRoomGroup',
       { groupId: g.id }
     );
-    expect(response.deleted).toBe(true);
+    expect(response).toEqual({});
   }
 
   // Finally, force the layout's group order to match the input.
@@ -371,7 +371,7 @@ async function waitForSidebarSets(page: Page, expectedCount: number): Promise<st
 
 function sidebarGroup(page: Page, name: string) {
   return page.locator('[data-testid="room-group-section"]', {
-    has: page.locator('button[aria-expanded]', { hasText: name })
+    has: page.getByRole('button', { name, exact: true })
   });
 }
 
@@ -396,9 +396,30 @@ async function dragWithPointer(
   // its live position only after the drag has crossed the start threshold.
   const targetBox = await target.boundingBox();
   if (!targetBox) throw new Error('Expected a visible drag target');
-  const targetX = targetBox.x + targetBox.width / 2;
+  const draggedBox = await page.locator('#dnd-action-dragged-el').boundingBox();
+  if (!draggedBox) throw new Error('Expected a visible dragged item');
+  // The library detects the dragged item's centre, not the pointer. Handles
+  // sit at the leading edge, so align the item horizontally with the target
+  // instead of leaving its centre near the target's far edge.
+  const pointerOffsetX = draggedBox.x + draggedBox.width / 2 - (startX + 8);
+  const targetX = targetBox.x + targetBox.width / 2 - pointerOffsetX;
   const targetY = targetBox.y + targetBox.height * targetYRatio;
   await page.mouse.move(targetX, targetY, { steps: 12 });
+}
+
+async function expectActiveSidebarDropTarget(target: Locator): Promise<void> {
+  await expect(target).toHaveClass(/sidebar-drop-target-active/);
+  await expect(target).toHaveCSS('outline-width', '2px');
+  await expect(target).toHaveCSS('outline-offset', '-2px');
+  await expect(target).toHaveCSS('outline-style', 'dashed');
+  await expect(target).toHaveCSS('border-radius', '6px');
+  await expect(target).toHaveCSS('transition-property', 'outline-color');
+  await expect(target).toHaveCSS('transition-duration', '0.12s');
+}
+
+async function expectInactiveSidebarDropTarget(target: Locator): Promise<void> {
+  await expect(target).not.toHaveClass(/sidebar-drop-target-active/);
+  await expect(target).toHaveCSS('outline-color', 'rgba(0, 0, 0, 0)');
 }
 
 // ============================================================================
@@ -572,6 +593,7 @@ test.describe('Room Layout', () => {
       ]);
       await navigateToSpace(page);
 
+      await sidebarGroup(page, 'Main').getByTestId('room-group-more').click();
       const alphaRow = page.locator('.room-list a.sidebar-item', { hasText: 'alpha' });
       await alphaRow.hover();
       const handle = alphaRow.getByTestId('room-drag-handle');
@@ -585,9 +607,10 @@ test.describe('Room Layout', () => {
         0.8
       );
 
-      await expect(
-        sidebarGroup(page, 'Projects').getByTestId('room-group-items-dropzone')
-      ).toHaveCSS('outline-style', 'dashed');
+      const projectsDropTarget = sidebarGroup(page, 'Projects').getByTestId(
+        'room-group-items-dropzone'
+      );
+      await expectActiveSidebarDropTarget(projectsDropTarget);
       await expect(
         sidebarGroup(page, 'Projects').locator('[data-is-dnd-shadow-item-hint="true"]')
       ).toHaveCount(1);
@@ -595,6 +618,7 @@ test.describe('Room Layout', () => {
       await expect(sidebarGroup(page, 'Main')).toBeVisible();
       await expect(sidebarGroup(page, 'Projects')).toBeVisible();
       await page.mouse.up();
+      await expectInactiveSidebarDropTarget(projectsDropTarget);
 
       await expect(async () => {
         const layout = await getAdminRoomLayoutViaAPI(page);
@@ -606,6 +630,8 @@ test.describe('Room Layout', () => {
       await expect(sidebarGroup(page, 'Main')).toBeVisible();
       const projects = sidebarGroup(page, 'Projects');
       await expect(projects).toBeVisible();
+      await expect(projects.locator('a.sidebar-item', { hasText: 'alpha' })).toHaveCount(0);
+      await projects.getByTestId('room-group-more').click();
       await expect(projects.locator('a.sidebar-item', { hasText: 'alpha' })).toBeVisible();
       await expect(
         page
@@ -627,7 +653,7 @@ test.describe('Room Layout', () => {
 
       const main = sidebarGroup(page, 'Main');
       const projects = sidebarGroup(page, 'Projects');
-      await main.locator('button[aria-expanded]').click({ button: 'right' });
+      await main.getByRole('button', { name: 'Main', exact: true }).click({ button: 'right' });
       await page.getByRole('menuitem', { name: 'New Link', exact: true }).click();
 
       const dialog = page.getByRole('dialog', { name: 'Create Link' });
@@ -681,7 +707,7 @@ test.describe('Room Layout', () => {
       const projects = sidebarGroup(page, 'Projects');
       const disclosureIcon = projects.getByTestId('room-group-disclosure-icon');
       await expect(disclosureIcon).toHaveCSS('opacity', '1');
-      await projects.locator('button[aria-expanded]').hover();
+      await projects.getByRole('button', { name: 'Projects', exact: true }).hover();
       await expect(projects.getByTestId('room-group-drag-handle')).toHaveCSS('opacity', '1');
       await expect(disclosureIcon).toHaveCSS('opacity', '0');
       await expect(projects.getByTestId('room-group-actions-button')).toHaveCount(0);
@@ -702,7 +728,10 @@ test.describe('Room Layout', () => {
         0.01
       );
 
-      await expect(landingIndicator).toHaveCSS('outline-style', 'dashed');
+      await expectActiveSidebarDropTarget(landingIndicator);
+      await page.emulateMedia({ reducedMotion: 'reduce' });
+      await expect(landingIndicator).toHaveCSS('transition-duration', '0s');
+      await page.emulateMedia({ reducedMotion: 'no-preference' });
       await expect(
         landingIndicator.locator(':scope > [data-is-dnd-shadow-item-hint="true"]')
       ).toHaveCount(1);
@@ -716,6 +745,7 @@ test.describe('Room Layout', () => {
         'true'
       );
       await page.mouse.up();
+      await expectInactiveSidebarDropTarget(landingIndicator);
 
       await expect(async () => {
         const layout = await getAdminRoomLayoutViaAPI(page);
@@ -723,7 +753,11 @@ test.describe('Room Layout', () => {
       }).toPass({ timeout: TIMEOUTS.SERVER_MUTATION_SYNC, intervals: [100, 250, 500] });
 
       await page.reload();
-      expect(await waitForSidebarSets(page, 2)).toEqual(['Projects', 'Main']);
+      // The saved layout can contain both groups in their previous order.
+      // Wait for the reordered layout to arrive through realtime catch-up.
+      await expect(page.locator('.room-list button.uppercase')).toHaveText(['Projects', 'Main'], {
+        timeout: TIMEOUTS.SERVER_MUTATION_SYNC
+      });
       await expect(page.locator('[data-testid="room-group-section"]')).toHaveCount(2);
     });
   });
@@ -944,7 +978,7 @@ test.describe('Room Layout', () => {
   });
 
   test.describe('Edge Cases', () => {
-    test('listable rooms user has not joined are shown faded in sets', async ({
+    test('listable unjoined rooms are hidden until the group discovery row is expanded', async ({
       page,
       browser,
       serverURL
@@ -976,14 +1010,20 @@ test.describe('Room Layout', () => {
 
         await navigateToSpace(page2);
 
-        // User B should see announcements, general, joined public, and listable
-        // non-member private. Non-member channel rows use a leading + affordance.
+        // Discovery keeps joined rooms visible and reveals the unjoined room on demand.
+        const initialRooms = await waitForSidebarRooms(page2, 3);
+        expect(initialRooms).not.toContain('private');
+        const more = sidebarGroup(page2, 'All').getByTestId('room-group-more');
+        await expect(more).toContainText('1 more');
+        await more.click();
         const roomNames = await waitForSidebarRooms(page2, 4);
         expect(roomNames).toContain('announcements');
         expect(roomNames).toContain('general');
         expect(roomNames).toContain('public');
         expect(roomNames).toContain('private');
         await expect(page2.getByRole('link', { name: '+ private' })).toHaveClass(/opacity-60/);
+        await more.click();
+        expect(await waitForSidebarRooms(page2, 3)).not.toContain('private');
       });
     });
   });

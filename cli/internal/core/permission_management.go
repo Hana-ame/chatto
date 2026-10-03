@@ -23,6 +23,7 @@ const (
 	MatrixScopeServer MatrixScopeKind = "SERVER"
 	MatrixScopeGroup  MatrixScopeKind = "GROUP"
 	MatrixScopeRoom   MatrixScopeKind = "ROOM"
+	MatrixScopeDM     MatrixScopeKind = "DM"
 )
 
 type PermissionState string
@@ -68,14 +69,18 @@ type PermissionMatrixScope struct {
 }
 
 type PermissionMatrixCell struct {
-	Permission     string
-	ScopeID        string
-	Override       MatrixDecision
-	Effective      MatrixDecision
+	Permission string
+	ScopeID    string
+	Override   MatrixDecision
+	Effective  MatrixDecision
+	// AllowPermitted reports the bot owner's RBAC entitlement at this scope.
+	// It does not include the acting human's session activation or edit authority.
+	// Nil means that the cell does not use a bot owner ceiling.
 	AllowPermitted *bool
 }
 
 type RolePermissionMatrix struct {
+	Page                  PermissionScopePage
 	RoleName              string
 	ApplicablePermissions []string
 	Scopes                []PermissionMatrixScope
@@ -83,6 +88,7 @@ type RolePermissionMatrix struct {
 }
 
 type UserPermissionMatrix struct {
+	Page                  PermissionScopePage
 	UserID                string
 	ApplicablePermissions []string
 	Scopes                []PermissionMatrixScope
@@ -90,6 +96,12 @@ type UserPermissionMatrix struct {
 }
 
 func (c *ChattoCore) ExplainPermissions(ctx context.Context, actorID, targetUserID, roomID string) ([]PermissionExplanation, error) {
+	return c.ExplainPermissionsAtScope(ctx, actorID, targetUserID, PermissionTargetScope{Kind: MatrixScopeRoom, ID: roomID})
+}
+
+// ExplainPermissionsAtScope returns permission explanations for a server,
+// direct-message, or channel-room target.
+func (c *ChattoCore) ExplainPermissionsAtScope(ctx context.Context, actorID, targetUserID string, target PermissionTargetScope) ([]PermissionExplanation, error) {
 	if actorID == "" {
 		return nil, ErrNotAuthenticated
 	}
@@ -106,11 +118,21 @@ func (c *ChattoCore) ExplainPermissions(ctx context.Context, actorID, targetUser
 	if !canManage {
 		return nil, ErrPermissionDenied
 	}
-	if roomID != "" {
-		if err := c.requirePermissionExplanationRoom(ctx, roomID); err != nil {
+	target = normalizePermissionScope(target)
+	if target.Kind == MatrixScopeDM {
+		if target.ID != "" {
+			return nil, fmt.Errorf("%w: direct-message scope id must be empty", ErrInvalidArgument)
+		}
+		return c.PermResolver().ExplainAllPermissions(ctx, targetUserID, KindDM, "")
+	}
+	if target.Kind == MatrixScopeRoom && target.ID != "" {
+		if err := c.requirePermissionExplanationRoom(ctx, target.ID); err != nil {
 			return nil, err
 		}
-		return c.PermResolver().ExplainAllPermissions(ctx, targetUserID, KindChannel, roomID)
+		return c.PermResolver().ExplainAllPermissions(ctx, targetUserID, KindChannel, target.ID)
+	}
+	if target.Kind != MatrixScopeServer && !(target.Kind == MatrixScopeRoom && target.ID == "") {
+		return nil, fmt.Errorf("%w: unsupported explanation scope %q", ErrInvalidArgument, target.Kind)
 	}
 	return c.PermResolver().ExplainAllPermissions(ctx, targetUserID, "", "")
 }
@@ -142,14 +164,43 @@ func (c *ChattoCore) GetRolePermissionTierMatrix(ctx context.Context, actorID, r
 	return c.buildTierRoles(ctx, ScopeServer, "", "")
 }
 
-func (c *ChattoCore) GetRolePermissionMatrix(ctx context.Context, actorID, roleName string) (*RolePermissionMatrix, error) {
+// GetRolePermissionDMTierMatrix returns the role matrix for the singleton
+// direct-message scope.
+func (c *ChattoCore) GetRolePermissionDMTierMatrix(ctx context.Context, actorID string) (*TierRoles, error) {
 	if err := c.requireCanManageAdminRoles(ctx, actorID); err != nil {
 		return nil, err
 	}
-	return c.buildRolePermissionMatrix(ctx, roleName)
+	return c.buildTierRoles(ctx, ScopeDM, "", "")
+}
+
+func (c *ChattoCore) GetRolePermissionMatrix(ctx context.Context, actorID, roleName string) (*RolePermissionMatrix, error) {
+	return c.GetRolePermissionMatrixIncludingDM(ctx, actorID, roleName, false)
+}
+
+// GetRolePermissionMatrixIncludingDM returns the first scope page, optionally including DMs.
+func (c *ChattoCore) GetRolePermissionMatrixIncludingDM(ctx context.Context, actorID, roleName string, includeDM bool) (*RolePermissionMatrix, error) {
+	return c.GetRolePermissionMatrixPage(ctx, actorID, roleName, includeDM, PermissionScopeQuery{})
+}
+
+// GetRolePermissionMatrixPage authorizes and evaluates one bounded scope page.
+func (c *ChattoCore) GetRolePermissionMatrixPage(ctx context.Context, actorID, roleName string, includeDM bool, query PermissionScopeQuery) (*RolePermissionMatrix, error) {
+	if err := c.requireCanManageAdminRoles(ctx, actorID); err != nil {
+		return nil, err
+	}
+	return c.buildRolePermissionMatrix(ctx, roleName, includeDM, query)
 }
 
 func (c *ChattoCore) GetUserPermissionMatrix(ctx context.Context, actorID, userID string) (*UserPermissionMatrix, error) {
+	return c.GetUserPermissionMatrixIncludingDM(ctx, actorID, userID, false)
+}
+
+// GetUserPermissionMatrixIncludingDM returns the first scope page, optionally including DMs.
+func (c *ChattoCore) GetUserPermissionMatrixIncludingDM(ctx context.Context, actorID, userID string, includeDM bool) (*UserPermissionMatrix, error) {
+	return c.GetUserPermissionMatrixPage(ctx, actorID, userID, includeDM, PermissionScopeQuery{})
+}
+
+// GetUserPermissionMatrixPage authorizes and evaluates one bounded scope page.
+func (c *ChattoCore) GetUserPermissionMatrixPage(ctx context.Context, actorID, userID string, includeDM bool, query PermissionScopeQuery) (*UserPermissionMatrix, error) {
 	if actorID == "" {
 		return nil, ErrNotAuthenticated
 	}
@@ -165,7 +216,7 @@ func (c *ChattoCore) GetUserPermissionMatrix(ctx context.Context, actorID, userI
 	} else if err := c.requireCanManageUserPermissionTarget(ctx, actorID); err != nil {
 		return nil, err
 	}
-	return c.buildUserPermissionMatrix(ctx, actorID, user)
+	return c.buildUserPermissionMatrix(ctx, actorID, user, includeDM, query)
 }
 
 func (c *ChattoCore) SetRolePermissionState(ctx context.Context, actorID, roleName string, scope PermissionTargetScope, perm Permission, state PermissionState) error {
@@ -176,6 +227,15 @@ func (c *ChattoCore) SetRolePermissionState(ctx context.Context, actorID, roleNa
 		return fmt.Errorf("%w: role name is required", ErrInvalidArgument)
 	}
 	switch normalizePermissionScope(scope).Kind {
+	case MatrixScopeDM:
+		if scope.ID != "" {
+			return fmt.Errorf("%w: direct-message scope id must be empty", ErrInvalidArgument)
+		}
+		check := func() error { return c.requireCanManageAdminRoles(ctx, actorID) }
+		if err := check(); err != nil {
+			return err
+		}
+		return c.applyRolePermissionState(ctx, actorID, ScopeDM, "", roleName, perm, state, check)
 	case MatrixScopeGroup:
 		if scope.ID == "" {
 			return fmt.Errorf("%w: group id is required", ErrInvalidArgument)
@@ -260,6 +320,11 @@ func (c *ChattoCore) SetUserPermissionState(ctx context.Context, actorID, userID
 		return err
 	}
 	switch normalizePermissionScope(scope).Kind {
+	case MatrixScopeDM:
+		if scope.ID != "" {
+			return fmt.Errorf("%w: direct-message scope id must be empty", ErrInvalidArgument)
+		}
+		return c.applyUserPermissionState(ctx, actorID, ScopeDM, "", userID, perm, state, check)
 	case MatrixScopeGroup:
 		if scope.ID == "" {
 			return fmt.Errorf("%w: group id is required", ErrInvalidArgument)
@@ -351,6 +416,9 @@ func (c *ChattoCore) applyRolePermissionState(ctx context.Context, actorID strin
 	if scope == ScopeGroup && !PermissionAppliesAtScope(perm, ScopeGroup) && !PermissionAppliesAtScope(perm, ScopeRoom) {
 		return fmt.Errorf("permission %s does not apply at group scope", perm)
 	}
+	if scope == ScopeDM && !PermissionAppliesAtScope(perm, ScopeDM) {
+		return fmt.Errorf("permission %s does not apply at direct-message scope", perm)
+	}
 
 	var event *evtv1.Event
 	switch state {
@@ -399,6 +467,9 @@ func (c *ChattoCore) applyUserPermissionState(ctx context.Context, actorID strin
 	}
 	if scope == ScopeGroup && !PermissionAppliesAtScope(perm, ScopeGroup) && !PermissionAppliesAtScope(perm, ScopeRoom) {
 		return fmt.Errorf("permission %s does not apply at group scope", perm)
+	}
+	if scope == ScopeDM && !PermissionAppliesAtScope(perm, ScopeDM) {
+		return fmt.Errorf("permission %s does not apply at direct-message scope", perm)
 	}
 
 	var event *evtv1.Event
@@ -501,6 +572,14 @@ func (c *ChattoCore) buildTierRole(ctx context.Context, role RoleWithPermissions
 	switch scope {
 	case ScopeServer:
 		out.Override = newCoreTierPermissions(serverGrants, serverDenials)
+	case ScopeDM:
+		grants, denials, err := c.GetDMRolePermissions(ctx, role.Name)
+		if err != nil {
+			return nil, fmt.Errorf("load direct-message overrides: %w", err)
+		}
+		out.Override = newCoreTierPermissions(grants, denials)
+		out.InheritedAllows = filterCorePermsByScope(serverGrants, ScopeDM)
+		out.InheritedDenials = filterCorePermsByScope(serverDenials, ScopeDM)
 	case ScopeRoom:
 		grants, denials, err := c.GetRoomRolePermissions(ctx, roomID, role.Name)
 		if err != nil {
@@ -528,7 +607,7 @@ func (c *ChattoCore) buildTierRole(ctx context.Context, role RoleWithPermissions
 	return out, nil
 }
 
-func (c *ChattoCore) buildRolePermissionMatrix(ctx context.Context, roleName string) (*RolePermissionMatrix, error) {
+func (c *ChattoCore) buildRolePermissionMatrix(ctx context.Context, roleName string, includeDM bool, query PermissionScopeQuery) (*RolePermissionMatrix, error) {
 	role, err := c.GetServerRole(ctx, roleName)
 	if err != nil {
 		return nil, fmt.Errorf("load role: %w", err)
@@ -538,7 +617,12 @@ func (c *ChattoCore) buildRolePermissionMatrix(ctx context.Context, roleName str
 	}
 
 	applicable := matrixApplicablePermissions()
-	scopes, err := c.buildMatrixScopes(ctx)
+	scopes, err := c.buildMatrixScopes(ctx, includeDM || query.includesDM())
+	if err != nil {
+		return nil, err
+	}
+
+	scopes, page, err := selectPermissionScopes(scopes, query)
 	if err != nil {
 		return nil, err
 	}
@@ -557,9 +641,15 @@ func (c *ChattoCore) buildRolePermissionMatrix(ctx context.Context, roleName str
 	roomGrants := make(map[string][]Permission)
 	roomDenials := make(map[string][]Permission)
 	roomToGroup := make(map[string]string)
+	var dmGrants, dmDenials []Permission
 
 	for _, scope := range scopes {
 		switch scope.Kind {
+		case MatrixScopeDM:
+			dmGrants, dmDenials, err = c.GetDMRolePermissions(ctx, roleName)
+			if err != nil {
+				return nil, fmt.Errorf("load direct-message permissions: %w", err)
+			}
 		case MatrixScopeGroup:
 			groupID := scopeRefID(scope.ID, "group:")
 			g, d, err := c.GetGroupRolePermissions(ctx, groupID, roleName)
@@ -577,6 +667,16 @@ func (c *ChattoCore) buildRolePermissionMatrix(ctx context.Context, roleName str
 			roomGrants[roomID] = g
 			roomDenials[roomID] = d
 			roomToGroup[roomID] = scope.ParentGroupID
+			// The parent may be outside the requested page. Its rules still apply.
+			if groupID := scope.ParentGroupID; groupID != "" {
+				if _, loaded := groupGrants[groupID]; !loaded {
+					g, d, err := c.GetGroupRolePermissions(ctx, groupID, roleName)
+					if err != nil {
+						return nil, fmt.Errorf("load parent group permissions: %w", err)
+					}
+					groupGrants[groupID], groupDenials[groupID] = g, d
+				}
+			}
 		}
 	}
 
@@ -587,6 +687,7 @@ func (c *ChattoCore) buildRolePermissionMatrix(ctx context.Context, roleName str
 			cell, ok := buildRolePermissionCell(
 				perm, scope,
 				serverGrants, serverDenials,
+				dmGrants, dmDenials,
 				groupGrants, groupDenials,
 				roomGrants, roomDenials,
 				roomToGroup,
@@ -599,13 +700,14 @@ func (c *ChattoCore) buildRolePermissionMatrix(ctx context.Context, roleName str
 
 	return &RolePermissionMatrix{
 		RoleName:              roleName,
+		Page:                  page,
 		ApplicablePermissions: applicable,
 		Scopes:                scopes,
 		Cells:                 cells,
 	}, nil
 }
 
-func (c *ChattoCore) buildUserPermissionMatrix(ctx context.Context, actorID string, user *evtv1.User) (*UserPermissionMatrix, error) {
+func (c *ChattoCore) buildUserPermissionMatrix(ctx context.Context, actorID string, user *evtv1.User, includeDM bool, query PermissionScopeQuery) (*UserPermissionMatrix, error) {
 	userID := user.GetId()
 	applicable := matrixApplicablePermissions()
 	bot := user.GetIsBot()
@@ -623,13 +725,18 @@ func (c *ChattoCore) buildUserPermissionMatrix(ctx context.Context, actorID stri
 		err    error
 	)
 	if bot {
-		scopes, err = c.buildBotMatrixScopes(ctx, user.GetBotOwnerUserId(), actorID)
+		scopes, err = c.buildBotMatrixScopes(ctx, user.GetBotOwnerUserId(), actorID, includeDM || query.includesDM())
 	} else {
-		scopes, err = c.buildMatrixScopes(ctx)
+		scopes, err = c.buildMatrixScopes(ctx, includeDM || query.includesDM())
 	}
 	if err != nil {
 		return nil, err
 	}
+	scopes, page, err := selectPermissionScopes(scopes, query)
+	if err != nil {
+		return nil, err
+	}
+
 	cells := make([]PermissionMatrixCell, 0, len(applicable)*len(scopes))
 	for _, permStr := range applicable {
 		perm := Permission(permStr)
@@ -652,6 +759,7 @@ func (c *ChattoCore) buildUserPermissionMatrix(ctx context.Context, actorID stri
 	}
 	return &UserPermissionMatrix{
 		UserID:                userID,
+		Page:                  page,
 		ApplicablePermissions: applicable,
 		Scopes:                scopes,
 		Cells:                 cells,
@@ -665,11 +773,13 @@ func (c *ChattoCore) botOwnerAllowsAtMatrixScope(ctx context.Context, ownerID st
 	)
 	switch scope.Kind {
 	case MatrixScopeServer:
-		decision, err = c.PermResolver().Resolve(ctx, ownerID, KindChannel, "", perm)
+		decision, err = c.PermResolver().resolveEntitlement(ctx, ownerID, KindChannel, "", "", perm)
+	case MatrixScopeDM:
+		decision, err = c.PermResolver().resolveEntitlement(ctx, ownerID, KindDM, "", "", perm)
 	case MatrixScopeGroup:
-		decision, err = c.PermResolver().ResolveGroup(ctx, ownerID, KindChannel, scopeRefID(scope.ID, "group:"), perm)
+		decision, err = c.PermResolver().resolveEntitlement(ctx, ownerID, KindChannel, "", scopeRefID(scope.ID, "group:"), perm)
 	case MatrixScopeRoom:
-		decision, err = c.PermResolver().Resolve(ctx, ownerID, KindChannel, scopeRefID(scope.ID, "room:"), perm)
+		decision, err = c.PermResolver().resolveEntitlement(ctx, ownerID, KindChannel, scopeRefID(scope.ID, "room:"), "", perm)
 	default:
 		return false, fmt.Errorf("%w: unknown scope kind %q", ErrInvalidArgument, scope.Kind)
 	}
@@ -681,6 +791,7 @@ func matrixApplicablePermissions() []string {
 	applicable := make([]string, 0, len(allPerms))
 	for _, meta := range allPerms {
 		if PermissionAppliesAtScope(meta.Permission, ScopeServer) ||
+			PermissionAppliesAtScope(meta.Permission, ScopeDM) ||
 			PermissionAppliesAtScope(meta.Permission, ScopeGroup) ||
 			PermissionAppliesAtScope(meta.Permission, ScopeRoom) {
 			applicable = append(applicable, string(meta.Permission))
@@ -689,28 +800,31 @@ func matrixApplicablePermissions() []string {
 	return applicable
 }
 
-func (c *ChattoCore) buildMatrixScopes(ctx context.Context) ([]PermissionMatrixScope, error) {
-	return c.buildMatrixScopesVisibleTo(ctx)
+func (c *ChattoCore) buildMatrixScopes(ctx context.Context, includeDM bool) ([]PermissionMatrixScope, error) {
+	return c.buildMatrixScopesVisibleTo(ctx, includeDM)
 }
 
 // buildBotMatrixScopes limits bot configuration room metadata to rooms visible
 // through the normal directory policy to both the owner and the managing
 // caller. Group metadata follows that policy's complete group layout so empty
 // groups remain configurable, including for group-scoped room.create grants.
-func (c *ChattoCore) buildBotMatrixScopes(ctx context.Context, ownerID, actorID string) ([]PermissionMatrixScope, error) {
+func (c *ChattoCore) buildBotMatrixScopes(ctx context.Context, ownerID, actorID string, includeDM bool) ([]PermissionMatrixScope, error) {
 	viewerIDs := []string{ownerID}
 	if actorID != ownerID {
 		viewerIDs = append(viewerIDs, actorID)
 	}
-	return c.buildMatrixScopesVisibleTo(ctx, viewerIDs...)
+	return c.buildMatrixScopesVisibleTo(ctx, includeDM, viewerIDs...)
 }
 
-func (c *ChattoCore) buildMatrixScopesVisibleTo(ctx context.Context, viewerIDs ...string) ([]PermissionMatrixScope, error) {
+func (c *ChattoCore) buildMatrixScopesVisibleTo(ctx context.Context, includeDM bool, viewerIDs ...string) ([]PermissionMatrixScope, error) {
 	scopes := []PermissionMatrixScope{{
 		ID:    "server",
 		Label: "Server",
 		Kind:  MatrixScopeServer,
 	}}
+	if includeDM {
+		scopes = append(scopes, PermissionMatrixScope{ID: "dm", Label: "Direct messages", Kind: MatrixScopeDM})
+	}
 	groups, err := c.ListRoomGroupsOrdered(ctx, KindChannel)
 	if err != nil {
 		return nil, fmt.Errorf("load room groups: %w", err)
@@ -721,6 +835,10 @@ func (c *ChattoCore) buildMatrixScopesVisibleTo(ctx context.Context, viewerIDs .
 		for _, roomID := range group.RoomIds {
 			room, err := c.GetRoom(ctx, KindChannel, roomID)
 			if err != nil || room == nil {
+				continue
+			}
+			// Filter before pagination so archived rooms contribute neither columns nor counts.
+			if room.GetArchived() {
 				continue
 			}
 			visible := true
@@ -767,6 +885,7 @@ func buildRolePermissionCell(
 	perm Permission,
 	scope PermissionMatrixScope,
 	serverGrants, serverDenials []Permission,
+	dmGrants, dmDenials []Permission,
 	groupGrants, groupDenials map[string][]Permission,
 	roomGrants, roomDenials map[string][]Permission,
 	roomToGroup map[string]string,
@@ -774,6 +893,7 @@ func buildRolePermissionCell(
 	cell, ok := buildExactRolePermissionCell(
 		perm, scope,
 		serverGrants, serverDenials,
+		dmGrants, dmDenials,
 		groupGrants, groupDenials,
 		roomGrants, roomDenials,
 		roomToGroup,
@@ -785,6 +905,7 @@ func buildRolePermissionCell(
 		includingCell, applies := buildExactRolePermissionCell(
 			including, scope,
 			serverGrants, serverDenials,
+			dmGrants, dmDenials,
 			groupGrants, groupDenials,
 			roomGrants, roomDenials,
 			roomToGroup,
@@ -801,6 +922,7 @@ func buildExactRolePermissionCell(
 	perm Permission,
 	scope PermissionMatrixScope,
 	serverGrants, serverDenials []Permission,
+	dmGrants, dmDenials []Permission,
 	groupGrants, groupDenials map[string][]Permission,
 	roomGrants, roomDenials map[string][]Permission,
 	roomToGroup map[string]string,
@@ -816,6 +938,21 @@ func buildExactRolePermissionCell(
 			ScopeID:    scope.ID,
 			Override:   override,
 			Effective:  override,
+		}, true
+	case MatrixScopeDM:
+		if !PermissionAppliesAtScope(perm, ScopeDM) {
+			return PermissionMatrixCell{}, false
+		}
+		override := matrixDecisionFromLists(perm, dmGrants, dmDenials)
+		effective := override
+		if effective == MatrixDecisionNone && PermissionAppliesAtScope(perm, ScopeServer) {
+			effective = matrixDecisionFromLists(perm, serverGrants, serverDenials)
+		}
+		return PermissionMatrixCell{
+			Permission: string(perm),
+			ScopeID:    scope.ID,
+			Override:   override,
+			Effective:  effective,
 		}, true
 	case MatrixScopeGroup:
 		if !PermissionAppliesAtScope(perm, ScopeGroup) {
@@ -876,6 +1013,18 @@ func (c *ChattoCore) buildUserPermissionMatrixCell(ctx context.Context, userID s
 			return PermissionMatrixCell{}, false, err
 		}
 		effective, err = c.PermResolver().Resolve(ctx, userID, KindChannel, "", perm)
+		if err != nil {
+			return PermissionMatrixCell{}, false, err
+		}
+	case MatrixScopeDM:
+		if !PermissionAppliesAtScope(perm, ScopeDM) {
+			return PermissionMatrixCell{}, false, nil
+		}
+		override, err = c.GetUserExplicitDMOverride(ctx, userID, perm)
+		if err != nil {
+			return PermissionMatrixCell{}, false, err
+		}
+		effective, err = c.PermResolver().Resolve(ctx, userID, KindDM, "", perm)
 		if err != nil {
 			return PermissionMatrixCell{}, false, err
 		}

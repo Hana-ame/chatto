@@ -1,8 +1,14 @@
 {
   "chat": {
+    "privileged_mode": {
+      "enable": "Włącz tryb uprzywilejowany",
+      "disable": "Wyłącz tryb uprzywilejowany",
+      "confirmation": "Na 15 minut włączy to dodatkowe uprawnienia przypisane do ciebie na tym serwerze."
+    },
     "notifications": {
       "title": "Powiadomienia",
       "subtitle": "Oto nowości",
+      "list_title": "Ostatnia aktywność",
       "clear_read": "Usuń przeczytane",
       "empty_title": "Brak powiadomień",
       "empty_body": "Wszyscy jesteście zajęci!",
@@ -42,40 +48,102 @@
       "send_message": "Wyślij wiadomość",
       "view_profile": "Zobacz profil",
       "profile_requires_direct_message": "Aby zobaczyć ten profil, potrzebujesz bezpośredniej wiadomości.",
+      "manage_bot": "Zarządzaj botem",
       "view_in_admin": "Wyświetl w administracji serwera",
       "copy_user_id": "Kopiuj identyfikator użytkownika"
     },
     "server_gutter": {
       "add_server": "Dodaj serwer",
+      "log_in": "Zaloguj się na tym serwerze",
+      "sign_out": "Wyloguj się z tego serwera",
       "version": "Wersja {version}",
-      "version_unknown": "Nieznana wersja",
       "unreachable": "Serwer jest niedostępny",
+      "connection_unavailable": "Połączenie niedostępne",
       "compatibility_server_too_old": "Ten serwer musi zostać zaktualizowany do Chatto 0.5 lub nowszego, zanim ta aplikacja będzie mogła się połączyć.",
-      "compatibility_unknown": "Ta aplikacja nie może określić zgodności na podstawie wersji serwera."
+      "compatibility_unknown": "Ta aplikacja nie może określić zgodności na podstawie wersji serwera.",
+      "go_to_notifications_count": {
+        "one": "Przejdź do {count} powiadomienia",
+        "few": "Przejdź do {count} powiadomień",
+        "many": "Przejdź do {count} powiadomień",
+        "other": "Przejdź do {count} powiadomienia"
+      },
+      "go_to_notification": "Przejdź do powiadomienia",
+      "go_to_first_unread": "Przejdź do pierwszego nieprzeczytanego pokoju",
+      "notifications_count": {
+        "one": "{count} powiadomienie",
+        "few": "{count} powiadomienia",
+        "many": "{count} powiadomień",
+        "other": "{count} powiadomienia"
+      }
+    },
+    "server_unavailable": {
+      "too_old_title": "Wymagana aktualizacja serwera",
+      "too_old_body": "Ten serwer używa wersji Chatto, której ta aplikacja już nie obsługuje. Poproś administratora serwera o aktualizację Chatto.",
+      "unknown_title": "Nieznana wersja serwera",
+      "unknown_body": "Ta aplikacja nie może rozpoznać wersji Chatto na tym serwerze, więc nie może się z nim połączyć.",
+      "unreachable_body": "Ta aplikacja nie może połączyć się z tym serwerem. Sprawdź połączenie sieciowe lub spróbuj ponownie później.",
+      "server_version": "Wersja serwera",
+      "required_version": "Wymagana wersja",
+      "required_version_value": "{version} lub nowsza",
+      "check_again": "Sprawdź ponownie"
+    },
+    "server_signed_out": {
+      "title": "Wylogowano Cię z tego serwera",
+      "body": "Zaloguj się, aby czytać i wysyłać wiadomości na tym serwerze."
     },
     "threads": {
       "title": "Moje wątki",
       "subtitle": "Wątki, które obserwujesz",
+      "list_title": "Obserwowane wątki",
       "filter_label": "Filtruj wątki",
       "filter_all": "Wszystko",
       "filter_unread": "Nieprzeczytane",
       "empty_title": "Brak obserwowanych wątków",
       "empty_body": "Wątki, które obserwujesz, pojawią się tutaj. Automatycznie obserwujesz wątki, w których bierzesz udział.",
-      "no_unread_loaded": "Nie załadowano żadnych nieprzeczytanych wątków",
       "all_caught_up": "Wszystko nadrobione",
-      "loaded_summary": "Załadowano następujące wątki {loaded} z {total}.",
       "load_more": "Załaduj więcej",
       "no_unread": "W tej chwili nie ma nieprzeczytanych wątków.",
       "message_missing": "Wiadomość nie jest już dostępna",
       "in_room": "w",
-      "in_room_capitalized": "W"
+      "in_room_capitalized": "W",
+      "load_failed": "Nie udało się wczytać wątków",
+      "notifications_count": {
+        "one": "{count} powiadomienie",
+        "few": "{count} powiadomienia",
+        "many": "{count} powiadomień",
+        "other": "{count} powiadomienia"
+      }
     },
     "profile": {
       "title": "Profil",
       "fallback_title": "Profil",
       "not_found": "Nie znaleziono użytkownika",
       "bot": "Bot",
-      "local_time": "{time} czasu lokalnego ({zone})"
+      "local_time": "{time} czasu lokalnego ({zone})",
+      "permissions": {
+        "title": "Co może robić",
+        "empty": "Nie widzisz żadnych aktywnych uprawnień.",
+        "error": "Nie udało się wczytać uprawnień tego bota.",
+        "inactive_title": "Nieaktywne uprawnienia",
+        "inactive_note": "Te uprawnienia są zapisane, ale obecne uprawnienia właściciela na nie nie pozwalają.",
+        "read": "Czytać wszystkie wiadomości",
+        "interactions": "Czytać wątki, które utworzył lub w których został bezpośrednio wspomniany",
+        "post": "Wysyłać nowe wiadomości",
+        "room": "#{name}",
+        "group": "Grupa: {name}",
+        "dm": "Jego wiadomości bezpośrednie",
+        "joined_rooms": "Pokoje, do których dołączył",
+        "all_rooms": "Pokoje",
+        "server": "Ten serwer",
+        "list_rooms": "Przeglądać pokoje",
+        "echo": "Pokazywać odpowiedzi w wątkach na osi czasu pokoju",
+        "start_calls": "Rozpoczynać rozmowy",
+        "browse_join": "Przeglądać pokoje i dołączać do nich",
+        "reply": "Odpowiadać w wątkach",
+        "manage_messages": "Zarządzać wiadomościami"
+      },
+      "owned_by": "Właściciel",
+      "open_card": "Otwórz kartę profilu użytkownika {name}"
     }
   }
 }

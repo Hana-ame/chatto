@@ -18,13 +18,14 @@ const directionFunction = themeScript?.match(
 
 type WebAppManifest = {
   icons?: Array<{ src?: string; sizes?: string; type?: string; purpose?: string }>;
+  theme_color?: string;
 };
 
-function metaContent(name: string, mediaFragment: string): string | null {
-  const tag = appHtml.match(
-    new RegExp(`<meta\\s+[^>]*name="${name}"[^>]*media="[^"]*${mediaFragment}[^"]*"[^>]*>`, 'i')
-  )?.[0];
+function metaTags(name: string): string[] {
+  return appHtml.match(new RegExp(`<meta\\s+[^>]*name="${name}"[^>]*>`, 'gi')) ?? [];
+}
 
+function metaContent(tag: string): string | null {
   return tag?.match(/\bcontent="([^"]+)"/i)?.[1] ?? null;
 }
 
@@ -59,7 +60,9 @@ function runThemeScript({
   systemDark,
   storedLocale,
   legacyStoredLocale,
-  browserLanguages
+  browserLanguages,
+  protocol = 'https:',
+  storage: extraStorage = {}
 }: {
   preferences?: unknown;
   legacyTheme?: string;
@@ -67,10 +70,12 @@ function runThemeScript({
   storedLocale?: string;
   legacyStoredLocale?: string;
   browserLanguages?: string[];
+  protocol?: string;
+  storage?: Record<string, string>;
 }) {
   if (!themeScript) throw new Error('theme script not found');
 
-  const storage = new Map<string, string>();
+  const storage = new Map<string, string>(Object.entries(extraStorage));
   if (preferences !== undefined) {
     storage.set('chatto:preferences', JSON.stringify(preferences));
   }
@@ -86,15 +91,40 @@ function runThemeScript({
 
   let dark = systemDark;
   let changeHandler: (() => void) | undefined;
+  const styleValues = new Map<string, string>();
   const root: {
     dataset: Record<string, string>;
-    style: Record<string, string>;
+    style: {
+      backgroundColor?: string;
+      colorScheme?: string;
+      setProperty: (name: string, value: string) => void;
+      getPropertyValue: (name: string) => string;
+    };
     lang?: string;
     dir?: string;
-  } = { dataset: {}, style: {} };
+  } = {
+    dataset: {},
+    style: {
+      setProperty: (name: string, value: string) => {
+        styleValues.set(name, value);
+      },
+      getPropertyValue: (name: string) => styleValues.get(name) ?? ''
+    }
+  };
+  const themeColor = {
+    content: '#e5e7eb',
+    setAttribute: (_name: string, value: string) => {
+      themeColor.content = value;
+    }
+  };
 
   runInNewContext(themeScript, {
-    document: { documentElement: root },
+    location: { protocol },
+    document: {
+      documentElement: root,
+      querySelector: (selector: string) =>
+        selector === 'meta[name="theme-color"]' ? themeColor : null
+    },
     localStorage: {
       getItem: (key: string) => storage.get(key) ?? null,
       setItem: (key: string, value: string) => storage.set(key, value),
@@ -117,6 +147,7 @@ function runThemeScript({
 
   return {
     root,
+    themeColor,
     storedLocale: () => storage.get('chatto:locale'),
     legacyStoredLocale: () => storage.get('PARAGLIDE_LOCALE'),
     changeSystemTheme(systemTheme: 'light' | 'dark') {
@@ -136,10 +167,38 @@ function firstPaintDirection(locale: string): string {
   return context.result ?? '';
 }
 
+describe('app.html native surface depth', () => {
+  it.each([undefined, {}, { surfaceDepth: 'invalid' }])(
+    'defaults to Flat in the iOS shell with preferences %j',
+    (preferences) => {
+      const { root } = runThemeScript({ preferences, systemDark: false, protocol: 'capacitor:' });
+      expect(root.style.getPropertyValue('--depth-level')).toBe('0');
+    }
+  );
+
+  it.each([
+    ['flat', '0'],
+    ['3d', '50'],
+    ['very-3d', '100'],
+    [30, '30']
+  ])('preserves the saved %s depth in the iOS shell', (surfaceDepth, level) => {
+    const { root } = runThemeScript({
+      preferences: { surfaceDepth },
+      systemDark: false,
+      protocol: 'capacitor:'
+    });
+    expect(root.style.getPropertyValue('--depth-level')).toBe(level);
+  });
+});
+
 describe('app.html metadata', () => {
-  it('defines theme colors matching the outer frame background colors', () => {
-    expect(metaContent('theme-color', 'light')).toBe('#e5e7eb');
-    expect(metaContent('theme-color', 'dark')).toBe('#262626');
+  it('defines one document-controlled theme color without a manifest override', () => {
+    const tags = metaTags('theme-color');
+
+    expect(tags).toHaveLength(1);
+    expect(metaContent(tags[0])).toBe('#e5e7eb');
+    expect(tags[0]).not.toMatch(/\bmedia=/i);
+    expect(manifest.theme_color).toBeUndefined();
   });
 
   it('declares the Safari apple touch icon with an explicit size', () => {
@@ -201,38 +260,211 @@ describe('app.html metadata', () => {
 });
 
 describe('app.html theme bootstrap', () => {
-  it('reads chatto:preferences.displayTheme before legacy localStorage.theme', () => {
+  it.each([
+    [20, 20],
+    [25, 26],
+    [25.5, 26],
+    [30, 30],
+    [34.5, 34],
+    [40, 40]
+  ])(
+    'restores saved contrast value %s as the 10%% step %s before the app starts',
+    (contrastAge, step) => {
+      const { root } = runThemeScript({ preferences: { contrastAge }, systemDark: false });
+      expect(root.style.getPropertyValue('--contrast-soft-mix')).toBe(
+        `${Math.max(0, 30 - step) * 10}%`
+      );
+      expect(root.style.getPropertyValue('--contrast-strong-mix')).toBe(
+        `${Math.max(0, step - 30) * 10}%`
+      );
+    }
+  );
+
+  it.each([
+    ['light', '#ffffff'],
+    ['dark', '#000000']
+  ])('uses the %s maximum-contrast shell colour before first paint', (displayTheme, color) => {
+    const { root, themeColor } = runThemeScript({
+      preferences: { displayTheme, contrastAge: 40 },
+      systemDark: false
+    });
+    expect(root.style.backgroundColor).toBe('var(--color-surface)');
+    expect(themeColor.content).toBe(color);
+  });
+
+  it.each([undefined, null, '40', 19.5, 40.5, 30.25])(
+    'uses current contrast for an absent or invalid saved value: %j',
+    (contrastAge) => {
+      const { root } = runThemeScript({ preferences: { contrastAge }, systemDark: false });
+      expect(root.style.getPropertyValue('--contrast-soft-mix')).toBe('0%');
+      expect(root.style.getPropertyValue('--contrast-strong-mix')).toBe('0%');
+    }
+  );
+
+  it.each([
+    ['flat', '0'],
+    ['3d', '50'],
+    ['very-3d', '100'],
+    [0, '0'],
+    [80, '80']
+  ])('restores %s surface depth before the app starts', (surfaceDepth, level) => {
+    const { root } = runThemeScript({ preferences: { surfaceDepth }, systemDark: false });
+    expect(root.style.getPropertyValue('--depth-level')).toBe(level);
+  });
+
+  it.each([
+    undefined,
+    null,
+    {},
+    { surfaceDepth: 'unknown' },
+    { surfaceDepth: 123 },
+    { surfaceDepth: 45 },
+    { surfaceDepth: 'toString' }
+  ])('uses Kinda 3D for an absent or invalid saved depth: %j', (preferences) => {
+    const { root } = runThemeScript({ preferences, systemDark: false });
+    expect(root.style.getPropertyValue('--depth-level')).toBe('50');
+  });
+
+  it.each(['blue', 'cyan', 'teal', 'green', 'amber', 'orange', 'pink', 'violet', 'grey'])(
+    'restores the %s accent before the app starts',
+    (accentColor) => {
+      const { root } = runThemeScript({ preferences: { accentColor }, systemDark: true });
+      expect(root.dataset.accent).toBe(accentColor);
+      expect(root.dataset.theme).toBe('dark');
+    }
+  );
+
+  it.each([
+    'neutral',
+    'stone',
+    'taupe',
+    'clay',
+    'olive',
+    'forest',
+    'mist',
+    'gray',
+    'slate',
+    'midnight',
+    'mauve',
+    'plum'
+  ])('restores the %s tone for each theme before the app starts', (tone) => {
     const { root } = runThemeScript({
+      preferences: { lightSurfaceTone: tone, darkSurfaceTone: 'plum' },
+      systemDark: false
+    });
+    expect(root.dataset.lightTone).toBe(tone);
+    expect(root.dataset.darkTone).toBe('plum');
+  });
+
+  it('paints the saved tone colours before the stylesheet loads', () => {
+    const palette = {
+      light: { background: '#eef6f1', highlight: '#8fa99a', text: '#3f5a4b', surface: '#dfece4' },
+      dark: { background: '#1d1022', highlight: '#4a3150', text: '#dcc9e0', surface: '#331b3a' },
+      tones: { light: 'forest', dark: 'plum' }
+    };
+    const { root, themeColor, changeSystemTheme } = runThemeScript({
+      preferences: { lightSurfaceTone: 'forest', darkSurfaceTone: 'plum' },
+      systemDark: false,
+      storage: { 'chatto:loading-palette': JSON.stringify(palette) }
+    });
+    for (const theme of ['light', 'dark'] as const) {
+      for (const name of ['background', 'highlight', 'text'] as const) {
+        expect(root.style.getPropertyValue(`--loading-${theme}-${name}`)).toBe(
+          palette[theme][name]
+        );
+      }
+    }
+    expect(themeColor.content).toBe('#dfece4');
+    changeSystemTheme('dark');
+    expect(themeColor.content).toBe('#331b3a');
+  });
+
+  it('ignores saved colours from tones that no longer match the preferences', () => {
+    // Another app version may change the tones without refreshing the palette.
+    const palette = {
+      light: { background: '#eef6f1', highlight: '#8fa99a', text: '#3f5a4b', surface: '#dfece4' },
+      dark: { background: '#1d1022', highlight: '#4a3150', text: '#dcc9e0', surface: '#331b3a' },
+      tones: { light: 'forest', dark: 'plum' }
+    };
+    const { root, themeColor } = runThemeScript({
+      preferences: { lightSurfaceTone: 'clay', darkSurfaceTone: 'plum' },
+      systemDark: false,
+      storage: { 'chatto:loading-palette': JSON.stringify(palette) }
+    });
+    expect(root.style.getPropertyValue('--loading-light-background')).toBe('');
+    expect(root.style.getPropertyValue('--loading-dark-background')).toBe('#1d1022');
+    expect(themeColor.content).toBe('#e5e7eb');
+  });
+
+  it.each([
+    'not json',
+    JSON.stringify({ light: { background: 'red' } }),
+    JSON.stringify({
+      light: { background: '#fff', highlight: '#000', text: '#000', surface: '#000' }
+    })
+  ])('ignores an unusable saved tone palette: %s', (raw) => {
+    const { root, themeColor } = runThemeScript({
+      systemDark: false,
+      storage: { 'chatto:loading-palette': raw }
+    });
+    expect(root.style.getPropertyValue('--loading-light-background')).toBe('');
+    expect(themeColor.content).toBe('#e5e7eb');
+  });
+
+  it.each([undefined, null, {}, { lightSurfaceTone: 'unknown', darkSurfaceTone: 123 }])(
+    'uses the default tones when saved tones are absent or invalid: %j',
+    (preferences) => {
+      const { root } = runThemeScript({ preferences, systemDark: false });
+      expect(root.dataset.lightTone).toBe('gray');
+      expect(root.dataset.darkTone).toBe('neutral');
+    }
+  );
+
+  it.each([undefined, null, {}, { accentColor: 'unknown' }, { accentColor: 123 }])(
+    'uses cyan when the saved accent is absent or invalid: %j',
+    (preferences) => {
+      const { root } = runThemeScript({ preferences, systemDark: false });
+      expect(root.dataset.accent).toBe('cyan');
+    }
+  );
+
+  it('reads chatto:preferences.displayTheme before legacy localStorage.theme', () => {
+    const { root, themeColor } = runThemeScript({
       preferences: { displayTheme: 'light' },
       legacyTheme: 'dark',
       systemDark: true
     });
 
     expect(root.dataset.theme).toBe('light');
-    expect(root.style.backgroundColor).toBe('#f3f4f6');
+    expect(root.style.backgroundColor).toBe('var(--color-surface)');
     expect(root.style.colorScheme).toBe('light');
+    expect(themeColor.content).toBe('#e5e7eb');
   });
 
   it('uses legacy localStorage.theme when no display preference exists', () => {
-    const { root } = runThemeScript({ legacyTheme: 'dark', systemDark: false });
+    const { root, themeColor } = runThemeScript({ legacyTheme: 'dark', systemDark: false });
     expect(root.dataset.theme).toBe('dark');
+    expect(root.style.backgroundColor).toBe('var(--color-surface)');
     expect(root.style.colorScheme).toBe('dark');
+    expect(themeColor.content).toBe('#262626');
   });
 
   it('follows prefers-color-scheme when the display preference is system', () => {
-    const { root } = runThemeScript({
+    const { root, themeColor } = runThemeScript({
       preferences: { displayTheme: 'system' },
       systemDark: true
     });
 
     expect(root.dataset.theme).toBe('dark');
     expect(root.style.colorScheme).toBe('dark');
+    expect(themeColor.content).toBe('#262626');
   });
 
   it('follows prefers-color-scheme when no display preference exists', () => {
-    const { root } = runThemeScript({ systemDark: true });
+    const { root, themeColor } = runThemeScript({ systemDark: true });
     expect(root.dataset.theme).toBe('dark');
     expect(root.style.colorScheme).toBe('dark');
+    expect(themeColor.content).toBe('#262626');
   });
 
   it('only reacts to system theme changes while the display preference is system', () => {
@@ -242,6 +474,7 @@ describe('app.html theme bootstrap', () => {
     });
     system.changeSystemTheme('dark');
     expect(system.root.dataset.theme).toBe('dark');
+    expect(system.themeColor.content).toBe('#262626');
 
     const explicit = runThemeScript({
       preferences: { displayTheme: 'light' },
@@ -249,6 +482,7 @@ describe('app.html theme bootstrap', () => {
     });
     explicit.changeSystemTheme('dark');
     expect(explicit.root.dataset.theme).toBe('light');
+    expect(explicit.themeColor.content).toBe('#e5e7eb');
   });
 });
 

@@ -24,7 +24,7 @@ func (s *adminOAuthClientService) ListOAuthClients(ctx context.Context, req *con
 	}
 	states, err := s.api.core.ListOAuthClients(ctx, caller.UserID)
 	if err != nil {
-		return nil, connectError(err)
+		return nil, err
 	}
 	limit, offset := apiPagination(req.Msg.GetPage(), defaultOAuthClientLimit, maxOAuthClientLimit)
 	total := len(states)
@@ -52,7 +52,7 @@ func (s *adminOAuthClientService) GetOAuthClient(ctx context.Context, req *conne
 	}
 	state, err := s.api.core.GetOAuthClient(ctx, caller.UserID, req.Msg.GetClientId())
 	if err != nil {
-		return nil, connectError(err)
+		return nil, err
 	}
 	return connect.NewResponse(&adminv1.GetOAuthClientResponse{OauthClient: apiOAuthClient(state)}), nil
 }
@@ -62,13 +62,17 @@ func (s *adminOAuthClientService) UpdateOAuthClientPolicy(ctx context.Context, r
 	if err != nil {
 		return nil, err
 	}
+	req.Msg, err = normalizeUpdateMask(req.Msg)
+	if err != nil {
+		return nil, err
+	}
 	policy, err := coreOAuthClientPolicy(req.Msg.GetPolicy())
 	if err != nil {
-		return nil, connectError(err)
+		return nil, err
 	}
 	state, err := s.api.core.UpdateOAuthClientPolicy(ctx, caller.UserID, req.Msg.GetClientId(), policy)
 	if err != nil {
-		return nil, connectError(err)
+		return nil, err
 	}
 	return connect.NewResponse(&adminv1.UpdateOAuthClientPolicyResponse{OauthClient: apiOAuthClient(state)}), nil
 }
@@ -87,42 +91,42 @@ func apiOAuthClient(state core.OAuthClientState) *adminv1.OAuthClient {
 	}
 }
 
-func apiOAuthClientSource(source evtv1.OAuthClientSource) adminv1.OAuthClientSource {
+func apiOAuthClientSource(source evtv1.OAuthClientSource) adminv1.OauthClientSource {
 	switch source {
 	case evtv1.OAuthClientSource_OAUTH_CLIENT_SOURCE_CIMD:
-		return adminv1.OAuthClientSource_OAUTH_CLIENT_SOURCE_CIMD
+		return adminv1.OauthClientSource_OAUTH_CLIENT_SOURCE_CIMD
 	case evtv1.OAuthClientSource_OAUTH_CLIENT_SOURCE_BUILT_IN:
-		return adminv1.OAuthClientSource_OAUTH_CLIENT_SOURCE_BUILT_IN
+		return adminv1.OauthClientSource_OAUTH_CLIENT_SOURCE_BUILT_IN
 	default:
 		// The public and durable enums intentionally share numeric assignments.
 		// Preserve future values so an older administration client can fail
 		// closed instead of mislabelling an unsupported source.
-		return adminv1.OAuthClientSource(source)
+		return adminv1.OauthClientSource(source)
 	}
 }
 
-func apiOAuthClientPolicy(policy evtv1.OAuthClientPolicy) adminv1.OAuthClientPolicy {
+func apiOAuthClientPolicy(policy evtv1.OAuthClientPolicy) adminv1.OauthClientPolicy {
 	switch policy {
 	case evtv1.OAuthClientPolicy_OAUTH_CLIENT_POLICY_DEFAULT:
-		return adminv1.OAuthClientPolicy_OAUTH_CLIENT_POLICY_DEFAULT
+		return adminv1.OauthClientPolicy_OAUTH_CLIENT_POLICY_DEFAULT
 	case evtv1.OAuthClientPolicy_OAUTH_CLIENT_POLICY_TRUSTED:
-		return adminv1.OAuthClientPolicy_OAUTH_CLIENT_POLICY_TRUSTED
+		return adminv1.OauthClientPolicy_OAUTH_CLIENT_POLICY_TRUSTED
 	case evtv1.OAuthClientPolicy_OAUTH_CLIENT_POLICY_BLOCKED:
-		return adminv1.OAuthClientPolicy_OAUTH_CLIENT_POLICY_BLOCKED
+		return adminv1.OauthClientPolicy_OAUTH_CLIENT_POLICY_BLOCKED
 	default:
 		// Preserve unknown numeric values across the durable/public boundary so
 		// clients can render them as unsupported and disable policy editing.
-		return adminv1.OAuthClientPolicy(policy)
+		return adminv1.OauthClientPolicy(policy)
 	}
 }
 
-func coreOAuthClientPolicy(policy adminv1.OAuthClientPolicy) (evtv1.OAuthClientPolicy, error) {
+func coreOAuthClientPolicy(policy adminv1.OauthClientPolicy) (evtv1.OAuthClientPolicy, error) {
 	switch policy {
-	case adminv1.OAuthClientPolicy_OAUTH_CLIENT_POLICY_DEFAULT:
+	case adminv1.OauthClientPolicy_OAUTH_CLIENT_POLICY_DEFAULT:
 		return evtv1.OAuthClientPolicy_OAUTH_CLIENT_POLICY_DEFAULT, nil
-	case adminv1.OAuthClientPolicy_OAUTH_CLIENT_POLICY_TRUSTED:
+	case adminv1.OauthClientPolicy_OAUTH_CLIENT_POLICY_TRUSTED:
 		return evtv1.OAuthClientPolicy_OAUTH_CLIENT_POLICY_TRUSTED, nil
-	case adminv1.OAuthClientPolicy_OAUTH_CLIENT_POLICY_BLOCKED:
+	case adminv1.OauthClientPolicy_OAUTH_CLIENT_POLICY_BLOCKED:
 		return evtv1.OAuthClientPolicy_OAUTH_CLIENT_POLICY_BLOCKED, nil
 	default:
 		return evtv1.OAuthClientPolicy_OAUTH_CLIENT_POLICY_UNSPECIFIED, core.ErrInvalidArgument

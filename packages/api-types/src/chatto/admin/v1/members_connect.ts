@@ -3,7 +3,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { AssignRoleRequest, AssignRoleResponse, BatchGetMembersRequest, BatchGetMembersResponse, ClearUsernameCooldownRequest, ClearUsernameCooldownResponse, DeleteUserRequest, DeleteUserResponse, GetMemberRequest, GetMemberResponse, ListMembersRequest, ListMembersResponse, RevokeRoleRequest, RevokeRoleResponse, UpdateUserPasswordRequest, UpdateUserPasswordResponse, UpdateUserRequest, UpdateUserResponse } from "./members_pb.js";
+import { AssignRoleRequest, AssignRoleResponse, BatchGetMembersRequest, BatchGetMembersResponse, ChangeUserPasswordRequest, ChangeUserPasswordResponse, ClearUsernameCooldownRequest, ClearUsernameCooldownResponse, DeleteUserRequest, DeleteUserResponse, GetMemberRequest, GetMemberResponse, ListMembersRequest, ListMembersResponse, RevokeRoleRequest, RevokeRoleResponse } from "./members_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -74,33 +74,21 @@ export const AdminUserService = {
       kind: MethodKind.Unary,
     },
     /**
-     * Updates another user's login and/or display name as an admin action.
-     * Requires user.manage-accounts; the caller cannot target their own account.
-     *
-     * @generated from rpc chatto.admin.v1.AdminUserService.UpdateUser
-     */
-    updateUser: {
-      name: "UpdateUser",
-      I: UpdateUserRequest,
-      O: UpdateUserResponse,
-      kind: MethodKind.Unary,
-    },
-    /**
      * Updates another user's password as an admin action. Requires
      * user.manage-accounts and a fresh credential for the caller; the caller
      * cannot target their own account.
      *
-     * @generated from rpc chatto.admin.v1.AdminUserService.UpdateUserPassword
+     * @generated from rpc chatto.admin.v1.AdminUserService.ChangeUserPassword
      */
-    updateUserPassword: {
-      name: "UpdateUserPassword",
-      I: UpdateUserPasswordRequest,
-      O: UpdateUserPasswordResponse,
+    changeUserPassword: {
+      name: "ChangeUserPassword",
+      I: ChangeUserPasswordRequest,
+      O: ChangeUserPasswordResponse,
       kind: MethodKind.Unary,
     },
     /**
      * Clears the target user's self-service username-change cooldown. Requires
-     * user.manage-accounts.
+     * user.manage-accounts, including when the caller targets their own account.
      *
      * @generated from rpc chatto.admin.v1.AdminUserService.ClearUsernameCooldown
      */

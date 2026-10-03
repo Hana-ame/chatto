@@ -1,6 +1,6 @@
 import { page } from '$app/state';
 import { segmentToServerId } from '$lib/navigation';
-import { serverRegistry } from './server/registry.svelte';
+import { serverRegistry } from '$lib/client';
 
 /**
  * Returns the active server ID, derived from the URL `[serverId]` segment.
@@ -13,9 +13,5 @@ import { serverRegistry } from './server/registry.svelte';
  * resolves the value on every call.
  */
 export function getActiveServer(): string {
-  return (
-    segmentToServerId(page.params.serverId ?? '-')
-    ?? serverRegistry.originServer?.id
-    ?? ''
-  );
+  return segmentToServerId(page.params.serverId ?? '-') ?? serverRegistry.originServer?.id ?? '';
 }

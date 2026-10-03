@@ -3,7 +3,6 @@ export { default as AppHeader } from './AppHeader.svelte';
 export { default as ActivityListRow } from './ActivityListRow.svelte';
 export { default as BottomSheet } from './BottomSheet.svelte';
 export { default as ChoiceRow } from './ChoiceRow.svelte';
-export { default as CollapsibleGroup } from './CollapsibleGroup.svelte';
 export { default as ConfirmDialog } from './ConfirmDialog.svelte';
 export { default as ContextMenu } from './ContextMenu.svelte';
 export { default as CopyId } from './CopyId.svelte';
@@ -14,14 +13,15 @@ export { default as EmptyState } from './EmptyState.svelte';
 export { default as FormDialog } from './FormDialog.svelte';
 export { default as FormSection } from './FormSection.svelte';
 export { default as FloatingPopover } from './FloatingPopover.svelte';
-export { default as FloatingTooltip } from './FloatingTooltip.svelte';
+export { default as CompactActionButton } from './CompactActionButton.svelte';
 export { default as Frame } from './Frame.svelte';
 export { default as HeaderIconButton } from './HeaderIconButton.svelte';
 export { default as HelpTooltip } from './HelpTooltip.svelte';
 export { default as Hint } from './Hint.svelte';
-export { default as ImageModal } from './ImageModal.svelte';
-export type { ImageItem } from './ImageModal.svelte';
 export { default as LoadingPage } from './LoadingPage.svelte';
+export { default as LoadingDots } from './LoadingDots.svelte';
+export { default as LoadingFog } from './LoadingFog.svelte';
+export { default as LoadRetry } from './LoadRetry.svelte';
 export { default as MarkdownHtml } from './MarkdownHtml.svelte';
 export { default as MenuItem } from './MenuItem.svelte';
 export { default as MenuSection } from './MenuSection.svelte';
@@ -35,8 +35,21 @@ export { default as Pill } from './Pill.svelte';
 export { default as ScrollFader } from './ScrollFader.svelte';
 export { default as ScrollArea } from './ScrollArea.svelte';
 export { default as SegmentedControl } from './SegmentedControl.svelte';
-export { default as SkeletonImg } from './SkeletonImg.svelte';
+export { default as TabNav, type TabNavItem } from './TabNav.svelte';
 export { default as StatCard } from './StatCard.svelte';
 export { default as ToggleChip } from './ToggleChip.svelte';
 export { default as TopOverlayNotice } from './TopOverlayNotice.svelte';
 export { default as UnreadDot } from './UnreadDot.svelte';
+export { default as UserCard } from './UserCard.svelte';
+export { default as FadeScale } from './FadeScale.svelte';
+export { default as PillButtonGroup } from './PillButtonGroup.svelte';
+export { default as WipeReveal } from './WipeReveal.svelte';
+
+// Context menu and menu presentation helpers
+export { contextMenuTrigger, type ContextMenuTriggerDetails } from './contextMenuTrigger.svelte';
+export {
+  provideMenuContext,
+  useMenuContext,
+  type MenuContext,
+  type MenuPresentation
+} from './menuContext.svelte';

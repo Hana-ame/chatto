@@ -14,19 +14,7 @@ import (
 	evtv1 "hmans.de/chatto/internal/pb/chatto/core/evt/v1"
 )
 
-// assetURL prepends AssetBaseURL to an asset path.
-// When AssetBaseURL is empty, returns the path unchanged.
-func (c *ChattoCore) assetURL(path string) string {
-	if c.AssetBaseURL == "" {
-		return path
-	}
-	return c.AssetBaseURL + path
-}
-
 // AssetsConfig returns the assets configuration as an assets.Config.
-// 【本地改动 32e1f566 + 218426d6 + 2026-09-02 + 2026-09-12】把 ChattoCore 上
-// 的 FFmpegPath 与重编码开关透传给 assets.Config,供上传路径(现在是
-// EncodeAVIF)和渲染路径 TransformImageWithFFmpeg 使用。
 func (c *ChattoCore) AssetsConfig() assets.Config {
 	maxUploadSize := int64(c.config.Assets.MaxUploadSize)
 	if maxUploadSize == 0 {
@@ -34,9 +22,6 @@ func (c *ChattoCore) AssetsConfig() assets.Config {
 	}
 	return assets.Config{
 		MaxUploadSize: maxUploadSize,
-		FFmpegPath:    c.FFmpegPath,
-		WebPEnabled:   c.WebPEnabled,
-		AVIFEnabled:   c.AVIFEnabled,
 	}
 }
 
@@ -117,13 +102,6 @@ func serverAssetNATSObjectKeys(key string) (logicalID string, namespaced bool, o
 		return logicalID, true, []string{key}, true
 	}
 	return logicalID, false, []string{PublicServerAssetObjectKey(logicalID), logicalID}, true
-}
-
-// IsReservedServerAssetKey rejects private, internal, and unknown namespaces
-// before public-route transform parsing or backend probing.
-func IsReservedServerAssetKey(key string) bool {
-	_, _, ok := serverAssetRequestKey(key)
-	return !ok
 }
 
 // ResolvePublicServerAsset positively classifies an object and binds the

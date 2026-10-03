@@ -19,10 +19,10 @@ current runtime in `docs/architecture/`.
 
 - [ ] Design upstream SSO through Goth-supported providers
 - [ ] Define secure upstream-account linking and email-collision behavior
-- [ ] Implement an event-backed orphan-key cleanup worker and crash/race tests
-- [ ] Implement durable account erasure
-- [ ] Implement erasure-aware two-phase replay before destroying account keys
-- [ ] Add key-loss, erasure, backup, substitution, and KMS-failure tests
+- [ ] Implement an event-backed orphan-key cleanup worker that resolves unknown
+  publication outcomes before deleting keys, with crash/race tests
+- [ ] Define and test retirement of external key backups after account erasure
+- [ ] Add external-KMS failure tests when a KMS provider is implemented
 - [ ] Implement upstream SSO and account linking
 
 ## OpenID Connect
@@ -32,8 +32,9 @@ current runtime in `docs/architecture/`.
 - [ ] Add authenticated emergency signing-key rotation and compromise-response controls
 - [ ] Add rotating refresh tokens bound to durable authorization-grant generations
 - [ ] Add token-revocation and RP-initiated logout behavior
-- [ ] Define identity-claim release policies before adding further scopes and claims
-- [ ] Automate the official OpenID Provider conformance suite outside the fast Docker-free test path
+- [ ] Define release policies before adding scopes beyond `openid`, `profile`, and `email`
+- [ ] Assess conformance warnings for extra ID Token claims, requested claims, and token revocation after code reuse
+- [ ] Extend automated official-suite coverage to the remaining Basic OP modules and screenshot-review flows
 - [ ] Add version-skew fixtures for CIMD-aware Chatto consumers
 
 ## Later user interface work

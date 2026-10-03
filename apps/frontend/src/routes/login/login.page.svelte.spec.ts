@@ -3,19 +3,29 @@ import { render } from 'vitest-browser-svelte';
 import LoginPage from './+page.svelte';
 
 const mocks = vi.hoisted(() => ({
+  getPublicServerInfo: vi.fn(),
+  authenticatedIds: new Set<string>(),
   startRemoteReauthentication: vi.fn(async () => undefined),
   servers: [] as Array<Record<string, unknown>>
 }));
 
-vi.mock('$lib/auth/reauth', () => ({
-  startRemoteReauthentication: mocks.startRemoteReauthentication
-}));
-vi.mock('$lib/state/server/registry.svelte', () => ({
+// Page titles are tested separately from this page's partial route/server fixtures.
+vi.mock('$lib/client', async () => ({
+  ...(await import('$lib/test-utils/clientMock')).clientMockDefaults,
   serverRegistry: {
+    isAuthenticated: (id: string) => mocks.authenticatedIds.has(id),
     get servers() {
       return mocks.servers;
     }
   }
+}));
+
+vi.mock('$lib/render/pageTitle', () => ({ formatPageTitle: () => 'Chatto' }));
+
+vi.mock('@chatto/client/api/server', () => ({ getPublicServerInfo: mocks.getPublicServerInfo }));
+
+vi.mock('$lib/auth/reauth', () => ({
+  startRemoteReauthentication: mocks.startRemoteReauthentication
 }));
 
 const standaloneData = {
@@ -31,32 +41,31 @@ describe('standalone server selection', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.servers = [];
+    mocks.authenticatedIds.clear();
+    mocks.getPublicServerInfo.mockReset();
+    mocks.getPublicServerInfo.mockResolvedValue({
+      name: 'Available',
+      authorizeUrl: '/oauth/authorize'
+    });
   });
 
-  it('shows signed-out locally known servers', async () => {
+  it('keeps saved servers out of the welcome page without checking them', async () => {
     mocks.servers = [
-      {
-        id: 'remote',
-        url: 'https://remote.example',
-        name: 'Remote Community',
-        iconUrl: null,
-        token: null,
-        userId: null,
-        userLogin: null,
-        userDisplayName: null,
-        userAvatarUrl: null,
-        reauthRequiredAt: null,
-        addedAt: 1
-      }
+      { id: 'remote', url: 'https://remote.example', name: 'Remote Community', token: null }
     ];
+    const { getByRole, getByText } = render(LoginPage, { props: { data: standaloneData } });
 
-    const { getByText, getByRole } = render(LoginPage, { props: { data: standaloneData } });
-
-    await expect.element(getByText('Remote Community')).toBeVisible();
-    await getByRole('button', { name: 'Sign in' }).click();
-    expect(mocks.startRemoteReauthentication).toHaveBeenCalledWith(
-      expect.objectContaining({ id: 'remote' })
-    );
+    await expect
+      .element(getByRole('heading', { name: 'Choose a server to get started' }))
+      .toBeVisible();
+    await expect.element(getByRole('link', { name: 'Connect to a server' })).toBeVisible();
+    await expect.element(getByText('Remote Community')).not.toBeInTheDocument();
+    await expect
+      .element(getByText(/This page checks saved servers directly/))
+      .not.toBeInTheDocument();
+    expect(mocks.getPublicServerInfo).not.toHaveBeenCalled();
+    expect(mocks.startRemoteReauthentication).not.toHaveBeenCalled();
+    expect(mocks.servers).toHaveLength(1);
   });
 
   it('opens the full Server Directory instead of a modal', async () => {
@@ -101,7 +110,9 @@ describe('standalone server selection', () => {
 
     await expect.element(getByRole('link', { name: 'Continue with Company SSO' })).toBeVisible();
     await expect
-      .element(getByText('The sign-in provider could not complete authentication. Please try again.'))
+      .element(
+        getByText('The sign-in provider could not complete authentication. Please try again.')
+      )
       .toBeVisible();
     await expect.element(getByLabelText('Username or Email')).not.toBeInTheDocument();
     await expect.element(getByLabelText('Password')).not.toBeInTheDocument();

@@ -25,6 +25,7 @@ import (
 	"hmans.de/chatto/internal/connectapi"
 	"hmans.de/chatto/internal/core"
 	"hmans.de/chatto/internal/email"
+	evtv1 "hmans.de/chatto/internal/pb/chatto/core/evt/v1"
 	"hmans.de/chatto/internal/search"
 )
 
@@ -66,6 +67,10 @@ type HTTPServer struct {
 
 	// Optional test hook for established realtime credential checks.
 	realtimeCredentialCheckEvery time.Duration
+
+	// Optional test hook that replaces the user lookup after a runtime
+	// credential validates.
+	credentialUserLookup func(context.Context, string) (*evtv1.User, error)
 }
 
 const (
@@ -123,6 +128,11 @@ func NewHTTPServer(cfg HTTPServerConfig) (*HTTPServer, error) {
 	if mockMailer != nil {
 		logger.Warn("TEST ENDPOINTS ENABLED - This build includes security-bypassing endpoints. DO NOT use in production!")
 	}
+	if cfg.Config.Email.TransportOrDefault() == config.EmailTransportSMTP {
+		if settings := cfg.Config.SMTP.InsecureTransportSettings(); len(settings) > 0 {
+			logger.Warn("Insecure SMTP transport configured; password-reset links and verification codes can be intercepted on the network", "settings", strings.Join(settings, ", "))
+		}
+	}
 
 	// Create Gin router with Recovery middleware, and optionally Logger
 	router := gin.New()
@@ -143,7 +153,7 @@ func NewHTTPServer(cfg HTTPServerConfig) (*HTTPServer, error) {
 		nc:               cfg.NC,
 		router:           router,
 		core:             cfg.Core,
-		connectAPI:       connectapi.New(cfg.Core, cfg.Config, cfg.Version, connectapi.WithMessageSearchProviderClient(search.NewClient(cfg.NC))),
+		connectAPI:       connectapi.New(cfg.Core, cfg.Config, cfg.Version, connectapi.WithMessageSearchProviderClient(search.NewClient(cfg.NC)), connectapi.WithEmailSender(mailer)),
 		mailer:           mailer,
 		mockMailer:       mockMailer,
 		addr:             cfg.Addr,
@@ -272,6 +282,7 @@ func (s *HTTPServer) setupRoutes() error {
 	s.setupRealtimeAPI()
 	s.setupCIMDRoutes()
 	s.setupOAuthMetadataRoutes()
+	s.setupPasswordManagementRoutes()
 	if err := s.setupMCPRoutes(); err != nil {
 		return err
 	}

@@ -1,6 +1,7 @@
-import type { DirectoryMember } from '$lib/api-client/memberDirectory';
-import { mapDirectoryRoomDetails, RoomKind } from '$lib/api-client/roomDirectory';
-import type { RoomThreadingMode } from '$lib/roomThreading';
+import type { DirectoryMember } from '@chatto/client/api/memberDirectory';
+import { mapDirectoryRoomDetails, RoomKind } from '@chatto/client/api/roomDirectory';
+import { RoomThreadingMode } from '@chatto/client/util/roomThreading';
+import { roomKindOrChannel } from '@chatto/client/api/enumDefaults';
 import { useServerScope } from '$lib/state/server/scope.svelte';
 
 export type RoomData = {
@@ -16,6 +17,7 @@ export type RoomData = {
   };
   spaceName: string | null;
   canReadMessages: boolean | null;
+  hasLimitedMessageAccess: boolean;
   canPostMessage: boolean;
   canPostInThread: boolean;
   canAttach: boolean;
@@ -30,10 +32,12 @@ export type RoomData = {
 export type DMData = {
   /** Stable member IDs from the room projection, including unresolved users. */
   participantIds: string[];
+  /** Resolved participants, with a deleted placeholder for each deleted account. */
   participants: Array<{
     id: string;
     login: string;
     displayName: string;
+    isBot?: boolean;
     deleted?: boolean;
     avatarUrl?: string | null;
     presenceStatus: DirectoryMember['presenceStatus'];
@@ -50,12 +54,12 @@ export type DMData = {
  */
 export function useRoomData(getProps: () => { roomId: string }) {
   const serverScope = useServerScope();
-  const store = $derived(serverScope.store);
+  const store = serverScope.store;
 
   const roomData = $derived.by<RoomData | null | undefined>(() => {
     const currentStore = store;
-    if (!currentStore.realtimeSync.hasUsableProjection) return undefined;
-    const projectedRoom = currentStore.projection.rooms.get(getProps().roomId)?.room;
+    if (!currentStore.realtimeSync.hasDisplayableView) return undefined;
+    const projectedRoom = currentStore.projection.rooms.get(getProps().roomId);
     const room = mapDirectoryRoomDetails(projectedRoom);
     // A stale projection can render known rooms immediately, but absence is
     // not authoritative until the activation catch-up reaches caught_up.
@@ -64,8 +68,8 @@ export function useRoomData(getProps: () => { roomId: string }) {
       room: {
         id: room.id,
         name: room.name,
-        description: room.description,
-        type: room.kind,
+        description: room.description ?? undefined,
+        type: roomKindOrChannel(room.kind ?? RoomKind.CHANNEL),
         isUniversal: room.isUniversal,
         slowModeSeconds: room.slowModeSeconds,
         threadingMode: room.threadingMode,
@@ -73,6 +77,7 @@ export function useRoomData(getProps: () => { roomId: string }) {
       },
       spaceName: currentStore.serverInfo.name ?? null,
       canReadMessages: room.canReadMessages,
+      hasLimitedMessageAccess: room.hasLimitedMessageAccess,
       canPostMessage: room.canPostMessage,
       canPostInThread: room.canPostInThread,
       canAttach: room.canAttach,
@@ -88,12 +93,12 @@ export function useRoomData(getProps: () => { roomId: string }) {
   const isDM = $derived(roomData?.room.type === RoomKind.DM);
   const dmData = $derived.by<DMData | null>(() => {
     const currentStore = store;
-    if (!isDM || !currentStore.realtimeSync.hasUsableProjection) return null;
+    if (!isDM || !currentStore.realtimeSync.hasDisplayableView) return null;
     const projectedRoom = currentStore.projection.rooms.get(getProps().roomId);
     return {
       participantIds: projectedRoom?.memberUserIds ?? [],
       participants: currentStore.projectedMembersForRoom(getProps().roomId),
-      currentUserId: currentStore.currentUser.user?.id ?? null
+      currentUserId: currentStore.viewerId
     };
   });
 

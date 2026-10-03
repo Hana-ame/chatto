@@ -71,7 +71,9 @@
     },
     "timeline": {
       "beginning": "Este es el comienzo de esta conversación.",
-      "read_denied": "No tienes permiso para leer mensajes en esta sala."
+      "read_denied": "No tienes permiso para leer mensajes en esta sala.",
+      "limited_empty": "Aún no hay conversaciones que puedas leer.",
+      "loading": "Cargando mensajes..."
     },
     "message": {
       "empty": "Aún no hay mensajes",
@@ -87,6 +89,7 @@
         "remove_reaction": "Eliminar {emoji}",
         "add_reaction": "Agregar reacción",
         "more_reactions": "Más reacciones",
+        "reactions": "Reacciones",
         "reply": "Responder",
         "reply_room": "Responder en la sala",
         "reply_thread": "Responder en hilo",
@@ -96,9 +99,18 @@
         "edit_short": "Editar",
         "copy_text": "Copiar texto",
         "copy_text_failed": "No se pudo copiar el texto",
-        "copy_link": "Copiar enlace"
+        "copy_link": "Copiar enlace",
+        "copy_message_link": "Copiar enlace del mensaje",
+        "copy_image": "Copiar imagen",
+        "link_copied": "Enlace copiado",
+        "message_link_copied": "Enlace del mensaje copiado",
+        "copy_link_failed": "No se pudo copiar el enlace",
+        "image_copied": "Imagen copiada",
+        "copy_image_failed": "No se pudo copiar la imagen"
       },
       "meta": {
+        "echo": "Eco",
+        "edited_short": "Editado",
         "pinned": "Mensaje fijado",
         "thread": "Hilo",
         "edited": "Mensaje editado",
@@ -142,6 +154,14 @@
       },
       "show_less": "mostrar menos"
     },
+    "typing": {
+      "one": "{name} está escribiendo",
+      "two": "{first} y {second} están escribiendo",
+      "many_count": {
+        "other": "{names} y {count} más están escribiendo",
+        "one": "{names} y {count} más están escribiendo"
+      }
+    },
     "attachment": {
       "delete_title": "Eliminar archivo adjunto",
       "delete_prompt": "¿Estás seguro de que deseas eliminar este archivo adjunto? Esto no se puede deshacer.",
@@ -150,7 +170,27 @@
       "view_label": "Ver {filename}",
       "download_label": "Descargar {filename}",
       "image_refresh_failed": "No se pudo actualizar el enlace de la imagen",
-      "download_refresh_failed": "No se pudo actualizar el enlace de descarga"
+      "download_refresh_failed": "No se pudo actualizar el enlace de descarga",
+      "add_description": "Añadir descripción",
+      "edit_description": "Editar descripción",
+      "description_title": "Descripción del archivo adjunto",
+      "description_label": "Descripción (opcional)",
+      "description_help": "Describe el archivo adjunto para las personas que no pueden verlo ni oírlo.",
+      "description_too_long": "Las descripciones pueden contener como máximo {max} caracteres.",
+      "description_update_failed": "No se pudo actualizar la descripción del archivo adjunto",
+      "html_viewer": {
+        "download": "Descargar",
+        "show_preview": "Mostrar vista previa",
+        "warning": "Este documento puede cargar contenido de sitios web externos. Estos sitios pueden ver tu dirección IP.",
+        "preview_title": "Vista previa de {filename}",
+        "preview_failed": "No se pudo cargar la vista previa. Inténtalo de nuevo.",
+        "document_type": "Tipo de documento",
+        "html_document": "Documento HTML",
+        "xhtml_document": "Documento XHTML",
+        "file_size": "Tamaño del archivo",
+        "unavailable": "No disponible",
+        "no_preview": "No hay vista previa disponible para este archivo. Descárgalo para guardarlo."
+      }
     },
     "link_preview": {
       "delete_title": "Eliminar vista previa del enlace",
@@ -158,6 +198,7 @@
       "delete_failed": "No se pudo eliminar la vista previa del enlace"
     },
     "sidebar": {
+      "go_to_message": "Ir al mensaje",
       "extras": "Extras de habitación",
       "resize": "Cambiar el tamaño del panel de extras de la habitación",
       "hide": "Ocultar extras de habitación",
@@ -170,24 +211,25 @@
       "clear_member_search": "Borrar búsqueda de miembros",
       "no_members": "No se encontraron miembros.",
       "online": "En línea ({count})",
+      "bots": "Bots ({count})",
       "offline": "Sin conexión ({count})",
       "no_files": "Aún no hay archivos en esta sala.",
       "files": "Archivos",
       "pins": "Mensajes fijados",
-      "call": "Llamar",
+      "call": "Llamada",
       "jump_to_file": "Saltar a {filename}",
       "loading_files": "Cargando archivos...",
+      "loading_members": "Cargando miembros...",
       "calls_unavailable": "Las llamadas no están disponibles en este servidor.",
       "view_profile": "Ver perfil de {name}",
       "in_voice_call": "En una llamada de voz",
       "in_video_call": "En una videollamada",
-      "ban_failed": "No se pudo prohibir la entrada a un miembro a la sala",
-      "ban_success": "{name} baneado de la sala"
+      "remove_failed": "No se pudo eliminar al usuario de la sala",
+      "remove_success": "Se eliminó a {name} de la sala",
+      "search": "Buscar"
     },
     "pins": {
-      "show": "Mostrar mensajes fijados",
       "unseen": "Nuevos mensajes fijados",
-      "hide": "Ocultar mensajes fijados",
       "pin": "Fijar mensaje",
       "unpin": "Desfijar mensaje",
       "unpin_prompt": "¿Seguro que quieres quitar este mensaje fijado?",

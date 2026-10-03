@@ -4,9 +4,9 @@
   import { resolve } from '$app/paths';
   import { serverIdToSegment } from '$lib/navigation';
   import { getActiveServer } from '$lib/state/activeServer.svelte';
-  import { serverRegistry } from '$lib/state/server/registry.svelte';
+  import { serverRegistry } from '$lib/client';
   import { clientAccount, type ClientAccountNavigation } from '$lib/state/clientAccount';
-  import { hardRedirectAfterSignOut } from '$lib/auth/signOut';
+  import { hardRedirectAfterSignOut } from '$lib/auth/signOutRedirect';
   import { m } from '$lib/i18n/messages';
   import { Dialog } from '$lib/ui';
   import { Button } from '$lib/ui/form';
@@ -81,8 +81,10 @@
 </script>
 
 <Dialog visible title={m('chat.sign_out.title')} size="md" {onclose}>
-  {#snippet footer()}
+  {#snippet dismissAction()}
     <Button variant="secondary" onclick={onclose}>{m('common.cancel')}</Button>
+  {/snippet}
+  {#snippet primaryAction()}
     <Button
       defaultAction
       variant="action"
@@ -90,21 +92,23 @@
       disabled={signingOutAll || !canSignOutCurrentServer}
       onclick={handleSignOutCurrentServer}
     >
-      <span class="iconify icon-[uil--sign-out-alt]"></span>
+      <span aria-hidden="true" class="iconify icon-[uil--sign-out-alt] rtl:-scale-x-100"></span>
       {m('chat.sign_out.current_server')}
     </Button>
+  {/snippet}
+  {#snippet secondaryActions()}
     <Button
-      variant="danger"
+      variant="danger-secondary"
       loading={signingOutAll}
       disabled={signingOutCurrent && canSignOutCurrentServer}
       onclick={handleSignOutAllServers}
     >
-      <span class="iconify icon-[uil--signout]"></span>
+      <span aria-hidden="true" class="iconify icon-[uil--signout] rtl:-scale-x-100"></span>
       {m('chat.sign_out.all_servers')}
     </Button>
   {/snippet}
 
-  <p class="text-muted">
+  <p class="text-pretty">
     {m('chat.sign_out.description')}
   </p>
 </Dialog>

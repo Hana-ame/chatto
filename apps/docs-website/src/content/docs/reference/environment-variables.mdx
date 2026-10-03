@@ -56,7 +56,7 @@ Every `chatto.toml` setting can be overridden with an environment variable. The 
 </EnvVar>
 
 <EnvVar name="CHATTO_WEBSERVER_ALLOWED_ORIGINS" toml="webserver.allowed_origins">
-  Comma-separated exact additional HTTPS origins for reverse-proxy aliases. Each origin can use browser cookie authentication, publish a matching bundled frontend OAuth identity, and serve an origin-bound MCP resource. Do not include a path, query, or fragment. Do not configure HTTP and HTTPS origins that produce the same request host. Do not use `*`; it permits none of these behaviors.
+  Comma-separated exact additional HTTPS origins for reverse-proxy aliases. Each origin can use browser cookie authentication, publish a matching bundled frontend OAuth identity, and serve an origin-bound MCP resource. API responses to a request on that origin use it in absolute URLs, such as server images, invite links, and webhook URLs. Do not include a path, query, or fragment. Do not configure HTTP and HTTPS origins that produce the same request host. Do not use `*`; it permits none of these behaviors.
 </EnvVar>
 
 ### TLS
@@ -164,7 +164,7 @@ See [Enabling Search](/guides/operations/search/) for a complete setup guide, an
 </EnvVar>
 
 <EnvVar name="CHATTO_SEARCH_PROVIDER_LANGUAGES" toml="search_provider.languages" default="all bundled analyzers">
-  Comma-separated Bleve analyzer codes to use when indexing messages and analyzing queries. Supported values are `ar`, `cjk`, `ckb`, `da`, `de`, `en`, `es`, `fa`, `fi`, `fr`, `hi`, `hr`, `hu`, `it`, `nl`, `no`, `pl`, `pt`, `ro`, `ru`, `sv`, and `tr`. Changing the set rebuilds the disposable index. Use `none` for language-neutral literal and typo-tolerant matching only; the TOML equivalent is `languages = []`.
+  Comma-separated Bleve analyzer codes to use when indexing messages and analyzing queries. Supported values are `ar`, `cjk`, `ckb`, `da`, `de`, `en`, `es`, `fa`, `fi`, `fr`, `hi`, `hr`, `hu`, `it`, `nl`, `no`, `pl`, `pt`, `ro`, `ru`, `sv`, and `tr`. Changing the set automatically rebuilds a recognized Chatto index on restart. See [index recovery](/guides/operations/search/#rebuild-the-search-index) if startup reports an error. Use `none` for language-neutral literal and typo-tolerant matching only; the TOML equivalent is `languages = []`.
 </EnvVar>
 
 ## Diagnostics
@@ -184,6 +184,21 @@ See [Enabling Search](/guides/operations/search/) for a complete setup guide, an
 </EnvVar>
 
 ## Core
+
+<EnvVar name="CHATTO_CORE_SKIP_SETUP_WIZARD" toml="core.skip_setup_wizard" default="false">
+  Disable the first-run web setup wizard. Use this for installations where you
+  create accounts through the local operator API. The flag does not change or
+  reset durable initialization state. Use the same value on all replicas.
+  Existing servers skip the wizard automatically.
+</EnvVar>
+
+<EnvVar name="CHATTO_CORE_EVT_READ_CACHE_IDLE_TTL" toml="core.evt_read_cache_idle_ttl" default="15m">
+  Keep an `EVT` record in each server process's timeline read cache for this duration after its last access. A shorter duration reduces idle memory use and can cause more NATS reads. A longer duration can make repeated timeline reads faster and use more memory. Supports values such as `15m` and `1h`.
+</EnvVar>
+
+<EnvVar name="CHATTO_CORE_EVT_READ_CACHE_MAX_BYTES" toml="core.evt_read_cache_max_bytes" default="256MiB">
+  Set the approximate maximum size of each server process's timeline read cache. Chatto evicts the least-recently-used `EVT` records when the cache exceeds this limit. Supports values such as `128MiB` and `1GiB`. Set this value to `-1` to disable the byte limit. The idle timeout remains active. Chatto logs both effective cache settings at info level during startup. Set `CHATTO_LOG_LEVEL=debug` to also log cache hit and miss summaries, read durations, LRU eviction counts, expiry counts, and cache clears.
+</EnvVar>
 
 <EnvVar name="CHATTO_CORE_PROJECTION_SNAPSHOTS" toml="core.projection_snapshots" default="false">
   Persist encrypted projection snapshots and replay only the later `EVT` delta for eligible projections at startup. Chatto treats `EVT` as authoritative and automatically replays it when a snapshot is missing, incompatible, corrupt, expired, or unavailable. User profile state is eligible, but password verifiers, external identities, and OAuth consent remain outside snapshots and cold-replay from focused event subjects. One elected replica attempts publication after boot and every 23–24 hours.
@@ -217,7 +232,7 @@ See [Enabling Search](/guides/operations/search/) for a complete setup guide, an
 
 ### S3 Storage
 
-Only used when `storage_backend` is set to `s3`. See the [S3 Storage guide](/guides/infrastructure/s3-storage/) for setup instructions.
+Only used when `storage_backend` is set to `s3`. See the [S3 Storage guide](/guides/infrastructure/media-attachments/#s3-storage) for setup instructions.
 
 <EnvVar name="CHATTO_CORE_ASSETS_S3_ENDPOINT" toml="core.assets.s3.endpoint">
   S3 endpoint URL (e.g., `s3.amazonaws.com` for AWS, or a custom endpoint for S3-compatible services).
@@ -289,6 +304,10 @@ Only used when `storage_backend` is set to `s3`. See the [S3 Storage guide](/gui
   JetStream data directory for the embedded server.
 </EnvVar>
 
+<EnvVar name="CHATTO_NATS_EMBEDDED_SYNC_INTERVAL" toml="nats.embedded.sync_interval" default="NATS default">
+  Set how often embedded JetStream syncs file data to disk. Use a duration such as `30s`, or use `always` to sync every write before NATS acknowledges it. Set this to `always` when you use a single NATS server and data durability is more important than maximum write throughput. If you omit this setting, Chatto keeps the NATS default.
+</EnvVar>
+
 <EnvVar name="CHATTO_NATS_EMBEDDED_AUTH_TOKEN" toml="nats.embedded.auth_token">
   Auth token for the embedded NATS server. When the embedded TCP port is enabled, Chatto derives matching `nats.client` defaults for CLI/admin commands unless you override them explicitly.
 </EnvVar>
@@ -349,6 +368,10 @@ Only used when `storage_backend` is set to `s3`. See the [S3 Storage guide](/gui
   Fixed lifetime of each human bearer access token. Validation does not renew it; compatible clients rotate the paired refresh credential before expiry. Supports durations like `15m`, `30m`, or `1h`.
 </EnvVar>
 
+<EnvVar name="CHATTO_AUTH_LOOPBACK_CLIENT_ENABLED" toml="auth.loopback_client_enabled" default="false">
+  Let the Chatto web client sign in to this server when the client runs on a local address of the member's device, for example a development server on `localhost`. The client uses the built-in `chatto://loopback` identity. Its sessions end at most 24 hours after sign-in and do not renew. When you set this to `false`, existing sessions of this client also stop working. Upgrade every serving replica before you enable this setting, and use the same value on every replica. Sign-ins made while replicas use different values can end, and members must then sign in again. See [Clients From Other Origins](/guides/operations/identity-login/#clients-from-other-origins).
+</EnvVar>
+
 <EnvVar name="CHATTO_AUTH_EMAIL_OTP_THROTTLING_ENABLED" toml="auth.email_otp.throttling_enabled" default="true">
   Enable throttling for registration and email-verification code delivery and wrong-code attempts. Set to `false` to disable these throttles while keeping OTP TTL enforcement.
 </EnvVar>
@@ -371,7 +394,7 @@ External login providers are configured as repeated `[[auth.providers]]` tables 
 Supported provider types are `oidc`, `github`, `gitlab`, `google`, and `discord`.
 
 <EnvVar name="CHATTO_AUTH_PROVIDERS_<index>_<field>" toml="auth.providers">
-  Counted environment-variable equivalent of repeated `[[auth.providers]]` tables. Indexes start at `0` and must not have gaps. Supported fields are `ID`, `TYPE`, `LABEL`, `CLIENT_ID`, `CLIENT_SECRET`, `ISSUER_URL`, `SCOPES`, `REQUEST_EMAIL`, `AUTO_PROVISION`, and `PROVIDER_OPTIONS_<KEY>`. `CLIENT_SECRET` is optional only for public OIDC clients; OAuth provider types still require it.
+  Counted environment-variable equivalent of repeated `[[auth.providers]]` tables. Indexes start at `0` and must not have gaps. Supported fields are `ID`, `TYPE`, `LABEL`, `CLIENT_ID`, `CLIENT_SECRET`, `TOKEN_ENDPOINT_AUTH_METHOD`, `ISSUER_URL`, `SCOPES`, `REQUEST_EMAIL`, `AUTO_PROVISION`, and `PROVIDER_OPTIONS_<KEY>`. `CLIENT_SECRET` is optional only for public OIDC clients; OAuth provider types still require it.
 </EnvVar>
 
 For compatibility with older single-provider OIDC deployments, Chatto also accepts `CHATTO_AUTH_OIDC_ENABLED`, `CHATTO_AUTH_OIDC_ISSUER_URL`, `CHATTO_AUTH_OIDC_CLIENT_ID`, `CHATTO_AUTH_OIDC_CLIENT_SECRET`, and optional `CHATTO_AUTH_OIDC_LABEL`. These create one `oidc` provider with `id = "oidc"`. Do not combine them with counted `CHATTO_AUTH_PROVIDERS_<index>_*` variables.
@@ -390,6 +413,12 @@ auto_provision = false
 Provider IDs are used in login URLs and external identity links, so do not change them after users link accounts through that provider.
 
 `request_email` defaults to `false`, so Chatto does not request provider email scopes unless you opt in. Set `request_email = true` when you want provider-verified email claims. OIDC providers can run with only `openid profile`; Chatto links and signs in accounts by issuer and subject even when no email claim is returned.
+
+`CHATTO_AUTH_PROVIDERS_0_TOKEN_ENDPOINT_AUTH_METHOD` sets the OIDC-only
+`token_endpoint_auth_method` option: `client_secret_basic`, `client_secret_post`,
+or `none`. Basic and POST require a secret; `none` forbids one. Omit the option
+to use public-client authentication without a secret, or discovery-selected
+Basic/POST with a secret. See [token authentication configuration](/guides/integrations/external-login-providers/#configuration).
 
 For a CIMD-capable OIDC provider, set `CHATTO_AUTH_PROVIDERS_<index>_CLIENT_ID` to `{webserver.url}/oauth/client-metadata.json` and omit `CHATTO_AUTH_PROVIDERS_<index>_CLIENT_SECRET`. Chatto then publishes the public client metadata at that URL. See the [External Login Providers guide](/guides/integrations/external-login-providers/#cimd-public-clients) for an example.
 
@@ -446,7 +475,7 @@ SMTP is the default transactional email transport. Set `email.transport = "jmap"
 </EnvVar>
 
 <EnvVar name="CHATTO_SMTP_TLS" toml="smtp.tls" default="mandatory">
-  SMTP TLS policy. Use `mandatory` to require STARTTLS on port `587`, or `implicit` for SMTPS on port `465`. When this value is omitted or left as `mandatory`, Chatto automatically uses implicit TLS for port `465`. Use `opportunistic` only when the SMTP server cannot support mandatory STARTTLS and plaintext fallback is explicitly acceptable.
+  SMTP TLS policy. Use `mandatory` to require STARTTLS on port `587`, or `implicit` for SMTPS on port `465`. When this value is omitted or left as `mandatory`, Chatto automatically uses implicit TLS for port `465`. Use `opportunistic` only when the SMTP server cannot support mandatory STARTTLS and plaintext fallback is explicitly acceptable. Chatto logs a warning at startup when this value is `opportunistic`.
 </EnvVar>
 
 <EnvVar name="CHATTO_SMTP_TLS_SERVER_NAME" toml="smtp.tls_server_name">
@@ -454,7 +483,7 @@ SMTP is the default transactional email transport. Set `email.transport = "jmap"
 </EnvVar>
 
 <EnvVar name="CHATTO_SMTP_TLS_SKIP_VERIFY" toml="smtp.tls_skip_verify" default="false">
-  Disable SMTP TLS certificate verification. Insecure; use only for trusted internal SMTP servers with self-signed or mismatched certificates.
+  Disable SMTP TLS certificate verification. Insecure; use only for trusted internal SMTP servers with self-signed or mismatched certificates. Chatto logs a warning at startup when this value is `true`.
 </EnvVar>
 
 <EnvVar name="CHATTO_SMTP_USERNAME" toml="smtp.username">
@@ -570,3 +599,60 @@ Server-wide resource limits. Use `-1` for unlimited (the default), `0` to disabl
 <EnvVar name="CHATTO_LIMITS_MAX_USERS" toml="limits.max_users" default="-1">
   Maximum number of verified accounts on this server. An account counts once it has at least one verified sign-in factor: a verified email or a linked SSO identity. Enforced when accounts are created and when the first verified factor is added. Note that the check is non-atomic, so a burst at the boundary can briefly overshoot by one or two.
 </EnvVar>
+
+## Outbound bot webhooks
+
+```toml
+[core.bot_webhooks]
+max_attempts = 5
+retry_delay = "30s"
+expiry = "24h"
+```
+
+| Environment variable | TOML key | Default | Meaning |
+| --- | --- | --- | --- |
+| `CHATTO_CORE_BOT_WEBHOOKS_MAX_ATTEMPTS` | `core.bot_webhooks.max_attempts` | `5` | Maximum delivery attempts, including the first attempt. Range: 1–100. |
+| `CHATTO_CORE_BOT_WEBHOOKS_RETRY_DELAY` | `core.bot_webhooks.retry_delay` | `30s` | Initial delay. Range: 1 second–30 minutes. Doubles after each failed attempt, up to 30 minutes. |
+| `CHATTO_CORE_BOT_WEBHOOKS_EXPIRY` | `core.bot_webhooks.expiry` | `24h` | Lifetime from the source message time. Range: 1 second–30 days. |
+
+Restart the server after a change. Delivery and retries are best effort.
+Restart discards pending work and retry timers. A source event accepted after
+restart uses the new attempt limit and retry delay; expiry is still measured
+from the original message time. Attempts include failures before HTTP starts.
+The network policy is checked on each attempt. Destinations require public
+HTTPS, except `localhost` and `*.localhost`, which permit HTTP and HTTPS only
+when every resolved address is loopback. IP literals do not receive this
+exception. Redirects are not followed.
+
+See [outbound bot webhooks](/guides/integrations/bot-accounts/#outbound-webhooks)
+for the request body, signature scheme, and receiver requirements.
+
+## Operational log
+
+```toml
+[core.log]
+retention = "7d"
+```
+
+| Environment variable | TOML key | Default | Description |
+| --- | --- | --- | --- |
+| `CHATTO_CORE_LOG_RETENTION` | `core.log.retention` | `7d` | Retention of operational diagnostics. Minimum: 1 second. Zero selects the default. |
+
+LOG retains terminal outbound webhook failures across server replicas.
+Expired records are removed and cannot be recovered. LOG is excluded from
+backups. Retention limits record age; it does not impose a fixed byte limit.
+Use the same configuration on all replicas.
+
+## Development bot bootstrap
+
+Builds with the `bootstrap` tag can create bots on an empty server. Release
+builds ignore bootstrap settings. Later starts do not change existing data.
+
+| Environment variable | TOML key within `[[bootstrap.bots]]` | Description |
+| --- | --- | --- |
+| `CHATTO_BOOTSTRAP_BOTS_0_BIO` | `bio` | Optional public Markdown bio, set only when the bot is first created. |
+| `CHATTO_BOOTSTRAP_BOTS_0_CREDENTIAL_FILE` | `credential_file` | File for the initial API key, written with owner-only permissions. |
+| `CHATTO_BOOTSTRAP_BOTS_0_OUTBOUND_WEBHOOK_URL` | `outbound_webhook_url` | Optional destination for an enabled outbound webhook named **Local development**. The signing secret is not exported. |
+
+Use consecutive indices from zero for additional bots. The `mise dev` stack
+sets these values for TestBot and points its webhook at the local Runling port.

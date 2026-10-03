@@ -17,7 +17,10 @@ type MarkRoomAsReadResult struct {
 // MarkThreadAsReadResult describes the timestamp response for a thread-level
 // read marker update.
 type MarkThreadAsReadResult struct {
-	PreviousReadAt time.Time
+	// LastReadAt is the retained marker after this operation. Zero means no marker.
+	LastReadAt time.Time
+	// PreviousLastReadAt is the marker observed by the successful advance decision.
+	PreviousLastReadAt time.Time
 }
 
 // ReadState returns the operation-level model for user-facing read marker
@@ -27,7 +30,7 @@ func (c *ChattoCore) ReadState() *ReadStateModel {
 	return c.readStateModel
 }
 
-// ReadStateModel owns user-facing read marker mutations. Lower-level marker
+// ReadStateModel owns user-facing read marker reads and mutations. Lower-level marker
 // helpers stay available for trusted/internal callers, while this model keeps
 // public API authorization and anchor semantics in one place.
 type ReadStateModel struct {
@@ -49,19 +52,6 @@ func (s *ReadStateModel) WaitReady(ctx context.Context) error {
 // Resync replaces the read-state watcher and waits for a current snapshot.
 func (s *ReadStateModel) Resync(ctx context.Context) error {
 	return s.index.Resync(ctx)
-}
-
-// RoomMarkerFence captures the latest room-marker change generation visible
-// through the process-wide read-state index.
-func (s *ReadStateModel) RoomMarkerFence(ctx context.Context) (uint64, error) {
-	return s.index.roomMarkerFence(ctx)
-}
-
-// RoomMarkerIDsChangedAfter returns one user's room marker keys changed after
-// fence. It supports bounded realtime reset repair without rebuilding every
-// visible room's permissions and read state.
-func (s *ReadStateModel) RoomMarkerIDsChangedAfter(ctx context.Context, userID string, fence uint64) ([]string, error) {
-	return s.index.roomMarkerIDsChangedAfter(ctx, userID, fence)
 }
 
 func (s *ReadStateModel) MarkRoomAsRead(ctx context.Context, actorID, roomID, upToEventID string) (*MarkRoomAsReadResult, error) {
@@ -167,7 +157,7 @@ func (s *ReadStateModel) MarkThreadAsRead(ctx context.Context, actorID, roomID, 
 		}
 	}
 
-	previousReadAt, err := s.core.SetThreadLastReadEventID(ctx, kind, actorID, room.Id, threadRootEventID, markerEventID)
+	result, err := s.core.advanceThreadLastReadEventID(ctx, kind, actorID, room.Id, threadRootEventID, markerEventID)
 	if err != nil {
 		return nil, err
 	}
@@ -175,9 +165,9 @@ func (s *ReadStateModel) MarkThreadAsRead(ctx context.Context, actorID, roomID, 
 		if _, err := s.core.notificationOccurrences.MarkCoveredRead(ctx, actorID, room.Id, threadRootEventID, markerEventID); err != nil {
 			return nil, fmt.Errorf("reconcile thread read state with notifications: %w", err)
 		}
-		s.core.NotifyNotificationUnreadChanged(ctx, actorID, actorID, room.Id, threadRootEventID)
+		s.core.NotifyNotificationUnreadStateChanged(ctx, actorID, actorID, room.Id, threadRootEventID)
 	}
-	return &MarkThreadAsReadResult{PreviousReadAt: previousReadAt}, nil
+	return result, nil
 }
 
 func (s *ReadStateModel) roomReadAnchor(ctx context.Context, actorID string, kind RoomKind, roomID, eventID string) (eventIDOut string, ts time.Time, found bool, err error) {
@@ -233,4 +223,54 @@ func (s *ReadStateModel) threadReadAnchor(ctx context.Context, kind RoomKind, ro
 		return "", invalidArgument("up_to_event_id must identify a message in the thread")
 	}
 	return event.Id, nil
+}
+
+// ReadMarker is a stored position, independent of notification attention.
+// A nil result means that no non-empty marker has been stored.
+type ReadMarker struct {
+	EventID    string
+	LastReadAt time.Time
+}
+
+// GetRoomReadMarker reads only; it never performs lazy marker initialization.
+func (s *ReadStateModel) GetRoomReadMarker(ctx context.Context, actorID, roomID string) (*ReadMarker, error) {
+	_, kind, err := s.core.requireRoomMessageReader(ctx, actorID, roomID)
+	if err != nil {
+		return nil, err
+	}
+	id, _, err := s.core.PeekLastReadEventID(ctx, actorID, roomID)
+	if err != nil {
+		return nil, err
+	}
+	return s.readMarker(ctx, kind, roomID, id)
+}
+
+// GetThreadReadMarker reads only after checking access to the thread root.
+func (s *ReadStateModel) GetThreadReadMarker(ctx context.Context, actorID, roomID, rootID string) (*ReadMarker, error) {
+	_, kind, err := s.core.requireThreadMessageReader(ctx, actorID, roomID, rootID)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := s.core.requireThreadRoot(ctx, kind, roomID, rootID); err != nil {
+		return nil, err
+	}
+	entry, exists, err := s.index.threadMarker(ctx, actorID, roomID, rootID)
+	if err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, nil
+	}
+	return s.readMarker(ctx, kind, roomID, string(entry.value))
+}
+
+func (s *ReadStateModel) readMarker(ctx context.Context, kind RoomKind, roomID, eventID string) (*ReadMarker, error) {
+	if eventID == "" {
+		return nil, nil
+	}
+	at, err := s.core.GetEventTimestamp(ctx, kind, roomID, eventID)
+	if err != nil {
+		return nil, err
+	}
+	return &ReadMarker{EventID: eventID, LastReadAt: at}, nil
 }

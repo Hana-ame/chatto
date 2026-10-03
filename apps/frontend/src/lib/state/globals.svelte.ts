@@ -5,142 +5,13 @@
  * are not scoped to an instance or room, and don't use Svelte context.
  */
 
-// ---------------------------------------------------------------------------
-// AppState — browser lifecycle tracking
-// ---------------------------------------------------------------------------
+import { innerWidth } from 'svelte/reactivity/window';
 
-class AppState {
-  isFocused = $state(typeof document !== 'undefined' ? document.hasFocus() : true);
-  isVisible = $state(
-    typeof document !== 'undefined' ? document.visibilityState === 'visible' : true
-  );
-  foregroundRevision = $state(0);
-  onlineRevision = $state(0);
-
-  private foregroundActive =
-    typeof document !== 'undefined' ? document.visibilityState === 'visible' : true;
-
-  /**
-   * True when the app is visible and focused. Continuous message arrivals
-   * use this stricter state. Target entry and foreground activation only need
-   * visibility because some mobile app resumes do not restore focus events.
-   */
-  get isPresent(): boolean {
-    return this.isFocused && this.isVisible;
-  }
-
-  constructor() {
-    if (typeof window !== 'undefined') {
-      window.addEventListener('focus', () => {
-        this.isFocused = true;
-      });
-      window.addEventListener('blur', () => {
-        this.isFocused = false;
-      });
-      window.addEventListener('pageshow', () => {
-        this.reconcileVisibility();
-      });
-      window.addEventListener('pagehide', () => {
-        this.markBackgrounded();
-      });
-      window.addEventListener('online', () => {
-        this.onlineRevision += 1;
-      });
-    }
-    if (typeof document !== 'undefined') {
-      document.addEventListener('visibilitychange', () => {
-        this.reconcileVisibility();
-      });
-      document.addEventListener('freeze', () => {
-        this.markBackgrounded();
-      });
-      document.addEventListener('resume', () => {
-        this.reconcileVisibility();
-      });
-      document.addEventListener(
-        'pointerdown',
-        (event) => {
-          if (event.isTrusted) this.activateFromInteraction();
-        },
-        { capture: true }
-      );
-      document.addEventListener(
-        'keydown',
-        (event) => {
-          if (event.isTrusted) this.activateFromInteraction();
-        },
-        { capture: true }
-      );
-    }
-  }
-
-  private markBackgrounded() {
-    this.foregroundActive = false;
-    this.isFocused = false;
-    this.isVisible = false;
-  }
-
-  private activateFromInteraction() {
-    this.isFocused = true;
-    this.isVisible = true;
-    if (!this.foregroundActive) {
-      this.foregroundActive = true;
-      this.foregroundRevision += 1;
-    }
-  }
-
-  private reconcileVisibility() {
-    const visible = document.visibilityState === 'visible';
-    this.isVisible = visible;
-
-    if (!visible) {
-      this.foregroundActive = false;
-      return;
-    }
-
-    this.isFocused = document.hasFocus();
-    if (!this.foregroundActive) {
-      this.foregroundActive = true;
-      this.foregroundRevision += 1;
-    }
-  }
-}
-
-export const appState = new AppState();
-
-// ---------------------------------------------------------------------------
-// TitleState — centralized page title
-// ---------------------------------------------------------------------------
-
-/**
- * Only the root layout renders <title> via <svelte:head>. Pages and components
- * set their desired title segment through this store; when they unmount they
- * clear it so the root layout falls back to just the instance name.
- */
-class TitleState {
-  pageTitle = $state<string | null>(null);
-
-  setPageTitle(title: string) {
-    this.pageTitle = title;
-  }
-
-  clearPageTitle() {
-    this.pageTitle = null;
-  }
-}
-
-export const titleState = new TitleState();
+export { appState } from './appLifecycle';
 
 // ---------------------------------------------------------------------------
 // SidebarNav — sidebar visibility state
 // ---------------------------------------------------------------------------
-
-/**
- * Combined width of the Server Gutter (~68px, `left-17`) + Server Sidebar
- * (256px, `md:w-64`/`max-md:w-64`). The mobile sidebars slide off-screen by
- * this amount when fully closed.
- */
-export const SIDEBAR_PANEL_WIDTH_PX = 68 + 256;
 
 /**
  * Controls the visibility of the inline-start sidebars (Server Gutter and RoomList).
@@ -157,6 +28,18 @@ export const SIDEBAR_PANEL_WIDTH_PX = 68 + 256;
  * CSS transitions while dragging and apply the transform from `progress`.
  */
 export class SidebarNavState {
+  private measuredPanelWidth = $state<number | null>(null);
+
+  /** Combined drawer width; the inset frame can be narrower than the viewport. */
+  get panelWidth(): number {
+    return this.measuredPanelWidth ?? innerWidth.current ?? 0;
+  }
+
+  /** The mounted sidebar row supplies its width and clears it on unmount. */
+  setPanelWidth(width: number | null) {
+    this.measuredPanelWidth = width;
+  }
+
   isOpen = $state(true);
   /**
    * Live drag offset in px relative to the *open* position. Negative values
@@ -199,6 +82,11 @@ export class SidebarNavState {
     return this._isMobile;
   }
 
+  /** Closed drawers remain mounted for their exit animation but must be inert. */
+  get drawerClosed(): boolean {
+    return this.isMobile && this.progress === 0 && this.dragOffset === null;
+  }
+
   /**
    * Animation progress in [0, 1]. 1 = fully open, 0 = fully closed.
    * Uses `dragOffset` when present (live finger), otherwise mirrors `isOpen`.
@@ -206,9 +94,11 @@ export class SidebarNavState {
    */
   get progress(): number {
     if (this.dragOffset !== null) {
-      const base = this.dragBaselineOpen ? 0 : -SIDEBAR_PANEL_WIDTH_PX;
-      const px = clamp(base + this.dragOffset, -SIDEBAR_PANEL_WIDTH_PX, 0);
-      return 1 + px / SIDEBAR_PANEL_WIDTH_PX;
+      const width = this.panelWidth;
+      if (width <= 0) return this.isOpen ? 1 : 0;
+      const base = this.dragBaselineOpen ? 0 : -width;
+      const px = clamp(base + this.dragOffset, -width, 0);
+      return 1 + px / width;
     }
     return this.isOpen ? 1 : 0;
   }

@@ -7,9 +7,52 @@ import (
 	"connectrpc.com/connect"
 	"hmans.de/chatto/internal/core"
 	apiv1 "hmans.de/chatto/internal/pb/chatto/api/v1"
+	"hmans.de/chatto/pkg/events"
 )
 
-func (s *accountService) UpdatePresence(ctx context.Context, req *connect.Request[apiv1.UpdatePresenceRequest]) (*connect.Response[apiv1.UpdatePresenceResponse], error) {
+func (s *accountService) GetPresencePreference(ctx context.Context, req *connect.Request[apiv1.GetPresencePreferenceRequest]) (*connect.Response[apiv1.GetPresencePreferenceResponse], error) {
+	caller, err := requireCaller(ctx)
+	if err != nil {
+		return nil, err
+	}
+	p, err := s.api.core.GetPresencePreference(ctx, caller.UserID)
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(&apiv1.GetPresencePreferenceResponse{Preference: p}), nil
+}
+
+func (s *accountService) SetPresencePreference(ctx context.Context, req *connect.Request[apiv1.SetPresencePreferenceRequest]) (*connect.Response[apiv1.SetPresencePreferenceResponse], error) {
+	caller, err := requireCaller(ctx)
+	if err != nil {
+		return nil, err
+	}
+	p, err := s.api.core.SetPresencePreference(ctx, caller.UserID, req.Msg.Status, req.Msg.ExpectedRevision)
+	if errors.Is(err, events.ErrConflict) {
+		return nil, connect.NewError(connect.CodeAborted, err)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(&apiv1.SetPresencePreferenceResponse{Preference: p}), nil
+}
+
+func (s *accountService) RefreshPresence(ctx context.Context, req *connect.Request[apiv1.RefreshPresenceRequest]) (*connect.Response[apiv1.RefreshPresenceResponse], error) {
+	caller, err := requireCaller(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.api.core.SetPresence(ctx, caller.UserID, core.PresenceStatusOnline); err != nil {
+		return nil, err
+	}
+	p, err := s.api.core.GetPresencePreference(ctx, caller.UserID)
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(&apiv1.RefreshPresenceResponse{Preference: p}), nil
+}
+
+func (s *accountService) SetPresence(ctx context.Context, req *connect.Request[apiv1.SetPresenceRequest]) (*connect.Response[apiv1.SetPresenceResponse], error) {
 	caller, err := requireCaller(ctx)
 	if err != nil {
 		return nil, err
@@ -20,14 +63,14 @@ func (s *accountService) UpdatePresence(ctx context.Context, req *connect.Reques
 		return nil, err
 	}
 	if err := s.api.core.SetPresenceWithOptions(ctx, caller.UserID, status, req.Msg.UserSelected); err != nil {
-		return nil, connectError(err)
+		return nil, err
 	}
 	storedStatus, err := s.api.core.GetUserPresence(ctx, caller.UserID)
 	if err != nil {
-		return nil, connectError(err)
+		return nil, err
 	}
 
-	return connect.NewResponse(&apiv1.UpdatePresenceResponse{
+	return connect.NewResponse(&apiv1.SetPresenceResponse{
 		Status: corePresenceStatusToAPI(storedStatus),
 	}), nil
 }

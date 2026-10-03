@@ -1,34 +1,36 @@
+import { toastError } from '$lib/utils/errorMessage';
+import { serverUi } from '$lib/state/server/serverUi';
 import { RoomKind } from '@chatto/api-types/api/v1/rooms_pb';
+import { accountNameToken } from '@chatto/client/timeline/accountName';
 import { goto } from '$app/navigation';
 import { resolve } from '$app/paths';
-import { untrack } from 'svelte';
+import { onDestroy, untrack } from 'svelte';
 import { SvelteSet } from 'svelte/reactivity';
-import { createMemberDirectoryAPI, type DirectoryMember } from '$lib/api-client/memberDirectory';
 import {
   createMessageSearchAPI,
   MessageSearchOrder,
   type MessageSearchResult
-} from '$lib/api-client/messageSearch';
-import { createRoomCommandAPI } from '$lib/api-client/rooms';
+} from '@chatto/client/api/messageSearch';
 import { useDebounce } from '$lib/hooks/useDebounce.svelte';
+import { startDMWith } from '$lib/dm/startDM';
 import { m } from '$lib/i18n/messages';
 import { buildMessageLinkPath } from '$lib/messageLinks';
 import { serverIdToSegment } from '$lib/navigation';
-import { buildDirectMessagePresentation } from '$lib/render/users';
+import {
+  buildDirectMessagePresentation,
+  type UserAvatarUserView
+} from '@chatto/client/timeline/users';
+import { directMessageLabels } from '$lib/render/directMessageLabels';
 import { quickSwitcher } from '$lib/state/globals.svelte';
 import { recentQuickSwitcher } from '$lib/state/recentQuickSwitcher.svelte';
-import { serverRegistry } from '$lib/state/server/registry.svelte';
-import { isNavigationVisibleRoom } from '$lib/state/server/rooms.svelte';
-import { serverConnectionManager } from '$lib/state/server/serverConnection.svelte';
-import { toast } from '$lib/ui/toast';
+import { serverRegistry, serverConnectionManager } from '$lib/client';
+import { isNavigationVisibleRoom } from '$lib/state/server/navigation';
 import { scoreItem } from './quickSwitcherSearch';
 
 export type QuickSwitcherAvatarUser = Pick<
-  DirectoryMember,
-  'id' | 'login' | 'displayName' | 'deleted' | 'isBot' | 'presenceStatus'
-> & {
-  avatarUrl?: string | null;
-};
+  UserAvatarUserView,
+  'id' | 'login' | 'displayName' | 'deleted' | 'isBot' | 'presenceStatus' | 'avatarUrl'
+>;
 
 type ServerLogo = { name: string; logoUrl?: string | null };
 
@@ -43,6 +45,8 @@ export type QuickSwitcherItem = {
   participants?: QuickSwitcherAvatarUser[];
   currentUserId?: string;
   targetUserId?: string;
+  /** Participant names and logins used for matching without changing the row label. */
+  searchTerms?: string[];
   href?: string;
   icon?: string;
   message?: MessageSearchResult;
@@ -103,9 +107,13 @@ export class QuickSwitcherModel {
   selectedIndex = $state(0);
 
   #allItems = $state.raw<QuickSwitcherItem[]>([]);
-  #userSearch = new SearchChannel<QuickSwitcherItem>();
+  #catalogLoading = $state(false);
   #messageSearch = new SearchChannel<QuickSwitcherItem>();
   #messageSearchServerKey = '';
+
+  constructor() {
+    onDestroy(() => this.deactivate());
+  }
 
   kindLabels = $derived<Record<QuickSwitcherItem['kind'], string>>({
     destination: m('quick_switcher.kind.destination'),
@@ -120,10 +128,6 @@ export class QuickSwitcherModel {
     const raw = this.query.trim();
     const recentUrls = recentQuickSwitcher.urls;
     const recentSet = new SvelteSet(recentUrls);
-    const searchableItems = [
-      ...this.#allItems.filter((item) => item.kind !== 'dm'),
-      ...this.#userSearch.items
-    ];
 
     if (raw.startsWith('?')) return this.#messageSearch.items;
 
@@ -131,6 +135,7 @@ export class QuickSwitcherModel {
       const recent: QuickSwitcherItem[] = [];
       const rest: QuickSwitcherItem[] = [];
       for (const item of this.#allItems) {
+        if (item.kind === 'user') continue;
         const url = this.#itemUrl(item);
         (url && recentSet.has(url) ? recent : rest).push(item);
       }
@@ -153,7 +158,7 @@ export class QuickSwitcherModel {
     const query = isChannelFilter ? raw.slice(1) : raw;
     const pool = isChannelFilter
       ? this.#allItems.filter((item) => item.kind === 'room')
-      : searchableItems;
+      : this.#allItems;
     if (isChannelFilter && !query) {
       return [...pool].sort((a, b) => a.label.localeCompare(b.label));
     }
@@ -168,37 +173,33 @@ export class QuickSwitcherModel {
         score: matchScore + (recentIndex === -1 ? 0 : 300 - recentIndex * 20)
       });
     }
-    return scored.sort((a, b) => b.score - a.score);
+    // Known users supplement navigation; even an exact user match follows conversations.
+    return scored.sort(
+      (a, b) => Number(a.kind === 'user') - Number(b.kind === 'user') || b.score - a.score
+    );
   });
 
   get loading(): boolean {
-    return this.#userSearch.loading || this.#messageSearch.loading;
+    return this.query.trim().startsWith('?') ? this.#messageSearch.loading : this.#catalogLoading;
   }
 
   activate(): void {
     this.query = '';
     this.selectedIndex = 0;
     this.#allItems = [];
-    this.#userSearch.fence();
+    this.#catalogLoading = false;
     this.#messageSearch.fence();
   }
 
   deactivate(): void {
-    this.#userSearch.fence();
+    this.#allItems = [];
+    this.#catalogLoading = false;
     this.#messageSearch.fence();
   }
 
   setQuery(raw: string): void {
     this.query = raw;
     this.selectedIndex = 0;
-
-    const userQuery = raw.trim();
-    this.#userSearch.schedule(
-      quickSwitcher.visible && userQuery && !userQuery.startsWith('#') && !userQuery.startsWith('?')
-        ? userQuery
-        : null,
-      (query, requestId) => void this.#loadUserResults(query, requestId)
-    );
 
     this.#scheduleMessageSearch(raw);
   }
@@ -220,22 +221,28 @@ export class QuickSwitcherModel {
   }
 
   async select(item: QuickSwitcherItem): Promise<void> {
-    quickSwitcher.close();
-
     if (item.kind === 'user') {
+      const store = serverRegistry.tryGetStore(item.serverId);
+      // Recheck the live scope before an action from a row that may have become stale.
+      if (
+        !store?.isAuthenticated ||
+        !store.realtimeSync.hasUsableProjection ||
+        !store.permissions.canStartDMs
+      )
+        return;
+      const user = item.targetUserId
+        ? store.projection.users.get(item.targetUserId)?.user
+        : undefined;
+      if (!user || user.deleted) return;
+      quickSwitcher.close();
       try {
-        const roomId = await this.#startDMFromUser(item);
-        const url = resolve('/chat/[serverId]/[roomId]', {
-          serverId: serverIdToSegment(item.serverId),
-          roomId
-        });
-        recentQuickSwitcher.record(url);
-        await goto(url);
+        await startDMWith(item.serverId, user.id);
       } catch (error) {
-        toast.error(error instanceof Error ? error.message : 'Failed to start DM');
+        toastError(error, m('quick_switcher.start_dm_failed'));
       }
       return;
     }
+    quickSwitcher.close();
 
     const url = this.#itemUrl(item);
     if (!url) return;
@@ -244,10 +251,12 @@ export class QuickSwitcherModel {
   }
 
   groupHeader(index: number): string | null {
-    if (this.query.trim()) return null;
     const item = this.filtered[index];
     if (!item) return null;
     const previous = index > 0 ? this.filtered[index - 1] : null;
+    if (this.query.trim()) {
+      return item.kind === 'user' && previous?.kind !== 'user' ? this.kindLabels.user : null;
+    }
     const recent = this.#isRecent(item);
     const previousRecent = previous ? this.#isRecent(previous) : false;
 
@@ -263,8 +272,12 @@ export class QuickSwitcherModel {
     void serverRegistry.servers;
     for (const instance of serverRegistry.servers) {
       const store = serverRegistry.tryGetStore(instance.id);
-      void store?.navigation.rooms;
-      void store?.navigation.isInitialLoading;
+      void store?.isAuthenticated;
+      void store?.realtimeSync.hasUsableProjection;
+      void store?.permissions.canStartDMs;
+      if (store) for (const member of store.projection.users.values()) void member;
+      void (store && serverUi(store).navigation.rooms);
+      void (store && serverUi(store).navigation.isInitialLoading);
     }
     untrack(() => this.#loadCatalog());
   }
@@ -285,7 +298,7 @@ export class QuickSwitcherModel {
       }
       this.#messageSearchServerKey = serverKey;
       const unsubscribes = stores.map(({ serverId, store }) =>
-        store.messageSearch.subscribePrivacyInvalidation((matches, force) => {
+        serverUi(store).messageSearch.subscribePrivacyInvalidation((matches, force) => {
           if (!quickSwitcher.visible) return;
           const affected = this.#messageSearch.items.some(
             (item) => item.serverId === serverId && item.message && matches(item.message)
@@ -315,13 +328,18 @@ export class QuickSwitcherModel {
     const instances = serverRegistry.servers;
     const multiInstance = instances.length > 1;
     const items: QuickSwitcherItem[] = [];
+    this.#catalogLoading = instances.some((instance) => {
+      const store = serverRegistry.tryGetStore(instance.id);
+      return store?.isAuthenticated && serverUi(store).navigation.isInitialLoading;
+    });
 
     for (const instance of instances) {
       const store = serverRegistry.tryGetStore(instance.id);
       const serverName = store?.serverInfo.name || instance.name || getHostname(instance.url);
       const serverLabel = multiInstance ? serverName : '';
-      const currentUserId = store?.currentUser.user?.id ?? undefined;
+      const currentUserId = store?.viewerId ?? undefined;
       const logo: ServerLogo = { name: serverName, logoUrl: store?.serverInfo.iconUrl ?? null };
+      const directMessageUserIds = new SvelteSet<string>();
 
       items.push({
         kind: 'server',
@@ -335,15 +353,25 @@ export class QuickSwitcherModel {
         score: 0
       });
 
-      for (const room of store?.navigation.rooms ?? []) {
+      for (const room of store ? serverUi(store).navigation.rooms : []) {
         if (room.type === RoomKind.DM) {
           if (!isNavigationVisibleRoom(room)) continue;
-          const participants = room.members.map(avatarUser);
+          const participants = room.members;
           const presentation = buildDirectMessagePresentation(
             participants,
             currentUserId,
-            m('common.you')
+            directMessageLabels()
           );
+          // Count full membership, not visible avatars: a group can lose profile data.
+          const memberIds =
+            store?.projection.rooms.get(room.id)?.memberUserIds ??
+            room.members.map((user) => user.id);
+          if (currentUserId && memberIds.includes(currentUserId) && memberIds.length <= 2) {
+            for (const userId of memberIds) {
+              if (userId !== currentUserId || memberIds.length === 1)
+                directMessageUserIds.add(userId);
+            }
+          }
           items.push({
             kind: 'dm',
             id: room.id,
@@ -351,7 +379,12 @@ export class QuickSwitcherModel {
             detail: serverLabel,
             serverId: instance.id,
             serverName,
-            participants: presentation.visibleParticipants.slice(0, 2),
+            participants: presentation.visibleParticipants,
+            searchTerms: presentation.visibleParticipants.flatMap((user) => [
+              user.displayName,
+              user.login
+            ]),
+            currentUserId,
             score: 0
           });
           continue;
@@ -369,6 +402,29 @@ export class QuickSwitcherModel {
           score: 0
         });
       }
+
+      if (
+        store?.isAuthenticated &&
+        store.realtimeSync.hasUsableProjection &&
+        store.permissions.canStartDMs
+      ) {
+        for (const id of store.projection.users.keys()) {
+          const user = store.projection.users.view(id);
+          if (!user?.id || user.deleted || directMessageUserIds.has(user.id)) continue;
+          items.push({
+            kind: 'user',
+            id: user.id,
+            targetUserId: user.id,
+            label: user.displayName || user.login,
+            detail: [user.login ? `@${user.login}` : '', serverLabel].filter(Boolean).join(' · '),
+            serverId: instance.id,
+            serverName,
+            participants: [user],
+            searchTerms: [user.displayName, user.login],
+            score: 0
+          });
+        }
+      }
     }
 
     items.push({
@@ -382,47 +438,18 @@ export class QuickSwitcherModel {
       icon: 'icon-[uil--bell]',
       score: 0
     });
+    // Catalogue updates must not move keyboard selection to a different destination.
+    const selected = this.filtered[this.selectedIndex];
     this.#allItems = items;
-    this.selectedIndex = 0;
-  }
-
-  async #loadUserResults(search: string, requestId: number): Promise<void> {
-    const instances = serverRegistry.servers;
-    const multiInstance = instances.length > 1;
-    const items: QuickSwitcherItem[] = [];
-
-    await Promise.allSettled(
-      instances.map(async (instance) => {
-        const store = serverRegistry.tryGetStore(instance.id);
-        if (!store?.permissions.canStartDMs) return;
-
-        const serverName = store.serverInfo.name || instance.name || getHostname(instance.url);
-        const result = await serverConnectionManager
-          .getClient(instance.id)
-          .getAPI(createMemberDirectoryAPI)
-          .listUsers(search, 20, 0);
-        for (const member of result.members) {
-          const user = avatarUser(member);
-          items.push({
-            kind: 'user',
-            id: user.id,
-            label: user.displayName || user.login,
-            detail: [user.login ? `@${user.login}` : '', multiInstance ? serverName : '']
-              .filter(Boolean)
-              .join(' · '),
-            serverId: instance.id,
-            serverName,
-            participants: [user],
-            currentUserId: store.currentUser.user?.id ?? undefined,
-            targetUserId: user.id,
-            score: 0
-          });
-        }
-      })
-    );
-
-    if (this.#userSearch.replace(requestId, items)) this.selectedIndex = 0;
-    this.#userSearch.finish(requestId);
+    const selectedIndex = selected
+      ? this.filtered.findIndex(
+          (item) =>
+            item.serverId === selected.serverId &&
+            item.kind === selected.kind &&
+            item.id === selected.id
+        )
+      : -1;
+    this.selectedIndex = selectedIndex >= 0 ? selectedIndex : 0;
   }
 
   async #loadMessageResults(search: string, requestId: number): Promise<void> {
@@ -452,9 +479,9 @@ export class QuickSwitcherModel {
 
     const searches = instances.map(async (instance): Promise<QuickSwitcherItem[]> => {
       const store = serverRegistry.tryGetStore(instance.id);
-      if (!store?.serverInfo.supportsFeature('messageSearch')) return [];
-      await store.messageSearch.ensureStatus();
-      if (!store.messageSearch.available) return [];
+      if (!store?.serverInfo.isSupportedVersion) return [];
+      await serverUi(store).messageSearch.ensureStatus();
+      if (!serverUi(store).messageSearch.available) return [];
 
       const serverName = store.serverInfo.name || instance.name || getHostname(instance.url);
       try {
@@ -471,7 +498,7 @@ export class QuickSwitcherModel {
           id: message.id,
           label: message.body,
           detail: [
-            message.actor?.displayName || message.actor?.login,
+            message.actor ? accountNameToken(0) : undefined,
             message.roomName ? `#${message.roomName}` : null,
             serverName
           ]
@@ -522,28 +549,6 @@ export class QuickSwitcherModel {
     const url = this.#itemUrl(item);
     return url !== undefined && recentQuickSwitcher.urls.includes(url);
   }
-
-  async #startDMFromUser(item: QuickSwitcherItem): Promise<string> {
-    if (!item.targetUserId) throw new Error('Missing DM target');
-    const room = await serverConnectionManager
-      .getClient(item.serverId)
-      .getAPI(createRoomCommandAPI)
-      .startDM(item.targetUserId === item.currentUserId ? [] : [item.targetUserId]);
-    if (!room?.id) throw new Error('Failed to start DM');
-    return room.id;
-  }
-}
-
-function avatarUser(user: QuickSwitcherAvatarUser): QuickSwitcherAvatarUser {
-  return {
-    id: user.id,
-    login: user.login,
-    displayName: user.displayName,
-    deleted: user.deleted,
-    isBot: user.isBot,
-    presenceStatus: user.presenceStatus,
-    avatarUrl: user.avatarUrl ?? null
-  };
 }
 
 function getHostname(url: string): string {

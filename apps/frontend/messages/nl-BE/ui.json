@@ -16,7 +16,6 @@
       "remote_title": "{server} moet inloggen",
       "remote_message": "Deze server heeft de opgeslagen aanmelding afgewezen. Sluit hem opnieuw aan om live updates en acties te hervatten.",
       "remote_action": "Opnieuw verbinding maken",
-      "remote_failed": "Kan opnieuw verbinden niet starten",
       "sidebar_reauth": "{server} moet inloggen"
     },
     "access_denied": {
@@ -48,7 +47,8 @@
       "complete": "Chatto is herbouwd. Eindscore: {count} punten"
     },
     "pane_header": {
-      "back": "Terug"
+      "back": "Terug",
+      "actions": "Paneelacties"
     },
     "sidebar_nav": {
       "back_to_chat": "Terug naar chatten"
@@ -67,7 +67,12 @@
     "image_modal": {
       "previous": "Vorige afbeelding",
       "next": "Volgende afbeelding",
-      "fallback_alt": "Afbeelding"
+      "fallback_alt": "Afbeelding",
+      "zoom_in": "Inzoomen",
+      "zoom_out": "Uitzoomen",
+      "fit": "Passend maken",
+      "details": "Details",
+      "file_type": "Bestandstype"
     },
     "toast": {
       "dismiss": "Melding sluiten"
@@ -78,11 +83,9 @@
       "clear": "Duidelijk"
     },
     "expiry": {
-      "label": "Verloopt",
       "24h": "24 uur",
       "7d": "7 dagen",
       "30d": "30 dagen",
-      "indefinite": "Geen vervaldatum",
       "custom": "Aangepast",
       "custom_label": "Aangepaste vervaldatum",
       "error_required": "Kies een vervaldatum.",

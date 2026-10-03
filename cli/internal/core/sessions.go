@@ -5,13 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"hmans.de/chatto/internal/pb/chatto/core/live/v1"
+	pubsubv1 "hmans.de/chatto/internal/pb/chatto/core/pubsub/v1"
 	"hmans.de/chatto/internal/pb/chatto/core/runtime_state/v1"
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
 	"google.golang.org/protobuf/types/known/timestamppb"
-	"hmans.de/chatto/internal/core/subjects"
 )
 
 var (
@@ -195,12 +194,7 @@ func (c *ChattoCore) MigrateLegacyCookieSession(ctx context.Context, sessionID s
 			return nil, err
 		}
 
-		validation, err := c.ValidateRuntimeCredential(ctx, RuntimeCredential{
-			UserID:         tokenData.UserID,
-			CreatedAt:      tokenData.CreatedAt,
-			AuthGeneration: tokenData.AuthGeneration,
-		})
-		if err != nil {
+		if err := c.RequireAuthenticationAllowed(ctx, tokenData.UserID, tokenData.AuthGeneration); err != nil {
 			if errors.Is(err, ErrAuthenticationRevoked) {
 				_ = c.deleteRuntimeStateKey(ctx, key, jetstream.LastRevision(entry.Revision()))
 				return nil, ErrCookieSessionNotFound
@@ -208,18 +202,10 @@ func (c *ChattoCore) MigrateLegacyCookieSession(ctx context.Context, sessionID s
 			return nil, err
 		}
 
-		changed := false
-		if validation.ShouldPersistAuthGeneration {
-			tokenData.AuthGeneration = validation.AuthGeneration
-			changed = true
-		}
-		if tokenData.ExpiresAt.IsZero() {
-			tokenData.ExpiresAt = now.Add(ttl)
-			changed = true
-		}
-		if !changed {
+		if !tokenData.ExpiresAt.IsZero() {
 			return c.cookieSessionRecordFromAuthTokenData(tokenData), nil
 		}
+		tokenData.ExpiresAt = now.Add(ttl)
 
 		value, err := json.Marshal(tokenData)
 		if err != nil {
@@ -347,20 +333,12 @@ func (c *ChattoCore) RenewCookieSession(ctx context.Context, sessionID string, n
 			return nil, false, ErrCookieSessionNotFound
 		}
 
-		validation, err := c.ValidateRuntimeCredential(ctx, RuntimeCredential{
-			UserID:         tokenData.UserID,
-			CreatedAt:      tokenData.CreatedAt,
-			AuthGeneration: tokenData.AuthGeneration,
-		})
-		if err != nil {
+		if err := c.RequireAuthenticationAllowed(ctx, tokenData.UserID, tokenData.AuthGeneration); err != nil {
 			if errors.Is(err, ErrAuthenticationRevoked) {
 				_ = c.deleteRuntimeStateKey(ctx, key, jetstream.LastRevision(entry.Revision()))
 				return nil, false, ErrCookieSessionNotFound
 			}
 			return nil, false, err
-		}
-		if validation.ShouldPersistAuthGeneration {
-			tokenData.AuthGeneration = validation.AuthGeneration
 		}
 
 		if tokenData.ExpiresAt.Sub(now) > ttl/4 {
@@ -401,6 +379,9 @@ func (c *ChattoCore) cookieSessionRecordFromValidatedCredential(credential Valid
 		record.FreshAuthMethod = credential.FreshAuthMethod
 		record.FreshAuthSource = credential.FreshAuthSource
 	}
+	if !credential.PrivilegedModeExpiresAt.IsZero() {
+		record.PrivilegedModeExpiresAt = timestamppb.New(credential.PrivilegedModeExpiresAt)
+	}
 	return record
 }
 
@@ -415,9 +396,11 @@ func (c *ChattoCore) RevokeCookieSession(ctx context.Context, sessionID string) 
 	return nil
 }
 
-// RevokeCookieSessionsForUser deletes all cookie sessions for a user. Used by
-// password changes/resets and account deletion flows that need immediate
-// revocation across browser sessions.
+// RevokeCookieSessionsForUser deletes all cookie sessions for a user. Account
+// deletion uses it to erase stored session records. The scan reads every
+// `session.*` record on the server, including bearer access records, so do not
+// call it on latency-sensitive paths. Password changes and resets revoke
+// sessions through the auth generation.
 func (c *ChattoCore) RevokeCookieSessionsForUser(ctx context.Context, userID string) (int, error) {
 	if userID == "" {
 		return 0, nil
@@ -468,13 +451,12 @@ func (c *ChattoCore) RevokeCookieSessionsForUser(ctx context.Context, userID str
 //
 // Reasons: "logout", "admin_boot", "account_deleted"
 func (c *ChattoCore) PublishSessionTerminated(ctx context.Context, userID, reason string) error {
-	event := newLiveEvent(userID, &livev1.LiveEvent{
-		Event: &livev1.LiveEvent_SessionTerminated{
-			SessionTerminated: &livev1.SessionTerminatedEvent{
+	event := newPubSubEvent(userID, &pubsubv1.PubSubEvent{
+		Event: &pubsubv1.PubSubEvent_SessionTerminated{
+			SessionTerminated: &pubsubv1.SessionTerminatedEvent{
 				Reason: reason,
 			},
 		},
 	})
-	subject := subjects.LiveSyncUserEvent(userID, "session_terminated")
-	return c.publishLiveEvent(ctx, subject, event)
+	return c.publishUserPubSubEvent(ctx, userID, event)
 }

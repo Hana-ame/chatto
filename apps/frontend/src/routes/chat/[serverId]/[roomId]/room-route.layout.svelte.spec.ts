@@ -1,72 +1,17 @@
 import { RoomKind } from '@chatto/api-types/api/v1/rooms_pb';
-import { PresenceStatus } from '@chatto/api-types/api/v1/presence_pb';
-import { tick } from 'svelte';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { render } from 'vitest-browser-svelte';
-import { q, testSnippet } from '$lib/test-utils';
 
-import type { RoomsListItem } from '$lib/state/server/rooms.svelte';
+// Title composition has separate coverage; these fixtures model route access only.
+// The store mock also carries the frontend UI state of its server.
+vi.mock(
+  '$lib/state/server/serverUi',
+  async () => (await import('$lib/test-utils/serverUiMock')).serverUiIsStore
+);
 
-const { mocks } = vi.hoisted(() => ({
-  mocks: {
-    goto: vi.fn(),
-    page: {
-      params: { serverId: '-', roomId: 'room-1' } as Record<string, string | undefined>,
-      route: { id: '/chat/[serverId]/[roomId]' as string | null },
-      state: {},
-      url: new URL('https://chat.example.test/chat/-/room-1')
-    },
-    roomsStore: {
-      rooms: [] as RoomsListItem[],
-      roomGroups: [] as Array<{ id: string; name: string; roomIds: string[] }>,
-      isInitialLoading: false,
-      currentUserId: 'viewer-1'
-    },
-    currentUserId: 'viewer-1',
-    joinRoom: vi.fn(),
-    loadJoinPreview: vi.fn(),
-    toastSuccess: vi.fn(),
-    toastError: vi.fn()
-  }
-}));
-
-vi.mock('$app/state', () => ({
-  page: mocks.page
-}));
-
-vi.mock('$app/navigation', () => ({
-  goto: mocks.goto
-}));
-
-vi.mock('$app/paths', () => ({
-  resolve: (path: string, params?: Record<string, string>) =>
-    path
-      .replace('[serverId]', params?.serverId ?? '')
-      .replace('[roomId]', params?.roomId ?? '')
-      .replace('[threadId]', params?.threadId ?? '')
-      .replace('[messageId]', params?.messageId ?? '')
-}));
-
-vi.mock('$lib/state/activeServer.svelte', () => ({
-  getActiveServer: () => 'origin'
-}));
-
-vi.mock('$lib/state/presenceCache.svelte', () => ({
-  getPresenceCache: () => ({
-    get: (_scope: unknown, fallback: unknown) => fallback
-  })
-}));
-
-vi.mock('$lib/state/userProfiles.svelte', () => ({
-    getLiveBio: () => null,
-    getLiveTimezone: () => null,
-  getLiveAvatarUrl: (_userId: string, fallback: string | null) => fallback,
-  getLiveCustomStatus: (_userId: string, fallback: unknown) => fallback
-}));
-
-vi.mock('$lib/state/server/registry.svelte', () => ({
+vi.mock('$lib/client', async () => ({
+  ...(await import('$lib/test-utils/clientMock')).clientMockDefaults,
   serverRegistry: {
     getStore: () => ({
+      realtimeSync: mocks.realtimeSync,
       navigation: {
         get rooms() {
           return mocks.roomsStore.rooms;
@@ -86,6 +31,12 @@ vi.mock('$lib/state/server/registry.svelte', () => ({
           return { id: mocks.currentUserId };
         }
       },
+      get viewerId() {
+        return mocks.currentUserId;
+      },
+      get projectionViewerId() {
+        return mocks.roomsStore.currentUserId;
+      },
       roomDirectory: {
         joinRoom: mocks.joinRoom,
         loadJoinPreview: mocks.loadJoinPreview
@@ -94,8 +45,72 @@ vi.mock('$lib/state/server/registry.svelte', () => ({
   }
 }));
 
+vi.mock('$lib/render/pageTitle', () => ({ formatPageTitle: () => 'Chatto' }));
+import { PresenceStatus } from '@chatto/api-types/api/v1/presence_pb';
+import { tick } from 'svelte';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { render } from 'vitest-browser-svelte';
+import { q, testSnippet } from '$lib/test-utils';
+
+import type { RoomsListItem } from '$lib/state/server/navigation';
+import { RealtimeProjectionSyncState } from '@chatto/client/server/realtimeSync';
+
+const { mocks } = vi.hoisted(() => ({
+  mocks: {
+    goto: vi.fn(),
+    page: {
+      params: { serverId: '-', roomId: 'room-1' } as Record<string, string | undefined>,
+      route: { id: '/chat/[serverId]/[roomId]' as string | null },
+      state: {},
+      url: new URL('https://chat.example.test/chat/-/room-1')
+    },
+    roomsStore: {
+      rooms: [] as RoomsListItem[],
+      roomGroups: [] as Array<{ id: string; name: string; roomIds: string[] }>,
+      isInitialLoading: false,
+      currentUserId: 'viewer-1'
+    },
+    currentUserId: 'viewer-1',
+    realtimeSync: null as RealtimeProjectionSyncState | null,
+    joinRoom: vi.fn(),
+    loadJoinPreview: vi.fn(),
+    toastSuccess: vi.fn(),
+    toastError: vi.fn()
+  }
+}));
+
+vi.mock('$app/state', () => ({
+  page: mocks.page
+}));
+
+vi.mock('$app/navigation', () => ({
+  pushState: vi.fn(),
+  goto: mocks.goto
+}));
+
+vi.mock('$app/paths', () => ({
+  resolve: (path: string, params?: Record<string, string>) =>
+    path
+      .replace('[serverId]', params?.serverId ?? '')
+      .replace('[roomId]', params?.roomId ?? '')
+      .replace('[threadId]', params?.threadId ?? '')
+      .replace('[messageId]', params?.messageId ?? '')
+}));
+
+vi.mock('$lib/state/activeServer.svelte', () => ({
+  getActiveServer: () => 'origin'
+}));
+
+vi.mock('$lib/state/userProfiles.svelte', () => ({
+  getLiveBotOwnerUserId: (_userId: string, fallback: string | null) => fallback,
+  getLiveBio: () => null,
+  getLiveTimezone: () => null,
+  getLiveAvatarUrl: (_userId: string, fallback: string | null) => fallback,
+  getLiveCustomStatus: (_userId: string, fallback: unknown) => fallback
+}));
+
 vi.mock('$lib/state/server/scope.svelte', async () => {
-  const { serverRegistry } = await import('$lib/state/server/registry.svelte');
+  const { serverRegistry } = await import('$lib/client');
   return {
     useServerScope: () => ({
       serverId: 'origin',
@@ -154,6 +169,8 @@ function renderLayout() {
 }
 
 beforeEach(() => {
+  mocks.realtimeSync = new RealtimeProjectionSyncState();
+  mocks.realtimeSync.markCaughtUp('initial');
   vi.clearAllMocks();
   mocks.page.params = { serverId: '-', roomId: 'room-1' };
   mocks.page.route.id = '/chat/[serverId]/[roomId]';
@@ -169,6 +186,20 @@ beforeEach(() => {
 });
 
 describe('room route layout access handling', () => {
+  it('keeps the room instance mounted while the snapshot viewer is unavailable', async () => {
+    const { container } = renderLayout();
+    const roomElement = q(container, '[data-testid="room-layout-room"]');
+    mocks.realtimeSync!.acceptProjectionEvent(undefined, true);
+    mocks.roomsStore.isInitialLoading = true;
+    mocks.currentUserId = '';
+    await tick();
+    expect(q(container, '[data-testid="room-layout-room"]')).toBe(roomElement);
+    mocks.roomsStore.isInitialLoading = false;
+    mocks.currentUserId = 'viewer-1';
+    mocks.realtimeSync!.markCaughtUp('replacement');
+    await tick();
+    expect(q(container, '[data-testid="room-layout-room"]')).toBe(roomElement);
+  });
   it('waits for projected rooms to belong to the authenticated viewer', async () => {
     mocks.roomsStore.currentUserId = 'previous-viewer';
 
@@ -287,7 +318,7 @@ describe('room route layout access handling', () => {
     await expect.element(q(container, 'button')).toHaveTextContent('Join Room');
   });
 
-  it('removes the preview skeleton after a best-effort preview miss', async () => {
+  it('clears the pending room preview after a best-effort miss', async () => {
     let resolvePreview!: (value: null) => void;
     mocks.roomsStore.rooms = [room({ viewerIsMember: false })];
     mocks.loadJoinPreview.mockReturnValue(
@@ -298,7 +329,8 @@ describe('room route layout access handling', () => {
 
     const { container } = renderLayout();
 
-    expect(q(container, '[aria-label="Room members"] .skeleton')).not.toBeNull();
+    expect(q(container, '[aria-label="Room members"][aria-busy="true"]')).not.toBeNull();
+    expect(q(container, '[aria-label="Room members"] .skeleton')).toBeNull();
     resolvePreview(null);
     await vi.waitFor(() => expect(q(container, '[aria-label="Room members"]')).toBeNull());
     await expect.element(q(container, 'button')).toHaveTextContent('Join Room');

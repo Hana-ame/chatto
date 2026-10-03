@@ -3,6 +3,7 @@
     "cancel": "Avbryt",
     "close_sidebar": "Lukk sidefeltet",
     "or": "eller",
+    "unknown_user": "Ukjent bruker",
     "loading": "Laster ...",
     "continue": "Fortsett",
     "submit": "Send inn",
@@ -35,7 +36,11 @@
     },
     "error": {
       "network": "Nettverksfeil. Vennligst prøv igjen.",
-      "generic": "Noe gikk galt"
+      "generic": "Noe gikk galt",
+      "permission_denied": "Du har ikke tillatelse til å gjøre det.",
+      "not_found": "Fant ikke det forespurte elementet.",
+      "unauthenticated": "Økten din er utløpt. Logg inn på nytt.",
+      "conflict": "Dette ble endret mens du redigerte det. Last inn siden på nytt, og prøv igjen."
     },
     "delete": "Slett",
     "save": "Lagre",

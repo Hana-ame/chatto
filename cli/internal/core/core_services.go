@@ -53,8 +53,10 @@ func assembleCore(
 		encryption:       infra.encryption,
 		dekResolver:      infra.dekResolver,
 		contentView:      projections.contentView,
+		eventReader:      infra.eventReader,
 		configModel:      configModel,
 		roomModel:        roomModel,
+		timelineHydrator: newRoomTimelineHydrator(infra.eventReader),
 		userModel:        userModel,
 		rbacModel:        newRBACModel(projections.rbac),
 		mentionables:     newMentionablesModel(projections.mentionables),
@@ -90,6 +92,7 @@ func initializeCoreServices(
 		return fmt.Errorf("failed to initialize call reconciler lease: %w", err)
 	}
 	initializeProjectionSnapshotWorker(core, infra, projections, cfg, logger)
+	initializeNeighborhoodDiscovery(core, infra, cfg, logger)
 
 	core.mediaModel = NewMediaModel(core)
 	core.callModel = NewCallModel(
@@ -141,6 +144,10 @@ func initializeCoreServices(
 	)
 	core.notificationMaterializer = NewNotificationMaterializer(core, projections.notificationDecisions)
 	core.notificationAlertDelivery = newNotificationAlertDelivery(core)
+	core.botWebhooks = newBotWebhookModel(core, projections.botWebhooks)
+	if err := core.botWebhooks.initialize(ctx); err != nil {
+		return fmt.Errorf("initialize bot webhooks: %w", err)
+	}
 	pushCleanupLease, err := lease.New(infra.js, infra.storage.memoryCacheKV, lease.Options{
 		Name:   pushSubscriptionReconcileLeaseName,
 		Bucket: "MEMORY_CACHE",
@@ -169,6 +176,9 @@ func initializeCoreServices(
 	if err := core.seedDefaultRBAC(ctx); err != nil {
 		return fmt.Errorf("failed to seed default RBAC: %w", err)
 	}
+	if err := core.seedCallPermissions(ctx); err != nil {
+		return fmt.Errorf("seed call permissions: %w", err)
+	}
 	if err := core.notificationMaterializer.Initialize(ctx); err != nil {
 		return fmt.Errorf("failed to initialize notification materializer: %w", err)
 	}
@@ -181,9 +191,9 @@ func initializeCoreServices(
 	assetsConfig := core.AssetsConfig()
 	core.linkPreviewFetcher = linkpreview.NewFetcher(&assetsConfig, NewAssetID, core.storeLinkPreviewImage)
 
-	// Presence owns one KV watcher per process and starts from core.Run with the
+	// Presence owns two KV watchers per process and starts from core.Run with the
 	// registered projectors and other long-running models.
-	core.presenceModel = NewPresenceModel(infra.js, infra.storage.memoryCacheKV, logger)
+	core.presenceModel = NewPresenceModel(infra.js, infra.storage.memoryCacheKV, infra.storage.runtimeStateKV, logger)
 	core.PresenceHub = core.presenceModel.hub
 	core.myEventsModel = NewMyEventsModel(core)
 	return nil

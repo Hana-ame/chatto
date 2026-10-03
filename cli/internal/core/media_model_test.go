@@ -6,6 +6,7 @@ import (
 	"hmans.de/chatto/internal/pb/chatto/core/runtime_state/v1"
 	"io"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -161,6 +162,79 @@ func TestMediaModelUploadDerivativeAttachmentWithDimensionsProjectsAssetDimensio
 	}
 }
 
+func TestMediaModelGeneratedVideoBypassesUserUploadLimits(t *testing.T) {
+	for _, backend := range []struct {
+		name  string
+		setup func(*testing.T) *ChattoCore
+	}{
+		{name: "NATS", setup: func(t *testing.T) *ChattoCore { core, _ := setupTestCore(t); return core }},
+		{name: "S3", setup: func(t *testing.T) *ChattoCore { core, _, _ := setupTestCoreWithS3(t); return core }},
+	} {
+		t.Run(backend.name, func(t *testing.T) {
+			core := backend.setup(t)
+			ctx := testContext(t)
+			core.config.Assets.MaxUploadSize = 10
+			core.VideoMaxUploadSize = 20
+			room, err := core.CreateRoom(ctx, SystemActorID, KindChannel, "", "generated-video", "Generated video")
+			if err != nil {
+				t.Fatalf("CreateRoom: %v", err)
+			}
+
+			if _, err := core.mediaModel.uploadAttachmentBinary(ctx, room.Id, "source.mp4", "video/mp4", bytes.NewReader(bytes.Repeat([]byte("v"), 21))); err == nil || !strings.Contains(err.Error(), "maximum size of 20 bytes") {
+				t.Fatalf("user video upload error = %v, want 20-byte limit", err)
+			}
+			if _, err := core.mediaModel.uploadAttachmentBinary(ctx, room.Id, "note.txt", "text/plain", bytes.NewReader(bytes.Repeat([]byte("n"), 11))); err == nil || !strings.Contains(err.Error(), "maximum size of 10 bytes") {
+				t.Fatalf("user file upload error = %v, want 10-byte limit", err)
+			}
+
+			for _, generated := range []struct {
+				name        string
+				contentType string
+				role        evtv1.AssetDerivativeRole
+			}{
+				{name: "segment.ts", contentType: "video/mp2t", role: evtv1.AssetDerivativeRole_ASSET_DERIVATIVE_ROLE_HLS_MEDIA_SEGMENT},
+				{name: "variant.mp4", contentType: "video/mp4", role: evtv1.AssetDerivativeRole_ASSET_DERIVATIVE_ROLE_VIDEO_VARIANT},
+			} {
+				size := 21
+				if generated.role == evtv1.AssetDerivativeRole_ASSET_DERIVATIVE_ROLE_HLS_MEDIA_SEGMENT {
+					size = 10<<20 + 1
+				}
+				content := bytes.Repeat([]byte("g"), size)
+				var source io.ReadSeeker = bytes.NewReader(content)
+				if generated.role == evtv1.AssetDerivativeRole_ASSET_DERIVATIVE_ROLE_HLS_MEDIA_SEGMENT {
+					file, err := os.CreateTemp(t.TempDir(), "segment-*.ts")
+					if err != nil {
+						t.Fatalf("CreateTemp: %v", err)
+					}
+					defer file.Close()
+					if _, err := file.Write(content); err != nil {
+						t.Fatalf("write segment: %v", err)
+					}
+					source = file
+				}
+				attachment, err := core.mediaModel.UploadDerivativeAttachment(ctx, "A-parent", generated.role, room.Id, generated.name, generated.contentType, source)
+				if err != nil {
+					t.Fatalf("UploadDerivativeAttachment(%s): %v", generated.name, err)
+				}
+				if attachment.GetSize() != int64(len(content)) {
+					t.Fatalf("%s size = %d, want %d", generated.name, attachment.GetSize(), len(content))
+				}
+				reader, info, err := core.mediaModel.GetAttachmentReader(ctx, attachment)
+				if err != nil {
+					t.Fatalf("GetAttachmentReader(%s): %v", generated.name, err)
+				}
+				stored, err := io.ReadAll(reader)
+				if closer, ok := reader.(io.Closer); ok {
+					closer.Close()
+				}
+				if err != nil || !bytes.Equal(stored, content) || info.Size != int64(len(content)) {
+					t.Fatalf("%s stored content matches = %t, size = %d, error = %v", generated.name, bytes.Equal(stored, content), info.Size, err)
+				}
+			}
+		})
+	}
+}
+
 func TestMediaModelCacheOperations(t *testing.T) {
 	core, _ := setupTestCoreWithCache(t)
 	service := core.mediaModel
@@ -230,7 +304,6 @@ func TestMediaModelDeleteAttachmentFromStorageDeletesBinaryAndCache(t *testing.T
 
 func TestMediaModelStableAttachmentURLs(t *testing.T) {
 	core, _ := setupTestCore(t)
-	core.AssetBaseURL = "https://assets.example"
 	service := core.mediaModel
 
 	before := time.Now()
@@ -238,43 +311,42 @@ func TestMediaModelStableAttachmentURLs(t *testing.T) {
 	if stable.URL == "" {
 		t.Fatal("GetStableAttachmentAssetURL returned empty URL")
 	}
-	if !strings.HasPrefix(stable.URL, "https://assets.example/assets/files/A-url?access=") {
-		t.Fatalf("stable URL = %q, want asset base URL and stable path", stable.URL)
+	if !strings.HasPrefix(stable.URL, "/assets/files/A-url?access=") {
+		t.Fatalf("stable URL = %q, want stable path", stable.URL)
 	}
 	if stable.ExpiresAt.IsZero() {
 		t.Fatal("stable URL expiry was zero")
 	}
 	assertStableAssetURLTicket(t, core, stable, nil, before)
 
-	if got := service.GetStableAttachmentURL("", "U-url"); got != "" {
-		t.Fatalf("GetStableAttachmentURL with empty asset id = %q, want empty", got)
+	if got := service.GetStableAttachmentAssetURL("", "U-url").URL; got != "" {
+		t.Fatalf("GetStableAttachmentAssetURL with empty asset id = %q, want empty", got)
 	}
-	if got := service.GetStableAttachmentURL("A-url", ""); got != "" {
-		t.Fatalf("GetStableAttachmentURL with empty user id = %q, want empty", got)
+	if got := service.GetStableAttachmentAssetURL("A-url", "").URL; got != "" {
+		t.Fatalf("GetStableAttachmentAssetURL with empty user id = %q, want empty", got)
 	}
 
 	transformed := service.GetStableTransformedAttachmentAssetURL("A-url", "U-url", 128, 96, "contain")
 	if transformed.URL == "" {
 		t.Fatal("GetStableTransformedAttachmentAssetURL returned empty URL")
 	}
-	// 【本地改动 2026-09-12】fork 取消附件衍生图:宽高与 fit 参数被忽略,回
-	// 原图链接,ticket 里也不再带 transform 参数(所以下面的断言传 nil)。
-	if !strings.HasPrefix(transformed.URL, "https://assets.example/assets/files/A-url?access=") {
-		t.Fatalf("stable transformed URL = %q, want the original asset path (fork has no derivatives)", transformed.URL)
-	}
-	if strings.Contains(transformed.URL, "/image/") {
-		t.Fatalf("stable transformed URL = %q, must not carry a transform path", transformed.URL)
+	if !strings.HasPrefix(transformed.URL, "/assets/files/A-url/image/128x96/contain?access=") {
+		t.Fatalf("stable transformed URL = %q, want transformed asset path", transformed.URL)
 	}
 	if transformed.ExpiresAt.IsZero() {
 		t.Fatal("stable transformed URL expiry was zero")
 	}
-	assertStableAssetURLTicket(t, core, transformed, nil, before)
-	if got := service.GetStableTransformedAttachmentURL("", "U-url", 128, 96, "contain"); got != "" {
-		t.Fatalf("GetStableTransformedAttachmentURL with empty asset id = %q, want empty", got)
+	assertStableAssetURLTicket(t, core, transformed, &signedurl.TransformParams{
+		Width:  128,
+		Height: 96,
+		Fit:    "contain",
+	}, before)
+	if got := service.GetStableTransformedAttachmentAssetURL("", "U-url", 128, 96, "contain").URL; got != "" {
+		t.Fatalf("GetStableTransformedAttachmentAssetURL with empty asset id = %q, want empty", got)
 	}
 
 	hls := service.GetStableHLSMasterPlaylistAssetURL("A-url", "U-url")
-	if !strings.HasPrefix(hls.URL, "https://assets.example/assets/hls/A-url/master.m3u8?access=") {
+	if !strings.HasPrefix(hls.URL, "/assets/hls/A-url/master.m3u8?access=") {
 		t.Fatalf("stable HLS URL = %q, want HLS master path", hls.URL)
 	}
 	parsedHLSURL, err := url.Parse(hls.URL)
@@ -287,44 +359,6 @@ func TestMediaModelStableAttachmentURLs(t *testing.T) {
 	}
 	if hlsTicket.AssetID != "A-url" || hlsTicket.UserID != "U-url" || hlsTicket.ExpiresAt != hls.ExpiresAt.Unix() {
 		t.Fatalf("stable HLS ticket = %#v, URL expiry = %v", hlsTicket, hls.ExpiresAt)
-	}
-}
-
-// 【本地改动 2026-08-23】公开附件 URL 构造器的精确断言测试。
-//
-// 发现背景：GetPublicStableTransformedAttachmentAssetURL 曾把完整路径传给
-// stableAttachmentPath（后者会再拼一遍 /assets/files/{id} 前缀），线上缩略图
-// URL 双重前缀全部 404，2026-08-23 部署后由用户浏览器控制台发现。此前的
-// HasPrefix 断言对该 bug 失效，故这里用完整相等断言锁死 URL 形状。
-//
-// 2026-08-29 合并 upstream：fixture 类型从 corev1.Attachment 迁移到 evtv1
-// （见 attachments.go 中同节说明）。
-func TestMediaModelPublicStableAttachmentURLShapes(t *testing.T) {
-	core, _ := setupTestCore(t)
-	core.AssetBaseURL = "https://assets.example"
-	service := core.mediaModel
-
-	attachment := &evtv1.Attachment{Id: "A-pub", Filename: "photo.jpg", ContentType: "image/jpeg"}
-
-	original := service.GetPublicStableAttachmentAssetURL(attachment)
-	if original.URL != "https://assets.example/assets/files/A-pub/photo.jpg" {
-		t.Fatalf("public original URL = %q, want exact /assets/files/A-pub/photo.jpg", original.URL)
-	}
-
-	// 【本地改动 2026-09-12】公开版衍生图 URL 也被 override 成原图链接:
-	// 不再有 /image/{w}x{h}/{fit} 段。那一段曾是 2026-08-23 双重前缀 bug 的
-	// 温床,现在整段消失,双重前缀不可能再发生。
-	transformed := service.GetPublicStableTransformedAttachmentAssetURL(attachment, 960, 400, "contain")
-	if transformed.URL != original.URL {
-		t.Fatalf("public transformed URL = %q, want the original URL %q", transformed.URL, original.URL)
-	}
-	if strings.Count(transformed.URL, "/assets/files/") != 1 {
-		t.Fatalf("public transformed URL = %q, want exactly one /assets/files/ prefix", transformed.URL)
-	}
-
-	empty := service.GetPublicStableAttachmentAssetURL(nil)
-	if empty.URL != "" {
-		t.Fatalf("public URL for nil attachment = %q, want empty", empty.URL)
 	}
 }
 
@@ -403,38 +437,6 @@ func assertStableAssetURLTicket(t *testing.T, core *ChattoCore, stable StableAss
 	minimumTTL := AssetAccessTicketTTL - assetAccessTicketIssueBucket
 	if ttl < minimumTTL || ttl > AssetAccessTicketTTL+2*time.Second {
 		t.Fatalf("stable URL ticket TTL = %v, want between %v and %v", ttl, minimumTTL, AssetAccessTicketTTL)
-	}
-}
-
-func TestMediaModelAssetURLs(t *testing.T) {
-	core, _ := setupTestCore(t)
-	core.AssetBaseURL = "https://assets.example"
-	service := core.mediaModel
-
-	rawURL := service.GetStableAttachmentURL("A-url", "U-url")
-	if !strings.HasPrefix(rawURL, "https://assets.example/assets/files/A-url?access=") {
-		t.Fatalf("GetStableAttachmentURL = %q, want stable asset URL", rawURL)
-	}
-
-	transformed := service.GetStableTransformedAttachmentURL("A-url", "U-url", 64, 48, "cover")
-	// 【本地改动 2026-09-12】fork 没有附件衍生图:回原图 URL,不含 /image/ 段。
-	if !strings.HasPrefix(transformed, "https://assets.example/assets/files/A-url?access=") {
-		t.Fatalf("GetStableTransformedAttachmentURL = %q, want the original stable asset URL", transformed)
-	}
-	if strings.Contains(transformed, "/image/") {
-		t.Fatalf("GetStableTransformedAttachmentURL = %q, must not carry a transform path", transformed)
-	}
-	serverAsset := service.GetTransformedServerAssetURL("server.logo", 80, 80, "cover")
-	// 【本地改动 2026-09-13】fork 取消服务端资产衍生图:头像/logo/banner/链接
-	// 预览上传时就缩放到上限并压缩,尺寸参数被忽略,回原档 URL。
-	if serverAsset != "https://assets.example/assets/server/server.logo" {
-		t.Fatalf("GetTransformedServerAssetURL = %q, want the original server asset URL", serverAsset)
-	}
-	if strings.Contains(serverAsset, "/t/") {
-		t.Fatalf("GetTransformedServerAssetURL = %q, must not carry a transform path", serverAsset)
-	}
-	if got := service.GetStableAttachmentURL("", "U-url"); got != "" {
-		t.Fatalf("GetStableAttachmentURL with empty asset id = %q, want empty", got)
 	}
 }
 
@@ -882,9 +884,9 @@ func TestMediaModelMessageBodyAttachmentLookups(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PostMessage: %v", err)
 	}
-	body, retracted, ok := core.roomModel.latestBody(event.GetId())
-	if !ok || retracted {
-		t.Fatalf("LatestBody ok=%v retracted=%v, want ok true retracted false", ok, retracted)
+	body, err := core.currentMessageBody(ctx, event.GetId())
+	if err != nil || body == nil {
+		t.Fatalf("currentMessageBody = %v, %v; want body", body, err)
 	}
 
 	attachments := service.MessageBodyAttachments(body)

@@ -71,7 +71,9 @@
     },
     "timeline": {
       "beginning": "Questo è l'inizio di questa conversazione.",
-      "read_denied": "Non hai l'autorizzazione per leggere i messaggi in questa stanza."
+      "read_denied": "Non hai l'autorizzazione per leggere i messaggi in questa stanza.",
+      "limited_empty": "Non ci sono ancora conversazioni che puoi leggere.",
+      "loading": "Caricamento dei messaggi..."
     },
     "message": {
       "empty": "Nessun messaggio ancora",
@@ -87,6 +89,7 @@
         "remove_reaction": "Rimuovi {emoji}",
         "add_reaction": "Aggiungi reazione",
         "more_reactions": "Altre reazioni",
+        "reactions": "Reazioni",
         "reply": "Rispondi",
         "reply_room": "Rispondi nella stanza",
         "reply_thread": "Rispondi nel thread",
@@ -96,9 +99,18 @@
         "edit_short": "Modifica",
         "copy_text": "Copia testo",
         "copy_text_failed": "Impossibile copiare il testo",
-        "copy_link": "Copia collegamento"
+        "copy_link": "Copia collegamento",
+        "copy_message_link": "Copia link al messaggio",
+        "copy_image": "Copia immagine",
+        "link_copied": "Link copiato",
+        "message_link_copied": "Link del messaggio copiato",
+        "copy_link_failed": "Impossibile copiare il link",
+        "image_copied": "Immagine copiata",
+        "copy_image_failed": "Impossibile copiare l’immagine"
       },
       "meta": {
+        "echo": "Eco",
+        "edited_short": "Modificato",
         "pinned": "Messaggio fissato",
         "thread": "Filo",
         "edited": "Messaggio modificato",
@@ -142,6 +154,14 @@
       },
       "show_less": "mostrare di meno"
     },
+    "typing": {
+      "one": "{name} sta scrivendo",
+      "two": "{first} e {second} stanno scrivendo",
+      "many_count": {
+        "other": "{names} e {count} altri stanno scrivendo",
+        "one": "{names} e {count} altro stanno scrivendo"
+      }
+    },
     "attachment": {
       "delete_title": "Elimina allegato",
       "delete_prompt": "Sei sicuro di voler eliminare questo allegato? Questa operazione non può essere annullata.",
@@ -150,7 +170,27 @@
       "view_label": "Visualizza {filename}",
       "download_label": "Scarica {filename}",
       "image_refresh_failed": "Impossibile aggiornare il collegamento dell'immagine",
-      "download_refresh_failed": "Impossibile aggiornare il collegamento per il download"
+      "download_refresh_failed": "Impossibile aggiornare il collegamento per il download",
+      "add_description": "Aggiungi descrizione",
+      "edit_description": "Modifica descrizione",
+      "description_title": "Descrizione dell'allegato",
+      "description_label": "Descrizione (facoltativa)",
+      "description_help": "Descrivi l'allegato per le persone che non possono vederlo o sentirlo.",
+      "description_too_long": "Le descrizioni possono contenere al massimo {max} caratteri.",
+      "description_update_failed": "Impossibile aggiornare la descrizione dell'allegato",
+      "html_viewer": {
+        "download": "Scarica",
+        "show_preview": "Mostra anteprima",
+        "warning": "Questo documento può caricare contenuti da siti web esterni. Questi siti possono vedere il tuo indirizzo IP.",
+        "preview_title": "Anteprima di {filename}",
+        "preview_failed": "Impossibile caricare l’anteprima. Riprova.",
+        "document_type": "Tipo di documento",
+        "html_document": "Documento HTML",
+        "xhtml_document": "Documento XHTML",
+        "file_size": "Dimensione del file",
+        "unavailable": "Non disponibile",
+        "no_preview": "Non è disponibile un’anteprima per questo file. Scaricalo per salvarlo."
+      }
     },
     "link_preview": {
       "delete_title": "Elimina anteprima collegamento",
@@ -158,6 +198,7 @@
       "delete_failed": "Impossibile eliminare l'anteprima del collegamento"
     },
     "sidebar": {
+      "go_to_message": "Vai al messaggio",
       "extras": "Extra della camera",
       "resize": "Ridimensiona il riquadro degli extra della stanza",
       "hide": "Nascondi gli extra della stanza",
@@ -170,24 +211,25 @@
       "clear_member_search": "Cancella la ricerca dei membri",
       "no_members": "Nessun membro trovato.",
       "online": "In linea ({count})",
+      "bots": "Bots ({count})",
       "offline": "Non in linea ({count})",
       "no_files": "Nessun file ancora in questa stanza.",
       "files": "File",
       "pins": "Messaggi fissati",
-      "call": "Chiama",
+      "call": "Chiamata",
       "jump_to_file": "Vai a {filename}",
       "loading_files": "Caricamento file...",
+      "loading_members": "Caricamento membri...",
       "calls_unavailable": "Le chiamate non sono disponibili su questo server.",
       "view_profile": "Visualizza il profilo di {name}",
       "in_voice_call": "In una chiamata vocale",
       "in_video_call": "In una videochiamata",
-      "ban_failed": "Impossibile escludere il membro dalla stanza",
-      "ban_success": "Bandito {name} dalla stanza"
+      "remove_failed": "Impossibile rimuovere l’utente dalla stanza",
+      "remove_success": "{name} è stato rimosso dalla stanza",
+      "search": "Cerca"
     },
     "pins": {
-      "show": "Mostra i messaggi fissati",
       "unseen": "Nuovi messaggi fissati",
-      "hide": "Nascondi i messaggi fissati",
       "pin": "Fissa il messaggio",
       "unpin": "Rimuovi il messaggio fissato",
       "unpin_prompt": "Vuoi davvero rimuovere questo messaggio fissato?",

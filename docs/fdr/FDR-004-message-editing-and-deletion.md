@@ -1,7 +1,7 @@
 # FDR-004: Message Editing & Deletion
 
 **Status:** Active
-**Last reviewed:** 2026-09-02
+**Last reviewed:** 2026-10-02
 
 ## Overview
 
@@ -12,20 +12,26 @@ attachments and initially leave a "[Message deleted]" placeholder.
 
 ## Behavior
 
+- Edit mode shows a muted label inside the composer input surface. The close
+  button cancels the edit without saving changes. Its tooltip shows
+  the Escape shortcut.
 - Authors can edit their own messages within a 3-hour window from posting time.
   After the window closes, the author needs effective `message.manage` to edit
   it. This permission also lets a user edit other users' messages at any time.
   The window value is queryable through `Server.messageEditWindowSeconds` so
   the frontend can show countdown timers and disable the edit action at the
   correct time.
-- Editing requires current room membership. In a channel room, it also requires
+- Editing requires current room membership. It also requires
   broad `message.read`, or `message.read-interactions` with a relationship to
   the message's thread. The operation reads and returns the current message.
-  DM membership authorizes the read. Posting and deletion remain independently
+  Posting and deletion remain independently
   authorized and do not return surrounding message state.
 - Only the message body text can be edited. Attachments aren't editable as text but can be removed individually.
+- When the user opens another room, the room composer cancels its unsaved edit. When the user opens another thread, the thread composer cancels its unsaved edit. The composer then shows the saved draft of the new room or thread. If the save of a cancelled edit completes later, the composer does not clear that draft.
 - Edited message bodies are capped at the same 10,000-byte limit as newly posted message bodies.
-- Edited messages show a pen icon after their text. The icon is not a control.
+- Edited timeline messages show a pen icon and an **Edited** label in their
+  metadata row, after thread controls and before the echo link and reactions.
+  This label is not a control and is hidden for deleted messages.
 - Deletions remove the message body and all attachments. The client removes the
   row immediately when no visible context remains.
 - Attachment bytes are deleted only when the durable asset owner is the exact message being changed; a duplicate reference left by an older vulnerable server is removed without damaging the owning message.
@@ -42,6 +48,9 @@ attachments and initially leave a "[Message deleted]" placeholder.
 - Every authorized edit, attachment removal, preview removal, and deletion rechecks mutable authority inside a room-OCC attempt. The authorization read repeats when RBAC, room-group, or user inputs change during the decision. A concurrent room change forces the complete command attempt to retry. A cross-aggregate authorization change after the stable decision can overlap the command.
 - Editing or deleting a thread reply that was echoed to the channel propagates to both visible artifacts automatically through the echo's `echoOfEventId` link.
 - Creating or removing a channel echo through an edit commits atomically with the parent edit. Echo creation also rechecks `message.echo`, `message.post`, and the room's Threading Mode on each room-OCC attempt. Disabled rooms reject new echoes while still allowing an existing historical echo to be removed.
+- Effective `message.manage` permits removal of another author's channel echo
+  through an edit. Echo creation remains author-only. Text-only edits omit
+  unchanged echo state, so they do not require echo creation permission.
 - Deleting the echo artifact itself hides only the room-timeline echo. The original thread reply remains readable inside the thread.
 - Individual attachments and link previews can be removed from a message by the author without deleting the whole message.
 - ConnectRPC `MessageService.UpdateMessage`, `DeleteMessage`, `DeleteAttachment`, and `DeleteLinkPreview` expose message-management behavior through the shared core `MessageModel`.
@@ -60,13 +69,16 @@ server-state API.
 
 ### 2. Edit/delete changes are durable facts
 
-**Decision:** Edits and deletions append durable message facts. The room timeline projection exposes the latest body, or a retracted placeholder after deletion.
+**Decision:** Edits and deletions append durable message facts. The Room
+Timeline projection exposes the current body-event reference or a retracted
+placeholder after deletion. Authorized reads use that reference to load the
+body from EVT.
 **Why:** Message state is now event-sourced, so connected clients and rebuilt projections consume the same committed facts. This keeps edit/delete behavior consistent with the room event log. See ADR-033 and ADR-034.
 **Tradeoff:** The user-facing timeline still exposes only the latest visible state. Showing prior versions would require a separate product decision and careful privacy handling.
 
 ### 3. Optimistic concurrency for edits
 
-**Decision:** Authorized edits use the room aggregate tail as their OCC boundary. Every attempt waits for current room and message state, validates stable room-group, RBAC, and user authorization inputs, and rechecks room archive state, membership, current message identity and authorship, the exact author edit-window boundary, and applicable permissions. It rebuilds from the latest committed body and atomically commits the body, semantic edit, and any edit-driven echo change. A room conflict retries the complete decision. Internal linked-message propagation and deletions remain room-scoped.
+**Decision:** Authorized edits use the room aggregate tail as their OCC boundary. Every attempt waits for current room and message state, validates stable room-group, RBAC, and user authorization inputs, and rechecks room archive state, membership, current message identity and authorship, the exact author edit-window boundary, and applicable permissions. It rebuilds from the latest committed body and atomically commits the body, semantic edit, and any edit-driven echo change. A room conflict retries the complete decision. Content mutations and deletions remain room-scoped.
 **Why:** Reusing a body prepared before a room OCC conflict could restore an attachment or preview removed by another mutation, while guarding edit facts independently could let a late body resurrect a deleted message. The room guard closes those lifecycle races. Stable request-time authorization gives one clear decision point without a synthetic domain event. Atomic echo reconciliation prevents partial success. See ADR-016, ADR-033, ADR-034, ADR-040, ADR-068, and ADR-087.
 **Tradeoff:** A cross-aggregate revocation after the final authorization validation can overlap a successful edit. The public API does not currently expose a client revision token, so concurrent full-text replacements resolve in commit order; the later successful edit supplies the visible text while retaining independently committed metadata changes.
 
@@ -76,11 +88,11 @@ server-state API.
 **Why:** Mentions are post-time attention facts, not mutable properties of the latest body. This prevents retroactive pings and keeps edit replay independent from mutable usernames and private body payload retention. See FDR-006.
 **Tradeoff:** If an author needs to notify someone they forgot, they must send a new message. If they remove an `@name` while editing, the original notification still reflects that the mention happened.
 
-### 5. Echo propagation
+### 5. Echo content follows the original
 
-**Decision:** Thread replies and their channel echoes are separate message events linked by `echoOfEventId`. An edit or delete targeting the original reply is applied to both visible artifacts by the read model. A delete targeting the echo's own event ID hides only the echo artifact from the room timeline.
-**Why:** Message identity belongs to the EVT envelope, and `MessagePostedEvent` remains payload-only. The link preserves the user-facing "same reply shown twice" behavior without duplicating envelope metadata into payload fields. See FDR-003.
-**Tradeoff:** Frontend has to distinguish direct echo deletes from original-reply deletes: direct echo deletes remove the echo row, while original deletes tombstone any loaded echoes.
+**Decision:** An echo references its original reply. Full and partial edits through either view change only the original content. Deleting an echo hides only its timeline entry. Deleting the original removes content from both views.
+**Why:** One content source keeps text, attachments, descriptions, previews, and edit state consistent.
+**Tradeoff:** Reads and content mutations must resolve echo IDs before they access or change content. Physical body-record ownership stays separate so echo deletion cannot erase the original.
 
 ### 6. Delete physically removes the body payload, not just hides it
 
@@ -104,10 +116,9 @@ message's thread summary contains a reply.
 ## Permissions
 
 - `message.manage` — edit messages at any time, and edit and delete other users'
-  messages.
-- `message.read` — read and edit any channel-room message.
-- `message.read-interactions` — read and edit a channel-room message in a
-  related thread. DM membership authorizes DM reads without either permission.
+  messages. A human session must also have privileged mode active.
+- `message.read` — read and edit any room message.
+- `message.read-interactions` — read and edit a message in a related thread.
   Deletion remains independently authorized by authorship or `message.manage`.
 - There is no separate edit-own or delete-own permission. Authorship permits
   deletion and permits editing within the edit window.
@@ -115,5 +126,5 @@ message's thread summary contains a reply.
 
 ## Related
 
-- **ADRs:** ADR-007 (per-user encryption with crypto-shredding), ADR-011 (message body/event split), ADR-016 (OCC for message publishing), ADR-033 (event-sourced state), ADR-034 (single domain event stream), ADR-038 (room-owned thread state), ADR-076 (notification occurrences), ADR-077 (persistent notification list), ADR-080 (explicit message-read permissions), ADR-082 (derived thread interactions), ADR-087 (request-time authorization with aggregate OCC)
-- **FDRs:** FDR-002 (Replies & Threads), FDR-003 (Thread Reply Echo), FDR-006 (@Mentions), FDR-012 (Notifications), FDR-039 (Message Access & Interactions)
+- **ADRs:** ADR-007 (per-user encryption with crypto-shredding), ADR-011 (message body/event split), ADR-016 (OCC for message publishing), ADR-033 (event-sourced state), ADR-034 (single domain event stream), ADR-038 (room-owned thread state), ADR-076 (notification occurrences), ADR-077 (persistent notification list), ADR-080 (explicit message-read permissions), ADR-082 (derived thread interactions), ADR-087 (request-time authorization with aggregate OCC), ADR-090 (EVT timeline payload hydration)
+- **FDRs:** FDR-002 (Replies & Threads), FDR-003 (Thread Reply Echo), FDR-006 (@Mentions), FDR-012 (Notifications), FDR-039 (Message Access & Interactions), FDR-045 (Privileged Mode)

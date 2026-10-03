@@ -5,6 +5,7 @@
 package core
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -13,6 +14,13 @@ import (
 	evtv1 "hmans.de/chatto/internal/pb/chatto/core/evt/v1"
 	"hmans.de/chatto/pkg/events"
 )
+
+type serverContentViewReadContextKey struct{}
+
+type serverContentViewReadContext struct {
+	view     *ServerContentView
+	sequence uint64
+}
 
 const serverContentViewSnapshotSemantics = "v1"
 
@@ -144,10 +152,44 @@ func (v *ServerContentView) Read(read func(sequence uint64) error) error {
 	return v.projector.WithReadBarrier(read)
 }
 
-func (v *ServerContentView) adminProjectionEstimate(components ...events.SnapshotComponentModel) (int64, int64, []ProjectionAdminMetric) {
+// ReadServerContentView runs one bounded in-memory operation against an exact
+// ServerContentView generation. Calls to other content-view-backed core reads
+// from the callback reuse the same barrier instead of trying to acquire a
+// nested barrier. The callback must not perform network, storage, or other
+// unbounded work.
+func (c *ChattoCore) ReadServerContentView(
+	ctx context.Context,
+	read func(context.Context, uint64) error,
+) error {
+	if c.contentView == nil {
+		return read(ctx, 0)
+	}
+	if active, ok := ctx.Value(serverContentViewReadContextKey{}).(serverContentViewReadContext); ok && active.view == c.contentView {
+		return read(ctx, active.sequence)
+	}
+	return c.contentView.Read(func(sequence uint64) error {
+		readCtx := context.WithValue(ctx, serverContentViewReadContextKey{}, serverContentViewReadContext{
+			view:     c.contentView,
+			sequence: sequence,
+		})
+		return read(readCtx, sequence)
+	})
+}
+
+// adminProjectionEstimate adds the estimates of every component and of the
+// event ID table that components share. A nil table means that no table is
+// shared.
+func (v *ServerContentView) adminProjectionEstimate(eventIDs *eventIDTable, components ...events.SnapshotComponentModel) (int64, int64, []ProjectionAdminMetric) {
 	var entries int64
 	var estimatedBytes int64
 	var metrics []ProjectionAdminMetric
+	if eventIDs != nil {
+		// Components exclude a shared table from their own estimates, so the
+		// view counts it once.
+		idCount, idBytes := int64(eventIDs.len()), eventIDs.estimatedBytes()
+		estimatedBytes += idBytes
+		metrics = append(metrics, ProjectionAdminMetric{Name: "component_event_ids", Value: idCount, Bytes: idBytes})
+	}
 	for _, component := range components {
 		estimator, ok := component.(interface {
 			adminProjectionEstimate() (int64, int64, []ProjectionAdminMetric)
@@ -158,6 +200,17 @@ func (v *ServerContentView) adminProjectionEstimate(components ...events.Snapsho
 		componentEntries, componentBytes, componentMetrics := estimator.adminProjectionEstimate()
 		entries += componentEntries
 		estimatedBytes += componentBytes
+		// The parent estimate includes every component. Expose the components
+		// whose size grows with message history separately so their memory
+		// changes can be measured directly.
+		switch component.(type) {
+		case *RoomTimelineProjection:
+			metrics = append(metrics, ProjectionAdminMetric{Name: "component_room_timeline", Value: componentEntries, Bytes: componentBytes})
+		case *ThreadProjection:
+			metrics = append(metrics, ProjectionAdminMetric{Name: "component_threads", Value: componentEntries, Bytes: componentBytes})
+		case *ReactionProjection:
+			metrics = append(metrics, ProjectionAdminMetric{Name: "component_reactions", Value: componentEntries, Bytes: componentBytes})
+		}
 		metrics = append(metrics, componentMetrics...)
 	}
 	return entries, estimatedBytes, metrics

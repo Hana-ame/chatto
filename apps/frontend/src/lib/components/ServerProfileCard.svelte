@@ -4,15 +4,28 @@
 One public Chatto server profile. Server-supplied content stays inside the
 card. Callers supply trusted badges and actions through explicit props.
 -->
+<script lang="ts" module>
+  import type { PublicServerInfo } from '@chatto/client/api/server';
+  import { serverHost } from '$lib/serverUrl';
+
+  /** Public profile fields that the card renders. */
+  export type ServerProfileCardProfile = Pick<
+    PublicServerInfo,
+    'name' | 'description' | 'iconUrl' | 'bannerUrl'
+  >;
+</script>
+
 <script lang="ts">
   import type { Snippet } from 'svelte';
-  import type { PublicServerInfo } from '$lib/api-client/server';
   import ServerLogo from '$lib/components/ServerLogo.svelte';
   import { m } from '$lib/i18n/messages';
-  import { Pill, SkeletonImg } from '$lib/ui';
+  import { loadPublicServerImage, publicServerImageURL } from '$lib/publicServerImage';
+  import { Pill } from '$lib/ui';
+  import { getGradientForName } from '$lib/utils/gradients';
 
   let {
     origin,
+    imageOrigin = origin,
     profile,
     badge,
     details,
@@ -22,11 +35,17 @@ card. Callers supply trusted badges and actions through explicit props.
     iconOpensInNewTab = false,
     iconActionLabel,
     iconActionDisabled = false,
-    testId = 'server-profile-card'
+    testId = 'server-profile-card',
+    headingTag = 'h3'
   }: {
     origin: string;
+    /**
+     * Origin that may supply the logo and banner. It defaults to `origin`. A
+     * registered server that hosts cached copies can supply them instead.
+     */
+    imageOrigin?: string;
     /** `undefined` means loading; `null` means that discovery failed. */
-    profile?: PublicServerInfo | null;
+    profile?: ServerProfileCardProfile | null;
     badge?: string;
     /** Optional caller-owned content between the public profile and actions. */
     details?: Snippet;
@@ -40,38 +59,46 @@ card. Callers supply trusted badges and actions through explicit props.
     iconActionLabel?: string;
     iconActionDisabled?: boolean;
     testId?: string;
+    /** Heading level of the server name, one below the surrounding section. */
+    headingTag?: 'h3' | 'h4';
   } = $props();
 
-  const hostname = $derived.by(() => {
-    try {
-      return new URL(origin).host;
-    } catch {
-      return origin;
-    }
-  });
+  const hostname = $derived(serverHost(origin));
   const logoServer = $derived({
     name: profile?.name ?? hostname,
     logoUrl: profile?.iconUrl
   });
+  const bannerURL = $derived(publicServerImageURL(imageOrigin, profile?.bannerUrl ?? null));
+  let failedBannerURL = $state<string | null>(null);
   const accessibleIconActionLabel = $derived(
     iconActionLabel ? `${iconActionLabel}: ${logoServer.name}` : logoServer.name
   );
 </script>
 
 <article
-  class="flex min-h-64 flex-col overflow-hidden rounded-xl border border-border bg-surface"
+  class="flex h-full flex-col overflow-hidden rounded-xl border border-border bg-surface"
   data-testid={testId}
   data-origin={origin}
 >
-  {#if profile?.bannerUrl}
-    <SkeletonImg src={profile.bannerUrl} alt="" class="h-32 w-full object-cover" />
+  {#if bannerURL && failedBannerURL !== bannerURL}
+    <img
+      alt=""
+      class="h-24 w-full object-cover"
+      {@attach loadPublicServerImage(bannerURL)}
+      onerror={() => (failedBannerURL = bannerURL)}
+    />
   {:else}
+    <!-- The name-seeded gradient matches the server's logo fallback. -->
     <div
-      class="h-32 shrink-0 bg-gradient-to-br from-surface-emphasized/80 via-surface-emphasized/45 to-surface"
+      class="h-24 shrink-0 opacity-40"
+      class:bg-surface-emphasized={profile === undefined}
+      style:background={profile === undefined ? undefined : getGradientForName(logoServer.name)}
+      aria-hidden="true"
+      data-banner-fallback
     ></div>
   {/if}
 
-  <div class="flex flex-1 flex-col gap-4 p-4">
+  <div class="flex flex-1 flex-col gap-3 p-4">
     <div class="flex min-w-0 items-start gap-3">
       {#if iconHref}
         <!-- eslint-disable svelte/no-navigation-without-resolve -- iconHref is a caller-provided external URL -->
@@ -84,7 +111,7 @@ card. Callers supply trusted badges and actions through explicit props.
           title={accessibleIconActionLabel}
           data-testid={`${testId}-icon-action`}
         >
-          <ServerLogo server={logoServer} fill />
+          <ServerLogo server={logoServer} publicImageOrigin={imageOrigin} fill />
         </a>
         <!-- eslint-enable svelte/no-navigation-without-resolve -->
       {:else if onIconClick}
@@ -97,21 +124,21 @@ card. Callers supply trusted badges and actions through explicit props.
           onclick={onIconClick}
           data-testid={`${testId}-icon-action`}
         >
-          <ServerLogo server={logoServer} fill />
+          <ServerLogo server={logoServer} publicImageOrigin={imageOrigin} fill />
         </button>
       {:else}
         <div
           class="-mt-10 h-14 w-14 shrink-0 overflow-hidden rounded-xl border-2 border-border bg-surface-emphasized"
         >
-          <ServerLogo server={logoServer} fill />
+          <ServerLogo server={logoServer} publicImageOrigin={imageOrigin} fill />
         </div>
       {/if}
 
       <div class="min-w-0 flex-1">
         <div class="flex min-w-0 flex-wrap items-center gap-2">
-          <h3 class="min-w-0 truncate font-semibold text-text-top">
+          <svelte:element this={headingTag} class="min-w-0 truncate font-semibold text-text-top">
             <bdi dir="auto">{profile?.name ?? hostname}</bdi>
-          </h3>
+          </svelte:element>
           {#if badge}<Pill tone="success">{badge}</Pill>{/if}
         </div>
         <p class="truncate text-sm text-muted" dir="ltr">{hostname}</p>
@@ -120,7 +147,7 @@ card. Callers supply trusted badges and actions through explicit props.
 
     <div class="flex-1">
       {#if profile?.description}
-        <p class="line-clamp-3 text-sm text-muted"><bdi dir="auto">{profile.description}</bdi></p>
+        <p class="line-clamp-2 text-sm text-muted"><bdi dir="auto">{profile.description}</bdi></p>
       {:else if profile === null}
         <p class="text-sm text-muted">{m('add_server.directory.profile_unavailable')}</p>
       {/if}

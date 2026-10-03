@@ -1,13 +1,12 @@
 <script lang="ts">
+  import { errorMessage } from '$lib/utils/errorMessage';
   import { goto } from '$app/navigation';
   import { resolve } from '$app/paths';
-  import { browserCookieAuthenticationHeaders } from '$lib/auth/authenticationMode';
+  import { browserCookieAuthenticationHeaders } from '@chatto/client/auth/authenticationMode';
   import { completeOriginAuthentication } from '$lib/auth/originAuthentication';
   import AuthLayout from '$lib/components/AuthLayout.svelte';
   import { m } from '$lib/i18n/messages';
-  import Divider from '$lib/ui/Divider.svelte';
-  import Hint from '$lib/ui/Hint.svelte';
-  import PageTitle from '$lib/ui/PageTitle.svelte';
+  import { Divider, Hint, PageTitle } from '$lib/ui';
   import { TextInput, FormError, Button, z, validate } from '$lib/ui/form';
 
   let { data } = $props();
@@ -83,7 +82,7 @@
         goto(resolve('/'), { replaceState: true });
       }
     } catch (err) {
-      error = err instanceof Error ? err.message : m('auth.register.failed');
+      error = errorMessage(err, m('auth.register.failed'));
     } finally {
       isLoading = false;
     }
@@ -92,9 +91,7 @@
 
 <PageTitle title={m('auth.register.complete_title')} />
 
-<AuthLayout>
-  <h1 class="mb-6 text-center text-2xl font-bold">{m('auth.register.complete_title')}</h1>
-
+<AuthLayout title={m('auth.register.complete_title')}>
   {#if !token}
     <Hint tone="danger">
       <p class="mb-2 font-medium">{m('auth.register.complete.invalid_title')}</p>
@@ -153,7 +150,7 @@
         loading={isLoading}
         loadingText={m('auth.register.creating')}
       >
-        <span class="iconify icon-[uil--user-plus]"></span>
+        <span aria-hidden="true" class="iconify icon-[uil--user-plus]"></span>
         {m('common.create_account')}
       </Button>
     </form>

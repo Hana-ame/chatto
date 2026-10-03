@@ -1,6 +1,7 @@
+import '../../app.css';
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
-import type { LinkPreviewView } from '$lib/render/linkPreviews';
+import type { LinkPreviewView } from '@chatto/client/timeline/linkPreviews';
 import LinkPreviewCard from './LinkPreviewCard.svelte';
 
 const navigation = vi.hoisted(() => ({
@@ -71,6 +72,73 @@ describe('LinkPreviewCard', () => {
     expect(container.querySelector('[data-testid="link-preview-card"]')).not.toBeNull();
   });
 
+  it('shows fog in the reserved image frame, then clears it on failure', async () => {
+    const { container } = render(LinkPreviewCard, {
+      props: { preview: preview({ imageUrl: 'data:image/png;base64,invalid' }) }
+    });
+    const card = container.querySelector<HTMLElement>('[data-testid="link-preview-card"]')!;
+    const image = card.querySelector<HTMLImageElement>('img')!;
+    const height = card.getBoundingClientRect().height;
+    expect(height).toBeGreaterThan(0);
+    expect(card.querySelector('[data-loading-fog]')).not.toBeNull();
+
+    image.dispatchEvent(new Event('error'));
+    expect(image.style.visibility).toBe('hidden');
+    await vi.waitFor(() => expect(card.querySelector('[data-loading-fog]')).toBeNull());
+    expect(card.getBoundingClientRect().height).toBe(height);
+  });
+
+  it('reserves social image heights before load and after an image error', () => {
+    const { container } = render(LinkPreviewCard, {
+      props: {
+        preview: preview({
+          socialPost: {
+            provider: 'bluesky',
+            text: 'Two images',
+            author: {
+              displayName: 'Alice',
+              handle: 'alice',
+              avatarUrl: 'data:image/png;base64,badavatar'
+            },
+            externalLink: {
+              url: 'https://example.com/article',
+              title: 'Article',
+              imageUrl: 'data:image/png;base64,badlink'
+            },
+            images: [
+              { url: 'data:image/png;base64,broken', alt: 'Known size', width: 1200, height: 600 },
+              { url: 'data:image/png;base64,invalid', alt: 'Unknown size' }
+            ]
+          }
+        })
+      }
+    });
+
+    const known = container.querySelector<HTMLImageElement>('img[alt="Known size"]')!;
+    const unknown = container.querySelector<HTMLImageElement>('img[alt="Unknown size"]')!;
+    const avatar = container.querySelector<HTMLImageElement>(
+      'img[src="data:image/png;base64,badavatar"]'
+    )!;
+    const linkImage = container.querySelector<HTMLImageElement>(
+      'img[src="data:image/png;base64,badlink"]'
+    )!;
+    expect(known.style.aspectRatio).toBe('1200 / 600');
+    expect(unknown.style.aspectRatio).toBe('16 / 9');
+    const height = known.getBoundingClientRect().height;
+    const card = container.querySelector<HTMLElement>('[data-testid="social-post-embed"]')!;
+    const cardHeight = card.getBoundingClientRect().height;
+    expect(height).toBeGreaterThan(0);
+
+    known.dispatchEvent(new Event('error'));
+    expect(known.style.visibility).toBe('hidden');
+    expect(known.getBoundingClientRect().height).toBe(height);
+    avatar.dispatchEvent(new Event('error'));
+    linkImage.dispatchEvent(new Event('error'));
+    expect(avatar.style.visibility).toBe('hidden');
+    expect(linkImage.style.visibility).toBe('hidden');
+    expect(card.getBoundingClientRect().height).toBe(cardHeight);
+  });
+
   it('renders the card when only a description is present', () => {
     const { container } = render(LinkPreviewCard, {
       props: { preview: preview({ description: 'A description' }) }
@@ -117,11 +185,7 @@ describe('LinkPreviewCard', () => {
 
     openContextMenu(container, '[data-testid="link-preview-card"]');
     (await menuButton('Open link')).click();
-    expect(open).toHaveBeenCalledWith(
-      'https://generic.example',
-      '_blank',
-      'noopener,noreferrer'
-    );
+    expect(open).toHaveBeenCalledWith('https://generic.example', '_blank', 'noopener,noreferrer');
 
     await rerender({
       preview: preview({

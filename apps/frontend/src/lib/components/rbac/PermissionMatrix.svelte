@@ -25,13 +25,13 @@ headers are clickable when `onRoleClick` is provided
 focusing a cell highlights its permission row and role column.
 -->
 <script lang="ts">
+  import { errorMessage } from '$lib/utils/errorMessage';
   import { onDestroy, type Snippet } from 'svelte';
-  import Panel from '$lib/ui/Panel.svelte';
+  import { Panel, Hint } from '$lib/ui';
   import { MatrixColumnHeading, MatrixTable } from '$lib/ui/matrix';
-  import { Hint } from '$lib/ui';
   import { ShortcutTextInput } from '$lib/ui/form';
   import { useServerScope } from '$lib/state/server/scope.svelte';
-  import { createPermissionAPI } from '$lib/api-client/permissions';
+  import { createPermissionAPI } from '@chatto/client/api/permissions';
   import { toast } from '$lib/ui/toast';
   import {
     getIncludingPermissions,
@@ -41,10 +41,13 @@ focusing a cell highlights its permission row and role column.
   } from '$lib/permissions';
   import { setRolePermission, type MutationScope } from './permissionMutations';
   import MatrixCell from './MatrixCell.svelte';
+  import PermissionHelpDialog from './PermissionHelpDialog.svelte';
+  import PermissionRowLabel from './PermissionRowLabel.svelte';
+  import { decisionTitle, decisionWord } from './decisionLabels';
   import { m } from '$lib/i18n/messages';
-  import { createQuery } from '@tanstack/svelte-query';
   import { adminQueryKeys } from '$lib/query/admin';
-  import { queryClient } from '$lib/query/client';
+  import { createQuery, queryClient } from '$lib/query/client';
+  import { registerQueryCacheRemovalListener } from '$lib/query/cacheRegistry';
   import { invalidateRolePermissionDependents } from '$lib/query/adminInvalidation';
 
   type State = 'allow' | 'deny' | 'neutral';
@@ -143,50 +146,46 @@ focusing a cell highlights its permission row and role column.
 
   const serverScope = useServerScope();
 
-  const matrixQuery = createQuery(
-    () => {
-      const serverId = serverScope.serverId;
-      const activeConnection = serverScope.connection;
-      const activeRoomId = roomId ?? null;
-      const activeGroupId = groupId ?? null;
-      return {
-        queryKey: adminQueryKeys.permissionTier(
-          serverId,
-          activeConnection,
-          activeRoomId,
-          activeGroupId
-        ),
-        queryFn: ({ signal }) =>
-          activeConnection
-            .getAPI(createPermissionAPI)
-            .getRolePermissionTierMatrix(
-              { roomId: activeRoomId, groupId: activeGroupId },
-              { signal }
-            )
-      };
-    },
-    () => queryClient
-  );
+  const matrixQuery = createQuery(() => {
+    const serverId = serverScope.serverId;
+    const activeConnection = serverScope.connection;
+    const activeRoomId = roomId ?? null;
+    const activeGroupId = groupId ?? null;
+    return {
+      queryKey: adminQueryKeys.permissionTier(
+        serverId,
+        activeConnection,
+        activeRoomId,
+        activeGroupId
+      ),
+      queryFn: ({ signal }) =>
+        activeConnection
+          .getAPI(createPermissionAPI)
+          .getRolePermissionTierMatrix({ roomId: activeRoomId, groupId: activeGroupId }, { signal })
+    };
+  });
 
   const data = $derived(matrixQuery.data ?? null);
   const loading = $derived(matrixQuery.isPending);
-  const loadError = $derived(matrixQuery.error instanceof Error ? matrixQuery.error.message : null);
+  const loadError = $derived(matrixQuery.error ? errorMessage(matrixQuery.error) : null);
   let mutationError = $state<{ context: string; message: string } | null>(null);
   let updating = $state<string[]>([]);
   let disposed = false;
+  let privacyGeneration = 0;
+  const unregisterPrivacyFence = registerQueryCacheRemovalListener((serverId) => {
+    if (serverId !== serverScope.serverId) return;
+    privacyGeneration += 1;
+    updating = [];
+    mutationError = null;
+  });
   const activeMutationContext = $derived(
-    mutationContext(
-      serverScope.serverId,
-      serverScope.connection.queryScope,
-      spaceId ?? null,
-      roomId ?? null,
-      groupId ?? null
-    )
+    mutationContext(spaceId ?? null, roomId ?? null, groupId ?? null)
   );
   const visibleMutationError = $derived(
     mutationError?.context === activeMutationContext ? mutationError.message : null
   );
   onDestroy(() => {
+    unregisterPrivacyFence();
     disposed = true;
   });
 
@@ -204,6 +203,13 @@ focusing a cell highlights its permission row and role column.
     return chains;
   });
   let permissionFilter = $state('');
+  let helpPermission = $state<string | null>(null);
+  let helpVisible = $state(false);
+
+  function showHelp(permission: string) {
+    helpPermission = permission;
+    helpVisible = true;
+  }
   const filteredPermissions = $derived.by(() => {
     const query = permissionFilter.trim().toLowerCase();
     return query
@@ -258,14 +264,17 @@ focusing a cell highlights its permission row and role column.
     return role.roleName === 'owner';
   }
 
+  /**
+   * Identify the tier that a mutation belongs to. The page can stay mounted when
+   * only the tier changes. The server session cannot change while the matrix is
+   * mounted (see ServerScope).
+   */
   function mutationContext(
-    serverId: string,
-    queryScope: string,
     activeSpaceId: string | null,
     activeRoomId: string | null,
     activeGroupId: string | null
   ): string {
-    return JSON.stringify([serverId, queryScope, activeSpaceId, activeRoomId, activeGroupId]);
+    return JSON.stringify([activeSpaceId, activeRoomId, activeGroupId]);
   }
 
   function cellIsUpdating(cellKey: string): boolean {
@@ -285,6 +294,7 @@ focusing a cell highlights its permission row and role column.
   }
 
   async function cycle(role: TierRole, permission: string, next: State) {
+    const generation = privacyGeneration;
     if (!data) return;
     const serverId = serverScope.serverId;
     const activeConnection = serverScope.connection;
@@ -296,13 +306,7 @@ focusing a cell highlights its permission row and role column.
     );
     const mutationScope = scopeFor(role);
     const cellKey = `${role.roleName}::${permission}`;
-    const context = mutationContext(
-      serverId,
-      activeConnection.queryScope,
-      spaceId ?? null,
-      roomId ?? null,
-      groupId ?? null
-    );
+    const context = mutationContext(spaceId ?? null, roomId ?? null, groupId ?? null);
     const pendingKey = `${context}:${cellKey}`;
     if (updating.includes(pendingKey)) return;
     updating = [...updating, pendingKey];
@@ -314,7 +318,7 @@ focusing a cell highlights its permission row and role column.
       permission,
       next
     );
-    if (disposed || !serverScope.isCurrent()) return;
+    if (disposed || !serverScope.isCurrent() || generation !== privacyGeneration) return;
     if (result.error) {
       if (context === activeMutationContext) {
         mutationError = { context, message: result.error };
@@ -352,12 +356,10 @@ focusing a cell highlights its permission row and role column.
   <Hint tone="danger">{visibleMutationError ?? loadError}</Hint>
 {/if}
 
-{#if loading}
-  <div class="text-muted">{m('rbac.permissions.loading')}</div>
-{:else if !data || data.roles.length === 0}
+{#if !loading && (!data || data.roles.length === 0)}
   <Hint tone="info">{m('rbac.permissions.no_roles')}</Hint>
 {:else}
-  {@const roles = [...data.roles].sort((a, b) => b.position - a.position)}
+  {@const roles = [...(data?.roles ?? [])].sort((a, b) => b.position - a.position)}
   <Panel title={panelTitle} {subtitle} {fillHeight} noPadding>
     {#snippet actions()}
       <div class="w-48 sm:w-64">
@@ -380,6 +382,7 @@ focusing a cell highlights its permission row and role column.
       getRowKey={(permission) => permission}
       getColumnKey={(role) => role.roleName}
       getGroupKey={(permission) => getPermissionCategory(permission)}
+      {loading}
       emptyMessage={m('rbac.permissions.no_filter_matches')}
       compact
       columnHeaderHeight="10rem"
@@ -410,7 +413,7 @@ focusing a cell highlights its permission row and role column.
             type="button"
             class={['cursor-pointer hover:underline', highlighted ? 'text-action' : '']}
             onclick={() => handle(role)}
-            title={`${role.displayName} — click to manage`}
+            title={m('rbac.permissions.cell.manage_role', { role: role.displayName })}
           >
             @{role.roleName}
           </button>
@@ -426,11 +429,7 @@ focusing a cell highlights its permission row and role column.
           >
             <MatrixColumnHeading>
               <!-- eslint-disable svelte/no-navigation-without-resolve -- newRoleHref is resolved by the owning route -->
-              <a
-                href={newRoleHref}
-                class="cursor-pointer font-medium text-action hover:underline"
-                data-testid="new-role-column"
-              >
+              <a href={newRoleHref} class="font-medium link" data-testid="new-role-column">
                 {m('admin.permissions.new_role_action')}
               </a>
               <!-- eslint-enable svelte/no-navigation-without-resolve -->
@@ -439,12 +438,12 @@ focusing a cell highlights its permission row and role column.
         {/if}
       {/snippet}
       {#snippet rowHeader(permission, highlighted)}
-        <span
-          data-testid="permission-name"
-          title={getPermissionDescription(permission)}
-          class={['text-sm whitespace-nowrap', highlighted ? 'text-action' : '']}
-          >{permission}</span
-        >
+        <PermissionRowLabel
+          label={permission}
+          {highlighted}
+          helpLabel={m('rbac.permissions.help.open', { permission })}
+          onhelp={() => showHelp(permission)}
+        />
       {/snippet}
       {#snippet cell(permission, role)}
         {@const permissionId = permission}
@@ -455,30 +454,42 @@ focusing a cell highlights its permission row and role column.
         {@const displayOverride = virtualOwner ? 'allow' : ov}
         {@const displayInherited = virtualOwner ? 'neutral' : inh}
         {@const ariaParts = virtualOwner
-          ? [`Owner is always granted ${permissionId}`]
+          ? [m('rbac.permissions.cell.owner_always_granted', { permission: permissionId })]
           : [
               ov !== 'neutral'
-                ? `Override ${ov} for ${role.displayName} on ${permissionId}`
-                : `No override for ${role.displayName} on ${permissionId}`,
+                ? m('rbac.permissions.cell.override_for_role', {
+                    state: decisionWord(ov),
+                    role: role.displayName,
+                    permission: permissionId
+                  })
+                : m('rbac.permissions.cell.no_override_for_role', {
+                    role: role.displayName,
+                    permission: permissionId
+                  }),
               inh !== 'neutral' && inheritedFromLabel
-                ? `inheriting ${inh} from ${inheritedFromLabel}`
+                ? m('rbac.permissions.cell.inheriting_from', {
+                    state: decisionWord(inh),
+                    source: inheritedFromLabel
+                  })
                 : null
             ].filter(Boolean)}
         {@const ariaLabel = ariaParts.join(', ')}
         {@const titleParts = virtualOwner
-          ? [
-              'Allow (owners are always granted all permissions)',
-              'Owner permissions are not editable'
-            ]
+          ? [m('rbac.permissions.cell.owner_allow'), m('rbac.permissions.cell.owner_not_editable')]
           : [
               ov !== 'neutral'
-                ? `${ov === 'allow' ? 'Allow' : 'Deny'} (override at this tier)`
+                ? m('rbac.permissions.cell.override_here', { state: decisionTitle(ov) })
                 : null,
               inh !== 'neutral' && inheritedFromLabel
-                ? `Inherits ${inh === 'allow' ? 'Allow' : 'Deny'} from ${inheritedFromLabel}`
+                ? m('rbac.permissions.cell.inherits_from', {
+                    state: decisionTitle(inh),
+                    source: inheritedFromLabel
+                  })
                 : null,
-              includedBy ? `Effective Allow (included by ${includedBy})` : null,
-              ov === 'neutral' && inh === 'neutral' ? 'No decision' : null
+              includedBy
+                ? m('rbac.permissions.cell.effective_included_by', { permission: includedBy })
+                : null,
+              ov === 'neutral' && inh === 'neutral' ? m('rbac.permissions.no_decision') : null
             ].filter(Boolean)}
         <MatrixCell
           override={displayOverride}
@@ -497,4 +508,5 @@ focusing a cell highlights its permission row and role column.
       {/snippet}
     </MatrixTable>
   </Panel>
+  <PermissionHelpDialog bind:visible={helpVisible} bind:permission={helpPermission} {permissions} />
 {/if}

@@ -24,7 +24,7 @@ type AssetProcessingRuntime struct {
 
 // NewAssetProcessingRuntime opens the resources used by a worker. The main app
 // owns resource creation; standalone workers therefore expect EVT and
-// SERVER_ASSETS to exist already.
+// SERVER_ASSETS to exist already. Generated media bypasses user upload limits.
 func NewAssetProcessingRuntime(
 	ctx context.Context,
 	nc *nats.Conn,
@@ -57,6 +57,9 @@ func NewAssetProcessingRuntime(
 	publisher := evtstream.NewPublisher(js, evt, logger)
 	projection := NewAssetProjection()
 	assets := evtstream.NewProjectionHandle(js, evt, projection, logger.WithPrefix("AssetsProjector"))
+	if err := assets.Projector().ConfigureConsumerIdentity("asset_processing", "Asset processing worker state"); err != nil {
+		return nil, fmt.Errorf("configure asset processing consumer identity: %w", err)
+	}
 
 	workerCore := &ChattoCore{
 		nc:             nc,

@@ -1,36 +1,30 @@
 <script lang="ts">
   import { resolve } from '$app/paths';
+  import { serverUi } from '$lib/state/server/serverUi';
   import { serverIdToSegment } from '$lib/navigation';
   import { useServerScope } from '$lib/state/server/scope.svelte';
-  import { notificationTarget } from '$lib/state/server/notifications.svelte';
-  import { NotificationAttentionLevel } from '$lib/api-client/notifications';
-  import UnreadDot from '$lib/ui/UnreadDot.svelte';
+  import { notificationTarget } from '@chatto/client/server/notifications';
+  import { NotificationAttentionLevel } from '@chatto/client/api/notifications';
+  import { NotificationBadge } from '$lib/ui';
   import { m } from '$lib/i18n/messages';
 
   let { active }: { active: boolean } = $props();
 
   const serverScope = useServerScope();
-  const serverId = $derived(serverScope.serverId);
-  const notificationStore = $derived(serverScope.store.notifications);
+  const serverId = serverScope.serverId;
   const threadNotifications = $derived(
-    notificationStore.unreadOccurrences.filter((notification) => {
+    serverUi(serverScope.store).attention.occurrences.filter((notification) => {
       const target = notificationTarget(notification);
       if (!target.roomId || !target.threadRootId) return false;
+      // A loaded room timeline can prove that a thread is not followed. When
+      // the timeline is not loaded, trust the authoritative notification
+      // occurrence until the explicit thread read supplies that state.
       return (
-        serverScope.store.projection.threadViewerStates.get(
-          `${target.roomId}\u0000${target.threadRootId}`
-        )?.isFollowing === true
+        serverScope.store.loadedThreadFollowState(target.roomId, target.threadRootId) !== false
       );
     })
   );
-  const hasNotification = $derived(threadNotifications.length > 0);
-
-  const hasUnread = $derived(
-    hasNotification ||
-      [...serverScope.store.projection.threadViewerStates.values()].some(
-        (state) => state.isFollowing && state.hasUnreadReplies
-      )
-  );
+  const notificationCount = $derived(threadNotifications.length);
 
   const hasImportantAttention = $derived(
     threadNotifications.some(
@@ -44,13 +38,17 @@
   aria-current={active ? 'page' : undefined}
   class="sidebar-item"
 >
-  <span class="iconify sidebar-icon icon-[uil--comment-alt-lines]"></span>
+  <span aria-hidden="true" class="iconify sidebar-icon icon-[uil--comment-alt-lines]"></span>
   {m('chat.threads.title')}
-  {#if hasUnread}
-    <UnreadDot
+  {#if notificationCount > 0}
+    <NotificationBadge
       class="ms-auto"
-      color={hasImportantAttention ? 'warning' : 'neutral'}
-      testid="my-threads-unread-dot"
+      count={notificationCount}
+      color={hasImportantAttention ? 'warning' : 'ambient'}
+      testid="my-threads-notification-badge"
     />
+    <span class="sr-only"
+      >{m('chat.threads.notifications_count', { count: notificationCount })}</span
+    >
   {/if}
 </a>

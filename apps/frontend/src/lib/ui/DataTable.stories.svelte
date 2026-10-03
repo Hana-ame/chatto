@@ -74,6 +74,34 @@
 </Story>
 
 <Story
+  name="Linked rows"
+  asChild
+  parameters={{
+    docs: {
+      description: {
+        story:
+          'Put a `data-table-row-link` on a real link in the primary cell. The whole row opens the link, the link is one keyboard stop, and other controls in the row stay operable.'
+      }
+    }
+  }}
+>
+  <div class="max-w-3xl">
+    <Panel title="Spaces" noPadding>
+      <DataTable items={rows} columns={4} getKey={(row) => row.id} header={tableHeader}>
+        {#snippet row(row: SpaceRow)}
+          <td class="px-4 py-3 font-medium">
+            <a class="data-table-row-link" href={`#${row.id}`}>{row.name}</a>
+          </td>
+          <td class="px-4 py-3"><CopyId value={row.id} /></td>
+          <td class="px-4 py-3 text-end tabular-nums">{row.members}</td>
+          <td class="px-4 py-3"><Pill>{row.visibility}</Pill></td>
+        {/snippet}
+      </DataTable>
+    </Panel>
+  </div>
+</Story>
+
+<Story
   name="Following controls"
   asChild
   parameters={{
@@ -143,12 +171,7 @@
 >
   <div class="max-w-3xl">
     <Panel title="Spaces" noPadding>
-      <DataTable
-        items={[]}
-        columns={4}
-        header={tableHeader}
-        row={tableRow}
-      >
+      <DataTable items={[]} columns={4} header={tableHeader} row={tableRow}>
         {#snippet empty()}
           <div class="flex min-h-52 flex-col">
             <EmptyState icon="icon-[uil--building]" title="No spaces yet">
@@ -164,17 +187,94 @@
   </div>
 </Story>
 
+<Story
+  name="Loading"
+  asChild
+  parameters={{
+    docs: {
+      description: {
+        story:
+          'While the first page is pending, `loading` replaces the empty row with one sized pending block inside the table.'
+      }
+    }
+  }}
+>
+  <div class="max-w-3xl">
+    <Panel title="Spaces" noPadding>
+      <DataTable items={[]} columns={4} loading header={tableHeader} row={tableRow} />
+    </Panel>
+  </div>
+</Story>
+
+<Story
+  name="Loading more"
+  asChild
+  parameters={{
+    docs: {
+      description: {
+        story:
+          'Set `hasMore` and `onLoadMore` for automatic pagination. `loadingMore` shows a pending block after the last row while the next page loads.'
+      }
+    }
+  }}
+>
+  <div class="max-w-3xl">
+    <Panel title="Spaces" noPadding>
+      <DataTable
+        items={rows}
+        columns={4}
+        getKey={(row) => row.id}
+        hasMore
+        loadingMore
+        onLoadMore={() => {}}
+        header={tableHeader}
+        row={tableRow}
+      />
+    </Panel>
+  </div>
+</Story>
+
+<Story
+  name="Grouped rows"
+  asChild
+  parameters={{
+    docs: {
+      description: {
+        story:
+          'Pass `getGroupKey` and a `group` snippet to insert a full-width heading row before each run of rows that share a key.'
+      }
+    }
+  }}
+>
+  <div class="max-w-3xl">
+    <Panel title="Spaces" noPadding>
+      <DataTable
+        items={[...rows].sort((a, b) => a.visibility.localeCompare(b.visibility))}
+        columns={4}
+        getKey={(row) => row.id}
+        getGroupKey={(row) => row.visibility}
+        header={tableHeader}
+        row={tableRow}
+      >
+        {#snippet group(row: SpaceRow)}
+          <h3 class="text-sm font-medium text-muted">{row.visibility}</h3>
+        {/snippet}
+      </DataTable>
+    </Panel>
+  </div>
+</Story>
+
 {#snippet tableHeader()}
   <th class="table-header-cell">Name</th>
   <th class="table-header-cell">ID</th>
-  <th class="table-header-cell text-right">Members</th>
+  <th class="table-header-cell text-end">Members</th>
   <th class="table-header-cell">Visibility</th>
 {/snippet}
 
 {#snippet tableRow(row: SpaceRow)}
   <td class="px-4 py-3 font-medium">{row.name}</td>
   <td class="px-4 py-3"><CopyId value={row.id} /></td>
-  <td class="px-4 py-3 text-right tabular-nums">{row.members}</td>
+  <td class="px-4 py-3 text-end tabular-nums">{row.members}</td>
   <td class="px-4 py-3">
     <Pill
       tone={row.visibility === 'Public'

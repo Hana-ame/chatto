@@ -107,12 +107,14 @@ test.describe('Thread Reply Echo ("Also send to channel")', () => {
       await roomPage.expectTextInThreadPane(replyMessage);
     });
 
-    await test.step('Close thread and verify echo appears in main room', async () => {
-      await roomPage.closeThread();
+    await test.step('Follow the Echo badge and highlight the echo in the room', async () => {
+      await page.getByRole('link', { name: 'Echo', exact: true }).click();
 
       // Wait for echo to arrive via WebSocket and become visible
       const echoArticle = page.locator('[role="article"]', { hasText: replyMessage });
       await expect(echoArticle.first()).toBeVisible({ timeout: TIMEOUTS.REALTIME_EVENT });
+      await expect(echoArticle).toHaveCount(1);
+      await expect(echoArticle).toHaveClass(/highlight-flash/);
     });
 
     await test.step('Verify echo has "Thread" badge', async () => {
@@ -609,6 +611,55 @@ test.describe('Thread Reply Echo ("Also send to channel")', () => {
       await roomPage.expectThreadRouteClosed();
       await roomPage.expectMessageVisible(editedMessage, { timeout: TIMEOUTS.REALTIME_EVENT });
     });
+  });
+
+  test('editing an image-only thread reply can add and remove its room echo', async ({
+    page,
+    chatPage,
+    roomPage
+  }) => {
+    await createAndLoginTestUser(page);
+    await chatPage.goto();
+    await chatPage.enterRoom('general');
+
+    const root = await roomPage.sendMessage(`Root for image echo edit ${Date.now()}`);
+    await root.openThread();
+    await roomPage.expectThreadPaneVisible();
+    await roomPage.dropFileInThread('e2e/fixtures/brighton.jpg');
+    await roomPage.threadReplyInput.press('Control+Enter');
+    await expect(roomPage.threadAttachmentPreview).toHaveCount(0);
+
+    const threadImage = roomPage.threadPane.locator(
+      '[role="article"]:has(button[aria-label^="View"] img)'
+    );
+    await expect(threadImage).toBeVisible({ timeout: TIMEOUTS.REALTIME_EVENT });
+    const replyId = await threadImage.getAttribute('data-event-id');
+    expect(replyId).toBeTruthy();
+    const reply = roomPage.getMessageByEventId(replyId!);
+    const roomImage = roomPage.roomDropZone.locator(
+      '[role="article"]:has(button[aria-label^="View"] img)'
+    );
+
+    await reply.startEdit();
+    await roomPage.expectThreadEditModeActive();
+    const toggle = page.getByRole('button', { name: 'Also send to channel' });
+    await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    await toggle.click();
+    await roomPage.threadReplyInput.press('Control+Enter');
+
+    await roomPage.expectThreadEditModeInactive();
+    await expect(threadImage).toBeVisible();
+    await expect(roomImage).toBeVisible({ timeout: TIMEOUTS.REALTIME_EVENT });
+
+    await reply.startEdit();
+    await roomPage.expectThreadEditModeActive();
+    await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    await toggle.click();
+    await roomPage.threadReplyInput.press('Control+Enter');
+
+    await roomPage.expectThreadEditModeInactive();
+    await expect(threadImage).toBeVisible();
+    await expect(roomImage).toHaveCount(0, { timeout: TIMEOUTS.REALTIME_EVENT });
   });
 
   test('editing an echoed thread reply can remove the main room echo', async ({
@@ -1501,4 +1552,48 @@ test.describe('Thread Reply Echo ("Also send to channel")', () => {
       });
     });
   });
+});
+
+test('a receiver with only the echo loaded sees canonical edits after reconnect', async ({
+  page,
+  chatPage,
+  roomPage,
+  browser,
+  serverURL
+}) => {
+  await createAndLoginTestUser(page);
+  await chatPage.goto();
+  await chatPage.enterRoom('general');
+  const { roomId } = await getIdsFromUrlViaConnect(page);
+  const root = await postMessageViaConnect(page, roomId, 'Reference echo receiver root');
+  const initial = 'Reference echo receiver initial';
+  const edited = 'Reference echo receiver edited';
+  const reply = await postThreadReplyWithEchoViaConnect(page, roomId, initial, root, '');
+  await roomPage.expectMessageVisible(initial);
+
+  await withServerUser(
+    browser!,
+    serverURL,
+    async ({ page: receiver, chatPage: receiverChat, roomPage: receiverRoom }) => {
+      await receiverChat.goto();
+      await receiverChat.enterRoom('general');
+      await receiverRoom.expectMessageVisible(initial);
+      await expect(receiverRoom.threadPane).not.toBeVisible();
+      await connectPost(page, 'chatto.api.v1.MessageService/UpdateMessage', {
+        roomId,
+        eventId: reply,
+        body: edited
+      });
+      await receiverRoom.expectMessageVisible(edited);
+      await receiverRoom.expectMessageNotVisible(initial);
+      await receiver.reload();
+      await receiverRoom.expectMessageVisible(edited);
+      await expect(receiverRoom.threadPane).not.toBeVisible();
+      await connectPost(page, 'chatto.api.v1.MessageService/DeleteMessage', {
+        roomId,
+        eventId: reply
+      });
+      await receiverRoom.expectMessageNotVisible(edited);
+    }
+  );
 });

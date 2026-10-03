@@ -33,12 +33,24 @@ const (
 // reflection-formatted method names, remove the leading slash and convert the remaining slash to a
 // period.
 const (
-	// MyAccountServiceUpdateProfileProcedure is the fully-qualified name of the MyAccountService's
-	// UpdateProfile RPC.
-	MyAccountServiceUpdateProfileProcedure = "/chatto.api.v1.MyAccountService/UpdateProfile"
-	// MyAccountServiceUpdatePasswordProcedure is the fully-qualified name of the MyAccountService's
-	// UpdatePassword RPC.
-	MyAccountServiceUpdatePasswordProcedure = "/chatto.api.v1.MyAccountService/UpdatePassword"
+	// MyAccountServiceChangePasswordProcedure is the fully-qualified name of the MyAccountService's
+	// ChangePassword RPC.
+	MyAccountServiceChangePasswordProcedure = "/chatto.api.v1.MyAccountService/ChangePassword"
+	// MyAccountServiceListVerifiedEmailsProcedure is the fully-qualified name of the MyAccountService's
+	// ListVerifiedEmails RPC.
+	MyAccountServiceListVerifiedEmailsProcedure = "/chatto.api.v1.MyAccountService/ListVerifiedEmails"
+	// MyAccountServiceRequestEmailVerificationProcedure is the fully-qualified name of the
+	// MyAccountService's RequestEmailVerification RPC.
+	MyAccountServiceRequestEmailVerificationProcedure = "/chatto.api.v1.MyAccountService/RequestEmailVerification"
+	// MyAccountServiceConfirmEmailVerificationProcedure is the fully-qualified name of the
+	// MyAccountService's ConfirmEmailVerification RPC.
+	MyAccountServiceConfirmEmailVerificationProcedure = "/chatto.api.v1.MyAccountService/ConfirmEmailVerification"
+	// MyAccountServiceSetPrimaryEmailProcedure is the fully-qualified name of the MyAccountService's
+	// SetPrimaryEmail RPC.
+	MyAccountServiceSetPrimaryEmailProcedure = "/chatto.api.v1.MyAccountService/SetPrimaryEmail"
+	// MyAccountServiceGetSettingsProcedure is the fully-qualified name of the MyAccountService's
+	// GetSettings RPC.
+	MyAccountServiceGetSettingsProcedure = "/chatto.api.v1.MyAccountService/GetSettings"
 	// MyAccountServiceUpdateSettingsProcedure is the fully-qualified name of the MyAccountService's
 	// UpdateSettings RPC.
 	MyAccountServiceUpdateSettingsProcedure = "/chatto.api.v1.MyAccountService/UpdateSettings"
@@ -51,12 +63,21 @@ const (
 	// MyAccountServiceDisconnectExternalIdentityProcedure is the fully-qualified name of the
 	// MyAccountService's DisconnectExternalIdentity RPC.
 	MyAccountServiceDisconnectExternalIdentityProcedure = "/chatto.api.v1.MyAccountService/DisconnectExternalIdentity"
-	// MyAccountServiceUpdatePresenceProcedure is the fully-qualified name of the MyAccountService's
-	// UpdatePresence RPC.
-	MyAccountServiceUpdatePresenceProcedure = "/chatto.api.v1.MyAccountService/UpdatePresence"
-	// MyAccountServiceUpdateCustomStatusProcedure is the fully-qualified name of the MyAccountService's
-	// UpdateCustomStatus RPC.
-	MyAccountServiceUpdateCustomStatusProcedure = "/chatto.api.v1.MyAccountService/UpdateCustomStatus"
+	// MyAccountServiceSetPresenceProcedure is the fully-qualified name of the MyAccountService's
+	// SetPresence RPC.
+	MyAccountServiceSetPresenceProcedure = "/chatto.api.v1.MyAccountService/SetPresence"
+	// MyAccountServiceGetPresencePreferenceProcedure is the fully-qualified name of the
+	// MyAccountService's GetPresencePreference RPC.
+	MyAccountServiceGetPresencePreferenceProcedure = "/chatto.api.v1.MyAccountService/GetPresencePreference"
+	// MyAccountServiceSetPresencePreferenceProcedure is the fully-qualified name of the
+	// MyAccountService's SetPresencePreference RPC.
+	MyAccountServiceSetPresencePreferenceProcedure = "/chatto.api.v1.MyAccountService/SetPresencePreference"
+	// MyAccountServiceRefreshPresenceProcedure is the fully-qualified name of the MyAccountService's
+	// RefreshPresence RPC.
+	MyAccountServiceRefreshPresenceProcedure = "/chatto.api.v1.MyAccountService/RefreshPresence"
+	// MyAccountServiceSetCustomStatusProcedure is the fully-qualified name of the MyAccountService's
+	// SetCustomStatus RPC.
+	MyAccountServiceSetCustomStatusProcedure = "/chatto.api.v1.MyAccountService/SetCustomStatus"
 	// MyAccountServiceDeleteCustomStatusProcedure is the fully-qualified name of the MyAccountService's
 	// DeleteCustomStatus RPC.
 	MyAccountServiceDeleteCustomStatusProcedure = "/chatto.api.v1.MyAccountService/DeleteCustomStatus"
@@ -70,10 +91,34 @@ const (
 
 // MyAccountServiceClient is a client for the chatto.api.v1.MyAccountService service.
 type MyAccountServiceClient interface {
-	// Updates the authenticated user's login, display name, and/or bio.
-	UpdateProfile(context.Context, *connect.Request[v1.UpdateProfileRequest]) (*connect.Response[v1.UpdateProfileResponse], error)
 	// Updates or adds the authenticated user's password.
-	UpdatePassword(context.Context, *connect.Request[v1.UpdatePasswordRequest]) (*connect.Response[v1.UpdatePasswordResponse], error)
+	ChangePassword(context.Context, *connect.Request[v1.ChangePasswordRequest]) (*connect.Response[v1.ChangePasswordResponse], error)
+	// Lists the authenticated user's verified email addresses and primary choice.
+	// Returns FAILED_PRECONDITION when the authenticated account does not match
+	// expected_user_id.
+	ListVerifiedEmails(context.Context, *connect.Request[v1.ListVerifiedEmailsRequest]) (*connect.Response[v1.ListVerifiedEmailsResponse], error)
+	// Sends a six-digit code to an email address that the authenticated user
+	// wants to add. The code expires after the server-configured email OTP
+	// lifetime. The client can request a new code after expiry. The server must
+	// have transactional email enabled. Returns ALREADY_EXISTS when the address
+	// is already verified for the user, RESOURCE_EXHAUSTED after too many code
+	// requests or attempts, and UNAVAILABLE when email delivery is disabled or
+	// fails. Returns FAILED_PRECONDITION when the authenticated account does not
+	// match expected_user_id.
+	RequestEmailVerification(context.Context, *connect.Request[v1.RequestEmailVerificationRequest]) (*connect.Response[v1.RequestEmailVerificationResponse], error)
+	// Confirms a verification code and adds the address to the account. Returns
+	// INVALID_ARGUMENT when the code is invalid or expired, and ALREADY_EXISTS
+	// when another user already controls the address. Returns FAILED_PRECONDITION
+	// when the authenticated account does not match expected_user_id.
+	ConfirmEmailVerification(context.Context, *connect.Request[v1.ConfirmEmailVerificationRequest]) (*connect.Response[v1.ConfirmEmailVerificationResponse], error)
+	// Selects one verified address for future account-directed email. Returns
+	// NOT_FOUND when the address is not verified for the authenticated user, and
+	// FAILED_PRECONDITION when the authenticated account does not match
+	// expected_user_id.
+	SetPrimaryEmail(context.Context, *connect.Request[v1.SetPrimaryEmailRequest]) (*connect.Response[v1.SetPrimaryEmailResponse], error)
+	// Reads the authenticated user's display preferences without changing them.
+	// Returns default settings when none have been saved.
+	GetSettings(context.Context, *connect.Request[v1.GetSettingsRequest]) (*connect.Response[v1.GetSettingsResponse], error)
 	// Updates the authenticated user's display preferences.
 	UpdateSettings(context.Context, *connect.Request[v1.UpdateSettingsRequest]) (*connect.Response[v1.UpdateSettingsResponse], error)
 	// Lists configured external identity providers and identities linked to the
@@ -85,13 +130,23 @@ type MyAccountServiceClient interface {
 	StartExternalIdentityLink(context.Context, *connect.Request[v1.StartExternalIdentityLinkRequest]) (*connect.Response[v1.StartExternalIdentityLinkResponse], error)
 	// Disconnects a provider identity from the authenticated account.
 	DisconnectExternalIdentity(context.Context, *connect.Request[v1.DisconnectExternalIdentityRequest]) (*connect.Response[v1.DisconnectExternalIdentityResponse], error)
-	// Updates the current user's live presence status. This state is transient:
-	// clients should refresh it periodically while visible, and should stop
-	// calling this RPC when the user chooses to appear offline.
-	UpdatePresence(context.Context, *connect.Request[v1.UpdatePresenceRequest]) (*connect.Response[v1.UpdatePresenceResponse], error)
-	// Updates or replaces the current user's custom status. Emoji and text are
-	// required, and expires_at must be omitted or in the future.
-	UpdateCustomStatus(context.Context, *connect.Request[v1.UpdateCustomStatusRequest]) (*connect.Response[v1.UpdateCustomStatusResponse], error)
+	// Legacy live presence report, expiring after 60 seconds without refresh.
+	// A saved private choice overrides this report, including user_selected.
+	// New clients use SetPresencePreference for choices and RefreshPresence
+	// every 30 seconds for liveness.
+	SetPresence(context.Context, *connect.Request[v1.SetPresenceRequest]) (*connect.Response[v1.SetPresenceResponse], error)
+	// Reads the authenticated account's private saved availability choice.
+	GetPresencePreference(context.Context, *connect.Request[v1.GetPresencePreferenceRequest]) (*connect.Response[v1.GetPresencePreferenceResponse], error)
+	// Saves a choice for all devices on this server. A stale revision returns ABORTED.
+	// OFFLINE suppresses public presence and typing; the choice survives disconnects.
+	SetPresencePreference(context.Context, *connect.Request[v1.SetPresencePreferenceRequest]) (*connect.Response[v1.SetPresencePreferenceResponse], error)
+	// Refreshes connection liveness without changing the saved choice. Clients call
+	// every 30 seconds; liveness expires after 60 seconds without a refresh.
+	// Accounts with a saved OFFLINE choice may refresh without public presence signals.
+	RefreshPresence(context.Context, *connect.Request[v1.RefreshPresenceRequest]) (*connect.Response[v1.RefreshPresenceResponse], error)
+	// Sets the current user's complete custom status. Emoji and text are required.
+	// Omit expires_at for no expiry, or supply a future time.
+	SetCustomStatus(context.Context, *connect.Request[v1.SetCustomStatusRequest]) (*connect.Response[v1.SetCustomStatusResponse], error)
 	// Deletes the current user's custom status. The call is idempotent and returns
 	// the resulting empty status state.
 	DeleteCustomStatus(context.Context, *connect.Request[v1.DeleteCustomStatusRequest]) (*connect.Response[v1.DeleteCustomStatusResponse], error)
@@ -114,16 +169,41 @@ func NewMyAccountServiceClient(httpClient connect.HTTPClient, baseURL string, op
 	baseURL = strings.TrimRight(baseURL, "/")
 	myAccountServiceMethods := v1.File_chatto_api_v1_account_proto.Services().ByName("MyAccountService").Methods()
 	return &myAccountServiceClient{
-		updateProfile: connect.NewClient[v1.UpdateProfileRequest, v1.UpdateProfileResponse](
+		changePassword: connect.NewClient[v1.ChangePasswordRequest, v1.ChangePasswordResponse](
 			httpClient,
-			baseURL+MyAccountServiceUpdateProfileProcedure,
-			connect.WithSchema(myAccountServiceMethods.ByName("UpdateProfile")),
+			baseURL+MyAccountServiceChangePasswordProcedure,
+			connect.WithSchema(myAccountServiceMethods.ByName("ChangePassword")),
 			connect.WithClientOptions(opts...),
 		),
-		updatePassword: connect.NewClient[v1.UpdatePasswordRequest, v1.UpdatePasswordResponse](
+		listVerifiedEmails: connect.NewClient[v1.ListVerifiedEmailsRequest, v1.ListVerifiedEmailsResponse](
 			httpClient,
-			baseURL+MyAccountServiceUpdatePasswordProcedure,
-			connect.WithSchema(myAccountServiceMethods.ByName("UpdatePassword")),
+			baseURL+MyAccountServiceListVerifiedEmailsProcedure,
+			connect.WithSchema(myAccountServiceMethods.ByName("ListVerifiedEmails")),
+			connect.WithIdempotency(connect.IdempotencyNoSideEffects),
+			connect.WithClientOptions(opts...),
+		),
+		requestEmailVerification: connect.NewClient[v1.RequestEmailVerificationRequest, v1.RequestEmailVerificationResponse](
+			httpClient,
+			baseURL+MyAccountServiceRequestEmailVerificationProcedure,
+			connect.WithSchema(myAccountServiceMethods.ByName("RequestEmailVerification")),
+			connect.WithClientOptions(opts...),
+		),
+		confirmEmailVerification: connect.NewClient[v1.ConfirmEmailVerificationRequest, v1.ConfirmEmailVerificationResponse](
+			httpClient,
+			baseURL+MyAccountServiceConfirmEmailVerificationProcedure,
+			connect.WithSchema(myAccountServiceMethods.ByName("ConfirmEmailVerification")),
+			connect.WithClientOptions(opts...),
+		),
+		setPrimaryEmail: connect.NewClient[v1.SetPrimaryEmailRequest, v1.SetPrimaryEmailResponse](
+			httpClient,
+			baseURL+MyAccountServiceSetPrimaryEmailProcedure,
+			connect.WithSchema(myAccountServiceMethods.ByName("SetPrimaryEmail")),
+			connect.WithClientOptions(opts...),
+		),
+		getSettings: connect.NewClient[v1.GetSettingsRequest, v1.GetSettingsResponse](
+			httpClient,
+			baseURL+MyAccountServiceGetSettingsProcedure,
+			connect.WithSchema(myAccountServiceMethods.ByName("GetSettings")),
 			connect.WithClientOptions(opts...),
 		),
 		updateSettings: connect.NewClient[v1.UpdateSettingsRequest, v1.UpdateSettingsResponse](
@@ -150,16 +230,34 @@ func NewMyAccountServiceClient(httpClient connect.HTTPClient, baseURL string, op
 			connect.WithSchema(myAccountServiceMethods.ByName("DisconnectExternalIdentity")),
 			connect.WithClientOptions(opts...),
 		),
-		updatePresence: connect.NewClient[v1.UpdatePresenceRequest, v1.UpdatePresenceResponse](
+		setPresence: connect.NewClient[v1.SetPresenceRequest, v1.SetPresenceResponse](
 			httpClient,
-			baseURL+MyAccountServiceUpdatePresenceProcedure,
-			connect.WithSchema(myAccountServiceMethods.ByName("UpdatePresence")),
+			baseURL+MyAccountServiceSetPresenceProcedure,
+			connect.WithSchema(myAccountServiceMethods.ByName("SetPresence")),
 			connect.WithClientOptions(opts...),
 		),
-		updateCustomStatus: connect.NewClient[v1.UpdateCustomStatusRequest, v1.UpdateCustomStatusResponse](
+		getPresencePreference: connect.NewClient[v1.GetPresencePreferenceRequest, v1.GetPresencePreferenceResponse](
 			httpClient,
-			baseURL+MyAccountServiceUpdateCustomStatusProcedure,
-			connect.WithSchema(myAccountServiceMethods.ByName("UpdateCustomStatus")),
+			baseURL+MyAccountServiceGetPresencePreferenceProcedure,
+			connect.WithSchema(myAccountServiceMethods.ByName("GetPresencePreference")),
+			connect.WithClientOptions(opts...),
+		),
+		setPresencePreference: connect.NewClient[v1.SetPresencePreferenceRequest, v1.SetPresencePreferenceResponse](
+			httpClient,
+			baseURL+MyAccountServiceSetPresencePreferenceProcedure,
+			connect.WithSchema(myAccountServiceMethods.ByName("SetPresencePreference")),
+			connect.WithClientOptions(opts...),
+		),
+		refreshPresence: connect.NewClient[v1.RefreshPresenceRequest, v1.RefreshPresenceResponse](
+			httpClient,
+			baseURL+MyAccountServiceRefreshPresenceProcedure,
+			connect.WithSchema(myAccountServiceMethods.ByName("RefreshPresence")),
+			connect.WithClientOptions(opts...),
+		),
+		setCustomStatus: connect.NewClient[v1.SetCustomStatusRequest, v1.SetCustomStatusResponse](
+			httpClient,
+			baseURL+MyAccountServiceSetCustomStatusProcedure,
+			connect.WithSchema(myAccountServiceMethods.ByName("SetCustomStatus")),
 			connect.WithClientOptions(opts...),
 		),
 		deleteCustomStatus: connect.NewClient[v1.DeleteCustomStatusRequest, v1.DeleteCustomStatusResponse](
@@ -186,27 +284,54 @@ func NewMyAccountServiceClient(httpClient connect.HTTPClient, baseURL string, op
 
 // myAccountServiceClient implements MyAccountServiceClient.
 type myAccountServiceClient struct {
-	updateProfile              *connect.Client[v1.UpdateProfileRequest, v1.UpdateProfileResponse]
-	updatePassword             *connect.Client[v1.UpdatePasswordRequest, v1.UpdatePasswordResponse]
+	changePassword             *connect.Client[v1.ChangePasswordRequest, v1.ChangePasswordResponse]
+	listVerifiedEmails         *connect.Client[v1.ListVerifiedEmailsRequest, v1.ListVerifiedEmailsResponse]
+	requestEmailVerification   *connect.Client[v1.RequestEmailVerificationRequest, v1.RequestEmailVerificationResponse]
+	confirmEmailVerification   *connect.Client[v1.ConfirmEmailVerificationRequest, v1.ConfirmEmailVerificationResponse]
+	setPrimaryEmail            *connect.Client[v1.SetPrimaryEmailRequest, v1.SetPrimaryEmailResponse]
+	getSettings                *connect.Client[v1.GetSettingsRequest, v1.GetSettingsResponse]
 	updateSettings             *connect.Client[v1.UpdateSettingsRequest, v1.UpdateSettingsResponse]
 	listExternalIdentities     *connect.Client[v1.ListExternalIdentitiesRequest, v1.ListExternalIdentitiesResponse]
 	startExternalIdentityLink  *connect.Client[v1.StartExternalIdentityLinkRequest, v1.StartExternalIdentityLinkResponse]
 	disconnectExternalIdentity *connect.Client[v1.DisconnectExternalIdentityRequest, v1.DisconnectExternalIdentityResponse]
-	updatePresence             *connect.Client[v1.UpdatePresenceRequest, v1.UpdatePresenceResponse]
-	updateCustomStatus         *connect.Client[v1.UpdateCustomStatusRequest, v1.UpdateCustomStatusResponse]
+	setPresence                *connect.Client[v1.SetPresenceRequest, v1.SetPresenceResponse]
+	getPresencePreference      *connect.Client[v1.GetPresencePreferenceRequest, v1.GetPresencePreferenceResponse]
+	setPresencePreference      *connect.Client[v1.SetPresencePreferenceRequest, v1.SetPresencePreferenceResponse]
+	refreshPresence            *connect.Client[v1.RefreshPresenceRequest, v1.RefreshPresenceResponse]
+	setCustomStatus            *connect.Client[v1.SetCustomStatusRequest, v1.SetCustomStatusResponse]
 	deleteCustomStatus         *connect.Client[v1.DeleteCustomStatusRequest, v1.DeleteCustomStatusResponse]
 	requestAccountDeletion     *connect.Client[v1.RequestAccountDeletionRequest, v1.RequestAccountDeletionResponse]
 	deleteMyAccount            *connect.Client[v1.DeleteMyAccountRequest, v1.DeleteMyAccountResponse]
 }
 
-// UpdateProfile calls chatto.api.v1.MyAccountService.UpdateProfile.
-func (c *myAccountServiceClient) UpdateProfile(ctx context.Context, req *connect.Request[v1.UpdateProfileRequest]) (*connect.Response[v1.UpdateProfileResponse], error) {
-	return c.updateProfile.CallUnary(ctx, req)
+// ChangePassword calls chatto.api.v1.MyAccountService.ChangePassword.
+func (c *myAccountServiceClient) ChangePassword(ctx context.Context, req *connect.Request[v1.ChangePasswordRequest]) (*connect.Response[v1.ChangePasswordResponse], error) {
+	return c.changePassword.CallUnary(ctx, req)
 }
 
-// UpdatePassword calls chatto.api.v1.MyAccountService.UpdatePassword.
-func (c *myAccountServiceClient) UpdatePassword(ctx context.Context, req *connect.Request[v1.UpdatePasswordRequest]) (*connect.Response[v1.UpdatePasswordResponse], error) {
-	return c.updatePassword.CallUnary(ctx, req)
+// ListVerifiedEmails calls chatto.api.v1.MyAccountService.ListVerifiedEmails.
+func (c *myAccountServiceClient) ListVerifiedEmails(ctx context.Context, req *connect.Request[v1.ListVerifiedEmailsRequest]) (*connect.Response[v1.ListVerifiedEmailsResponse], error) {
+	return c.listVerifiedEmails.CallUnary(ctx, req)
+}
+
+// RequestEmailVerification calls chatto.api.v1.MyAccountService.RequestEmailVerification.
+func (c *myAccountServiceClient) RequestEmailVerification(ctx context.Context, req *connect.Request[v1.RequestEmailVerificationRequest]) (*connect.Response[v1.RequestEmailVerificationResponse], error) {
+	return c.requestEmailVerification.CallUnary(ctx, req)
+}
+
+// ConfirmEmailVerification calls chatto.api.v1.MyAccountService.ConfirmEmailVerification.
+func (c *myAccountServiceClient) ConfirmEmailVerification(ctx context.Context, req *connect.Request[v1.ConfirmEmailVerificationRequest]) (*connect.Response[v1.ConfirmEmailVerificationResponse], error) {
+	return c.confirmEmailVerification.CallUnary(ctx, req)
+}
+
+// SetPrimaryEmail calls chatto.api.v1.MyAccountService.SetPrimaryEmail.
+func (c *myAccountServiceClient) SetPrimaryEmail(ctx context.Context, req *connect.Request[v1.SetPrimaryEmailRequest]) (*connect.Response[v1.SetPrimaryEmailResponse], error) {
+	return c.setPrimaryEmail.CallUnary(ctx, req)
+}
+
+// GetSettings calls chatto.api.v1.MyAccountService.GetSettings.
+func (c *myAccountServiceClient) GetSettings(ctx context.Context, req *connect.Request[v1.GetSettingsRequest]) (*connect.Response[v1.GetSettingsResponse], error) {
+	return c.getSettings.CallUnary(ctx, req)
 }
 
 // UpdateSettings calls chatto.api.v1.MyAccountService.UpdateSettings.
@@ -229,14 +354,29 @@ func (c *myAccountServiceClient) DisconnectExternalIdentity(ctx context.Context,
 	return c.disconnectExternalIdentity.CallUnary(ctx, req)
 }
 
-// UpdatePresence calls chatto.api.v1.MyAccountService.UpdatePresence.
-func (c *myAccountServiceClient) UpdatePresence(ctx context.Context, req *connect.Request[v1.UpdatePresenceRequest]) (*connect.Response[v1.UpdatePresenceResponse], error) {
-	return c.updatePresence.CallUnary(ctx, req)
+// SetPresence calls chatto.api.v1.MyAccountService.SetPresence.
+func (c *myAccountServiceClient) SetPresence(ctx context.Context, req *connect.Request[v1.SetPresenceRequest]) (*connect.Response[v1.SetPresenceResponse], error) {
+	return c.setPresence.CallUnary(ctx, req)
 }
 
-// UpdateCustomStatus calls chatto.api.v1.MyAccountService.UpdateCustomStatus.
-func (c *myAccountServiceClient) UpdateCustomStatus(ctx context.Context, req *connect.Request[v1.UpdateCustomStatusRequest]) (*connect.Response[v1.UpdateCustomStatusResponse], error) {
-	return c.updateCustomStatus.CallUnary(ctx, req)
+// GetPresencePreference calls chatto.api.v1.MyAccountService.GetPresencePreference.
+func (c *myAccountServiceClient) GetPresencePreference(ctx context.Context, req *connect.Request[v1.GetPresencePreferenceRequest]) (*connect.Response[v1.GetPresencePreferenceResponse], error) {
+	return c.getPresencePreference.CallUnary(ctx, req)
+}
+
+// SetPresencePreference calls chatto.api.v1.MyAccountService.SetPresencePreference.
+func (c *myAccountServiceClient) SetPresencePreference(ctx context.Context, req *connect.Request[v1.SetPresencePreferenceRequest]) (*connect.Response[v1.SetPresencePreferenceResponse], error) {
+	return c.setPresencePreference.CallUnary(ctx, req)
+}
+
+// RefreshPresence calls chatto.api.v1.MyAccountService.RefreshPresence.
+func (c *myAccountServiceClient) RefreshPresence(ctx context.Context, req *connect.Request[v1.RefreshPresenceRequest]) (*connect.Response[v1.RefreshPresenceResponse], error) {
+	return c.refreshPresence.CallUnary(ctx, req)
+}
+
+// SetCustomStatus calls chatto.api.v1.MyAccountService.SetCustomStatus.
+func (c *myAccountServiceClient) SetCustomStatus(ctx context.Context, req *connect.Request[v1.SetCustomStatusRequest]) (*connect.Response[v1.SetCustomStatusResponse], error) {
+	return c.setCustomStatus.CallUnary(ctx, req)
 }
 
 // DeleteCustomStatus calls chatto.api.v1.MyAccountService.DeleteCustomStatus.
@@ -256,10 +396,34 @@ func (c *myAccountServiceClient) DeleteMyAccount(ctx context.Context, req *conne
 
 // MyAccountServiceHandler is an implementation of the chatto.api.v1.MyAccountService service.
 type MyAccountServiceHandler interface {
-	// Updates the authenticated user's login, display name, and/or bio.
-	UpdateProfile(context.Context, *connect.Request[v1.UpdateProfileRequest]) (*connect.Response[v1.UpdateProfileResponse], error)
 	// Updates or adds the authenticated user's password.
-	UpdatePassword(context.Context, *connect.Request[v1.UpdatePasswordRequest]) (*connect.Response[v1.UpdatePasswordResponse], error)
+	ChangePassword(context.Context, *connect.Request[v1.ChangePasswordRequest]) (*connect.Response[v1.ChangePasswordResponse], error)
+	// Lists the authenticated user's verified email addresses and primary choice.
+	// Returns FAILED_PRECONDITION when the authenticated account does not match
+	// expected_user_id.
+	ListVerifiedEmails(context.Context, *connect.Request[v1.ListVerifiedEmailsRequest]) (*connect.Response[v1.ListVerifiedEmailsResponse], error)
+	// Sends a six-digit code to an email address that the authenticated user
+	// wants to add. The code expires after the server-configured email OTP
+	// lifetime. The client can request a new code after expiry. The server must
+	// have transactional email enabled. Returns ALREADY_EXISTS when the address
+	// is already verified for the user, RESOURCE_EXHAUSTED after too many code
+	// requests or attempts, and UNAVAILABLE when email delivery is disabled or
+	// fails. Returns FAILED_PRECONDITION when the authenticated account does not
+	// match expected_user_id.
+	RequestEmailVerification(context.Context, *connect.Request[v1.RequestEmailVerificationRequest]) (*connect.Response[v1.RequestEmailVerificationResponse], error)
+	// Confirms a verification code and adds the address to the account. Returns
+	// INVALID_ARGUMENT when the code is invalid or expired, and ALREADY_EXISTS
+	// when another user already controls the address. Returns FAILED_PRECONDITION
+	// when the authenticated account does not match expected_user_id.
+	ConfirmEmailVerification(context.Context, *connect.Request[v1.ConfirmEmailVerificationRequest]) (*connect.Response[v1.ConfirmEmailVerificationResponse], error)
+	// Selects one verified address for future account-directed email. Returns
+	// NOT_FOUND when the address is not verified for the authenticated user, and
+	// FAILED_PRECONDITION when the authenticated account does not match
+	// expected_user_id.
+	SetPrimaryEmail(context.Context, *connect.Request[v1.SetPrimaryEmailRequest]) (*connect.Response[v1.SetPrimaryEmailResponse], error)
+	// Reads the authenticated user's display preferences without changing them.
+	// Returns default settings when none have been saved.
+	GetSettings(context.Context, *connect.Request[v1.GetSettingsRequest]) (*connect.Response[v1.GetSettingsResponse], error)
 	// Updates the authenticated user's display preferences.
 	UpdateSettings(context.Context, *connect.Request[v1.UpdateSettingsRequest]) (*connect.Response[v1.UpdateSettingsResponse], error)
 	// Lists configured external identity providers and identities linked to the
@@ -271,13 +435,23 @@ type MyAccountServiceHandler interface {
 	StartExternalIdentityLink(context.Context, *connect.Request[v1.StartExternalIdentityLinkRequest]) (*connect.Response[v1.StartExternalIdentityLinkResponse], error)
 	// Disconnects a provider identity from the authenticated account.
 	DisconnectExternalIdentity(context.Context, *connect.Request[v1.DisconnectExternalIdentityRequest]) (*connect.Response[v1.DisconnectExternalIdentityResponse], error)
-	// Updates the current user's live presence status. This state is transient:
-	// clients should refresh it periodically while visible, and should stop
-	// calling this RPC when the user chooses to appear offline.
-	UpdatePresence(context.Context, *connect.Request[v1.UpdatePresenceRequest]) (*connect.Response[v1.UpdatePresenceResponse], error)
-	// Updates or replaces the current user's custom status. Emoji and text are
-	// required, and expires_at must be omitted or in the future.
-	UpdateCustomStatus(context.Context, *connect.Request[v1.UpdateCustomStatusRequest]) (*connect.Response[v1.UpdateCustomStatusResponse], error)
+	// Legacy live presence report, expiring after 60 seconds without refresh.
+	// A saved private choice overrides this report, including user_selected.
+	// New clients use SetPresencePreference for choices and RefreshPresence
+	// every 30 seconds for liveness.
+	SetPresence(context.Context, *connect.Request[v1.SetPresenceRequest]) (*connect.Response[v1.SetPresenceResponse], error)
+	// Reads the authenticated account's private saved availability choice.
+	GetPresencePreference(context.Context, *connect.Request[v1.GetPresencePreferenceRequest]) (*connect.Response[v1.GetPresencePreferenceResponse], error)
+	// Saves a choice for all devices on this server. A stale revision returns ABORTED.
+	// OFFLINE suppresses public presence and typing; the choice survives disconnects.
+	SetPresencePreference(context.Context, *connect.Request[v1.SetPresencePreferenceRequest]) (*connect.Response[v1.SetPresencePreferenceResponse], error)
+	// Refreshes connection liveness without changing the saved choice. Clients call
+	// every 30 seconds; liveness expires after 60 seconds without a refresh.
+	// Accounts with a saved OFFLINE choice may refresh without public presence signals.
+	RefreshPresence(context.Context, *connect.Request[v1.RefreshPresenceRequest]) (*connect.Response[v1.RefreshPresenceResponse], error)
+	// Sets the current user's complete custom status. Emoji and text are required.
+	// Omit expires_at for no expiry, or supply a future time.
+	SetCustomStatus(context.Context, *connect.Request[v1.SetCustomStatusRequest]) (*connect.Response[v1.SetCustomStatusResponse], error)
 	// Deletes the current user's custom status. The call is idempotent and returns
 	// the resulting empty status state.
 	DeleteCustomStatus(context.Context, *connect.Request[v1.DeleteCustomStatusRequest]) (*connect.Response[v1.DeleteCustomStatusResponse], error)
@@ -296,16 +470,41 @@ type MyAccountServiceHandler interface {
 // and JSON codecs. They also support gzip compression.
 func NewMyAccountServiceHandler(svc MyAccountServiceHandler, opts ...connect.HandlerOption) (string, http.Handler) {
 	myAccountServiceMethods := v1.File_chatto_api_v1_account_proto.Services().ByName("MyAccountService").Methods()
-	myAccountServiceUpdateProfileHandler := connect.NewUnaryHandler(
-		MyAccountServiceUpdateProfileProcedure,
-		svc.UpdateProfile,
-		connect.WithSchema(myAccountServiceMethods.ByName("UpdateProfile")),
+	myAccountServiceChangePasswordHandler := connect.NewUnaryHandler(
+		MyAccountServiceChangePasswordProcedure,
+		svc.ChangePassword,
+		connect.WithSchema(myAccountServiceMethods.ByName("ChangePassword")),
 		connect.WithHandlerOptions(opts...),
 	)
-	myAccountServiceUpdatePasswordHandler := connect.NewUnaryHandler(
-		MyAccountServiceUpdatePasswordProcedure,
-		svc.UpdatePassword,
-		connect.WithSchema(myAccountServiceMethods.ByName("UpdatePassword")),
+	myAccountServiceListVerifiedEmailsHandler := connect.NewUnaryHandler(
+		MyAccountServiceListVerifiedEmailsProcedure,
+		svc.ListVerifiedEmails,
+		connect.WithSchema(myAccountServiceMethods.ByName("ListVerifiedEmails")),
+		connect.WithIdempotency(connect.IdempotencyNoSideEffects),
+		connect.WithHandlerOptions(opts...),
+	)
+	myAccountServiceRequestEmailVerificationHandler := connect.NewUnaryHandler(
+		MyAccountServiceRequestEmailVerificationProcedure,
+		svc.RequestEmailVerification,
+		connect.WithSchema(myAccountServiceMethods.ByName("RequestEmailVerification")),
+		connect.WithHandlerOptions(opts...),
+	)
+	myAccountServiceConfirmEmailVerificationHandler := connect.NewUnaryHandler(
+		MyAccountServiceConfirmEmailVerificationProcedure,
+		svc.ConfirmEmailVerification,
+		connect.WithSchema(myAccountServiceMethods.ByName("ConfirmEmailVerification")),
+		connect.WithHandlerOptions(opts...),
+	)
+	myAccountServiceSetPrimaryEmailHandler := connect.NewUnaryHandler(
+		MyAccountServiceSetPrimaryEmailProcedure,
+		svc.SetPrimaryEmail,
+		connect.WithSchema(myAccountServiceMethods.ByName("SetPrimaryEmail")),
+		connect.WithHandlerOptions(opts...),
+	)
+	myAccountServiceGetSettingsHandler := connect.NewUnaryHandler(
+		MyAccountServiceGetSettingsProcedure,
+		svc.GetSettings,
+		connect.WithSchema(myAccountServiceMethods.ByName("GetSettings")),
 		connect.WithHandlerOptions(opts...),
 	)
 	myAccountServiceUpdateSettingsHandler := connect.NewUnaryHandler(
@@ -332,16 +531,34 @@ func NewMyAccountServiceHandler(svc MyAccountServiceHandler, opts ...connect.Han
 		connect.WithSchema(myAccountServiceMethods.ByName("DisconnectExternalIdentity")),
 		connect.WithHandlerOptions(opts...),
 	)
-	myAccountServiceUpdatePresenceHandler := connect.NewUnaryHandler(
-		MyAccountServiceUpdatePresenceProcedure,
-		svc.UpdatePresence,
-		connect.WithSchema(myAccountServiceMethods.ByName("UpdatePresence")),
+	myAccountServiceSetPresenceHandler := connect.NewUnaryHandler(
+		MyAccountServiceSetPresenceProcedure,
+		svc.SetPresence,
+		connect.WithSchema(myAccountServiceMethods.ByName("SetPresence")),
 		connect.WithHandlerOptions(opts...),
 	)
-	myAccountServiceUpdateCustomStatusHandler := connect.NewUnaryHandler(
-		MyAccountServiceUpdateCustomStatusProcedure,
-		svc.UpdateCustomStatus,
-		connect.WithSchema(myAccountServiceMethods.ByName("UpdateCustomStatus")),
+	myAccountServiceGetPresencePreferenceHandler := connect.NewUnaryHandler(
+		MyAccountServiceGetPresencePreferenceProcedure,
+		svc.GetPresencePreference,
+		connect.WithSchema(myAccountServiceMethods.ByName("GetPresencePreference")),
+		connect.WithHandlerOptions(opts...),
+	)
+	myAccountServiceSetPresencePreferenceHandler := connect.NewUnaryHandler(
+		MyAccountServiceSetPresencePreferenceProcedure,
+		svc.SetPresencePreference,
+		connect.WithSchema(myAccountServiceMethods.ByName("SetPresencePreference")),
+		connect.WithHandlerOptions(opts...),
+	)
+	myAccountServiceRefreshPresenceHandler := connect.NewUnaryHandler(
+		MyAccountServiceRefreshPresenceProcedure,
+		svc.RefreshPresence,
+		connect.WithSchema(myAccountServiceMethods.ByName("RefreshPresence")),
+		connect.WithHandlerOptions(opts...),
+	)
+	myAccountServiceSetCustomStatusHandler := connect.NewUnaryHandler(
+		MyAccountServiceSetCustomStatusProcedure,
+		svc.SetCustomStatus,
+		connect.WithSchema(myAccountServiceMethods.ByName("SetCustomStatus")),
 		connect.WithHandlerOptions(opts...),
 	)
 	myAccountServiceDeleteCustomStatusHandler := connect.NewUnaryHandler(
@@ -365,10 +582,18 @@ func NewMyAccountServiceHandler(svc MyAccountServiceHandler, opts ...connect.Han
 	)
 	return "/chatto.api.v1.MyAccountService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case MyAccountServiceUpdateProfileProcedure:
-			myAccountServiceUpdateProfileHandler.ServeHTTP(w, r)
-		case MyAccountServiceUpdatePasswordProcedure:
-			myAccountServiceUpdatePasswordHandler.ServeHTTP(w, r)
+		case MyAccountServiceChangePasswordProcedure:
+			myAccountServiceChangePasswordHandler.ServeHTTP(w, r)
+		case MyAccountServiceListVerifiedEmailsProcedure:
+			myAccountServiceListVerifiedEmailsHandler.ServeHTTP(w, r)
+		case MyAccountServiceRequestEmailVerificationProcedure:
+			myAccountServiceRequestEmailVerificationHandler.ServeHTTP(w, r)
+		case MyAccountServiceConfirmEmailVerificationProcedure:
+			myAccountServiceConfirmEmailVerificationHandler.ServeHTTP(w, r)
+		case MyAccountServiceSetPrimaryEmailProcedure:
+			myAccountServiceSetPrimaryEmailHandler.ServeHTTP(w, r)
+		case MyAccountServiceGetSettingsProcedure:
+			myAccountServiceGetSettingsHandler.ServeHTTP(w, r)
 		case MyAccountServiceUpdateSettingsProcedure:
 			myAccountServiceUpdateSettingsHandler.ServeHTTP(w, r)
 		case MyAccountServiceListExternalIdentitiesProcedure:
@@ -377,10 +602,16 @@ func NewMyAccountServiceHandler(svc MyAccountServiceHandler, opts ...connect.Han
 			myAccountServiceStartExternalIdentityLinkHandler.ServeHTTP(w, r)
 		case MyAccountServiceDisconnectExternalIdentityProcedure:
 			myAccountServiceDisconnectExternalIdentityHandler.ServeHTTP(w, r)
-		case MyAccountServiceUpdatePresenceProcedure:
-			myAccountServiceUpdatePresenceHandler.ServeHTTP(w, r)
-		case MyAccountServiceUpdateCustomStatusProcedure:
-			myAccountServiceUpdateCustomStatusHandler.ServeHTTP(w, r)
+		case MyAccountServiceSetPresenceProcedure:
+			myAccountServiceSetPresenceHandler.ServeHTTP(w, r)
+		case MyAccountServiceGetPresencePreferenceProcedure:
+			myAccountServiceGetPresencePreferenceHandler.ServeHTTP(w, r)
+		case MyAccountServiceSetPresencePreferenceProcedure:
+			myAccountServiceSetPresencePreferenceHandler.ServeHTTP(w, r)
+		case MyAccountServiceRefreshPresenceProcedure:
+			myAccountServiceRefreshPresenceHandler.ServeHTTP(w, r)
+		case MyAccountServiceSetCustomStatusProcedure:
+			myAccountServiceSetCustomStatusHandler.ServeHTTP(w, r)
 		case MyAccountServiceDeleteCustomStatusProcedure:
 			myAccountServiceDeleteCustomStatusHandler.ServeHTTP(w, r)
 		case MyAccountServiceRequestAccountDeletionProcedure:
@@ -396,12 +627,28 @@ func NewMyAccountServiceHandler(svc MyAccountServiceHandler, opts ...connect.Han
 // UnimplementedMyAccountServiceHandler returns CodeUnimplemented from all methods.
 type UnimplementedMyAccountServiceHandler struct{}
 
-func (UnimplementedMyAccountServiceHandler) UpdateProfile(context.Context, *connect.Request[v1.UpdateProfileRequest]) (*connect.Response[v1.UpdateProfileResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("chatto.api.v1.MyAccountService.UpdateProfile is not implemented"))
+func (UnimplementedMyAccountServiceHandler) ChangePassword(context.Context, *connect.Request[v1.ChangePasswordRequest]) (*connect.Response[v1.ChangePasswordResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("chatto.api.v1.MyAccountService.ChangePassword is not implemented"))
 }
 
-func (UnimplementedMyAccountServiceHandler) UpdatePassword(context.Context, *connect.Request[v1.UpdatePasswordRequest]) (*connect.Response[v1.UpdatePasswordResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("chatto.api.v1.MyAccountService.UpdatePassword is not implemented"))
+func (UnimplementedMyAccountServiceHandler) ListVerifiedEmails(context.Context, *connect.Request[v1.ListVerifiedEmailsRequest]) (*connect.Response[v1.ListVerifiedEmailsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("chatto.api.v1.MyAccountService.ListVerifiedEmails is not implemented"))
+}
+
+func (UnimplementedMyAccountServiceHandler) RequestEmailVerification(context.Context, *connect.Request[v1.RequestEmailVerificationRequest]) (*connect.Response[v1.RequestEmailVerificationResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("chatto.api.v1.MyAccountService.RequestEmailVerification is not implemented"))
+}
+
+func (UnimplementedMyAccountServiceHandler) ConfirmEmailVerification(context.Context, *connect.Request[v1.ConfirmEmailVerificationRequest]) (*connect.Response[v1.ConfirmEmailVerificationResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("chatto.api.v1.MyAccountService.ConfirmEmailVerification is not implemented"))
+}
+
+func (UnimplementedMyAccountServiceHandler) SetPrimaryEmail(context.Context, *connect.Request[v1.SetPrimaryEmailRequest]) (*connect.Response[v1.SetPrimaryEmailResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("chatto.api.v1.MyAccountService.SetPrimaryEmail is not implemented"))
+}
+
+func (UnimplementedMyAccountServiceHandler) GetSettings(context.Context, *connect.Request[v1.GetSettingsRequest]) (*connect.Response[v1.GetSettingsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("chatto.api.v1.MyAccountService.GetSettings is not implemented"))
 }
 
 func (UnimplementedMyAccountServiceHandler) UpdateSettings(context.Context, *connect.Request[v1.UpdateSettingsRequest]) (*connect.Response[v1.UpdateSettingsResponse], error) {
@@ -420,12 +667,24 @@ func (UnimplementedMyAccountServiceHandler) DisconnectExternalIdentity(context.C
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("chatto.api.v1.MyAccountService.DisconnectExternalIdentity is not implemented"))
 }
 
-func (UnimplementedMyAccountServiceHandler) UpdatePresence(context.Context, *connect.Request[v1.UpdatePresenceRequest]) (*connect.Response[v1.UpdatePresenceResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("chatto.api.v1.MyAccountService.UpdatePresence is not implemented"))
+func (UnimplementedMyAccountServiceHandler) SetPresence(context.Context, *connect.Request[v1.SetPresenceRequest]) (*connect.Response[v1.SetPresenceResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("chatto.api.v1.MyAccountService.SetPresence is not implemented"))
 }
 
-func (UnimplementedMyAccountServiceHandler) UpdateCustomStatus(context.Context, *connect.Request[v1.UpdateCustomStatusRequest]) (*connect.Response[v1.UpdateCustomStatusResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("chatto.api.v1.MyAccountService.UpdateCustomStatus is not implemented"))
+func (UnimplementedMyAccountServiceHandler) GetPresencePreference(context.Context, *connect.Request[v1.GetPresencePreferenceRequest]) (*connect.Response[v1.GetPresencePreferenceResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("chatto.api.v1.MyAccountService.GetPresencePreference is not implemented"))
+}
+
+func (UnimplementedMyAccountServiceHandler) SetPresencePreference(context.Context, *connect.Request[v1.SetPresencePreferenceRequest]) (*connect.Response[v1.SetPresencePreferenceResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("chatto.api.v1.MyAccountService.SetPresencePreference is not implemented"))
+}
+
+func (UnimplementedMyAccountServiceHandler) RefreshPresence(context.Context, *connect.Request[v1.RefreshPresenceRequest]) (*connect.Response[v1.RefreshPresenceResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("chatto.api.v1.MyAccountService.RefreshPresence is not implemented"))
+}
+
+func (UnimplementedMyAccountServiceHandler) SetCustomStatus(context.Context, *connect.Request[v1.SetCustomStatusRequest]) (*connect.Response[v1.SetCustomStatusResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("chatto.api.v1.MyAccountService.SetCustomStatus is not implemented"))
 }
 
 func (UnimplementedMyAccountServiceHandler) DeleteCustomStatus(context.Context, *connect.Request[v1.DeleteCustomStatusRequest]) (*connect.Response[v1.DeleteCustomStatusResponse], error) {

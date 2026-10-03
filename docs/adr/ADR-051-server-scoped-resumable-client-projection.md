@@ -4,9 +4,16 @@
 
 **Updated:** 2026-09-02
 
-ADR-089 supersedes the server-side multi-projection readiness and capture
-mechanism with `ServerContentView`. This ADR's public realtime protocol,
-cursor, privacy, authorization, and convergence decisions remain in effect.
+**Superseded by:** [ADR-091](ADR-091-semantic-realtime-events-with-bounded-resume.md)
+and [ADR-093](ADR-093-use-a-public-realtime-event-union.md). ADR-091 replaced
+frontend-shaped live projection operations with semantic public events.
+ADR-093 defines the independent public event catalogue and canonical resource
+references. The text below records the former protocol 2 design. It does not
+describe protocol 4.
+
+[ADR-089](ADR-089-server-content-view.md) separately replaces the former
+server-side multi-projection readiness and capture mechanism with
+`ServerContentView`.
 
 ## Context
 
@@ -42,20 +49,17 @@ later changes:
 “Every room” includes joined DMs with no message yet. The public directory's
 conversation-list policy may hide those rows, but the realtime projection and
 live authorization capture are exhaustive so the room can receive its first
-message and be opened directly.
-2. The subscription names timeline rooms already retained by the client. On a
-   room's first view, the client sends `hydrate_room` on the same WebSocket and
-   receives an atomic room-membership upsert plus the latest 50 timeline events
-   as normal projection operations. Later timeline mutations are emitted only
-   for retained rooms. Unretained room facts still update lightweight room and
-   viewer state; root messages carry a content-free room-activity operation so
-   DM ordering, unread, notification, and call state remain current while the
-   single resume cursor advances.
-3. A cursor is issued only at EVT boundaries. A socket reconnect in the same
-   in-memory client session supplies its last applied cursor and receives
-   projection operations derived from later EVT facts before `caught_up`.
-4. A missing, invalid, expired, foreign-incarnation, authorization-sensitive,
-   or oversized cursor causes another `reset` plus current compacted state.
+message and be opened directly. 2. The subscription names timeline rooms already retained by the client. On a
+room's first view, the client sends `hydrate_room` on the same WebSocket and
+receives an atomic room-membership upsert plus the latest 50 timeline events
+as normal projection operations. Later timeline mutations are emitted only
+for retained rooms. Unretained room facts still update lightweight room and
+viewer state; root messages carry a content-free room-activity operation so
+DM ordering, unread, notification, and call state remain current while the
+single resume cursor advances. 3. A cursor is issued only at EVT boundaries. A socket reconnect in the same
+in-memory client session supplies its last applied cursor and receives
+projection operations derived from later EVT facts before `caught_up`. 4. A missing, invalid, expired, foreign-incarnation, authorization-sensitive,
+or oversized cursor causes another `reset` plus current compacted state.
 
 The 0.5 bundled client requires a 0.5 server and does not retain the 0.4
 ConnectRPC bootstrap as a fallback. A 0.4 server is therefore an explicit
@@ -103,7 +107,8 @@ compacted reset. Room-timeline pagination cursors follow the same confidentialit
 and integrity invariant, and bind their sequence boundary to the authenticated
 viewer plus the exact room or room/thread-root resource; legacy plaintext
 `seq:` cursors and cross-resource reuse are rejected.
-Realtime resume cursors carry a sealed issue time and expire after 24 hours.
+Protocol 2 realtime resume cursors carried a sealed issue time and expired
+after 24 hours.
 Expiry selects compacted current state, so clients converge without retaining
 an indefinitely reusable replay credential.
 
@@ -299,9 +304,10 @@ rolled through the capped window.
 The stream is a convergence feed, not an audit log. Replay uses current
 authorization, deletion, and erasure state; it may reset rather than reproduce
 historical public shapes. Clients must apply operations in order and persist a
-cursor only after all preceding operations have succeeded. Integrators offline
-for more than 24 hours still converge through compacted state, but cannot
-recover every historical transition from the expired interval.
+cursor only after all preceding operations have succeeded. Integrators that
+were offline beyond the protocol 2 cursor lifetime still converged through
+compacted state, but could not recover every historical transition from the
+expired interval.
 
 Clients fail closed on an undecodable frame or unknown projection operation.
 They validate an entire projection event before mutating state and do not

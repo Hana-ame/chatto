@@ -24,12 +24,15 @@ const (
 	projectionBenchmarkUsers = 100
 	// Bump the fixture version when changing its event mix so benchmark
 	// results from materially different workloads are not compared directly.
-	projectionBenchmarkFixtureVersion = "mixed_v1"
+	projectionBenchmarkFixtureVersion = "mixed_v2"
 )
 
 type projectionBenchmarkWireEvent struct {
 	subject string
 	data    []byte
+	// seq is the stream sequence of a record read from a store; synthetic
+	// fixtures leave it zero.
+	seq uint64
 }
 
 type projectionBenchmarkTarget struct {
@@ -37,6 +40,7 @@ type projectionBenchmarkTarget struct {
 	subjects   []string
 	apply      func(*evtv1.Event, string, uint64) error
 	complete   func()
+	estimate   func() int64
 }
 
 // BenchmarkProjectionReplay measures the complete decode-and-apply startup
@@ -146,6 +150,11 @@ func BenchmarkProjectionRetainedHeap(b *testing.B) {
 				b.ReportMetric(float64(retainedBytes)/float64(len(fixture)), "retained-heap-B/event")
 				b.ReportMetric(float64(retainedBytes)/float64(logicalMessages), "retained-heap-B/message")
 				b.ReportMetric(float64(len(fixture)), "events/replay")
+				var estimatedBytes int64
+				for _, target := range targets {
+					estimatedBytes += target.estimate()
+				}
+				b.ReportMetric(float64(estimatedBytes), "estimated-B")
 
 				// Keep the serialized fixture present for both memory snapshots so
 				// the delta contains projection state only. Release it before an
@@ -232,7 +241,7 @@ func TestProjectionBenchmarkFixture(t *testing.T) {
 
 func newProjectionBenchmarkFixture(tb testing.TB, logicalMessages int) []projectionBenchmarkWireEvent {
 	tb.Helper()
-	// mixed_v1 uses 10 rooms and 100 users, with 20% replies, 4% edits,
+	// mixed_v2 uses production-length IDs, 10 rooms, and 100 users, with 20% replies, 4% edits,
 	// 1% retractions, 5% echoes, 2% attachments, one follow per created
 	// thread, and one key-shred fact in fixtures of at least 1,000 messages.
 	fixture := make([]projectionBenchmarkWireEvent, 0, logicalMessages*2+logicalMessages/4)
@@ -242,7 +251,7 @@ func newProjectionBenchmarkFixture(tb testing.TB, logicalMessages int) []project
 
 	nextID := func(prefix string) string {
 		serial++
-		return fmt.Sprintf("%s%026d", prefix, serial)
+		return fmt.Sprintf("%s%014d", prefix, serial)
 	}
 	createdAt := func() *timestamppb.Timestamp {
 		return timestamppb.New(time.Unix(1_700_000_000+int64(serial), 0).UTC())
@@ -261,8 +270,8 @@ func newProjectionBenchmarkFixture(tb testing.TB, logicalMessages int) []project
 	for messageIndex := range logicalMessages {
 		roomIndex := messageIndex % projectionBenchmarkRooms
 		ordinalInRoom := messageIndex / projectionBenchmarkRooms
-		roomID := fmt.Sprintf("R%025d", roomIndex)
-		actorID := fmt.Sprintf("U%025d", messageIndex%projectionBenchmarkUsers)
+		roomID := fmt.Sprintf("R%014d", roomIndex)
+		actorID := fmt.Sprintf("U%014d", messageIndex%projectionBenchmarkUsers)
 		roomAggregate := evtstream.RoomAggregate(roomID)
 		previousRoot := latestRootByRoom[roomIndex]
 		messageID := nextID("E")
@@ -314,7 +323,7 @@ func newProjectionBenchmarkFixture(tb testing.TB, logicalMessages int) []project
 
 		assetIDs := []string(nil)
 		if messageIndex%50 == 0 {
-			assetIDs = []string{fmt.Sprintf("A%025d", messageIndex)}
+			assetIDs = []string{fmt.Sprintf("A%014d", messageIndex)}
 		}
 		bodyID := nextID("B")
 		appendEvent(roomAggregate, projectionBenchmarkBodyEvent(bodyID, messageID, roomID, actorID, assetIDs, createdAt()))
@@ -346,7 +355,7 @@ func newProjectionBenchmarkFixture(tb testing.TB, logicalMessages int) []project
 	}
 
 	if logicalMessages >= 1_000 {
-		userID := fmt.Sprintf("U%025d", 0)
+		userID := fmt.Sprintf("U%014d", 0)
 		appendEvent(evtstream.UserAggregate(userID), &evtv1.Event{
 			Id:        nextID("S"),
 			CreatedAt: createdAt(),
@@ -415,6 +424,15 @@ func newProjectionBenchmarkTargets(scope string) ([]projectionBenchmarkTarget, e
 					completer.CompleteStartupReplay()
 				}
 			},
+			estimate: func() int64 {
+				if estimator, ok := projection.(interface {
+					adminProjectionEstimate() (int64, int64, []ProjectionAdminMetric)
+				}); ok {
+					_, bytes, _ := estimator.adminProjectionEstimate()
+					return bytes
+				}
+				return 0
+			},
 		}
 	}
 	switch scope {
@@ -427,28 +445,78 @@ func newProjectionBenchmarkTargets(scope string) ([]projectionBenchmarkTarget, e
 			newTarget(NewRoomTimelineProjection()),
 			newTarget(NewThreadProjection()),
 		}, nil
+	case "reactions":
+		return []projectionBenchmarkTarget{newTarget(NewReactionProjection())}, nil
+	case "notification_decisions":
+		return []projectionBenchmarkTarget{newTarget(NewNotificationDecisionProjection())}, nil
+	case "assets":
+		return []projectionBenchmarkTarget{newTarget(NewAssetProjection())}, nil
+	case "rbac":
+		return []projectionBenchmarkTarget{newTarget(NewRBACProjection())}, nil
+	case "content_keys":
+		return []projectionBenchmarkTarget{newTarget(NewContentKeyProjection())}, nil
+	case "infallible_content_view":
+		// Every Server Content View component that needs no DEK resolver.
+		roomDirectory := NewRoomDirectoryProjection()
+		serverConfig := NewConfigProjection()
+		roomGroupLayout := NewRoomGroupLayoutProjection()
+		eventIDs := newEventIDTable()
+		timeline := newRoomTimelineProjection(eventIDs)
+		callState := NewCallStateProjection()
+		assets := NewAssetProjection()
+		threads := newThreadProjection(eventIDs)
+		reactions := newReactionProjection(eventIDs)
+		contentKeys := NewContentKeyProjection()
+		rbac := NewRBACProjection()
+		view := newServerContentView(
+			newServerContentComponent("room_directory", roomDirectory, roomDirectory),
+			newInfallibleServerContentComponent("server_config", serverConfig, serverConfig.Apply),
+			newInfallibleServerContentComponent("room_group_layout", roomGroupLayout, roomGroupLayout.Apply),
+			newInfallibleServerContentComponent("room_timeline", timeline, timeline.Apply),
+			newInfallibleServerContentComponent("call_state", callState, callState.Apply),
+			newInfallibleServerContentComponent("assets", assets, assets.Apply),
+			newInfallibleServerContentComponent("threads", threads, threads.Apply),
+			newInfallibleServerContentComponent("reactions", reactions, reactions.Apply),
+			newInfallibleServerContentComponent("content_keys", contentKeys, contentKeys.Apply),
+			newInfallibleServerContentComponent("rbac", rbac, rbac.Apply),
+		)
+		return []projectionBenchmarkTarget{newContentViewBenchmarkTarget(view, eventIDs,
+			roomDirectory, serverConfig, roomGroupLayout, timeline, callState,
+			assets, threads, reactions, contentKeys, rbac,
+		)}, nil
 	case "content_view_timeline_and_threads":
-		timeline := NewRoomTimelineProjection()
-		threads := NewThreadProjection()
+		eventIDs := newEventIDTable()
+		timeline := newRoomTimelineProjection(eventIDs)
+		threads := newThreadProjection(eventIDs)
 		view := newServerContentView(
 			newInfallibleServerContentComponent("room_timeline", timeline, timeline.Apply),
 			newInfallibleServerContentComponent("threads", threads, threads.Apply),
 		)
-		return []projectionBenchmarkTarget{{
-			projection: view,
-			subjects:   view.Subjects(),
-			apply: func(event *evtv1.Event, subject string, sequence uint64) error {
-				mutation, err := view.PrepareSubject(event, subject, sequence)
-				if err != nil {
-					return err
-				}
-				mutation.Commit()
-				return nil
-			},
-			complete: view.CompleteStartupReplay,
-		}}, nil
+		return []projectionBenchmarkTarget{newContentViewBenchmarkTarget(view, eventIDs, timeline, threads)}, nil
 	default:
 		return nil, fmt.Errorf("unknown projection benchmark scope %q", scope)
+	}
+}
+
+// newContentViewBenchmarkTarget applies events through the content view's
+// shared prepare-and-commit barrier, as the production projector does.
+func newContentViewBenchmarkTarget(view *ServerContentView, eventIDs *eventIDTable, components ...events.SnapshotComponentModel) projectionBenchmarkTarget {
+	return projectionBenchmarkTarget{
+		projection: view,
+		subjects:   view.Subjects(),
+		apply: func(event *evtv1.Event, subject string, sequence uint64) error {
+			mutation, err := view.PrepareSubject(event, subject, sequence)
+			if err != nil {
+				return err
+			}
+			mutation.Commit()
+			return nil
+		},
+		complete: view.CompleteStartupReplay,
+		estimate: func() int64 {
+			_, bytes, _ := view.adminProjectionEstimate(eventIDs, components...)
+			return bytes
+		},
 	}
 }
 

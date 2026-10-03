@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { getToasts, toast } from '$lib/ui/toast';
 import { ComposerSubmissionState, type PreparedPost, uploadPercentage } from './submission.svelte';
-import type { MentionRolesStatus } from '$lib/state/server/mentionRoles.svelte';
+import type { MentionRolesStatus } from '@chatto/client/server/mentionRoles';
 
 function preparedPost(overrides: Partial<PreparedPost> = {}): PreparedPost {
   return {
@@ -104,7 +104,11 @@ describe('ComposerSubmissionState', () => {
 
   it('updates messages and reports failures without leaking loading state', async () => {
     await state.editMessage({ roomId: 'room_1', eventId: 'event_1', body: 'Updated' });
-    expect(onEditSuccess).toHaveBeenCalledOnce();
+    expect(onEditSuccess).toHaveBeenCalledExactlyOnceWith({
+      roomId: 'room_1',
+      eventId: 'event_1',
+      body: 'Updated'
+    });
 
     updateMessage.mockRejectedValueOnce(new Error('edit failed'));
     await state.editMessage({ roomId: 'room_1', eventId: 'event_1', body: 'Again' });

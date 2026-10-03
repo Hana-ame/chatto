@@ -4,14 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"hmans.de/chatto/internal/config"
 )
 
 type oauthRoundTripFunc func(*http.Request) (*http.Response, error)
@@ -223,6 +227,53 @@ func TestOAuthClientNativeLoopbackIPRedirectUsesVariablePortOnly(t *testing.T) {
 	}
 }
 
+func TestBuiltInLoopbackClientAcceptsPopupCallbackOnAnyLoopbackOrigin(t *testing.T) {
+	s := &HTTPServer{}
+	client, err := s.resolveOAuthClient(context.Background(), config.ChattoLoopbackClientID)
+	if err != nil {
+		t.Fatalf("resolveOAuthClient: %v", err)
+	}
+	if !client.BuiltIn || client.Native {
+		t.Fatalf("loopback client = %#v, want built-in web client", client)
+	}
+	tests := []struct {
+		name      string
+		candidate string
+		want      bool
+	}{
+		{name: "localhost", candidate: "http://localhost:4001/servers/callback?mode=popup", want: true},
+		{name: "workspace localhost", candidate: "http://chatto.canberra.localhost:4000/servers/callback?mode=popup", want: true},
+		{name: "IPv4", candidate: "http://127.0.0.1:5173/servers/callback?mode=popup", want: true},
+		{name: "IPv6", candidate: "http://[::1]:4000/servers/callback?mode=popup", want: true},
+		{name: "HTTPS localhost", candidate: "https://chatto.localhost/servers/callback?mode=popup", want: true},
+		{name: "public host", candidate: "https://evil.example/servers/callback?mode=popup"},
+		{name: "localhost prefix", candidate: "http://localhost.evil.example/servers/callback?mode=popup"},
+		{name: "invalid localhost label", candidate: "http://bad_label.localhost/servers/callback?mode=popup"},
+		{name: "other loopback IP", candidate: "http://127.0.0.2/servers/callback?mode=popup"},
+		{name: "wrong path", candidate: "http://localhost:4001/other?mode=popup"},
+		{name: "missing query", candidate: "http://localhost:4001/servers/callback"},
+		{name: "extra query", candidate: "http://localhost:4001/servers/callback?mode=popup&x=1"},
+		{name: "userinfo", candidate: "http://user@localhost:4001/servers/callback?mode=popup"},
+		{name: "fragment", candidate: "http://localhost:4001/servers/callback?mode=popup#x"},
+		{name: "custom scheme", candidate: "chatto://localhost/servers/callback?mode=popup"},
+		{name: "uppercase host", candidate: "HTTP://LOCALHOST:4001/servers/callback?mode=popup", want: true},
+		{name: "trailing dot", candidate: "http://localhost.:4001/servers/callback?mode=popup"},
+		{name: "IPv4-mapped IPv6", candidate: "http://[::ffff:127.0.0.1]:4001/servers/callback?mode=popup"},
+		{name: "unspecified address", candidate: "http://0.0.0.0:4001/servers/callback?mode=popup"},
+		{name: "percent-encoded host", candidate: "http://%6cocalhost:4001/servers/callback?mode=popup"},
+		{name: "encoded path", candidate: "http://localhost:4001/servers/%63allback?mode=popup"},
+		{name: "port out of range", candidate: "http://localhost:99999/servers/callback?mode=popup"},
+		{name: "port zero", candidate: "http://localhost:0/servers/callback?mode=popup"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := client.allowsRedirectURI(tt.candidate); got != tt.want {
+				t.Fatalf("allowsRedirectURI(%q) = %v, want %v", tt.candidate, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestOAuthClientWebLoopbackIPRedirectRequiresExactPort(t *testing.T) {
 	client := OAuthClient{RedirectURIs: []string{"http://127.0.0.1:41000/oauth/callback"}}
 	if client.allowsRedirectURI("http://127.0.0.1:52000/oauth/callback") {
@@ -329,6 +380,25 @@ func TestOAuthClientResolverDeadlineIncludesDestinationValidation(t *testing.T) 
 	}
 }
 
+func TestResolveOAuthClientProvidesExactMobileRegistration(t *testing.T) {
+	server := &HTTPServer{}
+	client, err := server.resolveOAuthClient(context.Background(), "eu.chattocorp.chatto.mobile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !client.BuiltIn || !client.allowsRedirectURI("eu.chattocorp.chatto.mobile:/oauth/callback") {
+		t.Fatal("mobile client must accept its exact callback")
+	}
+	for _, redirect := range []string{
+		"eu.chattocorp.chatto.mobile:/other", "eu.chattocorp.chatto.mobile://attacker/oauth/callback",
+		"eu.chattocorp.chatto.mobile:/oauth/callback?extra=true", "https://attacker.example/oauth/callback",
+	} {
+		if client.allowsRedirectURI(redirect) {
+			t.Errorf("accepted unrelated redirect %q", redirect)
+		}
+	}
+}
+
 func TestResolveOAuthClientProvidesExactDesktopRegistration(t *testing.T) {
 	server := &HTTPServer{}
 	client, err := server.resolveOAuthClient(context.Background(), "chatto://desktop")
@@ -337,5 +407,60 @@ func TestResolveOAuthClientProvidesExactDesktopRegistration(t *testing.T) {
 	}
 	if !client.BuiltIn || client.ClientName != "Chatto Desktop" || !client.allowsRedirectURI("chatto://desktop/servers/callback?mode=popup") {
 		t.Fatalf("client = %#v", client)
+	}
+}
+
+// localhost commonly resolves to IPv6 first, while a frontend may bind only IPv4.
+func TestOAuthClientResolverLocalhostIPv4Only(t *testing.T) {
+	var clientID string
+	metadataServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(cimdDocument{
+			ClientID: clientID, ClientName: "Local frontend", ApplicationType: "web",
+			RedirectURIs:            []string{strings.TrimSuffix(clientID, "/metadata.json") + "/callback"},
+			TokenEndpointAuthMethod: "none", GrantTypes: []string{"authorization_code"},
+			ResponseTypes: []string{"code"},
+		})
+	}))
+	defer metadataServer.Close()
+	clientID = strings.Replace(metadataServer.URL, "127.0.0.1", "localhost", 1) + "/metadata.json"
+	resolver, err := newOAuthClientResolver("https://chatto.dev.localhost", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolver.Resolve(context.Background(), clientID); err != nil {
+		t.Fatalf("resolve metadata served on IPv4 localhost: %v", err)
+	}
+}
+
+func TestDialOAuthClientAddressesFallsBackAfterRefusal(t *testing.T) {
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	_, port, err := net.SplitHostPort(listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	conn, err := dialOAuthClientAddresses(ctx, "tcp", port, []netip.Addr{
+		netip.MustParseAddr("::1"), netip.MustParseAddr("127.0.0.1"),
+	})
+	if err != nil {
+		t.Fatalf("fallback to reachable IPv4 address: %v", err)
+	}
+	conn.Close()
+}
+
+func TestDialOAuthClientAddressesHonorsCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := dialOAuthClientAddresses(ctx, "tcp", "1", []netip.Addr{
+		netip.MustParseAddr("::1"), netip.MustParseAddr("127.0.0.1"),
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context cancellation", err)
 	}
 }

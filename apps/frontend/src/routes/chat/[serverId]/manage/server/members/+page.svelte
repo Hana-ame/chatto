@@ -1,24 +1,20 @@
 <script lang="ts">
-  import { goto } from '$app/navigation';
+  import { errorMessage } from '$lib/utils/errorMessage';
+  import AccountName from '$lib/components/users/AccountName.svelte';
   import { resolve } from '$app/paths';
   import { serverIdToSegment } from '$lib/navigation';
-  import { createAdminUserManagementAPI, type AdminRoleSummary } from '$lib/api-client/adminUsers';
-  import Panel from '$lib/ui/Panel.svelte';
-  import DataTable from '$lib/ui/DataTable.svelte';
+  import { createAdminUserManagementAPI, type AdminRoleSummary } from '$lib/api/adminUsers';
+  import { Panel, DataTable, Hint, PaneContent, Pill, PaneHeader, PageTitle } from '$lib/ui';
   import UserAvatar from '$lib/components/UserAvatar.svelte';
   import { PresenceStatus } from '@chatto/api-types/api/v1/presence_pb';
-  import { Hint, PaneContent, Pill } from '$lib/ui';
-  import PaneHeader from '$lib/ui/PaneHeader.svelte';
-  import PageTitle from '$lib/ui/PageTitle.svelte';
   import { TextInput } from '$lib/ui/form';
   import { useServerScope } from '$lib/state/server/scope.svelte';
   import { formatDate as formatDateUtil, timeFormatSettingsFor } from '$lib/utils/formatTime';
   import { getLocale } from '$lib/i18n/runtime';
   import { useDebounce } from '$lib/hooks/useDebounce.svelte';
   import { SvelteSet } from 'svelte/reactivity';
-  import { createInfiniteQuery } from '@tanstack/svelte-query';
   import { adminQueryKeys } from '$lib/query/admin';
-  import { queryClient } from '$lib/query/client';
+  import { createInfiniteQuery } from '$lib/query/client';
   import { m } from '$lib/i18n/messages';
 
   const serverScope = useServerScope();
@@ -33,29 +29,23 @@
   const searchDebounce = useDebounce();
   let scrollContainer = $state<HTMLDivElement>();
 
-  const membersQuery = createInfiniteQuery(
-    () => {
-      const serverId = serverScope.serverId;
-      const activeConnection = serverScope.connection;
-      const search = activeSearch;
-      return {
-        queryKey: adminQueryKeys.members(serverId, activeConnection, search),
-        queryFn: ({ pageParam, signal }) =>
-          activeConnection
-            .getAPI(createAdminUserManagementAPI)
-            .listMembers(
-              { search: search || null, limit: PAGE_SIZE, offset: pageParam },
-              { signal }
-            ),
-        initialPageParam: 0,
-        getNextPageParam: (lastPage, _pages, lastPageParam) =>
-          lastPage.hasMore && lastPage.users.length > 0
-            ? lastPageParam + lastPage.users.length
-            : undefined
-      };
-    },
-    () => queryClient
-  );
+  const membersQuery = createInfiniteQuery(() => {
+    const serverId = serverScope.serverId;
+    const activeConnection = serverScope.connection;
+    const search = activeSearch;
+    return {
+      queryKey: adminQueryKeys.members(serverId, activeConnection, search),
+      queryFn: ({ pageParam, signal }) =>
+        activeConnection
+          .getAPI(createAdminUserManagementAPI)
+          .listMembers({ search: search || null, limit: PAGE_SIZE, offset: pageParam }, { signal }),
+      initialPageParam: 0,
+      getNextPageParam: (lastPage, _pages, lastPageParam) =>
+        lastPage.hasMore && lastPage.consumedCount > 0
+          ? lastPageParam + lastPage.consumedCount
+          : undefined
+    };
+  });
 
   const users = $derived.by(() => {
     const seen = new SvelteSet<string>();
@@ -67,14 +57,17 @@
       })
     );
   });
-  const roles = $derived<AdminRoleSummary[]>(membersQuery.data?.pages.at(-1)?.roles ?? []);
+  // An empty ID page needs no batch read, so retain the last hydrated labels.
+  const roles = $derived<AdminRoleSummary[]>(
+    membersQuery.data?.pages.findLast((page) => page.roles.length > 0)?.roles ?? []
+  );
   const totalCount = $derived(membersQuery.data?.pages.at(-1)?.totalCount ?? 0);
   const hasMore = $derived(membersQuery.hasNextPage);
   const loading = $derived(membersQuery.isPending);
   const loadingMore = $derived(membersQuery.isFetchingNextPage);
-  const error = $derived(
-    membersQuery.error instanceof Error ? membersQuery.error.message : membersQuery.error
-  );
+  // The first page replaces the table body with a loading block.
+  const initialLoading = $derived(loading && users.length === 0);
+  const error = $derived(membersQuery.error ? errorMessage(membersQuery.error) : null);
 
   function scheduleSearch(event: Event) {
     const value = event.currentTarget instanceof HTMLInputElement ? event.currentTarget.value : '';
@@ -112,78 +105,95 @@
 <PageTitle title={m('admin.common.page_title', { title: m('admin.members.title') })} />
 
 <div class="pane-page">
-  <PaneHeader
-    title={m('admin.members.title')}
-    subtitle={m('admin.members.subtitle')}
-    showMobileNav
-  />
+  <PaneHeader title={m('admin.members.title')} subtitle={m('admin.members.subtitle')} />
 
   <PaneContent bind:scrollContainer>
     <div class="flex flex-col gap-6">
-      <!-- Search input -->
-      <div class="max-w-md">
-        <TextInput
-          label={m('admin.members.search')}
-          placeholder={m('admin.members.search_placeholder')}
-          bind:value={searchInput}
-          oninput={scheduleSearch}
-        />
-      </div>
+      {#if error}
+        <Hint tone="danger">{error}</Hint>
+      {/if}
 
-      {#if loading && users.length === 0}
-        <div class="text-muted">{m('admin.members.loading')}</div>
-      {:else}
-        {#if error}
-          <Hint tone="danger">{error}</Hint>
-        {/if}
+      <Panel
+        title={m('admin.members.title')}
+        count={initialLoading ? undefined : totalCount}
+        noPadding
+      >
+        {#snippet actions()}
+          <div class="w-48 sm:w-64">
+            <TextInput
+              label={m('admin.members.search')}
+              labelHidden
+              leadingIcon="iconify icon-[uil--search]"
+              placeholder={m('admin.members.search_placeholder')}
+              bind:value={searchInput}
+              oninput={scheduleSearch}
+            />
+          </div>
+        {/snippet}
+        <DataTable
+          items={users}
+          columns={5}
+          loading={initialLoading}
+          loadingMessage={m('admin.members.loading')}
+          emptyMessage={m('admin.members.empty')}
+          hasMore={hasMore && !error}
+          {loadingMore}
+          onLoadMore={loadMore}
+          loadMoreRoot={scrollContainer}
+          loadingMoreMessage={m('admin.members.loading_more')}
+        >
+          {#snippet header()}
+            <th class="table-header-cell">{m('admin.common.user')}</th>
+            <th class="table-header-cell">{m('admin.users.login')}</th>
+            <th class="table-header-cell">{m('admin.users.email')}</th>
+            <th class="table-header-cell">{m('admin.common.joined')}</th>
+            <th class="table-header-cell">{m('admin.common.roles')}</th>
+          {/snippet}
+          {#snippet row(user)}
+            <td class="px-4 py-3">
+              <div class="flex items-center gap-2">
+                <UserAvatar user={{ ...user, presenceStatus: PresenceStatus.OFFLINE }} size="sm" />
+                <a
+                  class="data-table-row-link min-w-0"
+                  href={resolve('/chat/[serverId]/manage/server/members/[userId]', {
+                    serverId: serverIdToSegment(serverScope.serverId),
+                    userId: user.id
+                  })}
+                >
+                  <AccountName name={user.displayName || user.login} identity={user} />
+                </a>
+              </div>
+            </td>
+            <td class="px-4 py-3 text-muted">@{user.login}</td>
+            <td class="px-4 py-3 text-muted">
+              {#if user.primaryVerifiedEmail}
+                <span class="flex min-w-0 items-center gap-1">
+                  <span
+                    class="iconify icon-[uil--check-circle] shrink-0 text-success"
+                    role="img"
+                    aria-label={m('admin.members.email_verified')}
+                  ></span>
+                  <bdi class="truncate" dir="auto" title={user.primaryVerifiedEmail}
+                    >{user.primaryVerifiedEmail}</bdi
+                  >
+                </span>
+              {:else}
+                —
+              {/if}
+            </td>
+            <td class="px-4 py-3 text-muted">{formatDate(user.createdAt)}</td>
+            <td class="px-4 py-3">
+              <div class="flex flex-wrap gap-1">
+                {#each getDisplayRoles(user) as roleName (roleName)}
+                  <Pill>{getRoleDisplayName(roleName)}</Pill>
+                {/each}
+              </div>
+            </td>
+          {/snippet}
+        </DataTable>
+      </Panel>
 
-        <Panel noPadding>
-          <DataTable
-            items={users}
-            columns={4}
-            emptyMessage={m('admin.members.empty')}
-            hasMore={hasMore && !error}
-            {loadingMore}
-            onLoadMore={loadMore}
-            loadMoreRoot={scrollContainer}
-            loadingMoreMessage={m('admin.members.loading_more')}
-            onRowClick={(user) =>
-              goto(
-                resolve('/chat/[serverId]/manage/server/members/[userId]', {
-                  serverId: serverIdToSegment(serverScope.serverId),
-                  userId: user.id
-                })
-              )}
-          >
-            {#snippet header()}
-              <th class="table-header-cell">{m('admin.common.user')}</th>
-              <th class="table-header-cell">{m('admin.users.login')}</th>
-              <th class="table-header-cell">{m('admin.common.joined')}</th>
-              <th class="table-header-cell">{m('admin.common.roles')}</th>
-            {/snippet}
-            {#snippet row(user)}
-              <td class="px-4 py-3">
-                <div class="flex items-center gap-2">
-                  <UserAvatar
-                    user={{ ...user, presenceStatus: PresenceStatus.OFFLINE }}
-                    size="sm"
-                  />
-                  <span>{user.displayName}</span>
-                </div>
-              </td>
-              <td class="px-4 py-3 text-muted">@{user.login}</td>
-              <td class="px-4 py-3 text-muted">{formatDate(user.createdAt)}</td>
-              <td class="px-4 py-3">
-                <div class="flex flex-wrap gap-1">
-                  {#each getDisplayRoles(user) as roleName (roleName)}
-                    <Pill>{getRoleDisplayName(roleName)}</Pill>
-                  {/each}
-                </div>
-              </td>
-            {/snippet}
-          </DataTable>
-        </Panel>
-
+      {#if !initialLoading}
         <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div class="text-sm text-muted">
             {m('admin.members.showing', { shown: users.length, total: totalCount })}

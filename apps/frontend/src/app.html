@@ -3,6 +3,7 @@
   <head>
     <meta charset="utf-8" />
     %sveltekit.head%
+    <meta name="theme-color" content="#e5e7eb" />
     <script>
       // Resolve and apply shell preferences as early as possible — before CSS
       // loads — so:
@@ -33,14 +34,75 @@
           }
         }
 
+        // Keep this allowlist aligned with lib/state/userPreferences.svelte.ts.
+        const surfaceTones = [
+          'neutral',
+          'stone',
+          'taupe',
+          'clay',
+          'olive',
+          'forest',
+          'mist',
+          'gray',
+          'slate',
+          'midnight',
+          'mauve',
+          'plum'
+        ];
+
+        // CSS selects the tone that matches the active theme.
+        function storedSurfaceTone(theme) {
+          const key = theme === 'dark' ? 'darkSurfaceTone' : 'lightSurfaceTone';
+          try {
+            const parsed = JSON.parse(localStorage.getItem('chatto:preferences') ?? '{}');
+            const tone = parsed && typeof parsed === 'object' ? parsed[key] : null;
+            if (surfaceTones.includes(tone)) return tone;
+          } catch {
+            // Fall through to the default tone below.
+          }
+          return theme === 'dark' ? 'neutral' : 'gray';
+        }
+
         function applyTheme() {
           const stored = storedPreferenceTheme() ?? legacyTheme() ?? 'system';
           const effective =
             stored === 'light' || stored === 'dark' ? stored : mq.matches ? 'dark' : 'light';
           root.dataset.theme = effective;
-          // Pre-CSS background hint, mirrors --color-background.
-          root.style.backgroundColor = effective === 'dark' ? '#171717' : '#f3f4f6';
           root.style.colorScheme = effective;
+          syncShellColor();
+        }
+
+        // The app saves the resolved colours of the chosen tones under this key;
+        // see LoadingPalette in lib/state/userPreferences.svelte.ts.
+        function storedLoadingPalette(theme) {
+          try {
+            const parsed = JSON.parse(localStorage.getItem('chatto:loading-palette') ?? 'null');
+            // Colours from other tones would flash the wrong palette until the app starts.
+            if (!parsed || parsed.tones?.[theme] !== storedSurfaceTone(theme)) return null;
+            const palette = typeof parsed === 'object' ? parsed[theme] : null;
+            const valid = (color) => typeof color === 'string' && /^#[0-9a-f]{6}$/.test(color);
+            return palette &&
+              typeof palette === 'object' &&
+              ['background', 'highlight', 'text', 'surface'].every((name) => valid(palette[name]))
+              ? palette
+              : null;
+          } catch {
+            return null;
+          }
+        }
+
+        function syncShellColor() {
+          // Match the app frame where iOS samples the outer page background.
+          root.style.backgroundColor = 'var(--color-surface)';
+          const dark = root.dataset.theme === 'dark';
+          const veryHigh = root.style.getPropertyValue('--contrast-strong-mix') === '100%';
+          const surface = storedLoadingPalette(dark ? 'dark' : 'light')?.surface;
+          const shellColor = veryHigh
+            ? dark
+              ? '#000000'
+              : '#ffffff'
+            : (surface ?? (dark ? '#262626' : '#e5e7eb'));
+          document.querySelector('meta[name="theme-color"]')?.setAttribute('content', shellColor);
         }
 
         function textDirection(locale) {
@@ -74,8 +136,8 @@
 
         function applyLocale() {
           const locales = [
-            'en-GB',
             'en-US',
+            'en-GB',
             'de-DE',
             'de-AT',
             'de-CH',
@@ -167,6 +229,66 @@
           root.dir = textDirection(locale);
         }
 
+        // Restore accent, depth, and contrast before CSS loads.
+        // Keep this allowlist aligned with lib/state/userPreferences.svelte.ts.
+        // The iOS shell serves its bundled page through this native-only scheme.
+        const defaultDepth = location.protocol === 'capacitor:' ? 0 : 50;
+        try {
+          const stored = JSON.parse(localStorage.getItem('chatto:preferences') ?? '{}');
+          const age = stored?.contrastAge;
+          const contrastAge =
+            typeof age === 'number' &&
+            Number.isFinite(age) &&
+            age >= 20 &&
+            age <= 40 &&
+            Number.isInteger(age * 2)
+              ? // Snap half steps from earlier versions to the slider's 10% steps.
+                Math.round(age / 2) * 2
+              : 30;
+          root.style.setProperty('--contrast-soft-mix', `${Math.max(0, 30 - contrastAge) * 10}%`);
+          root.style.setProperty('--contrast-strong-mix', `${Math.max(0, contrastAge - 30) * 10}%`);
+          syncShellColor();
+          // Depth is a 0–100 level in 10% steps; earlier versions saved named modes.
+          const depth = stored?.surfaceDepth;
+          const legacyDepth = { flat: 0, '3d': 50, 'very-3d': 100 };
+          const depthLevel =
+            Number.isInteger(depth) && depth >= 0 && depth <= 100 && depth % 10 === 0
+              ? depth
+              : Object.hasOwn(legacyDepth, depth)
+                ? legacyDepth[depth]
+                : defaultDepth;
+          root.style.setProperty('--depth-level', String(depthLevel));
+          const accent = stored?.accentColor;
+          root.dataset.accent = [
+            'blue',
+            'cyan',
+            'teal',
+            'green',
+            'amber',
+            'orange',
+            'pink',
+            'violet',
+            'grey'
+          ].includes(accent)
+            ? accent
+            : 'cyan';
+        } catch {
+          root.dataset.accent = 'cyan';
+          root.style.setProperty('--depth-level', String(defaultDepth));
+          root.style.setProperty('--contrast-soft-mix', '0%');
+          root.style.setProperty('--contrast-strong-mix', '0%');
+        }
+
+        root.dataset.lightTone = storedSurfaceTone('light');
+        root.dataset.darkTone = storedSurfaceTone('dark');
+        // Paint the startup screen in the chosen tones before the stylesheet loads.
+        for (const theme of ['light', 'dark']) {
+          const palette = storedLoadingPalette(theme);
+          if (!palette) continue;
+          for (const name of ['background', 'highlight', 'text']) {
+            root.style.setProperty(`--loading-${theme}-${name}`, palette[name]);
+          }
+        }
         applyTheme();
         applyLocale();
 
@@ -175,21 +297,97 @@
         });
       })();
     </script>
+    <!-- Critical startup styles must work before the application CSS downloads. -->
+    <style>
+      #app-loading {
+        /* Keep startup colours available before the application stylesheet arrives.
+           The script supplies the saved tone colours; literals match the default tones. */
+        --loading-background: var(--loading-light-background, #f3f4f6);
+        --loading-highlight: var(--loading-light-highlight, #99a1af);
+        --loading-first-strength: 55%;
+        --loading-second-strength: 40%;
+        --loading-text: var(--loading-light-text, #4a5565);
+        display: grid;
+        place-items: center;
+        position: fixed;
+        inset: 0;
+        z-index: 100;
+        overflow: hidden;
+        pointer-events: none;
+        background: var(--color-background, var(--loading-background));
+      }
+      :root[data-theme='dark'] #app-loading {
+        --loading-background: var(--loading-dark-background, #171717);
+        --loading-highlight: var(--loading-dark-highlight, #404040);
+        --loading-first-strength: 45%;
+        --loading-second-strength: 33%;
+        --loading-text: var(--loading-dark-text, #d4d4d4);
+      }
+      #app-loading > span {
+        position: relative;
+        color: var(--color-text, var(--loading-text));
+        /* Keep metrics stable when application CSS and web fonts arrive. */
+        box-sizing: border-box;
+        font:
+          600 20px / 1 system-ui,
+          sans-serif;
+        letter-spacing: 0.45em;
+        padding-inline-start: 0.45em;
+        opacity: 0.28;
+      }
+      #app-loading::before {
+        content: '';
+        position: absolute;
+        inset: -25%;
+        background:
+          radial-gradient(
+            ellipse at var(--loading-first-x, 35%) var(--loading-first-y, 40%),
+            color-mix(in srgb, var(--loading-highlight) var(--loading-first-strength), transparent),
+            transparent var(--loading-first-size, 50%)
+          ),
+          radial-gradient(
+            ellipse at var(--loading-second-x, 65%) var(--loading-second-y, 60%),
+            color-mix(
+              in srgb,
+              var(--loading-highlight) var(--loading-second-strength),
+              transparent
+            ),
+            transparent var(--loading-second-size, 50%)
+          );
+        animation: app-loading-drift 2.6s ease-in-out infinite alternate;
+      }
+      #app-loading[data-noise]::before {
+        animation: none;
+      }
+      @keyframes app-loading-drift {
+        from {
+          transform: translate(-12%, -6%) scale(0.95);
+        }
+        to {
+          transform: translate(12%, 6%) scale(1.05);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        #app-loading::before {
+          animation: none;
+        }
+      }
+    </style>
     <!-- OG_META_PLACEHOLDER -->
     <meta
       name="viewport"
       content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content"
     />
     <meta name="description" content="Real-time chat application" />
-    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#e5e7eb" />
-    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#262626" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <!-- Keep standalone iOS content below the system status bar. -->
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" href="/favicon" sizes="32x32" />
     <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon" />
   </head>
   <body>
+    <div id="app-loading" aria-hidden="true"><span dir="ltr">CHATTO</span></div>
     <div style="display: contents">%sveltekit.body%</div>
   </body>
 </html>

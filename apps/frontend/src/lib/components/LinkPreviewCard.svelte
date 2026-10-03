@@ -15,13 +15,10 @@ When `canDelete` is true, right-click / long-press opens a context menu with Ope
 - `eventId` - Message body ID (required when canDelete is true, for confirmation dialog)
 -->
 <script lang="ts">
-  import type { LinkPreviewView } from '$lib/render/linkPreviews';
-  import SkeletonImg from '$lib/ui/SkeletonImg.svelte';
+  import type { LinkPreviewView } from '@chatto/client/timeline/linkPreviews';
   import { pushState } from '$app/navigation';
   import { m } from '$lib/i18n/messages';
-  import ContextMenu from '$lib/ui/ContextMenu.svelte';
-  import MenuItem from '$lib/ui/MenuItem.svelte';
-  import MenuSection from '$lib/ui/MenuSection.svelte';
+  import { ContextMenu, MenuItem, MenuSection, LoadingFog } from '$lib/ui';
   import { toast } from '$lib/ui/toast';
   import YouTubeEmbed from './YouTubeEmbed.svelte';
   import SocialPostEmbed from './SocialPostEmbed.svelte';
@@ -46,6 +43,7 @@ When `canDelete` is true, right-click / long-press opens a context menu with Ope
 
   const isYouTube = $derived(preview.embedType === 'youtube' && Boolean(preview.embedId));
   let contextMenuPos = $state<{ x: number; y: number } | null>(null);
+  let settledImageUrl = $state<string | null>(null);
 
   function openDeleteConfirmation() {
     if (!serverId || !roomId || !eventId) return;
@@ -70,9 +68,9 @@ When `canDelete` is true, right-click / long-press opens a context menu with Ope
   async function handleCopyUrl() {
     try {
       await navigator.clipboard.writeText(preview.url);
-      toast.success('URL copied to clipboard');
+      toast.success(m('preview.url_copied'));
     } catch {
-      toast.error('Failed to copy URL');
+      toast.error(m('preview.copy_url_failed'));
     }
     contextMenuPos = null;
   }
@@ -116,15 +114,25 @@ When `canDelete` is true, right-click / long-press opens a context menu with Ope
     oncontextmenu={handleContextMenu}
   >
     {#if preview.imageUrl}
-      <SkeletonImg
-        src={preview.imageUrl}
-        alt=""
-        class="aspect-[1.91/1] w-full rounded-sm object-cover"
-        onerror={(e) => {
-          // Hide the image if it fails to load
-          (e.target as HTMLImageElement).style.display = 'none';
-        }}
-      />
+      <div class="relative aspect-[1.91/1] w-full overflow-hidden rounded-sm">
+        {#if settledImageUrl !== preview.imageUrl}
+          <LoadingFog class="h-full w-full rounded-none" />
+        {/if}
+        <img
+          src={preview.imageUrl}
+          alt=""
+          class="absolute inset-0 h-full w-full object-cover"
+          onload={(event) => {
+            (event.currentTarget as HTMLImageElement).style.visibility = '';
+            settledImageUrl = event.currentTarget.getAttribute('src');
+          }}
+          onerror={(e) => {
+            // Keep the image frame in the virtualized message row.
+            (e.currentTarget as HTMLImageElement).style.visibility = 'hidden';
+            settledImageUrl = e.currentTarget.getAttribute('src');
+          }}
+        />
+      </div>
     {/if}
     <div class="flex min-w-0 flex-col gap-0.5 px-3 pt-3 pb-2">
       {#if preview.siteName}
@@ -145,10 +153,10 @@ When `canDelete` is true, right-click / long-press opens a context menu with Ope
           e.stopPropagation();
           onDismiss?.();
         }}
-        class="embed-control-button md:group-hover/preview:opacity-100"
+        class="embed-control-button"
         aria-label={m('preview.dismiss')}
       >
-        <span class="iconify icon-[uil--times] text-sm"></span>
+        <span class="iconify icon-[uil--times] text-sm" aria-hidden="true"></span>
       </button>
     {:else if canDelete}
       <button
@@ -158,10 +166,10 @@ When `canDelete` is true, right-click / long-press opens a context menu with Ope
           e.stopPropagation();
           openDeleteConfirmation();
         }}
-        class="embed-control-button md:group-hover/preview:opacity-100"
+        class="embed-control-button"
         aria-label={m('preview.delete')}
       >
-        <span class="iconify icon-[uil--times] text-sm"></span>
+        <span class="iconify icon-[uil--times] text-sm" aria-hidden="true"></span>
       </button>
     {/if}
   </a>

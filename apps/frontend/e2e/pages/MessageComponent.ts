@@ -35,6 +35,9 @@ export class MessageComponent {
    * Open the context menu by right-clicking the message content.
    */
   private async openContextMenu(): Promise<void> {
+    // Leave any neighbouring message's toolbar before clicking the content.
+    // In narrow panes that toolbar can cover the content's centre.
+    await this.locator.hover({ position: { x: 4, y: 4 } });
     await this.locator.locator('.message-content-stack').click({ button: 'right' });
     await expect(this.contextMenu).toBeVisible({ timeout: TIMEOUTS.REALTIME_EVENT });
   }
@@ -95,13 +98,19 @@ export class MessageComponent {
   }
 
   /**
-   * Add a reaction to the message via the context menu.
+   * Add a reaction through the context menu, using its picker when the emoji
+   * is not in the quick-reaction history.
    */
   async react(emoji: string): Promise<void> {
     await this.openContextMenu();
-    await this.contextMenu
-      .getByLabel(`React with ${emoji}`)
-      .click({ timeout: TIMEOUTS.REALTIME_EVENT });
+    const quickReaction = this.contextMenu.getByLabel(`React with ${emoji}`, { exact: true });
+    if (await quickReaction.count()) {
+      await quickReaction.click({ timeout: TIMEOUTS.REALTIME_EVENT });
+      return;
+    }
+    await this.contextMenu.getByLabel('More reactions').click({ timeout: TIMEOUTS.REALTIME_EVENT });
+    await expect(this.page.getByPlaceholder('Search emojis...')).toBeVisible();
+    await this.page.getByRole('button', { name: emoji, exact: true }).first().click();
   }
 
   /**
@@ -162,6 +171,9 @@ export class MessageComponent {
     const dialog = this.page.getByRole('dialog');
     await expect(dialog).toBeVisible();
     await dialog.getByRole('button', { name: 'Delete' }).click();
+    // Mutation delivery can remove the row before the modal's history.back().
+    // Wait for that navigation before a caller reloads or opens another modal.
+    await expect(dialog).not.toBeVisible();
   }
 
   /**
@@ -203,8 +215,7 @@ export class MessageComponent {
   }
 
   /**
-   * Open the thread pane for this message.
-   * Right-clicks to open context menu, then clicks Reply in thread.
+   * Open the thread pane without leaving a reply target in its composer.
    */
   async openThread(): Promise<void> {
     await this.openContextMenu();
@@ -216,6 +227,18 @@ export class MessageComponent {
       await openThread.click({ timeout: TIMEOUTS.REALTIME_EVENT });
       return;
     }
+    await this.contextMenu
+      .getByRole('menuitem', { name: 'Reply in thread', exact: true })
+      .click({ timeout: TIMEOUTS.REALTIME_EVENT });
+    const replyIndicator = this.page.getByTestId('thread-pane').getByTestId('reply-indicator');
+    await expect(replyIndicator).toBeVisible({ timeout: TIMEOUTS.REALTIME_EVENT });
+    await replyIndicator.locator('button:visible').click();
+    await expect(replyIndicator).not.toBeVisible();
+  }
+
+  /** Start an attributed reply to this message in its thread. */
+  async replyInThread(): Promise<void> {
+    await this.openContextMenu();
     await this.contextMenu
       .getByRole('menuitem', { name: 'Reply in thread', exact: true })
       .click({ timeout: TIMEOUTS.REALTIME_EVENT });
@@ -253,6 +276,9 @@ export class MessageComponent {
     const dialog = this.page.getByRole('dialog');
     await expect(dialog).toBeVisible();
     await dialog.getByRole('button', { name: 'Delete' }).click();
+    // Mutation delivery can remove the row before the modal's history.back().
+    // Wait for that navigation before a caller reloads or opens another modal.
+    await expect(dialog).not.toBeVisible();
   }
 
   /**
@@ -422,12 +448,16 @@ export class MessageComponent {
 
   /** Assert that the message shows the edit marker. */
   async expectEdited(): Promise<void> {
-    await expect(this.locator.locator('.edited-marker')).toBeVisible();
+    await expect(
+      this.locator.locator('.meta-badge').getByText('Edited', { exact: true })
+    ).toBeVisible();
   }
 
   /** Assert that the message does not show the edit marker. */
   async expectNotEdited(): Promise<void> {
-    await expect(this.locator.locator('.edited-marker')).not.toBeVisible();
+    await expect(
+      this.locator.locator('.meta-badge').getByText('Edited', { exact: true })
+    ).not.toBeVisible();
   }
 
   /**

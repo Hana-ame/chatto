@@ -26,6 +26,7 @@ import (
 // It provides a unified API for spaces, users, rooms, and messages,
 // managing current JetStream resources internally.
 type ChattoCore struct {
+	botWebhooks               *botWebhookModel
 	nc                        *nats.Conn
 	js                        jetstream.JetStream
 	logger                    *log.Logger
@@ -34,6 +35,7 @@ type ChattoCore struct {
 	encryption                *encryptionManager
 	dekResolver               *unwrappedDEKResolver
 	contentView               *ServerContentView
+	eventReader               *evtstream.Reader
 	configModel               *ConfigModel
 	roomModel                 *RoomModel
 	roomCommands              *RoomCommandModel
@@ -42,6 +44,7 @@ type ChattoCore struct {
 	messageSearchReads        *MessageSearchReadModel
 	notificationPolicy        *NotificationPolicyModel
 	roomTimelineReads         *RoomTimelineReadModel
+	timelineHydrator          *RoomTimelineHydrator
 	readStateModel            *ReadStateModel
 	notificationBoundaries    *notificationBoundaryIndex
 	notificationOccurrences   *NotificationOccurrenceModel
@@ -67,6 +70,7 @@ type ChattoCore struct {
 	linkPreviewCache          *linkpreview.Cache   // Cache for link preview metadata
 	linkPreviewFetcher        *linkpreview.Fetcher // Fetcher for link preview metadata
 	projectionSnapshotWorker  *projectionSnapshotWorker
+	neighborhoodDiscovery     *neighborhoodDiscovery
 	credentialUsage           *credentialUsageRecorder
 	serverOrigins             map[string]struct{}
 	natsRecoveryState         atomic.Int32
@@ -78,27 +82,6 @@ type ChattoCore struct {
 	// Set this after ChattoCore is created, from VideoConfig.
 	VideoMaxUploadSize int64
 
-	// FFmpegPath 是用于把上传的附件图片重编码为 AVIF 的 ffmpeg 二进制。
-	// 为空时从 PATH 解析;ffmpeg 不可用时附件保持原图存储。
-	// 【本地改动 32e1f566 + 218426d6】ChattoCore 创建后设置,数据来源为
-	// AssetProcessingConfig。merge upstream 后字段本身保留(上游没有
-	// AVIF 功能),但配置读取位置从 cfg.Video 移到 cfg.AssetProcessing。
-	FFmpegPath string
-
-	// WebPEnabled 是 2026-09-02 ~ 2026-09-12 期间 room 附件 WebP 重编码的
-	// 开关。【本地改动 218426d6 + 2026-09-12】存储格式改回 AVIF 后上传路径
-	// 不再读它,保留是为了兼容既有 `webp_enabled` 配置(它作为 avif_enabled
-	// 的别名在 config 层被消费);新代码请用 AVIFEnabled。
-	// 【2026-09-02 前】此字段曾名为 AVIFEnabled。
-	WebPEnabled bool
-
-	// AVIFEnabled 控制 room 附件图片上传时是否重编码为**原尺寸** AVIF。
-	// 【本地改动 2026-09-12】取代 WebP 存储,动画输入产出动画 AVIF。
-	// ChattoCore 创建后设置,数据来源为
-	// AssetProcessingConfig.AVIFEnabledOrDefault()。只影响 room 附件;
-	// 头像/branding/链接预览仍是 Go 直出的 WebP。
-	AVIFEnabled bool
-
 	// VideoUploadsEnabled makes message commits enqueue durable processing work
 	// for accepted video-shaped attachments. Worker placement is configured
 	// independently; the main process does not hand work to a local callback.
@@ -108,11 +91,6 @@ type ChattoCore struct {
 
 	// OnPushTestRequested sends a test notification to a user's push subscriptions.
 	OnPushTestRequested func(ctx context.Context, userID string) error
-
-	// AssetBaseURL is prepended to all asset URLs to make them absolute.
-	// When empty, URLs are returned as relative paths (backward compatible).
-	// Set from webserver.url config: scheme + host only (no trailing slash).
-	AssetBaseURL string
 
 	// PresenceHub is the compatibility handle for PresenceModel's per-process
 	// fanout hub. Started by (*ChattoCore).Run through PresenceModel.
@@ -154,6 +132,9 @@ func (c *ChattoCore) Run(ctx context.Context) error {
 	natsStatus := c.nc.StatusChanged(nats.DISCONNECTED, nats.RECONNECTING, nats.CONNECTED, nats.CLOSED)
 	defer c.nc.RemoveStatusListener(natsStatus)
 	g.Go(func() error { return c.runNATSRecovery(gctx, natsStatus) })
+	if c.eventReader != nil {
+		g.Go(func() error { return c.eventReader.Run(gctx) })
+	}
 
 	for _, projection := range c.projections {
 		projection := projection
@@ -222,6 +203,7 @@ func (c *ChattoCore) Run(ctx context.Context) error {
 	g.Go(func() error { return c.notificationOccurrences.Run(gctx) })
 	g.Go(func() error { return c.notificationMaterializer.Run(gctx) })
 	g.Go(func() error { return c.notificationAlertDelivery.run(gctx) })
+	g.Go(func() error { return c.botWebhooks.run(gctx) })
 	g.Go(func() error { return c.pushSubscriptionCleanup.Run(gctx) })
 	g.Go(func() error { return c.presenceModel.Run(gctx) })
 	g.Go(func() error { return c.myEventsModel.Run(gctx) })
@@ -230,6 +212,17 @@ func (c *ChattoCore) Run(ctx context.Context) error {
 	g.Go(func() error { return c.assetUploadModel.RunCleanup(gctx) })
 	g.Go(func() error { return c.keyShredding.Run(gctx) })
 	g.Go(func() error { return c.credentialUsage.Run(gctx) })
+	if c.neighborhoodDiscovery != nil {
+		g.Go(func() error {
+			err := c.neighborhoodDiscovery.Run(gctx, c.bootDone)
+			if errors.Is(err, context.Canceled) {
+				return err
+			}
+			// Neighborhood discovery is optional public metadata. A failure
+			// must never make core unavailable.
+			return nil
+		})
+	}
 	if c.projectionSnapshotWorker != nil {
 		g.Go(func() error {
 			err := c.projectionSnapshotWorker.Run(gctx, c.bootDone)
@@ -277,14 +270,19 @@ func (c *ChattoCore) WaitForBoot(ctx context.Context) error {
 
 // WaitForProjectionsCurrent blocks until every registered projection has
 // applied the latest stream message matching its filters as of this call.
-// Intended for boot/import diagnostics, not hot request paths.
+// Each target lookup is a broker round trip, so projections wait concurrently.
+// Realtime replay planning calls this once for each WebSocket connection.
 func (c *ChattoCore) WaitForProjectionsCurrent(ctx context.Context) error {
+	waits, waitCtx := errgroup.WithContext(ctx)
 	for _, projection := range c.projections {
-		if err := projection.projector.WaitForCurrent(ctx); err != nil {
-			return fmt.Errorf("%s projection: %w", projection.name, err)
-		}
+		waits.Go(func() error {
+			if err := projection.projector.WaitForCurrent(waitCtx); err != nil {
+				return fmt.Errorf("%s projection: %w", projection.name, err)
+			}
+			return nil
+		})
 	}
-	return nil
+	return waits.Wait()
 }
 
 // ProjectionHealthError returns the first fatal projection error currently
@@ -381,6 +379,9 @@ func NewChattoCore(ctx context.Context, nc *nats.Conn, cfg config.CoreConfig) (*
 	}
 
 	core := assembleCore(nc, cfg, infra, projections, logger)
+	if err := core.initializeServerSetup(ctx); err != nil {
+		return nil, fmt.Errorf("initialize server setup: %w", err)
+	}
 
 	// ensureChannelRoomsAreInAGroup is deferred to core.Run() — it
 	// needs the projectors to be live so its CreateRoomGroup /

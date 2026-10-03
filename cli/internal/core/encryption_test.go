@@ -95,9 +95,8 @@ func TestPostMessage_EncryptsMessageBody(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, event)
 
-	stored, retracted, ok := core.roomModel.latestBody(event.Id)
-	require.True(t, ok, "expected message to be projected")
-	require.False(t, retracted, "new message should not be retracted")
+	stored, err := core.currentMessageBody(ctx, event.Id)
+	require.NoError(t, err)
 	require.NotNil(t, stored, "expected projected body from MessageBodyEvent")
 	require.NotEmpty(t, stored.EncryptedBody, "encrypted body should not be empty")
 	require.NotEmpty(t, stored.EncryptionNonce, "nonce should not be empty")
@@ -143,9 +142,8 @@ func TestMessageBodyV2AADRejectsWrongEventContext(t *testing.T) {
 
 	event, err := core.PostMessage(ctx, KindChannel, room.Id, user.Id, "Bound to one event", nil, "", "", nil, false)
 	require.NoError(t, err)
-	stored, retracted, ok := core.roomModel.latestBody(event.Id)
-	require.True(t, ok)
-	require.False(t, retracted)
+	stored, err := core.currentMessageBody(ctx, event.Id)
+	require.NoError(t, err)
 	require.NotNil(t, stored)
 
 	plaintext, err := core.decryptMessageBody(ctx, event.Id, room.Id, stored)
@@ -433,6 +431,34 @@ func TestGetMessageBody_CryptoShredding(t *testing.T) {
 	require.Nil(t, fullBody, "message should be nil after crypto-shredding (treated same as deleted)")
 }
 
+func TestAttachmentDescription_CryptoShredding(t *testing.T) {
+	core := setupTestCoreWithEncryption(t)
+	ctx := testContext(t)
+	user, err := core.CreateUser(ctx, SystemActorID, "description-shredding", "Description Shredding", "password123")
+	require.NoError(t, err)
+	room, err := core.CreateRoom(ctx, user.Id, KindChannel, "", "description-shredding", "")
+	require.NoError(t, err)
+	_, err = core.JoinRoom(ctx, user.Id, KindChannel, user.Id, room.Id)
+	require.NoError(t, err)
+	attachment, err := core.UploadAttachment(ctx, user.Id, room.Id, "photo.png", "image/png", bytes.NewReader(createTestPNG(20, 20)))
+	require.NoError(t, err)
+	posted, err := core.Messages().PostMessage(ctx, MessagePostInput{
+		ActorID: user.Id, RoomID: room.Id, AttachmentAssetIDs: []string{attachment.Id},
+		AttachmentDescriptions: []MessageAttachmentDescriptionInput{{
+			AssetID: attachment.Id, Description: "A person beside a window",
+		}},
+	})
+	require.NoError(t, err)
+	body, err := core.GetFullMessageBody(ctx, posted.Event.Id)
+	require.NoError(t, err)
+	require.Equal(t, "A person beside a window", body.AttachmentDescriptions[attachment.Id])
+
+	require.NoError(t, core.DeleteUserEncryptionKeyAs(ctx, user.Id, user.Id))
+	body, err = core.GetFullMessageBody(ctx, posted.Event.Id)
+	require.NoError(t, err)
+	require.Nil(t, body)
+}
+
 func TestDeleteUserEncryptionKey_UsesStoredDEKWrappingRefs(t *testing.T) {
 	core := setupTestCoreWithEncryption(t)
 	ctx := testContext(t)
@@ -639,11 +665,10 @@ func TestEditMessage_PreservesEncryptionState(t *testing.T) {
 	err = core.EditMessage(ctx, user.Id, KindChannel, room.Id, eventID, "Edited content")
 	require.NoError(t, err)
 
-	// Post-#597 cutover: the edited body rides on a MessageEditedEvent
-	// in the EVT stream, surfaced via the projection's LatestBody.
-	stored, retracted, ok := core.roomModel.latestBody(event.Id)
-	require.True(t, ok, "expected the edited message to still be projected")
-	require.False(t, retracted, "message should not be retracted by an edit")
+	// Post-#597 cutover: the edited body rides on a MessageBodyEvent in the
+	// EVT stream. The projection supplies its exact hydration reference.
+	stored, err := core.currentMessageBody(ctx, event.Id)
+	require.NoError(t, err)
 	require.NotNil(t, stored, "expected a body after edit")
 	require.NotEmpty(t, stored.EncryptedBody, "encrypted body should not be empty after edit")
 	require.NotEmpty(t, stored.EncryptionNonce, "nonce should not be empty after edit")

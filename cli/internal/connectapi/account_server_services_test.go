@@ -1,7 +1,9 @@
 package connectapi
 
 import (
+	"context"
 	"errors"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -9,20 +11,152 @@ import (
 
 	"connectrpc.com/connect"
 
+	"hmans.de/chatto/internal/authctx"
 	"hmans.de/chatto/internal/config"
 	"hmans.de/chatto/internal/core"
+	"hmans.de/chatto/internal/email"
 	adminv1 "hmans.de/chatto/internal/pb/chatto/admin/v1"
 	apiv1 "hmans.de/chatto/internal/pb/chatto/api/v1"
 	configv1 "hmans.de/chatto/internal/pb/chatto/config/v1"
 	evtv1 "hmans.de/chatto/internal/pb/chatto/core/evt/v1"
 )
 
+func TestViewerServicePrivilegedModeLifecycle(t *testing.T) {
+	env := newConnectAPITestEnv(t)
+	owner, err := env.core.CreateUser(env.ctx, core.SystemActorID, "privileged-viewer", "Privileged Viewer", "password")
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if err := env.core.AssignOwnerRole(env.ctx, owner.Id); err != nil {
+		t.Fatalf("AssignOwnerRole: %v", err)
+	}
+	credentials, err := env.core.CreateBearerSessionWithSource(env.ctx, owner.Id, "password_login")
+	if err != nil {
+		t.Fatalf("CreateBearerSessionWithSource: %v", err)
+	}
+	requestContext := func() context.Context {
+		validated, err := env.core.ValidatePublicBearerCredential(env.ctx, credentials.AccessToken)
+		if err != nil {
+			t.Fatalf("ValidatePublicBearerCredential: %v", err)
+		}
+		ctx := withCaller(env.ctx, owner)
+		return authctx.WithCredential(ctx, authctx.RuntimeCredential{
+			Kind:                    authctx.RuntimeCredentialKindBearerToken,
+			UserID:                  owner.Id,
+			Handle:                  credentials.AccessToken,
+			ExpiresAt:               validated.ExpiresAt,
+			PrivilegedModeExpiresAt: validated.PrivilegedModeExpiresAt,
+		})
+	}
+
+	unarmed, err := env.viewerService.GetViewer(requestContext(), connect.NewRequest(&apiv1.GetViewerRequest{}))
+	if err != nil {
+		t.Fatalf("GetViewer unarmed: %v", err)
+	}
+	if state := unarmed.Msg.GetPrivilegedMode(); !state.GetAvailable() || state.GetActive() {
+		t.Fatalf("unarmed privileged mode = %+v, want available and inactive", state)
+	}
+	if apiCapabilityGranted(unarmed.Msg.GetCapabilities().GetGrants(), viewerCapabilityAdminViewSystem) {
+		t.Fatal("unarmed owner has effective system capability")
+	}
+
+	activated, err := env.viewerService.ActivatePrivilegedMode(requestContext(), connect.NewRequest(&apiv1.ActivatePrivilegedModeRequest{}))
+	if err != nil {
+		t.Fatalf("ActivatePrivilegedMode: %v", err)
+	}
+	if !activated.Msg.GetPrivilegedMode().GetActive() || activated.Msg.GetPrivilegedMode().GetExpiresAt() == nil {
+		t.Fatalf("activated privileged mode = %+v, want active deadline", activated.Msg.GetPrivilegedMode())
+	}
+	if !apiCapabilityGranted(activated.Msg.GetCapabilities().GetGrants(), viewerCapabilityAdminViewSystem) {
+		t.Fatal("activation response lacks newly effective system capability")
+	}
+	if _, err := env.viewerService.ActivatePrivilegedMode(requestContext(), connect.NewRequest(&apiv1.ActivatePrivilegedModeRequest{})); err != nil {
+		t.Fatalf("idempotent ActivatePrivilegedMode: %v", err)
+	}
+	armed, err := env.viewerService.GetViewer(requestContext(), connect.NewRequest(&apiv1.GetViewerRequest{}))
+	if err != nil {
+		t.Fatalf("GetViewer armed: %v", err)
+	}
+	if !apiCapabilityGranted(armed.Msg.GetCapabilities().GetGrants(), viewerCapabilityAdminViewSystem) {
+		t.Fatal("armed owner lacks effective system capability")
+	}
+	activationLog, err := env.core.ListEventLog(requestContext(), owner.Id, core.EventLogQuery{
+		Filter: core.EventLogFilter{EventType: "PrivilegedModeActivatedEvent", ActorID: owner.Id},
+	})
+	if err != nil {
+		t.Fatalf("ListEventLog activation: %v", err)
+	}
+	if len(activationLog.Entries) != 1 {
+		t.Fatalf("privileged-mode activation audit entries = %d, want 1", len(activationLog.Entries))
+	}
+
+	armedContext := requestContext()
+	deactivated, err := env.viewerService.DeactivatePrivilegedMode(armedContext, connect.NewRequest(&apiv1.DeactivatePrivilegedModeRequest{}))
+	if err != nil {
+		t.Fatalf("DeactivatePrivilegedMode: %v", err)
+	}
+	if apiCapabilityGranted(deactivated.Msg.GetCapabilities().GetGrants(), viewerCapabilityAdminViewSystem) {
+		t.Fatal("deactivation response retains system capability")
+	}
+	if _, err := env.viewerService.DeactivatePrivilegedMode(requestContext(), connect.NewRequest(&apiv1.DeactivatePrivilegedModeRequest{})); err != nil {
+		t.Fatalf("idempotent DeactivatePrivilegedMode: %v", err)
+	}
+	deactivationLog, err := env.core.ListEventLog(armedContext, owner.Id, core.EventLogQuery{
+		Filter: core.EventLogFilter{EventType: "PrivilegedModeDeactivatedEvent", ActorID: owner.Id},
+	})
+	if err != nil {
+		t.Fatalf("ListEventLog deactivation: %v", err)
+	}
+	if len(deactivationLog.Entries) != 1 {
+		t.Fatalf("privileged-mode deactivation audit entries = %d, want 1", len(deactivationLog.Entries))
+	}
+	disarmed, err := env.viewerService.GetViewer(requestContext(), connect.NewRequest(&apiv1.GetViewerRequest{}))
+	if err != nil {
+		t.Fatalf("GetViewer disarmed: %v", err)
+	}
+	if disarmed.Msg.GetPrivilegedMode().GetActive() {
+		t.Fatal("deactivated privileged mode remains active")
+	}
+}
+
+func TestViewerServicePrivilegedModeRejectsIneligibleCallers(t *testing.T) {
+	env := newConnectAPITestEnv(t)
+	credentials, err := env.core.CreateBearerSessionWithSource(env.ctx, env.viewer.Id, "password_login")
+	if err != nil {
+		t.Fatalf("CreateBearerSessionWithSource: %v", err)
+	}
+	humanContext := withBearerCredential(env.ctx, env.viewer, credentials.AccessToken)
+	if _, err := env.viewerService.ActivatePrivilegedMode(humanContext, connect.NewRequest(&apiv1.ActivatePrivilegedModeRequest{})); errorCode(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("unentitled activation code = %v, want failed_precondition", errorCode(err))
+	}
+	validated, err := env.core.ValidatePublicBearerCredential(env.ctx, credentials.AccessToken)
+	if err != nil {
+		t.Fatalf("ValidatePublicBearerCredential: %v", err)
+	}
+	if !validated.PrivilegedModeExpiresAt.IsZero() {
+		t.Fatalf("unentitled activation wrote deadline %v", validated.PrivilegedModeExpiresAt)
+	}
+
+	bot, err := env.core.CreateBot(env.ctx, env.viewer.Id, "privileged_mode_bot", "Privileged Mode Bot")
+	if err != nil {
+		t.Fatalf("CreateBot: %v", err)
+	}
+	botContext := authctx.WithCredential(withCaller(env.ctx, bot.User), authctx.RuntimeCredential{
+		Kind:   authctx.RuntimeCredentialKindBotAPIKey,
+		UserID: bot.User.Id,
+		Handle: bot.APIKey,
+	})
+	if _, err := env.viewerService.ActivatePrivilegedMode(botContext, connect.NewRequest(&apiv1.ActivatePrivilegedModeRequest{})); errorCode(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("bot activation code = %v, want failed_precondition", errorCode(err))
+	}
+}
+
 func TestViewerServiceGetViewerReturnsSelfScopedState(t *testing.T) {
 	env := newConnectAPITestEnv(t)
 	ctx := withCaller(env.ctx, env.viewer)
 
-	if _, err := env.viewerService.GetViewer(env.ctx, connect.NewRequest(&apiv1.GetViewerRequest{})); connect.CodeOf(err) != connect.CodeUnauthenticated {
-		t.Fatalf("unauthenticated GetViewer code = %v, want unauthenticated", connect.CodeOf(err))
+	if _, err := env.viewerService.GetViewer(env.ctx, connect.NewRequest(&apiv1.GetViewerRequest{})); errorCode(err) != connect.CodeUnauthenticated {
+		t.Fatalf("unauthenticated GetViewer code = %v, want unauthenticated", errorCode(err))
 	}
 	if err := env.core.AddVerifiedEmailDirect(env.ctx, env.viewer.Id, "viewer-connect@example.com"); err != nil {
 		t.Fatalf("AddVerifiedEmailDirect: %v", err)
@@ -119,22 +253,24 @@ func TestMyAccountServiceUpdatesSelfProfileAndSettings(t *testing.T) {
 	env := newConnectAPITestEnv(t)
 	ctx := withCaller(env.ctx, env.viewer)
 
-	if _, err := env.account.UpdateProfile(env.ctx, connect.NewRequest(&apiv1.UpdateProfileRequest{
+	if _, err := env.users.UpdateUserProfile(env.ctx, connect.NewRequest(&apiv1.UpdateUserProfileRequest{
+		UserId:      env.viewer.Id,
 		DisplayName: stringPtr("No Auth"),
-	})); connect.CodeOf(err) != connect.CodeUnauthenticated {
-		t.Fatalf("unauthenticated UpdateProfile code = %v, want unauthenticated", connect.CodeOf(err))
+	})); errorCode(err) != connect.CodeUnauthenticated {
+		t.Fatalf("unauthenticated UpdateUserProfile code = %v, want unauthenticated", errorCode(err))
 	}
-	if _, err := env.account.UpdateProfile(ctx, connect.NewRequest(&apiv1.UpdateProfileRequest{})); connect.CodeOf(err) != connect.CodeInvalidArgument {
-		t.Fatalf("empty UpdateProfile code = %v, want invalid_argument", connect.CodeOf(err))
+	if _, err := env.users.UpdateUserProfile(ctx, connect.NewRequest(&apiv1.UpdateUserProfileRequest{UserId: env.viewer.Id})); errorCode(err) != connect.CodeInvalidArgument {
+		t.Fatalf("empty UpdateUserProfile code = %v, want invalid_argument", errorCode(err))
 	}
 
-	profileResp, err := env.account.UpdateProfile(ctx, connect.NewRequest(&apiv1.UpdateProfileRequest{
+	profileResp, err := env.users.UpdateUserProfile(ctx, connect.NewRequest(&apiv1.UpdateUserProfileRequest{
+		UserId:      env.viewer.Id,
 		DisplayName: stringPtr("Connect Profile"),
 		Login:       stringPtr("connect-profile"),
 		Bio:         stringPtr("Connect profile bio"),
 	}))
 	if err != nil {
-		t.Fatalf("UpdateProfile: %v", err)
+		t.Fatalf("UpdateUserProfile: %v", err)
 	}
 	if user := profileResp.Msg.GetUser(); user.GetId() != env.viewer.Id || user.GetDisplayName() != "Connect Profile" || user.GetLogin() != "connect-profile" || user.GetBio() != "Connect profile bio" {
 		t.Fatalf("updated profile = %+v, want renamed viewer", user)
@@ -146,14 +282,21 @@ func TestMyAccountServiceUpdatesSelfProfileAndSettings(t *testing.T) {
 	if firstLoginChange.IsZero() {
 		t.Fatal("first profile login change did not start the cooldown")
 	}
+	if _, err := env.users.UpdateUserProfile(ctx, connect.NewRequest(&apiv1.UpdateUserProfileRequest{
+		UserId: env.viewer.Id,
+		Login:  stringPtr("connect-profile-blocked"),
+	})); errorCode(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("UpdateUserProfile during cooldown code = %v, want failed precondition (err=%v)", errorCode(err), err)
+	}
 	if err := env.core.GrantUserPermission(env.ctx, core.SystemActorID, env.viewer.Id, core.PermUserManageAccounts); err != nil {
 		t.Fatalf("GrantUserPermission user.manage-accounts: %v", err)
 	}
-	bypassResp, err := env.account.UpdateProfile(ctx, connect.NewRequest(&apiv1.UpdateProfileRequest{
-		Login: stringPtr("connect-profile-bypass"),
+	bypassResp, err := env.users.UpdateUserProfile(ctx, connect.NewRequest(&apiv1.UpdateUserProfileRequest{
+		UserId: env.viewer.Id,
+		Login:  stringPtr("connect-profile-bypass"),
 	}))
 	if err != nil {
-		t.Fatalf("UpdateProfile with own cooldown bypass: %v", err)
+		t.Fatalf("UpdateUserProfile with own cooldown bypass: %v", err)
 	}
 	if got := bypassResp.Msg.GetUser().GetLogin(); got != "connect-profile-bypass" {
 		t.Fatalf("bypassed profile login = %q, want connect-profile-bypass", got)
@@ -208,8 +351,8 @@ func TestMyAccountServiceUpdatesSelfProfileAndSettings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpdateSettings clear timezone: %v", err)
 	}
-	if clearResp.Msg.GetSettings().Timezone != nil {
-		t.Fatalf("cleared timezone = %q, want nil", clearResp.Msg.GetSettings().GetTimezone())
+	if settings := clearResp.Msg.GetSettings(); settings.Timezone == nil || settings.GetTimezone() != "" {
+		t.Fatalf("cleared timezone must preserve the explicit browser default: %+v", settings)
 	}
 }
 
@@ -231,57 +374,186 @@ func TestMyAccountServiceSetsPassword(t *testing.T) {
 	}
 	oauthCtx := withBearerCredential(env.ctx, passwordless, oauthToken)
 
-	if _, err := env.account.UpdatePassword(env.ctx, connect.NewRequest(&apiv1.UpdatePasswordRequest{
+	if _, err := env.account.ChangePassword(env.ctx, connect.NewRequest(&apiv1.ChangePasswordRequest{
 		Password: "newpassword456",
-	})); connect.CodeOf(err) != connect.CodeUnauthenticated {
-		t.Fatalf("unauthenticated UpdatePassword code = %v, want unauthenticated", connect.CodeOf(err))
+	})); errorCode(err) != connect.CodeUnauthenticated {
+		t.Fatalf("unauthenticated ChangePassword code = %v, want unauthenticated", errorCode(err))
 	}
-	if _, err := env.account.UpdatePassword(ctx, connect.NewRequest(&apiv1.UpdatePasswordRequest{})); connect.CodeOf(err) != connect.CodeInvalidArgument {
-		t.Fatalf("empty UpdatePassword code = %v, want invalid_argument", connect.CodeOf(err))
+	if _, err := env.account.ChangePassword(ctx, connect.NewRequest(&apiv1.ChangePasswordRequest{})); errorCode(err) != connect.CodeInvalidArgument {
+		t.Fatalf("empty ChangePassword code = %v, want invalid_argument", errorCode(err))
 	}
-	if _, err := env.account.UpdatePassword(ctx, connect.NewRequest(&apiv1.UpdatePasswordRequest{
+	if _, err := env.account.ChangePassword(ctx, connect.NewRequest(&apiv1.ChangePasswordRequest{
 		Password: "short",
-	})); connect.CodeOf(err) != connect.CodeInvalidArgument {
-		t.Fatalf("short UpdatePassword code = %v, want invalid_argument", connect.CodeOf(err))
+	})); errorCode(err) != connect.CodeInvalidArgument {
+		t.Fatalf("short ChangePassword code = %v, want invalid_argument", errorCode(err))
 	}
 
-	if _, err := env.account.UpdatePassword(ctx, connect.NewRequest(&apiv1.UpdatePasswordRequest{
+	if _, err := env.account.ChangePassword(ctx, connect.NewRequest(&apiv1.ChangePasswordRequest{
 		Password: "newpassword456",
-	})); connect.CodeOf(err) != connect.CodeFailedPrecondition {
-		t.Fatalf("UpdatePassword without fresh credential code = %v, want failed_precondition", connect.CodeOf(err))
+	})); errorCode(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("ChangePassword without fresh credential code = %v, want failed_precondition", errorCode(err))
 	}
-	if _, err := env.account.UpdatePassword(oauthCtx, connect.NewRequest(&apiv1.UpdatePasswordRequest{
+	if _, err := env.account.ChangePassword(oauthCtx, connect.NewRequest(&apiv1.ChangePasswordRequest{
 		Password: "newpassword456",
-	})); connect.CodeOf(err) != connect.CodeFailedPrecondition {
-		t.Fatalf("UpdatePassword with OAuth token code = %v, want failed_precondition", connect.CodeOf(err))
+	})); errorCode(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("ChangePassword with OAuth token code = %v, want failed_precondition", errorCode(err))
 	}
-	if _, err := env.account.UpdatePassword(freshCtx, connect.NewRequest(&apiv1.UpdatePasswordRequest{
+	if _, err := env.account.ChangePassword(freshCtx, connect.NewRequest(&apiv1.ChangePasswordRequest{
 		Password: "newpassword456",
 	})); err != nil {
-		t.Fatalf("UpdatePassword: %v", err)
+		t.Fatalf("ChangePassword: %v", err)
 	}
 	if _, err := env.core.VerifyPassword(env.ctx, passwordless.Login, "newpassword456"); err != nil {
 		t.Fatalf("VerifyPassword: %v", err)
 	}
-	if _, err := env.account.UpdatePassword(ctx, connect.NewRequest(&apiv1.UpdatePasswordRequest{
+	if _, err := env.account.ChangePassword(ctx, connect.NewRequest(&apiv1.ChangePasswordRequest{
 		Password: "anotherpassword456",
-	})); connect.CodeOf(err) != connect.CodeInvalidArgument {
-		t.Fatalf("second UpdatePassword without current code = %v, want invalid_argument", connect.CodeOf(err))
+	})); errorCode(err) != connect.CodeInvalidArgument {
+		t.Fatalf("second ChangePassword without current code = %v, want invalid_argument", errorCode(err))
 	}
-	if _, err := env.account.UpdatePassword(ctx, connect.NewRequest(&apiv1.UpdatePasswordRequest{
+	if _, err := env.account.ChangePassword(ctx, connect.NewRequest(&apiv1.ChangePasswordRequest{
 		Password:        "anotherpassword456",
 		CurrentPassword: "wrongpassword",
-	})); connect.CodeOf(err) != connect.CodeInvalidArgument {
-		t.Fatalf("second UpdatePassword wrong current code = %v, want invalid_argument", connect.CodeOf(err))
+	})); errorCode(err) != connect.CodeInvalidArgument {
+		t.Fatalf("second ChangePassword wrong current code = %v, want invalid_argument", errorCode(err))
 	}
-	if _, err := env.account.UpdatePassword(ctx, connect.NewRequest(&apiv1.UpdatePasswordRequest{
+	if _, err := env.account.ChangePassword(ctx, connect.NewRequest(&apiv1.ChangePasswordRequest{
 		Password:        "anotherpassword456",
 		CurrentPassword: "newpassword456",
 	})); err != nil {
-		t.Fatalf("UpdatePassword with current: %v", err)
+		t.Fatalf("ChangePassword with current: %v", err)
 	}
 	if _, err := env.core.VerifyPassword(env.ctx, passwordless.Login, "anotherpassword456"); err != nil {
 		t.Fatalf("VerifyPassword changed: %v", err)
+	}
+}
+
+func TestMyAccountServiceManagesVerifiedEmails(t *testing.T) {
+	env := newConnectAPITestEnv(t)
+	ctx := withCaller(env.ctx, env.viewer)
+	mailer := email.NewMockSender(true)
+	env.api.emailSender = mailer
+
+	// The account requests a code through the authenticated API. The address is
+	// not verified until the code delivered by the configured sender is confirmed.
+	if _, err := env.account.RequestEmailVerification(ctx, connect.NewRequest(&apiv1.RequestEmailVerificationRequest{
+		Email: "First@Example.com", ExpectedUserId: env.viewer.Id,
+	})); err != nil {
+		t.Fatalf("RequestEmailVerification: %v", err)
+	}
+	message := mailer.LastMessage()
+	if message == nil || message.To != "first@example.com" {
+		t.Fatalf("verification message = %+v, want normalized recipient", message)
+	}
+	listed, err := env.account.ListVerifiedEmails(ctx, connect.NewRequest(&apiv1.ListVerifiedEmailsRequest{ExpectedUserId: env.viewer.Id}))
+	if err != nil {
+		t.Fatalf("ListVerifiedEmails before confirmation: %v", err)
+	}
+	if emails := listed.Msg.GetVerifiedEmails(); len(emails) != 0 {
+		t.Fatalf("emails before confirmation = %+v, want none", emails)
+	}
+	if _, err := env.account.SetPrimaryEmail(ctx, connect.NewRequest(&apiv1.SetPrimaryEmailRequest{
+		Email: "first@example.com", ExpectedUserId: env.viewer.Id,
+	})); errorCode(err) != connect.CodeNotFound {
+		t.Fatalf("SetPrimaryEmail before confirmation code = %v, want not_found", errorCode(err))
+	}
+	code := regexp.MustCompile(`\b[0-9]{6}\b`).FindString(message.Body)
+	if code == "" {
+		t.Fatalf("verification message body has no code: %q", message.Body)
+	}
+	confirmed, err := env.account.ConfirmEmailVerification(ctx, connect.NewRequest(&apiv1.ConfirmEmailVerificationRequest{
+		Email: "first@example.com", Code: code, ExpectedUserId: env.viewer.Id,
+	}))
+	if err != nil {
+		t.Fatalf("ConfirmEmailVerification: %v", err)
+	}
+	if emails := confirmed.Msg.GetVerifiedEmails(); len(emails) != 1 || !emails[0].GetPrimary() {
+		t.Fatalf("confirmed emails = %+v, want one primary address", emails)
+	}
+	if _, err := env.account.RequestEmailVerification(ctx, connect.NewRequest(&apiv1.RequestEmailVerificationRequest{
+		Email: "FIRST@example.com", ExpectedUserId: env.viewer.Id,
+	})); errorCode(err) != connect.CodeAlreadyExists {
+		t.Fatalf("RequestEmailVerification verified address code = %v, want already_exists", errorCode(err))
+	}
+
+	// A second verified address stays secondary until the account selects it.
+	if err := env.core.AddVerifiedEmailDirect(ctx, env.viewer.Id, "second@example.com"); err != nil {
+		t.Fatalf("AddVerifiedEmailDirect second: %v", err)
+	}
+	selected, err := env.account.SetPrimaryEmail(ctx, connect.NewRequest(&apiv1.SetPrimaryEmailRequest{
+		Email: "second@example.com", ExpectedUserId: env.viewer.Id,
+	}))
+	if err != nil {
+		t.Fatalf("SetPrimaryEmail: %v", err)
+	}
+	primary := ""
+	for _, address := range selected.Msg.GetVerifiedEmails() {
+		if address.GetPrimary() {
+			primary = address.GetEmail()
+		}
+	}
+	if primary != "second@example.com" {
+		t.Fatalf("primary email = %q, want second@example.com", primary)
+	}
+}
+
+func TestMyAccountServiceBindsVerifiedEmailRequestsToExpectedUser(t *testing.T) {
+	env := newConnectAPITestEnv(t)
+	ctx := withCaller(env.ctx, env.viewer)
+	mailer := email.NewMockSender(true)
+	env.api.emailSender = mailer
+	otherUserID := "U-another-account"
+
+	if _, err := env.account.ListVerifiedEmails(ctx, connect.NewRequest(&apiv1.ListVerifiedEmailsRequest{
+		ExpectedUserId: otherUserID,
+	})); errorCode(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("ListVerifiedEmails mismatched account code = %v, want failed_precondition", errorCode(err))
+	}
+
+	if _, err := env.account.RequestEmailVerification(ctx, connect.NewRequest(&apiv1.RequestEmailVerificationRequest{
+		Email: "bound-request@example.com", ExpectedUserId: otherUserID,
+	})); errorCode(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("RequestEmailVerification mismatched account code = %v, want failed_precondition", errorCode(err))
+	}
+	if messages := mailer.Messages(); len(messages) != 0 {
+		t.Fatalf("mismatched account sent %d verification messages, want none", len(messages))
+	}
+
+	const pendingAddress = "bound-confirmation@example.com"
+	code, err := env.core.CreateEmailVerificationCode(ctx, env.viewer.Id, pendingAddress)
+	if err != nil {
+		t.Fatalf("CreateEmailVerificationCode: %v", err)
+	}
+	if _, err := env.account.ConfirmEmailVerification(ctx, connect.NewRequest(&apiv1.ConfirmEmailVerificationRequest{
+		Email: pendingAddress, Code: code, ExpectedUserId: otherUserID,
+	})); errorCode(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("ConfirmEmailVerification mismatched account code = %v, want failed_precondition", errorCode(err))
+	}
+	if _, err := env.account.ConfirmEmailVerification(ctx, connect.NewRequest(&apiv1.ConfirmEmailVerificationRequest{
+		Email: pendingAddress, Code: code, ExpectedUserId: env.viewer.Id,
+	})); err != nil {
+		t.Fatalf("ConfirmEmailVerification after mismatched account: %v", err)
+	}
+
+	const secondaryAddress = "bound-primary@example.com"
+	if err := env.core.AddVerifiedEmailDirect(ctx, env.viewer.Id, secondaryAddress); err != nil {
+		t.Fatalf("AddVerifiedEmailDirect: %v", err)
+	}
+	if _, err := env.account.SetPrimaryEmail(ctx, connect.NewRequest(&apiv1.SetPrimaryEmailRequest{
+		Email: secondaryAddress, ExpectedUserId: otherUserID,
+	})); errorCode(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("SetPrimaryEmail mismatched account code = %v, want failed_precondition", errorCode(err))
+	}
+	listed, err := env.account.ListVerifiedEmails(ctx, connect.NewRequest(&apiv1.ListVerifiedEmailsRequest{
+		ExpectedUserId: env.viewer.Id,
+	}))
+	if err != nil {
+		t.Fatalf("ListVerifiedEmails: %v", err)
+	}
+	for _, address := range listed.Msg.GetVerifiedEmails() {
+		if address.GetEmail() == secondaryAddress && address.GetPrimary() {
+			t.Fatalf("mismatched account selected %q as primary", secondaryAddress)
+		}
 	}
 }
 
@@ -291,19 +563,19 @@ func TestUserServiceAvatarAndMyAccountServiceDeletion(t *testing.T) {
 
 	if _, err := env.users.UploadAvatar(env.ctx, connect.NewRequest(&apiv1.UploadAvatarRequest{
 		UserId: env.viewer.Id, Image: &apiv1.ImageUpload{Image: connectAPITestPNG()},
-	})); connect.CodeOf(err) != connect.CodeUnauthenticated {
-		t.Fatalf("unauthenticated UploadAvatar code = %v, want unauthenticated", connect.CodeOf(err))
+	})); errorCode(err) != connect.CodeUnauthenticated {
+		t.Fatalf("unauthenticated UploadAvatar code = %v, want unauthenticated", errorCode(err))
 	}
-	if _, err := env.users.UploadAvatar(ctx, connect.NewRequest(&apiv1.UploadAvatarRequest{UserId: env.viewer.Id})); connect.CodeOf(err) != connect.CodeInvalidArgument {
-		t.Fatalf("empty UploadAvatar code = %v, want invalid_argument", connect.CodeOf(err))
+	if _, err := env.users.UploadAvatar(ctx, connect.NewRequest(&apiv1.UploadAvatarRequest{UserId: env.viewer.Id})); errorCode(err) != connect.CodeInvalidArgument {
+		t.Fatalf("empty UploadAvatar code = %v, want invalid_argument", errorCode(err))
 	}
 	if _, err := env.users.UploadAvatar(ctx, connect.NewRequest(&apiv1.UploadAvatarRequest{
 		Image: &apiv1.ImageUpload{Image: connectAPITestPNG()},
-	})); connect.CodeOf(err) != connect.CodeInvalidArgument {
-		t.Fatalf("missing target UploadAvatar code = %v, want invalid_argument", connect.CodeOf(err))
+	})); errorCode(err) != connect.CodeInvalidArgument {
+		t.Fatalf("missing target UploadAvatar code = %v, want invalid_argument", errorCode(err))
 	}
-	if _, err := env.users.DeleteAvatar(ctx, connect.NewRequest(&apiv1.DeleteAvatarRequest{})); connect.CodeOf(err) != connect.CodeInvalidArgument {
-		t.Fatalf("missing target DeleteAvatar code = %v, want invalid_argument", connect.CodeOf(err))
+	if _, err := env.users.DeleteAvatar(ctx, connect.NewRequest(&apiv1.DeleteAvatarRequest{})); errorCode(err) != connect.CodeInvalidArgument {
+		t.Fatalf("missing target DeleteAvatar code = %v, want invalid_argument", errorCode(err))
 	}
 
 	uploadAvatarResp, err := env.users.UploadAvatar(ctx, connect.NewRequest(&apiv1.UploadAvatarRequest{
@@ -342,8 +614,8 @@ func TestUserServiceAvatarAndMyAccountServiceDeletion(t *testing.T) {
 	if tokenResp.Msg.GetConfirmationToken() == "" {
 		t.Fatal("confirmation token is empty")
 	}
-	if _, err := env.account.DeleteMyAccount(ctx, connect.NewRequest(&apiv1.DeleteMyAccountRequest{})); connect.CodeOf(err) != connect.CodeInvalidArgument {
-		t.Fatalf("empty DeleteMyAccount code = %v, want invalid_argument", connect.CodeOf(err))
+	if _, err := env.account.DeleteMyAccount(ctx, connect.NewRequest(&apiv1.DeleteMyAccountRequest{})); errorCode(err) != connect.CodeInvalidArgument {
+		t.Fatalf("empty DeleteMyAccount code = %v, want invalid_argument", errorCode(err))
 	}
 
 	deleteResp, err := env.account.DeleteMyAccount(ctx, connect.NewRequest(&apiv1.DeleteMyAccountRequest{
@@ -352,9 +624,7 @@ func TestUserServiceAvatarAndMyAccountServiceDeletion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DeleteMyAccount: %v", err)
 	}
-	if !deleteResp.Msg.GetDeleted() {
-		t.Fatal("Deleted = false, want true")
-	}
+	requireEmptyResponse(t, deleteResp.Msg)
 }
 
 func TestAccountDeletionRequiresDeleteSelfPermission(t *testing.T) {
@@ -374,13 +644,13 @@ func TestAccountDeletionRequiresDeleteSelfPermission(t *testing.T) {
 		t.Fatalf("DenyUserPermission user.delete-self: %v", err)
 	}
 
-	if _, err := env.account.RequestAccountDeletion(withCaller(env.ctx, env.viewer), connect.NewRequest(&apiv1.RequestAccountDeletionRequest{})); connect.CodeOf(err) != connect.CodePermissionDenied {
-		t.Fatalf("denied RequestAccountDeletion code = %v, want permission_denied", connect.CodeOf(err))
+	if _, err := env.account.RequestAccountDeletion(withCaller(env.ctx, env.viewer), connect.NewRequest(&apiv1.RequestAccountDeletionRequest{})); errorCode(err) != connect.CodePermissionDenied {
+		t.Fatalf("denied RequestAccountDeletion code = %v, want permission_denied", errorCode(err))
 	}
 	if _, err := env.account.DeleteMyAccount(withCaller(env.ctx, env.viewer), connect.NewRequest(&apiv1.DeleteMyAccountRequest{
 		ConfirmationToken: tokenResp.Msg.GetConfirmationToken(),
-	})); connect.CodeOf(err) != connect.CodePermissionDenied {
-		t.Fatalf("denied DeleteMyAccount code = %v, want permission_denied", connect.CodeOf(err))
+	})); errorCode(err) != connect.CodePermissionDenied {
+		t.Fatalf("denied DeleteMyAccount code = %v, want permission_denied", errorCode(err))
 	}
 
 	if err := env.core.GrantUserPermission(env.ctx, core.SystemActorID, env.viewer.Id, core.PermUserDeleteSelf); err != nil {
@@ -392,8 +662,83 @@ func TestAccountDeletionRequiresDeleteSelfPermission(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DeleteMyAccount with restored permission: %v", err)
 	}
-	if !deleteResp.Msg.GetDeleted() {
-		t.Fatal("Deleted = false, want true")
+	requireEmptyResponse(t, deleteResp.Msg)
+}
+
+func TestAdminUserServiceManagesOwnUsernameCooldown(t *testing.T) {
+	for _, grant := range []string{"admin role", "account management permission"} {
+		t.Run(grant, func(t *testing.T) {
+			env := newConnectAPITestEnv(t)
+			user, err := env.core.CreateUser(env.ctx, core.SystemActorID, "self-manager", "Self Manager", "password")
+			if err != nil {
+				t.Fatalf("CreateUser: %v", err)
+			}
+			if _, err := env.core.UpdateUserLogin(env.ctx, user.Id, "self-manager-first"); err != nil {
+				t.Fatalf("start cooldown: %v", err)
+			}
+			before, err := env.core.GetLastLoginChange(env.ctx, user.Id)
+			if err != nil || before.IsZero() {
+				t.Fatalf("expected active cooldown: %v", err)
+			}
+			if grant == "admin role" {
+				err = env.core.AssignAdminRole(env.ctx, user.Id)
+			} else {
+				err = env.core.GrantUserPermission(env.ctx, core.SystemActorID, user.Id, core.PermUserManageAccounts)
+			}
+			if err != nil {
+				t.Fatalf("grant account management: %v", err)
+			}
+			token, err := env.core.CreateAuthTokenWithSource(env.ctx, user.Id, "password_login")
+			if err != nil {
+				t.Fatalf("CreateAuthTokenWithSource: %v", err)
+			}
+			ctx := withArmedBearerCredential(env.ctx, user, token)
+			resp, err := env.users.UpdateUserProfile(ctx, connect.NewRequest(&apiv1.UpdateUserProfileRequest{
+				UserId: user.Id,
+				Login:  stringPtr("self-manager-second"),
+			}))
+			if err != nil {
+				t.Fatalf("admin self rename during cooldown: %v", err)
+			}
+			if resp.Msg.GetUser().GetLogin() != "self-manager-second" {
+				t.Fatal("admin self rename did not update the login")
+			}
+			after, err := env.core.GetLastLoginChange(env.ctx, user.Id)
+			if err != nil || !after.Equal(before) {
+				t.Fatalf("admin self rename must preserve the cooldown: %v", err)
+			}
+			if _, err := env.adminUsers.ClearUsernameCooldown(ctx, connect.NewRequest(&adminv1.ClearUsernameCooldownRequest{
+				UserId: user.Id,
+			})); err != nil {
+				t.Fatalf("clear own cooldown: %v", err)
+			}
+			after, err = env.core.GetLastLoginChange(env.ctx, user.Id)
+			if err != nil || !after.IsZero() {
+				t.Fatalf("own cooldown must be cleared: %v", err)
+			}
+			if err := env.core.DenyUserPermission(env.ctx, core.SystemActorID, user.Id, core.PermUserManageAccounts); err != nil {
+				t.Fatalf("deny account management: %v", err)
+			}
+			// Without account management, a self rename follows the ordinary
+			// self-service cooldown rules again.
+			if _, err := env.users.UpdateUserProfile(ctx, connect.NewRequest(&apiv1.UpdateUserProfileRequest{
+				UserId: user.Id,
+				Login:  stringPtr("self-manager-third"),
+			})); err != nil {
+				t.Fatalf("self rename after permission denial: %v", err)
+			}
+			if _, err := env.users.UpdateUserProfile(ctx, connect.NewRequest(&apiv1.UpdateUserProfileRequest{
+				UserId: user.Id,
+				Login:  stringPtr("self-manager-denied"),
+			})); errorCode(err) != connect.CodeFailedPrecondition {
+				t.Fatalf("second self rename after permission denial = %v, want failed_precondition", err)
+			}
+			if _, err := env.adminUsers.ClearUsernameCooldown(ctx, connect.NewRequest(&adminv1.ClearUsernameCooldownRequest{
+				UserId: user.Id,
+			})); errorCode(err) != connect.CodePermissionDenied {
+				t.Fatalf("self clear after permission denial = %v, want permission_denied", err)
+			}
+		})
 	}
 }
 
@@ -408,56 +753,56 @@ func TestAdminUserServiceUpdatesUsersAndClearsCooldown(t *testing.T) {
 		t.Fatalf("CreateUser regular: %v", err)
 	}
 
-	if _, err := env.adminUsers.UpdateUser(env.ctx, connect.NewRequest(&adminv1.UpdateUserRequest{
+	if _, err := env.users.UpdateUserProfile(env.ctx, connect.NewRequest(&apiv1.UpdateUserProfileRequest{
 		UserId:      target.Id,
 		DisplayName: stringPtr("No Auth"),
-	})); connect.CodeOf(err) != connect.CodeUnauthenticated {
-		t.Fatalf("unauthenticated UpdateUser code = %v, want unauthenticated", connect.CodeOf(err))
+	})); errorCode(err) != connect.CodeUnauthenticated {
+		t.Fatalf("unauthenticated UpdateUserProfile code = %v, want unauthenticated", errorCode(err))
 	}
-	if _, err := env.adminUsers.UpdateUserPassword(env.ctx, connect.NewRequest(&adminv1.UpdateUserPasswordRequest{
+	if _, err := env.adminUsers.ChangeUserPassword(env.ctx, connect.NewRequest(&adminv1.ChangeUserPasswordRequest{
 		UserId:   target.Id,
 		Password: "newpassword456",
-	})); connect.CodeOf(err) != connect.CodeUnauthenticated {
-		t.Fatalf("unauthenticated UpdateUserPassword code = %v, want unauthenticated", connect.CodeOf(err))
+	})); errorCode(err) != connect.CodeUnauthenticated {
+		t.Fatalf("unauthenticated ChangeUserPassword code = %v, want unauthenticated", errorCode(err))
 	}
 	if _, err := env.adminUsers.DeleteUser(env.ctx, connect.NewRequest(&adminv1.DeleteUserRequest{
 		UserId: target.Id,
-	})); connect.CodeOf(err) != connect.CodeUnauthenticated {
-		t.Fatalf("unauthenticated DeleteUser code = %v, want unauthenticated", connect.CodeOf(err))
+	})); errorCode(err) != connect.CodeUnauthenticated {
+		t.Fatalf("unauthenticated DeleteUser code = %v, want unauthenticated", errorCode(err))
 	}
-	if _, err := env.adminUsers.UpdateUser(withCaller(env.ctx, regular), connect.NewRequest(&adminv1.UpdateUserRequest{
+	if _, err := env.users.UpdateUserProfile(withCaller(env.ctx, regular), connect.NewRequest(&apiv1.UpdateUserProfileRequest{
 		UserId:      target.Id,
 		DisplayName: stringPtr("Denied"),
-	})); connect.CodeOf(err) != connect.CodePermissionDenied {
-		t.Fatalf("regular UpdateUser code = %v, want permission_denied", connect.CodeOf(err))
+	})); errorCode(err) != connect.CodePermissionDenied {
+		t.Fatalf("regular UpdateUserProfile code = %v, want permission_denied", errorCode(err))
 	}
-	if _, err := env.adminUsers.UpdateUserPassword(withCaller(env.ctx, regular), connect.NewRequest(&adminv1.UpdateUserPasswordRequest{
+	if _, err := env.adminUsers.ChangeUserPassword(withCaller(env.ctx, regular), connect.NewRequest(&adminv1.ChangeUserPasswordRequest{
 		UserId:   target.Id,
 		Password: "newpassword456",
-	})); connect.CodeOf(err) != connect.CodePermissionDenied {
-		t.Fatalf("regular UpdateUserPassword code = %v, want permission_denied", connect.CodeOf(err))
+	})); errorCode(err) != connect.CodePermissionDenied {
+		t.Fatalf("regular ChangeUserPassword code = %v, want permission_denied", errorCode(err))
 	}
 	if _, err := env.adminUsers.DeleteUser(withCaller(env.ctx, regular), connect.NewRequest(&adminv1.DeleteUserRequest{
 		UserId: target.Id,
-	})); connect.CodeOf(err) != connect.CodePermissionDenied {
-		t.Fatalf("regular DeleteUser code = %v, want permission_denied", connect.CodeOf(err))
+	})); errorCode(err) != connect.CodePermissionDenied {
+		t.Fatalf("regular DeleteUser code = %v, want permission_denied", errorCode(err))
 	}
 	if _, err := env.core.UpdateUserLogin(env.ctx, regular.Id, "admin-user-regular-renamed"); err != nil {
 		t.Fatalf("UpdateUserLogin regular: %v", err)
 	}
-	if _, err := env.adminUsers.UpdateUser(withCaller(env.ctx, regular), connect.NewRequest(&adminv1.UpdateUserRequest{
+	if _, err := env.users.UpdateUserProfile(withCaller(env.ctx, regular), connect.NewRequest(&apiv1.UpdateUserProfileRequest{
 		UserId: regular.Id,
 		Login:  stringPtr("admin-user-regular-bypass"),
-	})); connect.CodeOf(err) != connect.CodePermissionDenied {
-		t.Fatalf("regular self UpdateUser code = %v, want permission_denied", connect.CodeOf(err))
+	})); errorCode(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("regular self UpdateUserProfile during cooldown code = %v, want failed_precondition", errorCode(err))
 	}
 	if _, err := env.core.UpdateUserLogin(env.ctx, regular.Id, "admin-user-regular-cooldown"); !errors.Is(err, core.ErrLoginChangeCooldown) {
-		t.Fatalf("regular cooldown after denied self UpdateUser err = %v, want cooldown", err)
+		t.Fatalf("regular cooldown after rejected self UpdateUserProfile err = %v, want cooldown", err)
 	}
 	if _, err := env.adminUsers.ClearUsernameCooldown(withCaller(env.ctx, regular), connect.NewRequest(&adminv1.ClearUsernameCooldownRequest{
 		UserId: regular.Id,
-	})); connect.CodeOf(err) != connect.CodePermissionDenied {
-		t.Fatalf("regular self ClearUsernameCooldown code = %v, want permission_denied", connect.CodeOf(err))
+	})); errorCode(err) != connect.CodePermissionDenied {
+		t.Fatalf("regular self ClearUsernameCooldown code = %v, want permission_denied", errorCode(err))
 	}
 	if _, err := env.core.UpdateUserLogin(env.ctx, regular.Id, "regular-still-cooldown"); !errors.Is(err, core.ErrLoginChangeCooldown) {
 		t.Fatalf("regular cooldown after denied self clear err = %v, want cooldown", err)
@@ -470,11 +815,11 @@ func TestAdminUserServiceUpdatesUsersAndClearsCooldown(t *testing.T) {
 	if err := env.core.GrantUserPermission(env.ctx, core.SystemActorID, roleAssigner.Id, core.PermRoleAssign); err != nil {
 		t.Fatalf("GrantUserPermission role.assign: %v", err)
 	}
-	if _, err := env.adminUsers.UpdateUserPassword(withCaller(env.ctx, roleAssigner), connect.NewRequest(&adminv1.UpdateUserPasswordRequest{
+	if _, err := env.adminUsers.ChangeUserPassword(withCaller(env.ctx, roleAssigner), connect.NewRequest(&adminv1.ChangeUserPasswordRequest{
 		UserId:   target.Id,
 		Password: "newpassword456",
-	})); connect.CodeOf(err) != connect.CodePermissionDenied {
-		t.Fatalf("role.assign-only UpdateUserPassword code = %v, want permission_denied", connect.CodeOf(err))
+	})); errorCode(err) != connect.CodePermissionDenied {
+		t.Fatalf("role.assign-only ChangeUserPassword code = %v, want permission_denied", errorCode(err))
 	}
 
 	accountManager, err := env.core.CreateUser(env.ctx, core.SystemActorID, "admin-user-account-manager", "Admin User Account Manager", "password")
@@ -486,38 +831,35 @@ func TestAdminUserServiceUpdatesUsersAndClearsCooldown(t *testing.T) {
 	}
 	if _, err := env.adminUsers.GetMember(withCaller(env.ctx, accountManager), connect.NewRequest(&adminv1.GetMemberRequest{
 		Target: &adminv1.GetMemberRequest_UserId{UserId: target.Id},
-	})); connect.CodeOf(err) != connect.CodePermissionDenied {
-		t.Fatalf("account manager GetMember code = %v, want permission_denied", connect.CodeOf(err))
+	})); errorCode(err) != connect.CodePermissionDenied {
+		t.Fatalf("account manager GetMember code = %v, want permission_denied", errorCode(err))
 	}
-	accountUpdateResp, err := env.adminUsers.UpdateUser(withCaller(env.ctx, accountManager), connect.NewRequest(&adminv1.UpdateUserRequest{
+	accountUpdateResp, err := env.users.UpdateUserProfile(withCaller(env.ctx, accountManager), connect.NewRequest(&apiv1.UpdateUserProfileRequest{
 		UserId:      target.Id,
 		DisplayName: stringPtr("Account Managed Target"),
 	}))
 	if err != nil {
-		t.Fatalf("account manager UpdateUser: %v", err)
+		t.Fatalf("account manager UpdateUserProfile: %v", err)
 	}
 	if accountUpdateResp.Msg.GetUser().GetDisplayName() != "Account Managed Target" {
-		t.Fatalf("account manager UpdateUser user display name = %q, want Account Managed Target", accountUpdateResp.Msg.GetUser().GetDisplayName())
+		t.Fatalf("account manager UpdateUserProfile user display name = %q, want Account Managed Target", accountUpdateResp.Msg.GetUser().GetDisplayName())
 	}
-	if member := accountUpdateResp.Msg.GetMember(); member.GetUser().GetId() != target.Id || member.GetUser().GetDisplayName() != "Account Managed Target" {
-		t.Fatalf("account manager UpdateUser member = %+v, want updated target", member)
-	}
-	if _, err := env.adminUsers.UpdateUserPassword(withCaller(env.ctx, accountManager), connect.NewRequest(&adminv1.UpdateUserPasswordRequest{
+	if _, err := env.adminUsers.ChangeUserPassword(withCaller(env.ctx, accountManager), connect.NewRequest(&adminv1.ChangeUserPasswordRequest{
 		UserId:   target.Id,
 		Password: "accountmanagerpass456",
-	})); connect.CodeOf(err) != connect.CodeFailedPrecondition {
-		t.Fatalf("account manager stale UpdateUserPassword code = %v, want failed_precondition", connect.CodeOf(err))
+	})); errorCode(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("account manager stale ChangeUserPassword code = %v, want failed_precondition", errorCode(err))
 	}
 	accountManagerToken, err := env.core.CreateAuthTokenWithSource(env.ctx, accountManager.Id, "password_login")
 	if err != nil {
 		t.Fatalf("CreateAuthTokenWithSource account manager: %v", err)
 	}
-	accountManagerResp, err := env.adminUsers.UpdateUserPassword(withBearerCredential(env.ctx, accountManager, accountManagerToken), connect.NewRequest(&adminv1.UpdateUserPasswordRequest{
+	accountManagerResp, err := env.adminUsers.ChangeUserPassword(withArmedBearerCredential(env.ctx, accountManager, accountManagerToken), connect.NewRequest(&adminv1.ChangeUserPasswordRequest{
 		UserId:   target.Id,
 		Password: "accountmanagerpass456",
 	}))
 	if err != nil {
-		t.Fatalf("account manager UpdateUserPassword: %v", err)
+		t.Fatalf("account manager ChangeUserPassword: %v", err)
 	}
 	if got := accountManagerResp.Msg.GetMember().GetUser().GetId(); got != target.Id {
 		t.Fatalf("account manager password member ID = %q, want %q", got, target.Id)
@@ -537,50 +879,50 @@ func TestAdminUserServiceUpdatesUsersAndClearsCooldown(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateAuthTokenWithSource admin: %v", err)
 	}
-	adminCtx := withBearerCredential(env.ctx, admin, adminToken)
+	adminCtx := withArmedBearerCredential(env.ctx, admin, adminToken)
 
-	if _, err := env.adminUsers.UpdateUser(adminCtx, connect.NewRequest(&adminv1.UpdateUserRequest{
+	if _, err := env.users.UpdateUserProfile(adminCtx, connect.NewRequest(&apiv1.UpdateUserProfileRequest{
 		UserId: target.Id,
-	})); connect.CodeOf(err) != connect.CodeInvalidArgument {
-		t.Fatalf("empty UpdateUser code = %v, want invalid_argument", connect.CodeOf(err))
+	})); errorCode(err) != connect.CodeInvalidArgument {
+		t.Fatalf("empty UpdateUserProfile code = %v, want invalid_argument", errorCode(err))
 	}
-	if _, err := env.adminUsers.UpdateUserPassword(adminCtx, connect.NewRequest(&adminv1.UpdateUserPasswordRequest{
+	if _, err := env.adminUsers.ChangeUserPassword(adminCtx, connect.NewRequest(&adminv1.ChangeUserPasswordRequest{
 		UserId: target.Id,
-	})); connect.CodeOf(err) != connect.CodeInvalidArgument {
-		t.Fatalf("empty UpdateUserPassword code = %v, want invalid_argument", connect.CodeOf(err))
+	})); errorCode(err) != connect.CodeInvalidArgument {
+		t.Fatalf("empty ChangeUserPassword code = %v, want invalid_argument", errorCode(err))
 	}
-	if _, err := env.adminUsers.DeleteUser(adminCtx, connect.NewRequest(&adminv1.DeleteUserRequest{})); connect.CodeOf(err) != connect.CodeInvalidArgument {
-		t.Fatalf("empty DeleteUser code = %v, want invalid_argument", connect.CodeOf(err))
+	if _, err := env.adminUsers.DeleteUser(adminCtx, connect.NewRequest(&adminv1.DeleteUserRequest{})); errorCode(err) != connect.CodeInvalidArgument {
+		t.Fatalf("empty DeleteUser code = %v, want invalid_argument", errorCode(err))
 	}
-	if _, err := env.adminUsers.UpdateUserPassword(adminCtx, connect.NewRequest(&adminv1.UpdateUserPasswordRequest{
+	if _, err := env.adminUsers.ChangeUserPassword(adminCtx, connect.NewRequest(&adminv1.ChangeUserPasswordRequest{
 		UserId:   target.Id,
 		Password: "short",
-	})); connect.CodeOf(err) != connect.CodeInvalidArgument {
-		t.Fatalf("short UpdateUserPassword code = %v, want invalid_argument", connect.CodeOf(err))
+	})); errorCode(err) != connect.CodeInvalidArgument {
+		t.Fatalf("short ChangeUserPassword code = %v, want invalid_argument", errorCode(err))
 	}
-	if _, err := env.adminUsers.UpdateUserPassword(adminCtx, connect.NewRequest(&adminv1.UpdateUserPasswordRequest{
+	if _, err := env.adminUsers.ChangeUserPassword(adminCtx, connect.NewRequest(&adminv1.ChangeUserPasswordRequest{
 		UserId:   admin.Id,
 		Password: "newpassword456",
-	})); connect.CodeOf(err) != connect.CodePermissionDenied {
-		t.Fatalf("self UpdateUserPassword code = %v, want permission_denied", connect.CodeOf(err))
+	})); errorCode(err) != connect.CodePermissionDenied {
+		t.Fatalf("self ChangeUserPassword code = %v, want permission_denied", errorCode(err))
 	}
-	resp, err := env.adminUsers.UpdateUser(adminCtx, connect.NewRequest(&adminv1.UpdateUserRequest{
+	resp, err := env.users.UpdateUserProfile(adminCtx, connect.NewRequest(&apiv1.UpdateUserProfileRequest{
 		UserId:      target.Id,
 		DisplayName: stringPtr("Managed Target"),
 		Login:       stringPtr("managed-target"),
 	}))
 	if err != nil {
-		t.Fatalf("UpdateUser: %v", err)
+		t.Fatalf("UpdateUserProfile: %v", err)
 	}
 	if user := resp.Msg.GetUser(); user.GetId() != target.Id || user.GetDisplayName() != "Managed Target" || user.GetLogin() != "managed-target" {
 		t.Fatalf("updated user = %+v, want managed target", user)
 	}
-	passwordResp, err := env.adminUsers.UpdateUserPassword(adminCtx, connect.NewRequest(&adminv1.UpdateUserPasswordRequest{
+	passwordResp, err := env.adminUsers.ChangeUserPassword(adminCtx, connect.NewRequest(&adminv1.ChangeUserPasswordRequest{
 		UserId:   target.Id,
 		Password: "adminpassword456",
 	}))
 	if err != nil {
-		t.Fatalf("UpdateUserPassword: %v", err)
+		t.Fatalf("ChangeUserPassword: %v", err)
 	}
 	if got := passwordResp.Msg.GetMember().GetUser().GetId(); got != target.Id {
 		t.Fatalf("password member ID = %q, want %q", got, target.Id)
@@ -601,9 +943,7 @@ func TestAdminUserServiceUpdatesUsersAndClearsCooldown(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ClearUsernameCooldown: %v", err)
 	}
-	if !clearResp.Msg.GetCleared() {
-		t.Fatal("Cleared = false, want true")
-	}
+	requireEmptyResponse(t, clearResp.Msg)
 	if _, err := env.core.UpdateUserLogin(env.ctx, target.Id, "target-unblocked"); err != nil {
 		t.Fatalf("self rename after cooldown clear: %v", err)
 	}
@@ -613,9 +953,7 @@ func TestAdminUserServiceUpdatesUsersAndClearsCooldown(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DeleteUser: %v", err)
 	}
-	if !deleteResp.Msg.GetDeleted() {
-		t.Fatal("Deleted = false, want true")
-	}
+	requireEmptyResponse(t, deleteResp.Msg)
 	if _, err := env.core.GetUser(env.ctx, target.Id); !errors.Is(err, core.ErrNotFound) {
 		t.Fatalf("GetUser after DeleteUser err = %v, want not found", err)
 	}
@@ -636,15 +974,13 @@ func TestAdminUserServiceDeleteUserDoesNotRequireFreshCredential(t *testing.T) {
 	}
 
 	deleteResp, err := env.adminUsers.DeleteUser(
-		withBearerCredential(env.ctx, env.viewer, staleToken),
+		withArmedBearerCredential(env.ctx, env.viewer, staleToken),
 		connect.NewRequest(&adminv1.DeleteUserRequest{UserId: target.Id}),
 	)
 	if err != nil {
 		t.Fatalf("DeleteUser with stale credential: %v", err)
 	}
-	if !deleteResp.Msg.GetDeleted() {
-		t.Fatal("Deleted = false, want true")
-	}
+	requireEmptyResponse(t, deleteResp.Msg)
 	if _, err := env.core.GetUser(env.ctx, target.Id); !errors.Is(err, core.ErrNotFound) {
 		t.Fatalf("GetUser after DeleteUser err = %v, want not found", err)
 	}
@@ -660,9 +996,7 @@ func TestAdminUserServiceDeleteUserPreservesSelfTargetContract(t *testing.T) {
 	if err != nil {
 		t.Fatalf("self DeleteUser: %v", err)
 	}
-	if !deleteResp.Msg.GetDeleted() {
-		t.Fatal("Deleted = false, want true")
-	}
+	requireEmptyResponse(t, deleteResp.Msg)
 	if _, err := env.core.GetUser(env.ctx, env.viewer.Id); !errors.Is(err, core.ErrNotFound) {
 		t.Fatalf("GetUser after self DeleteUser err = %v, want not found", err)
 	}
@@ -691,31 +1025,37 @@ func TestAdminUserServiceListsAndGetsMembers(t *testing.T) {
 	if err := env.core.AddVerifiedEmailDirect(env.ctx, target.Id, "admin-member-target@example.test"); err != nil {
 		t.Fatalf("AddVerifiedEmailDirect target: %v", err)
 	}
+	if err := env.core.AddVerifiedEmailDirect(env.ctx, target.Id, "admin-member-primary@example.test"); err != nil {
+		t.Fatalf("AddVerifiedEmailDirect target primary: %v", err)
+	}
+	if err := env.core.SetPrimaryVerifiedEmail(env.ctx, target.Id, "admin-member-primary@example.test"); err != nil {
+		t.Fatalf("SetPrimaryVerifiedEmail target: %v", err)
+	}
 	if _, err := env.core.UpdateUserLogin(env.ctx, target.Id, "admin-member-target-renamed"); err != nil {
 		t.Fatalf("UpdateUserLogin target: %v", err)
 	}
 
-	if _, err := env.adminUsers.ListMembers(env.ctx, connect.NewRequest(&adminv1.ListMembersRequest{})); connect.CodeOf(err) != connect.CodeUnauthenticated {
-		t.Fatalf("unauthenticated ListMembers code = %v, want unauthenticated", connect.CodeOf(err))
+	if _, err := env.adminUsers.ListMembers(env.ctx, connect.NewRequest(&adminv1.ListMembersRequest{})); errorCode(err) != connect.CodeUnauthenticated {
+		t.Fatalf("unauthenticated ListMembers code = %v, want unauthenticated", errorCode(err))
 	}
-	if _, err := env.adminUsers.BatchGetMembers(env.ctx, connect.NewRequest(&adminv1.BatchGetMembersRequest{UserIds: []string{target.Id}})); connect.CodeOf(err) != connect.CodeUnauthenticated {
-		t.Fatalf("unauthenticated BatchGetMembers code = %v, want unauthenticated", connect.CodeOf(err))
+	if _, err := env.adminUsers.BatchGetMembers(env.ctx, connect.NewRequest(&adminv1.BatchGetMembersRequest{UserIds: []string{target.Id}})); errorCode(err) != connect.CodeUnauthenticated {
+		t.Fatalf("unauthenticated BatchGetMembers code = %v, want unauthenticated", errorCode(err))
 	}
 
 	regularCtx := withCaller(env.ctx, regular)
 	if _, err := env.adminUsers.ListMembers(regularCtx, connect.NewRequest(&adminv1.ListMembersRequest{
 		Search: "target",
 		Page:   &apiv1.PageRequest{Limit: 10},
-	})); connect.CodeOf(err) != connect.CodePermissionDenied {
-		t.Fatalf("regular ListMembers code = %v, want permission denied", connect.CodeOf(err))
+	})); errorCode(err) != connect.CodePermissionDenied {
+		t.Fatalf("regular ListMembers code = %v, want permission denied", errorCode(err))
 	}
 	if _, err := env.adminUsers.GetMember(regularCtx, connect.NewRequest(&adminv1.GetMemberRequest{
 		Target: &adminv1.GetMemberRequest_UserId{UserId: target.Id},
-	})); connect.CodeOf(err) != connect.CodePermissionDenied {
-		t.Fatalf("regular GetMember code = %v, want permission denied", connect.CodeOf(err))
+	})); errorCode(err) != connect.CodePermissionDenied {
+		t.Fatalf("regular GetMember code = %v, want permission denied", errorCode(err))
 	}
-	if _, err := env.adminUsers.BatchGetMembers(regularCtx, connect.NewRequest(&adminv1.BatchGetMembersRequest{UserIds: []string{target.Id}})); connect.CodeOf(err) != connect.CodePermissionDenied {
-		t.Fatalf("regular BatchGetMembers code = %v, want permission denied", connect.CodeOf(err))
+	if _, err := env.adminUsers.BatchGetMembers(regularCtx, connect.NewRequest(&adminv1.BatchGetMembersRequest{UserIds: []string{target.Id}})); errorCode(err) != connect.CodePermissionDenied {
+		t.Fatalf("regular BatchGetMembers code = %v, want permission denied", errorCode(err))
 	}
 
 	adminCtx := withCaller(env.ctx, admin)
@@ -732,8 +1072,11 @@ func TestAdminUserServiceListsAndGetsMembers(t *testing.T) {
 	if got := batchTarget.GetRoles(); len(got) != 1 || got[0] != core.RoleModerator {
 		t.Fatalf("BatchGetMembers target roles = %v, want explicit moderator only", got)
 	}
-	if !batchTarget.GetHasVerifiedEmail() || len(batchTarget.GetVerifiedEmails()) != 1 || batchTarget.GetVerifiedEmails()[0] != "admin-member-target@example.test" {
-		t.Fatalf("BatchGetMembers emails = has:%v emails:%v, want target email", batchTarget.GetHasVerifiedEmail(), batchTarget.GetVerifiedEmails())
+	if !batchTarget.GetHasVerifiedEmail() || len(batchTarget.GetVerifiedEmails()) != 2 || batchTarget.GetPrimaryVerifiedEmail() != "admin-member-primary@example.test" {
+		t.Fatalf("BatchGetMembers emails = has:%v emails:%v primary:%q, want both addresses and selected primary", batchTarget.GetHasVerifiedEmail(), batchTarget.GetVerifiedEmails(), batchTarget.GetPrimaryVerifiedEmail())
+	}
+	if batchResp.Msg.GetMembers()[1].PrimaryVerifiedEmail != nil {
+		t.Fatalf("BatchGetMembers regular primary email = %q, want absent", batchResp.Msg.GetMembers()[1].GetPrimaryVerifiedEmail())
 	}
 	if batchTarget.GetLastLoginChange() == nil {
 		t.Fatal("BatchGetMembers LastLoginChange is nil, want visible cooldown timestamp")
@@ -749,24 +1092,8 @@ func TestAdminUserServiceListsAndGetsMembers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListMembers admin: %v", err)
 	}
-	if listResp.Msg.GetPage().GetTotalCount() != 1 || len(listResp.Msg.GetMembers()) != 1 {
-		t.Fatalf("ListMembers returned %d/%d members, want 1/1", len(listResp.Msg.GetMembers()), listResp.Msg.GetPage().GetTotalCount())
-	}
-	listUser := listResp.Msg.GetMembers()[0]
-	if listUser.GetUser().GetId() != target.Id {
-		t.Fatalf("ListMembers user ID = %q, want %q", listUser.GetUser().GetId(), target.Id)
-	}
-	if got := listUser.GetRoles(); len(got) != 1 || got[0] != core.RoleModerator {
-		t.Fatalf("ListMembers roles = %v, want explicit moderator only", got)
-	}
-	if !listUser.GetHasVerifiedEmail() || len(listUser.GetVerifiedEmails()) != 1 || listUser.GetVerifiedEmails()[0] != "admin-member-target@example.test" {
-		t.Fatalf("ListMembers emails = has:%v emails:%v, want target email", listUser.GetHasVerifiedEmail(), listUser.GetVerifiedEmails())
-	}
-	if listUser.GetLastLoginChange() == nil {
-		t.Fatal("ListMembers LastLoginChange is nil, want visible cooldown timestamp")
-	}
-	if len(listResp.Msg.GetRoles()) == 0 {
-		t.Fatal("ListMembers roles are empty")
+	if listResp.Msg.GetPage().GetTotalCount() != 1 || len(listResp.Msg.GetUserIds()) != 1 || listResp.Msg.GetUserIds()[0] != target.Id {
+		t.Fatalf("ListMembers = %+v, want target ID and total 1", listResp.Msg)
 	}
 
 	getResp, err := env.adminUsers.GetMember(adminCtx, connect.NewRequest(&adminv1.GetMemberRequest{
@@ -779,8 +1106,8 @@ func TestAdminUserServiceListsAndGetsMembers(t *testing.T) {
 	if member.GetUser().GetId() != target.Id || member.GetUser().GetLogin() != "admin-member-target-renamed" {
 		t.Fatalf("GetMember member = %+v, want renamed target", member)
 	}
-	if !member.GetHasVerifiedEmail() || len(member.GetVerifiedEmails()) != 1 || member.GetVerifiedEmails()[0] != "admin-member-target@example.test" {
-		t.Fatalf("GetMember emails = has:%v emails:%v, want target email", member.GetHasVerifiedEmail(), member.GetVerifiedEmails())
+	if !member.GetHasVerifiedEmail() || len(member.GetVerifiedEmails()) != 2 || member.GetPrimaryVerifiedEmail() != "admin-member-primary@example.test" {
+		t.Fatalf("GetMember emails = has:%v emails:%v primary:%q, want both addresses and selected primary", member.GetHasVerifiedEmail(), member.GetVerifiedEmails(), member.GetPrimaryVerifiedEmail())
 	}
 	if member.GetLastLoginChange() == nil {
 		t.Fatal("GetMember LastLoginChange is nil, want visible cooldown timestamp")
@@ -802,8 +1129,8 @@ func TestAdminUserServiceListsAndGetsMembers(t *testing.T) {
 	}
 	if _, err := env.adminUsers.GetMember(adminCtx, connect.NewRequest(&adminv1.GetMemberRequest{
 		Target: &adminv1.GetMemberRequest_UserId{UserId: "missing-user"},
-	})); connect.CodeOf(err) != connect.CodeNotFound {
-		t.Fatalf("missing GetMember code = %v, want not found", connect.CodeOf(err))
+	})); errorCode(err) != connect.CodeNotFound {
+		t.Fatalf("missing GetMember code = %v, want not found", errorCode(err))
 	}
 }
 
@@ -824,24 +1151,27 @@ func TestAdminUserServiceAssignsAndRevokesRoles(t *testing.T) {
 	if err := env.core.AssignAdminRole(env.ctx, admin.Id); err != nil {
 		t.Fatalf("AssignAdminRole: %v", err)
 	}
+	if err := env.core.AddVerifiedEmailDirect(env.ctx, target.Id, "admin-role-target@example.test"); err != nil {
+		t.Fatalf("AddVerifiedEmailDirect target: %v", err)
+	}
 	adminCtx := withCaller(env.ctx, admin)
 
 	if _, err := env.adminUsers.AssignRole(env.ctx, connect.NewRequest(&adminv1.AssignRoleRequest{
 		UserId:   target.Id,
 		RoleName: core.RoleModerator,
-	})); connect.CodeOf(err) != connect.CodeUnauthenticated {
-		t.Fatalf("unauthenticated AssignRole code = %v, want unauthenticated", connect.CodeOf(err))
+	})); errorCode(err) != connect.CodeUnauthenticated {
+		t.Fatalf("unauthenticated AssignRole code = %v, want unauthenticated", errorCode(err))
 	}
 	if _, err := env.adminUsers.AssignRole(withCaller(env.ctx, regular), connect.NewRequest(&adminv1.AssignRoleRequest{
 		UserId:   target.Id,
 		RoleName: core.RoleModerator,
-	})); connect.CodeOf(err) != connect.CodePermissionDenied {
-		t.Fatalf("regular AssignRole code = %v, want permission_denied", connect.CodeOf(err))
+	})); errorCode(err) != connect.CodePermissionDenied {
+		t.Fatalf("regular AssignRole code = %v, want permission_denied", errorCode(err))
 	}
 	if _, err := env.adminUsers.AssignRole(adminCtx, connect.NewRequest(&adminv1.AssignRoleRequest{
 		UserId: target.Id,
-	})); connect.CodeOf(err) != connect.CodeInvalidArgument {
-		t.Fatalf("empty role AssignRole code = %v, want invalid_argument", connect.CodeOf(err))
+	})); errorCode(err) != connect.CodeInvalidArgument {
+		t.Fatalf("empty role AssignRole code = %v, want invalid_argument", errorCode(err))
 	}
 	roleAssigner, err := env.core.CreateUser(env.ctx, core.SystemActorID, "admin-role-assigner-only", "Admin Role Assigner Only", "password")
 	if err != nil {
@@ -853,14 +1183,14 @@ func TestAdminUserServiceAssignsAndRevokesRoles(t *testing.T) {
 	if err := env.core.GrantUserPermission(env.ctx, core.SystemActorID, roleAssigner.Id, core.PermMessageManage); err != nil {
 		t.Fatalf("GrantUserPermission message.manage: %v", err)
 	}
-	if err := env.core.GrantUserPermission(env.ctx, core.SystemActorID, roleAssigner.Id, core.PermRoomMemberBan); err != nil {
-		t.Fatalf("GrantUserPermission room.ban-member: %v", err)
+	if err := env.core.GrantUserPermission(env.ctx, core.SystemActorID, roleAssigner.Id, core.PermRoomMemberRemove); err != nil {
+		t.Fatalf("GrantUserPermission room.remove-member: %v", err)
 	}
 	roleAssignerCtx := withCaller(env.ctx, roleAssigner)
 	if _, err := env.adminUsers.GetMember(roleAssignerCtx, connect.NewRequest(&adminv1.GetMemberRequest{
 		Target: &adminv1.GetMemberRequest_UserId{UserId: target.Id},
-	})); connect.CodeOf(err) != connect.CodePermissionDenied {
-		t.Fatalf("role.assign-only GetMember code = %v, want permission_denied", connect.CodeOf(err))
+	})); errorCode(err) != connect.CodePermissionDenied {
+		t.Fatalf("role.assign-only GetMember code = %v, want permission_denied", errorCode(err))
 	}
 	roleAssignerResp, err := env.adminUsers.AssignRole(roleAssignerCtx, connect.NewRequest(&adminv1.AssignRoleRequest{
 		UserId:   target.Id,
@@ -871,6 +1201,9 @@ func TestAdminUserServiceAssignsAndRevokesRoles(t *testing.T) {
 	}
 	if !stringSliceContains(roleAssignerResp.Msg.GetMember().GetRoles(), core.RoleModerator) {
 		t.Fatalf("role.assign-only AssignRole response = %+v, want assigned moderator", roleAssignerResp.Msg)
+	}
+	if roleAssignerResp.Msg.GetMember().GetHasVerifiedEmail() || len(roleAssignerResp.Msg.GetMember().GetVerifiedEmails()) != 0 || roleAssignerResp.Msg.GetMember().PrimaryVerifiedEmail != nil {
+		t.Fatalf("role.assign-only response exposed verified email metadata: %+v", roleAssignerResp.Msg.GetMember())
 	}
 	roleAssignerRevokeResp, err := env.adminUsers.RevokeRole(roleAssignerCtx, connect.NewRequest(&adminv1.RevokeRoleRequest{
 		UserId:   target.Id,
@@ -885,8 +1218,8 @@ func TestAdminUserServiceAssignsAndRevokesRoles(t *testing.T) {
 	if _, err := env.adminUsers.AssignRole(roleAssignerCtx, connect.NewRequest(&adminv1.AssignRoleRequest{
 		UserId:   target.Id,
 		RoleName: core.RoleOwner,
-	})); connect.CodeOf(err) != connect.CodePermissionDenied {
-		t.Fatalf("role.assign-only owner assignment code = %v, want permission_denied", connect.CodeOf(err))
+	})); errorCode(err) != connect.CodePermissionDenied {
+		t.Fatalf("role.assign-only owner assignment code = %v, want permission_denied", errorCode(err))
 	}
 
 	memberDetails, err := env.adminUsers.GetMember(adminCtx, connect.NewRequest(&adminv1.GetMemberRequest{
@@ -938,8 +1271,8 @@ func TestAdminUserServiceAssignsAndRevokesRoles(t *testing.T) {
 	if _, err := env.adminUsers.RevokeRole(adminCtx, connect.NewRequest(&adminv1.RevokeRoleRequest{
 		UserId:   admin.Id,
 		RoleName: core.RoleAdmin,
-	})); connect.CodeOf(err) != connect.CodeFailedPrecondition {
-		t.Fatalf("self admin RevokeRole code = %v, want failed_precondition", connect.CodeOf(err))
+	})); errorCode(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("self admin RevokeRole code = %v, want failed_precondition", errorCode(err))
 	}
 }
 
@@ -967,11 +1300,14 @@ func TestServerServiceGetMotdAndRuntimeConfig(t *testing.T) {
 		t.Fatalf("SetServerConfig: %v", err)
 	}
 
-	if _, err := env.serverState.GetMotd(env.ctx, connect.NewRequest(&apiv1.GetMotdRequest{})); connect.CodeOf(err) != connect.CodeUnauthenticated {
-		t.Fatalf("unauthenticated GetMotd code = %v, want unauthenticated", connect.CodeOf(err))
+	if _, err := env.serverState.GetMotd(env.ctx, connect.NewRequest(&apiv1.GetMotdRequest{})); errorCode(err) != connect.CodeUnauthenticated {
+		t.Fatalf("unauthenticated GetMotd code = %v, want unauthenticated", errorCode(err))
 	}
-	if _, err := env.serverState.GetRuntimeConfig(env.ctx, connect.NewRequest(&apiv1.GetRuntimeConfigRequest{})); connect.CodeOf(err) != connect.CodeUnauthenticated {
-		t.Fatalf("unauthenticated GetRuntimeConfig code = %v, want unauthenticated", connect.CodeOf(err))
+	if _, err := env.serverState.GetServerProfile(env.ctx, connect.NewRequest(&apiv1.GetServerProfileRequest{})); errorCode(err) != connect.CodeUnauthenticated {
+		t.Fatalf("unauthenticated GetServerProfile code = %v, want unauthenticated", errorCode(err))
+	}
+	if _, err := env.serverState.GetRuntimeConfig(env.ctx, connect.NewRequest(&apiv1.GetRuntimeConfigRequest{})); errorCode(err) != connect.CodeUnauthenticated {
+		t.Fatalf("unauthenticated GetRuntimeConfig code = %v, want unauthenticated", errorCode(err))
 	}
 
 	motdResp, err := env.serverState.GetMotd(withCaller(env.ctx, env.viewer), connect.NewRequest(&apiv1.GetMotdRequest{}))
@@ -980,6 +1316,13 @@ func TestServerServiceGetMotdAndRuntimeConfig(t *testing.T) {
 	}
 	if motdResp.Msg.GetMotd() != "Authenticated MOTD" {
 		t.Fatalf("MOTD = %q, want Authenticated MOTD", motdResp.Msg.GetMotd())
+	}
+	profileResp, err := env.serverState.GetServerProfile(withCaller(env.ctx, env.viewer), connect.NewRequest(&apiv1.GetServerProfileRequest{}))
+	if err != nil {
+		t.Fatalf("GetServerProfile: %v", err)
+	}
+	if profileResp.Msg.GetProfile().GetName() == "" {
+		t.Fatal("GetServerProfile returned an empty server name")
 	}
 
 	runtimeResp, err := env.serverState.GetRuntimeConfig(withCaller(env.ctx, env.viewer), connect.NewRequest(&apiv1.GetRuntimeConfigRequest{}))
@@ -1010,20 +1353,20 @@ func TestAdminServerServiceUpdateServerConfig(t *testing.T) {
 
 	if _, err := env.serverState.UpdateServerConfig(env.ctx, connect.NewRequest(&adminv1.UpdateServerConfigRequest{
 		ServerName: stringPtr("Nope"),
-	})); connect.CodeOf(err) != connect.CodeUnauthenticated {
-		t.Fatalf("unauthenticated UpdateServerConfig code = %v, want unauthenticated", connect.CodeOf(err))
+	})); errorCode(err) != connect.CodeUnauthenticated {
+		t.Fatalf("unauthenticated UpdateServerConfig code = %v, want unauthenticated", errorCode(err))
 	}
-	if _, err := env.serverState.GetServerConfig(env.ctx, connect.NewRequest(&adminv1.GetServerConfigRequest{})); connect.CodeOf(err) != connect.CodeUnauthenticated {
-		t.Fatalf("unauthenticated GetServerConfig code = %v, want unauthenticated", connect.CodeOf(err))
+	if _, err := env.serverState.GetServerConfig(env.ctx, connect.NewRequest(&adminv1.GetServerConfigRequest{})); errorCode(err) != connect.CodeUnauthenticated {
+		t.Fatalf("unauthenticated GetServerConfig code = %v, want unauthenticated", errorCode(err))
 	}
 
 	if _, err := env.serverState.UpdateServerConfig(ctx, connect.NewRequest(&adminv1.UpdateServerConfigRequest{
 		ServerName: stringPtr("Nope"),
-	})); connect.CodeOf(err) != connect.CodePermissionDenied {
-		t.Fatalf("UpdateServerConfig without permission code = %v, want permission denied", connect.CodeOf(err))
+	})); errorCode(err) != connect.CodePermissionDenied {
+		t.Fatalf("UpdateServerConfig without permission code = %v, want permission denied", errorCode(err))
 	}
-	if _, err := env.serverState.GetServerConfig(ctx, connect.NewRequest(&adminv1.GetServerConfigRequest{})); connect.CodeOf(err) != connect.CodePermissionDenied {
-		t.Fatalf("GetServerConfig without permission code = %v, want permission denied", connect.CodeOf(err))
+	if _, err := env.serverState.GetServerConfig(ctx, connect.NewRequest(&adminv1.GetServerConfigRequest{})); errorCode(err) != connect.CodePermissionDenied {
+		t.Fatalf("GetServerConfig without permission code = %v, want permission denied", errorCode(err))
 	}
 
 	if err := env.core.GrantServerPermission(env.ctx, core.SystemActorID, core.RoleEveryone, core.PermServerManage); err != nil {
@@ -1094,21 +1437,21 @@ func TestAdminServerServiceUpdatesServerBranding(t *testing.T) {
 
 	if _, err := env.serverState.UploadServerLogo(env.ctx, connect.NewRequest(&adminv1.UploadServerLogoRequest{
 		Image: &apiv1.ImageUpload{Image: connectAPITestPNG()},
-	})); connect.CodeOf(err) != connect.CodeUnauthenticated {
-		t.Fatalf("unauthenticated UploadServerLogo code = %v, want unauthenticated", connect.CodeOf(err))
+	})); errorCode(err) != connect.CodeUnauthenticated {
+		t.Fatalf("unauthenticated UploadServerLogo code = %v, want unauthenticated", errorCode(err))
 	}
 	if _, err := env.serverState.UploadServerLogo(ctx, connect.NewRequest(&adminv1.UploadServerLogoRequest{
 		Image: &apiv1.ImageUpload{Image: connectAPITestPNG()},
-	})); connect.CodeOf(err) != connect.CodePermissionDenied {
-		t.Fatalf("UploadServerLogo without permission code = %v, want permission_denied", connect.CodeOf(err))
+	})); errorCode(err) != connect.CodePermissionDenied {
+		t.Fatalf("UploadServerLogo without permission code = %v, want permission_denied", errorCode(err))
 	}
 
 	if err := env.core.GrantServerPermission(env.ctx, core.SystemActorID, core.RoleEveryone, core.PermServerManage); err != nil {
 		t.Fatalf("GrantServerPermission manage server: %v", err)
 	}
 
-	if _, err := env.serverState.UploadServerLogo(ctx, connect.NewRequest(&adminv1.UploadServerLogoRequest{})); connect.CodeOf(err) != connect.CodeInvalidArgument {
-		t.Fatalf("empty UploadServerLogo code = %v, want invalid_argument", connect.CodeOf(err))
+	if _, err := env.serverState.UploadServerLogo(ctx, connect.NewRequest(&adminv1.UploadServerLogoRequest{})); errorCode(err) != connect.CodeInvalidArgument {
+		t.Fatalf("empty UploadServerLogo code = %v, want invalid_argument", errorCode(err))
 	}
 	logoResp, err := env.serverState.UploadServerLogo(ctx, connect.NewRequest(&adminv1.UploadServerLogoRequest{
 		Image: &apiv1.ImageUpload{
@@ -1132,8 +1475,8 @@ func TestAdminServerServiceUpdatesServerBranding(t *testing.T) {
 		t.Fatalf("DeleteServerLogo logo URL = %q, want nil", deleteLogoResp.Msg.GetPublicProfile().GetLogoUrl())
 	}
 
-	if _, err := env.serverState.UploadServerBanner(ctx, connect.NewRequest(&adminv1.UploadServerBannerRequest{})); connect.CodeOf(err) != connect.CodeInvalidArgument {
-		t.Fatalf("empty UploadServerBanner code = %v, want invalid_argument", connect.CodeOf(err))
+	if _, err := env.serverState.UploadServerBanner(ctx, connect.NewRequest(&adminv1.UploadServerBannerRequest{})); errorCode(err) != connect.CodeInvalidArgument {
+		t.Fatalf("empty UploadServerBanner code = %v, want invalid_argument", errorCode(err))
 	}
 	bannerResp, err := env.serverState.UploadServerBanner(ctx, connect.NewRequest(&adminv1.UploadServerBannerRequest{
 		Image: &apiv1.ImageUpload{
@@ -1162,16 +1505,16 @@ func TestAdminServerServiceSecurityConfig(t *testing.T) {
 	env := newConnectAPITestEnv(t)
 	ctx := withCaller(env.ctx, env.viewer)
 
-	if _, err := env.serverState.GetServerSecurityConfig(env.ctx, connect.NewRequest(&adminv1.GetServerSecurityConfigRequest{})); connect.CodeOf(err) != connect.CodeUnauthenticated {
-		t.Fatalf("unauthenticated GetServerSecurityConfig code = %v, want unauthenticated", connect.CodeOf(err))
+	if _, err := env.serverState.GetServerSecurityConfig(env.ctx, connect.NewRequest(&adminv1.GetServerSecurityConfigRequest{})); errorCode(err) != connect.CodeUnauthenticated {
+		t.Fatalf("unauthenticated GetServerSecurityConfig code = %v, want unauthenticated", errorCode(err))
 	}
-	if _, err := env.serverState.GetServerSecurityConfig(ctx, connect.NewRequest(&adminv1.GetServerSecurityConfigRequest{})); connect.CodeOf(err) != connect.CodePermissionDenied {
-		t.Fatalf("GetServerSecurityConfig without permission code = %v, want permission denied", connect.CodeOf(err))
+	if _, err := env.serverState.GetServerSecurityConfig(ctx, connect.NewRequest(&adminv1.GetServerSecurityConfigRequest{})); errorCode(err) != connect.CodePermissionDenied {
+		t.Fatalf("GetServerSecurityConfig without permission code = %v, want permission denied", errorCode(err))
 	}
 	if _, err := env.serverState.UpdateBlockedUsernames(ctx, connect.NewRequest(&adminv1.UpdateBlockedUsernamesRequest{
 		BlockedUsernames: []string{"root"},
-	})); connect.CodeOf(err) != connect.CodePermissionDenied {
-		t.Fatalf("UpdateBlockedUsernames without permission code = %v, want permission denied", connect.CodeOf(err))
+	})); errorCode(err) != connect.CodePermissionDenied {
+		t.Fatalf("UpdateBlockedUsernames without permission code = %v, want permission denied", errorCode(err))
 	}
 
 	if err := env.core.GrantServerPermission(env.ctx, core.SystemActorID, core.RoleEveryone, core.PermServerManage); err != nil {
@@ -1213,7 +1556,42 @@ func TestAdminServerServiceSecurityConfig(t *testing.T) {
 
 	if _, err := env.serverState.UpdateBlockedUsernames(ctx, connect.NewRequest(&adminv1.UpdateBlockedUsernamesRequest{
 		BlockedUsernames: []string{strings.Repeat("u", core.MaxLoginLength+1)},
-	})); connect.CodeOf(err) != connect.CodeInvalidArgument {
-		t.Fatalf("oversized UpdateBlockedUsernames code = %v, want invalid argument", connect.CodeOf(err))
+	})); errorCode(err) != connect.CodeInvalidArgument {
+		t.Fatalf("oversized UpdateBlockedUsernames code = %v, want invalid argument", errorCode(err))
+	}
+}
+
+func TestMyAccountServiceSettingsPatchPresence(t *testing.T) {
+	env := newConnectAPITestEnv(t)
+	ctx := withCaller(env.ctx, env.viewer)
+	_, err := env.account.UpdateSettings(env.ctx, connect.NewRequest(&apiv1.UpdateSettingsRequest{}))
+	requireConnectCode(t, err, connect.CodeUnauthenticated)
+	_, err = env.account.UpdateSettings(ctx, connect.NewRequest(&apiv1.UpdateSettingsRequest{}))
+	requireConnectCode(t, err, connect.CodeInvalidArgument)
+
+	timezone, share := "Europe/Berlin", true
+	_, err = env.account.UpdateSettings(ctx, connect.NewRequest(&apiv1.UpdateSettingsRequest{
+		Timezone: &timezone, ShareTimezone: &share, TimeFormat: apiv1.TimeFormat_TIME_FORMAT_24_HOUR.Enum(),
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	share = false
+	response, err := env.account.UpdateSettings(ctx, connect.NewRequest(&apiv1.UpdateSettingsRequest{ShareTimezone: &share}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := response.Msg.GetSettings(); got.GetShareTimezone() || got.GetTimezone() != timezone || got.GetTimeFormat() != apiv1.TimeFormat_TIME_FORMAT_24_HOUR {
+		t.Fatalf("false must be applied and omitted fields preserved: %+v", got)
+	}
+	clear := ""
+	response, err = env.account.UpdateSettings(ctx, connect.NewRequest(&apiv1.UpdateSettingsRequest{
+		Timezone: &clear, TimeFormat: apiv1.TimeFormat_TIME_FORMAT_UNSPECIFIED.Enum(),
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := response.Msg.GetSettings(); got.Timezone == nil || got.GetTimezone() != "" || got.GetTimeFormat() != apiv1.TimeFormat_TIME_FORMAT_AUTO {
+		t.Fatalf("explicit defaults must clear overrides: %+v", got)
 	}
 }

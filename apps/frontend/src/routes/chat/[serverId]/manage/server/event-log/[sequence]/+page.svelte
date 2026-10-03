@@ -1,21 +1,19 @@
 <script lang="ts">
+  import { errorMessage } from '$lib/utils/errorMessage';
   import { page } from '$app/state';
   import { resolve } from '$app/paths';
   import { serverIdToSegment } from '$lib/navigation';
   import { useServerScope } from '$lib/state/server/scope.svelte';
-  import { createAdminEventLogAPI } from '$lib/api-client/adminEventLog';
-  import Panel from '$lib/ui/Panel.svelte';
-  import { Hint, PaneContent, Pill } from '$lib/ui';
-  import PaneHeader from '$lib/ui/PaneHeader.svelte';
-  import PageTitle from '$lib/ui/PageTitle.svelte';
+  import { createAdminEventLogAPI } from '$lib/api/adminEventLog';
+  import { Panel, Hint, PaneContent, Pill, LoadingFog, PaneHeader, PageTitle } from '$lib/ui';
+  import { JsonCode } from '$lib/ui/code';
   import {
     formatDateTime as formatDateTimeUtil,
     timeFormatSettingsFor
   } from '$lib/utils/formatTime';
   import { m } from '$lib/i18n/messages';
-  import { createQuery } from '@tanstack/svelte-query';
   import { adminQueryKeys } from '$lib/query/admin';
-  import { queryClient } from '$lib/query/client';
+  import { createQuery } from '$lib/query/client';
 
   const serverScope = useServerScope();
   const userSettings = $derived(
@@ -23,20 +21,17 @@
   );
 
   const sequence = $derived(page.params.sequence!);
-  const activeServerId = $derived(serverScope.serverId);
-  const entryQuery = createQuery(
-    () => {
-      const serverId = activeServerId;
-      const activeConnection = serverScope.connection;
-      const eventSequence = sequence;
-      return {
-        queryKey: adminQueryKeys.event(serverId, activeConnection, eventSequence),
-        queryFn: ({ signal }) =>
-          activeConnection.getAPI(createAdminEventLogAPI).getEvent(eventSequence, { signal })
-      };
-    },
-    () => queryClient
-  );
+  const activeServerId = serverScope.serverId;
+  const entryQuery = createQuery(() => {
+    const serverId = activeServerId;
+    const activeConnection = serverScope.connection;
+    const eventSequence = sequence;
+    return {
+      queryKey: adminQueryKeys.event(serverId, activeConnection, eventSequence),
+      queryFn: ({ signal }) =>
+        activeConnection.getAPI(createAdminEventLogAPI).getEvent(eventSequence, { signal })
+    };
+  });
 
   const backHref = $derived(
     resolve('/chat/[serverId]/manage/server/event-log', {
@@ -56,18 +51,15 @@
     title={m('admin.event_log.event_title', { sequence })}
     subtitle={m('admin.event_log.event_subtitle')}
     {backHref}
-    showMobileNav
   />
 
   <PaneContent>
     <div class="flex min-h-0 flex-col gap-6">
       {#if entryQuery.isPending}
-        <div class="text-muted">{m('admin.event_log.loading_event')}</div>
+        <LoadingFog class="h-40 w-full" label={m('admin.event_log.loading_event')} />
       {:else if entryQuery.error}
         <Hint tone="danger">
-          {entryQuery.error instanceof Error
-            ? entryQuery.error.message
-            : m('admin.event_log.unavailable')}
+          {errorMessage(entryQuery.error, m('admin.event_log.unavailable'))}
         </Hint>
       {:else if !entryQuery.data}
         <Hint tone="warning">{m('admin.event_log.not_found', { sequence })}</Hint>
@@ -105,8 +97,7 @@
         </Panel>
 
         <Panel title={m('admin.event_log.payload')}>
-          <pre
-            class="overflow-x-auto rounded-md bg-surface-emphasized p-4 font-mono text-xs leading-relaxed">{entry.payloadJson}</pre>
+          <JsonCode text={entry.payloadJson} />
         </Panel>
       {/if}
     </div>

@@ -2,13 +2,110 @@ package core
 
 import (
 	"bytes"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	"hmans.de/chatto/internal/evtstream"
 	evtv1 "hmans.de/chatto/internal/pb/chatto/core/evt/v1"
 )
+
+func TestThreadProjectionHistoricalImportRetainsMessageIndexWithoutInteraction(t *testing.T) {
+	p := NewThreadProjection()
+	if err := p.Apply(roomCreatedEvent("ROOM", "", "", evtv1.RoomKind_ROOM_KIND_CHANNEL), 1); err != nil {
+		t.Fatal(err)
+	}
+	imported := newEvent(SystemActorID, &evtv1.Event{Id: "IMPORTED", Event: &evtv1.Event_MessagePosted{MessagePosted: &evtv1.MessagePostedEvent{
+		RoomId: "ROOM", AuthorId: "AUTHOR", HistoricalImport: true,
+	}}})
+	if err := p.Apply(imported, 2); err != nil {
+		t.Fatal(err)
+	}
+	rootID, ok := p.ThreadRootForMessage("ROOM", imported.Id)
+	if !ok || rootID != imported.Id {
+		t.Fatalf("thread root = (%q, %t)", rootID, ok)
+	}
+	if p.HasInteraction("AUTHOR", "ROOM", imported.Id) {
+		t.Fatal("import created an author interaction")
+	}
+	snapshot, err := p.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored := NewThreadProjection()
+	if err := restored.Restore(snapshot); err != nil {
+		t.Fatal(err)
+	}
+	rootID, ok = restored.ThreadRootForMessage("ROOM", imported.Id)
+	if !ok || rootID != imported.Id || restored.HasInteraction("AUTHOR", "ROOM", imported.Id) {
+		t.Fatal("snapshot changed historical thread state")
+	}
+}
+
+func TestThreadProjectionDMReceivedInteractions(t *testing.T) {
+	joined := func(id, userID string) *evtv1.Event {
+		return &evtv1.Event{Id: id, ActorId: userID, Event: &evtv1.Event_UserJoinedRoom{
+			UserJoinedRoom: &evtv1.UserJoinedRoomEvent{RoomId: "DM"},
+		}}
+	}
+	left := &evtv1.Event{Id: "LEFT", ActorId: "RECIPIENT", Event: &evtv1.Event_UserLeftRoom{
+		UserLeftRoom: &evtv1.UserLeftRoomEvent{RoomId: "DM"},
+	}}
+	steps := []struct {
+		event *evtv1.Event
+		check func(*ThreadProjection)
+	}{
+		{event: roomCreatedEvent("DM", "", "", evtv1.RoomKind_ROOM_KIND_DM)},
+		{event: joined("JOIN", "RECIPIENT"), check: func(p *ThreadProjection) {
+			require.False(t, p.HasInteraction("RECIPIENT", "DM", "ROOT"))
+		}},
+		{event: postedEvent(postedOpts{envelopeID: "ROOT", roomID: "DM", actorID: "AUTHOR"}), check: func(p *ThreadProjection) {
+			require.True(t, p.HasInteraction("RECIPIENT", "DM", "ROOT"))
+			require.False(t, p.HasInteraction("OUTSIDER", "DM", "ROOT"))
+		}},
+		{event: left},
+		{event: postedEvent(postedOpts{envelopeID: "ABSENT", roomID: "DM", actorID: "AUTHOR"}), check: func(p *ThreadProjection) {
+			require.False(t, p.HasInteraction("RECIPIENT", "DM", "ABSENT"))
+			require.True(t, p.HasInteraction("RECIPIENT", "DM", "ROOT"))
+		}},
+		{event: joined("REJOIN", "RECIPIENT"), check: func(p *ThreadProjection) {
+			require.False(t, p.HasInteraction("RECIPIENT", "DM", "ABSENT"))
+		}},
+		{event: postedEvent(postedOpts{envelopeID: "REPLY", roomID: "DM", actorID: "AUTHOR", inThread: "ABSENT"}), check: func(p *ThreadProjection) {
+			require.True(t, p.HasInteraction("RECIPIENT", "DM", "ABSENT"))
+		}},
+		{event: editedEvent("EDIT", "REPLY", "DM", "AUTHOR", "edited", 8)},
+		{event: retractedEvent("RETRACT", "REPLY", "DM", "AUTHOR", "removed", 9), check: func(p *ThreadProjection) {
+			require.True(t, p.HasInteraction("RECIPIENT", "DM", "ABSENT"))
+		}},
+		{event: &evtv1.Event{Id: "BAN", Event: &evtv1.Event_RoomMemberBanned{
+			RoomMemberBanned: &evtv1.RoomMemberBannedEvent{RoomId: "DM", UserId: "RECIPIENT"},
+		}}},
+		{event: postedEvent(postedOpts{envelopeID: "BANNED", roomID: "DM", actorID: "AUTHOR"}), check: func(p *ThreadProjection) {
+			require.False(t, p.HasInteraction("RECIPIENT", "DM", "BANNED"))
+		}},
+	}
+	full, restored := NewThreadProjection(), NewThreadProjection()
+	for i, step := range steps {
+		for _, p := range []*ThreadProjection{full, restored} {
+			require.NoError(t, p.Apply(step.event, uint64(i+1)))
+			if step.check != nil {
+				step.check(p)
+			}
+		}
+		data, err := restored.Snapshot()
+		require.NoError(t, err)
+		restored = NewThreadProjection()
+		require.NoError(t, restored.Restore(data))
+		want, err := full.Snapshot()
+		require.NoError(t, err)
+		got, err := restored.Snapshot()
+		require.NoError(t, err)
+		require.Equal(t, want, got, "snapshot and tail replay at step %d", i)
+	}
+}
 
 func TestThreadProjectionSnapshotRoundTripAndTailReplay(t *testing.T) {
 	full := NewThreadProjection()
@@ -78,15 +175,14 @@ func TestThreadProjectionSnapshotRoundTripAndTailReplay(t *testing.T) {
 	if got := restored.FollowState("U2", "R1", "ROOT"); got != ThreadFollowStateFollowing {
 		t.Fatalf("FollowState after restore = %q", got)
 	}
-	interaction, ok := restored.Interaction("U2", "R1", "ROOT")
-	if !ok || len(interaction.Causes) != 2 {
-		t.Fatalf("U2 interaction after restore and tail = %#v, %v; want two direct-mention facts", interaction, ok)
+	if !restored.HasInteraction("U2", "R1", "ROOT") {
+		t.Fatal("U2 interaction missing after restore and tail")
 	}
 }
 
 func TestThreadProjectionSnapshotContractID(t *testing.T) {
-	if got := NewThreadProjection().SnapshotContractID(); !strings.HasPrefix(got, "v2-") {
-		t.Fatalf("SnapshotContractID() = %q, want v2 schema contract", got)
+	if got := NewThreadProjection().SnapshotContractID(); !strings.HasPrefix(got, "v3-") {
+		t.Fatalf("SnapshotContractID() = %q, want v3 schema contract", got)
 	}
 }
 
@@ -181,14 +277,15 @@ func TestThreadProjection_DerivesInteractionRelationshipsFromTypedMessageFacts(t
 			t.Errorf("HasInteraction(%s) = false, want true", userID)
 		}
 	}
-	for _, userID := range []string{"LEGACY", "ROLE", "HERE", "ALL", "REPLIER", "ECHO-AUTHOR", "ECHO-MENTION", "PARTIAL-ECHO-AUTHOR", "PARTIAL-ECHO-MENTION", "DM-AUTHOR", "DM-MENTION"} {
+	for _, userID := range []string{"LEGACY", "ROLE", "HERE", "ALL", "REPLIER", "ECHO-AUTHOR", "ECHO-MENTION", "PARTIAL-ECHO-AUTHOR", "PARTIAL-ECHO-MENTION"} {
 		if p.HasInteraction(userID, "R1", "ROOT") || p.HasInteraction(userID, "DM1", "DM-MESSAGE") {
 			t.Errorf("unexpected interaction for %s", userID)
 		}
 	}
-	interaction, ok := p.Interaction("DIRECT", "R1", "ROOT")
-	if !ok || len(interaction.Causes) != 2 || interaction.Causes[0].SourceEventID != "ROOT" || interaction.Causes[1].SourceEventID != "REPLY" {
-		t.Fatalf("DIRECT interaction = %#v, %v; want root and reply mention facts", interaction, ok)
+	for _, userID := range []string{"DM-AUTHOR", "DM-MENTION"} {
+		if !p.HasInteraction(userID, "DM1", "DM-MESSAGE") {
+			t.Errorf("DM HasInteraction(%s) = false, want true", userID)
+		}
 	}
 	for eventID, wantRoot := range map[string]string{"ROOT": "ROOT", "REPLY": "ROOT", "ECHO": "ROOT", "PARTIAL-ECHO": "ROOT"} {
 		if got, ok := p.ThreadRootForMessage("R1", eventID); !ok || got != wantRoot {
@@ -197,21 +294,21 @@ func TestThreadProjection_DerivesInteractionRelationshipsFromTypedMessageFacts(t
 	}
 }
 
-func TestThreadProjection_InteractionCauseOrderIsDeterministic(t *testing.T) {
+func TestThreadProjection_RepeatedInteractionCausesShareOneRelationship(t *testing.T) {
 	p := NewThreadProjection()
 	applyAll(t, p, []*evtv1.Event{
 		roomCreatedTimelineEvent("ROOM", "R1", "room", 1),
-		postedEvent(postedOpts{envelopeID: "ROOT", roomID: "R1", actorID: "AUTHOR", at: 2}),
+		postedEvent(postedOpts{envelopeID: "ROOT", roomID: "R1", actorID: "AUTHOR", at: 2, mentions: []*evtv1.MessageMention{directThreadMention("TARGET")}}),
 		postedEvent(postedOpts{envelopeID: "MENTION-Z", roomID: "R1", actorID: "AUTHOR", inThread: "ROOT", at: 3, mentions: []*evtv1.MessageMention{directThreadMention("TARGET")}}),
 		postedEvent(postedOpts{envelopeID: "MENTION-A", roomID: "R1", actorID: "AUTHOR", inThread: "ROOT", at: 3, mentions: []*evtv1.MessageMention{directThreadMention("TARGET")}}),
 	})
 
-	interaction, ok := p.Interaction("TARGET", "R1", "ROOT")
-	if !ok || len(interaction.Causes) != 2 {
-		t.Fatalf("Interaction = %#v, %v; want two causes", interaction, ok)
+	if !p.HasInteraction("TARGET", "R1", "ROOT") {
+		t.Fatal("TARGET interaction missing")
 	}
-	if interaction.Causes[0].SourceEventID != "MENTION-A" || interaction.Causes[1].SourceEventID != "MENTION-Z" {
-		t.Fatalf("cause order = %#v; want source event ID tie-break", interaction.Causes)
+	// AUTHOR's root authorship and TARGET's three mentions are two relationships.
+	if got := len(p.interactions); got != 2 {
+		t.Fatalf("interactions = %d, want 2", got)
 	}
 }
 
@@ -601,6 +698,9 @@ func TestThreadProjection_SubjectFilter(t *testing.T) {
 		evtstream.RoomEventTypeFilter(evtstream.EventThreadCreated):             true,
 		evtstream.RoomEventTypeFilter(evtstream.EventThreadFollowed):            true,
 		evtstream.RoomEventTypeFilter(evtstream.EventThreadUnfollowed):          true,
+		evtstream.RoomEventTypeFilter(evtstream.EventUserJoinedRoom):            true,
+		evtstream.RoomEventTypeFilter(evtstream.EventUserLeftRoom):              true,
+		evtstream.RoomEventTypeFilter(evtstream.EventRoomMemberBanned):          true,
 		evtstream.RoomEventTypeFilter(evtstream.EventMessagePosted):             true,
 		evtstream.RoomEventTypeFilter(evtstream.EventMessageEdited):             true,
 		evtstream.RoomEventTypeFilter(evtstream.EventMessageRetracted):          true,
@@ -621,4 +721,91 @@ func TestThreadProjection_SubjectFilter(t *testing.T) {
 	if slices.Contains(subjects, evtstream.RoomSubjectFilter()) {
 		t.Errorf("unexpected broad room subject filter %q", evtstream.RoomSubjectFilter())
 	}
+}
+
+func TestThreadParticipantsExceedPreviewAndSurviveRestore(t *testing.T) {
+	p := NewThreadProjection()
+	events := []*evtv1.Event{
+		roomCreatedTimelineEvent("ROOM", "R1", "room", 1),
+		postedEvent(postedOpts{envelopeID: "ROOT", eventID: "ROOT", roomID: "R1", actorID: "AUTHOR", at: 2}),
+		threadCreatedEvent("THREAD", "R1", "ROOT", "AUTHOR", 1),
+	}
+	for i := 0; i < 60; i++ {
+		id := fmt.Sprintf("REPLY-%02d", i)
+		events = append(events, postedEvent(postedOpts{envelopeID: id, eventID: id, roomID: "R1", actorID: fmt.Sprintf("U%02d", i), inThread: "ROOT", at: i + 3}))
+	}
+	applyAll(t, p, events)
+	if got := len(p.ParticipantIDs("ROOT")); got != 60 {
+		t.Fatalf("participants = %d, want 60", got)
+	}
+	if got := p.ThreadMetadata("ROOT"); got.ParticipantCount != 60 || len(got.ParticipantIDs) != 50 {
+		t.Fatalf("metadata count=%d preview=%d", got.ParticipantCount, len(got.ParticipantIDs))
+	}
+	snapshot, err := p.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored := NewThreadProjection()
+	if err := restored.Restore(snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(restored.ParticipantIDs("ROOT")); got != 60 {
+		t.Fatalf("restored participants = %d, want 60", got)
+	}
+	if err := restored.Apply(retractedEvent("RETRACT", "REPLY-59", "R1", "U59", "removed", 70), 64); err != nil {
+		t.Fatal(err)
+	}
+	if err := restored.Apply(userKeyShreddedSnapshotTestEvent("SHRED", "U58"), 65); err != nil {
+		t.Fatal(err)
+	}
+	ids := restored.ParticipantIDs("ROOT")
+	if len(ids) != 58 || slices.Contains(ids, "U59") || slices.Contains(ids, "U58") || slices.Contains(ids, "AUTHOR") {
+		t.Fatalf("participants after removal = %v", ids)
+	}
+	if restored.ThreadMetadata("ROOT").ParticipantCount != 58 {
+		t.Fatal("participant count did not follow removals")
+	}
+}
+
+func TestThreadProjection_InteractionRequiresMatchingRoom(t *testing.T) {
+	p := NewThreadProjection()
+	applyAll(t, p, []*evtv1.Event{
+		roomCreatedTimelineEvent("ROOM-1", "R1", "one", 1),
+		roomCreatedTimelineEvent("ROOM-2", "R2", "two", 2),
+		postedEvent(postedOpts{envelopeID: "ROOT", roomID: "R1", actorID: "AUTHOR", at: 3}),
+	})
+
+	require.True(t, p.HasInteraction("AUTHOR", "R1", "ROOT"))
+	require.False(t, p.HasInteraction("AUTHOR", "R2", "ROOT"))
+	require.False(t, p.HasInteraction("AUTHOR", "UNKNOWN-ROOM", "ROOT"))
+	_, ok := p.ThreadRootForMessage("R2", "ROOT")
+	require.False(t, ok)
+}
+
+func TestThreadProjection_RoomDeletionClearsInteractionState(t *testing.T) {
+	p := NewThreadProjection()
+	deleted := roomDeletedEvent("R1")
+	deleted.Id = "DELETE"
+	applyAll(t, p, []*evtv1.Event{
+		roomCreatedTimelineEvent("ROOM-1", "R1", "one", 1),
+		roomCreatedTimelineEvent("ROOM-2", "R2", "two", 2),
+		postedEvent(postedOpts{envelopeID: "ROOT-1", roomID: "R1", actorID: "AUTHOR", at: 3}),
+		postedEvent(postedOpts{envelopeID: "ROOT-2", roomID: "R2", actorID: "AUTHOR", at: 4}),
+		deleted,
+	})
+
+	require.False(t, p.HasInteraction("AUTHOR", "R1", "ROOT-1"))
+	_, ok := p.ThreadRootForMessage("R1", "ROOT-1")
+	require.False(t, ok)
+	require.True(t, p.HasInteraction("AUTHOR", "R2", "ROOT-2"))
+	root, ok := p.ThreadRootForMessage("R2", "ROOT-2")
+	require.True(t, ok)
+	require.Equal(t, "ROOT-2", root)
+
+	snapshot, err := p.Snapshot()
+	require.NoError(t, err)
+	restored := NewThreadProjection()
+	require.NoError(t, restored.Restore(snapshot))
+	require.False(t, restored.HasInteraction("AUTHOR", "R1", "ROOT-1"))
+	require.True(t, restored.HasInteraction("AUTHOR", "R2", "ROOT-2"))
 }

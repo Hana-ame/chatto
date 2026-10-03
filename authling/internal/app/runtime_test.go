@@ -19,6 +19,7 @@ import (
 
 	jose "github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"hmans.de/authling/internal/accounts"
 	"hmans.de/authling/internal/authorizations"
@@ -424,6 +425,57 @@ func TestOIDCAuthorizationCodeFlowAndSingleUseCode(t *testing.T) {
 	}
 }
 
+func TestPasswordManagerDiscoveryResumesPasswordChangeAfterLogin(t *testing.T) {
+	cfg := embeddedTestConfig(t)
+	cfg.HTTP = config.HTTPConfig{BindAddress: "127.0.0.1:8080", PublicURL: "http://localhost:8080"}
+	runtime, cancel, runErrors := startTestRuntime(t, cfg)
+	defer stopTestRuntime(t, runtime, cancel, runErrors)
+	if _, err := runtime.Accounts.CreateLocal(testContext(t), "password-manager@example.com", "a deliberately uncommon password"); err != nil {
+		t.Fatal(err)
+	}
+	handler := web.Handler(web.Dependencies{
+		Accounts: runtime.Accounts, Authentication: runtime.Authentication, Sessions: runtime.Sessions,
+		PublicURL: cfg.HTTP.PublicURLOrDefault(),
+	})
+
+	discovery := requestHandler(t, handler, http.MethodGet, "/.well-known/change-password", "", nil)
+	if discovery.Code != http.StatusSeeOther || discovery.Header().Get("Location") != "/account/password" {
+		t.Fatalf("discovery status/location = %d %q", discovery.Code, discovery.Header().Get("Location"))
+	}
+
+	protectedPage := requestHandler(t, handler, http.MethodGet, discovery.Header().Get("Location"), "", nil)
+	loginTarget := protectedPage.Header().Get("Location")
+	if protectedPage.Code != http.StatusSeeOther || loginTarget != "/login?return_to=%2Faccount%2Fpassword" {
+		t.Fatalf("protected page status/location = %d %q", protectedPage.Code, loginTarget)
+	}
+
+	loginPage := requestHandler(t, handler, http.MethodGet, loginTarget, "", nil)
+	if loginPage.Code != http.StatusOK || !strings.Contains(loginPage.Body.String(), `name="return_to" value="/account/password"`) {
+		t.Fatalf("login page status/body = %d %s", loginPage.Code, loginPage.Body.String())
+	}
+
+	login := requestHandler(t, handler, http.MethodPost, "/login", url.Values{
+		"email": {"password-manager@example.com"}, "password": {"a deliberately uncommon password"},
+		"return_to": {"/account/password"},
+	}.Encode(), nil)
+	if login.Code != http.StatusSeeOther || login.Header().Get("Location") != "/account/password" || len(login.Result().Cookies()) != 1 {
+		t.Fatalf("login status/location/cookies = %d %q %d", login.Code, login.Header().Get("Location"), len(login.Result().Cookies()))
+	}
+
+	passwordPage := requestHandler(t, handler, http.MethodGet, login.Header().Get("Location"), "", login.Result().Cookies()[0])
+	if passwordPage.Code != http.StatusOK || !strings.Contains(passwordPage.Body.String(), "Change your password") {
+		t.Fatalf("password page status/body = %d %s", passwordPage.Code, passwordPage.Body.String())
+	}
+
+	externalReturn := requestHandler(t, handler, http.MethodPost, "/login", url.Values{
+		"email": {"password-manager@example.com"}, "password": {"a deliberately uncommon password"},
+		"return_to": {"https://attacker.example"},
+	}.Encode(), nil)
+	if externalReturn.Code != http.StatusSeeOther || externalReturn.Header().Get("Location") != "/account" {
+		t.Fatalf("external return status/location = %d %q", externalReturn.Code, externalReturn.Header().Get("Location"))
+	}
+}
+
 func TestOIDCAuthorizationGrantsReuseConsentAndRevokeFutureAccess(t *testing.T) {
 	cfg := embeddedTestConfig(t)
 	cfg.HTTP = config.HTTPConfig{BindAddress: "127.0.0.1:8080", PublicURL: "http://localhost:8080"}
@@ -480,8 +532,24 @@ func TestOIDCAuthorizationGrantsReuseConsentAndRevokeFutureAccess(t *testing.T) 
 		t.Fatalf("first consent status/body = %d %s", firstPage.Code, firstPage.Body.String())
 	}
 	firstURL, _ := url.Parse(firstLocation)
+	for _, disclosure := range []string{account.ID, "You can revoke this access"} {
+		if !strings.Contains(firstPage.Body.String(), disclosure) {
+			t.Fatalf("consent omits %q", disclosure)
+		}
+	}
+	for _, version := range []string{"", "0", "1", "3"} {
+		stale := requestHandler(t, handler, http.MethodPost, "/oidc/consent", url.Values{
+			"id": {firstURL.Query().Get("id")}, "decision": {"allow"}, "consent_version": {version},
+		}.Encode(), cookie)
+		if stale.Code != http.StatusBadRequest {
+			t.Fatalf("stale disclosure status = %d", stale.Code)
+		}
+	}
+	if grants, err := runtime.Authorizations.List(testContext(t), account.ID); err != nil || len(grants) != 0 {
+		t.Fatalf("stale consent created grants: %d, %v", len(grants), err)
+	}
 	allow := requestHandler(t, handler, http.MethodPost, "/oidc/consent", url.Values{
-		"id": {firstURL.Query().Get("id")}, "decision": {"allow"},
+		"id": {firstURL.Query().Get("id")}, "decision": {"allow"}, "consent_version": {"2"},
 	}.Encode(), cookie)
 	if allow.Code != http.StatusSeeOther {
 		t.Fatalf("allow status/body = %d %s", allow.Code, allow.Body.String())
@@ -503,7 +571,7 @@ func TestOIDCAuthorizationGrantsReuseConsentAndRevokeFutureAccess(t *testing.T) 
 		t.Fatalf("active grants = %+v, %v", grants, err)
 	}
 	accountPage := requestHandler(t, handler, http.MethodGet, "/account", "", cookie)
-	if accountPage.Code != http.StatusOK || !strings.Contains(accountPage.Body.String(), "Authorized apps") || !strings.Contains(accountPage.Body.String(), "Test Client") {
+	if accountPage.Code != http.StatusOK || !strings.Contains(accountPage.Body.String(), "Connected apps") || !strings.Contains(accountPage.Body.String(), "Test Client") {
 		t.Fatalf("account authorized apps status/body = %d %s", accountPage.Code, accountPage.Body.String())
 	}
 
@@ -557,7 +625,7 @@ func TestOIDCAuthorizationGrantsReuseConsentAndRevokeFutureAccess(t *testing.T) 
 	}
 	afterRevokeURL, _ := url.Parse(afterRevokeLocation)
 	reauthorize := requestHandler(t, handler, http.MethodPost, "/oidc/consent", url.Values{
-		"id": {afterRevokeURL.Query().Get("id")}, "decision": {"allow"},
+		"id": {afterRevokeURL.Query().Get("id")}, "decision": {"allow"}, "consent_version": {"2"},
 	}.Encode(), cookie)
 	if reauthorize.Code != http.StatusSeeOther {
 		t.Fatalf("reauthorization status/body = %d %s", reauthorize.Code, reauthorize.Body.String())
@@ -571,7 +639,7 @@ func TestOIDCAuthorizationGrantsReuseConsentAndRevokeFutureAccess(t *testing.T) 
 func TestOIDCAuthorizationGrantsReplayAfterRestart(t *testing.T) {
 	cfg := embeddedTestConfig(t)
 	first, cancelFirst, firstErrors := startTestRuntime(t, cfg)
-	account, err := first.Accounts.Create(testContext(t))
+	account, err := first.Accounts.CreateLocal(testContext(t), "grant@example.com", "a deliberately uncommon password")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -581,12 +649,22 @@ func TestOIDCAuthorizationGrantsReplayAfterRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	event, raw := lastAccountEvent(t, first, account.ID)
+	protected := event.GetOidcGrantAuthorized()
+	if protected.GetMetadataEnvelopeVersion() != 1 || protected.GetConsentVersion() != authorizations.ConsentVersion || protected.GetClientName() != "" || protected.GetClientHost() != "" {
+		t.Fatal("new grant did not use protected metadata and current disclosure")
+	}
+	for _, secret := range []string{"Client One", "client.example", "client-one"} {
+		if bytes.Contains(raw, []byte(secret)) {
+			t.Fatal("durable grant leaked client metadata")
+		}
+	}
 	stopTestRuntime(t, first, cancelFirst, firstErrors)
 
 	restarted, cancelRestarted, restartedErrors := startTestRuntime(t, cfg)
 	defer stopTestRuntime(t, restarted, cancelRestarted, restartedErrors)
 	grants, err := restarted.Authorizations.List(testContext(t), account.ID)
-	if err != nil || len(grants) != 1 || grants[0].ID != grant.ID || grants[0].AuthorizationEventID != grant.AuthorizationEventID {
+	if err != nil || len(grants) != 1 || grants[0].ID != grant.ID || grants[0].AuthorizationEventID != grant.AuthorizationEventID || grants[0].ClientName != "Client One" || grants[0].ClientHost != "client.example" {
 		t.Fatalf("replayed grants = %+v, %v; want %+v", grants, err, grant)
 	}
 	if _, ok := restarted.Accounts.Get(account.ID); !ok {
@@ -597,7 +675,7 @@ func TestOIDCAuthorizationGrantsReplayAfterRestart(t *testing.T) {
 func TestConcurrentOIDCAuthorizationsShareOneGrantGeneration(t *testing.T) {
 	runtime, cancel, runErrors := startTestRuntime(t, embeddedTestConfig(t))
 	defer stopTestRuntime(t, runtime, cancel, runErrors)
-	account, err := runtime.Accounts.Create(testContext(t))
+	account, err := runtime.Accounts.CreateLocal(testContext(t), "grant@example.com", "a deliberately uncommon password")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -665,7 +743,7 @@ func TestBrowserSessionManagementHTTP(t *testing.T) {
 		t.Fatalf("account status/body = %d %s", accountPage.Code, accountPage.Body.String())
 	}
 	body := accountPage.Body.String()
-	if strings.Count(body, ">Browser session</p>") != 2 || !strings.Contains(body, "This browser") || !strings.Contains(body, "does not store browser names, IP addresses, or locations") {
+	if strings.Count(body, ">Browser session</p>") != 2 || !strings.Contains(body, "This browser") || !strings.Contains(body, "do not store browser names, IP addresses, or locations") {
 		t.Fatalf("account page does not show privacy-preserving session inventory: %s", body)
 	}
 	match := regexp.MustCompile(`name="session_id" value="([^"]+)"`).FindStringSubmatch(body)
@@ -730,10 +808,14 @@ func completeAuthorization(t *testing.T, handler http.Handler, verifier string, 
 func completeAuthorizationForScopes(t *testing.T, handler http.Handler, verifier string, cookie *http.Cookie, scopes string) string {
 	t.Helper()
 	challenge := "7w_YNF9DSfIdPf_pRjSq646_kPr-2-o9NAl16JGghdM"
-	if verifier != strings.Repeat("v", 43) {
+	if verifier != "" && verifier != strings.Repeat("v", 43) {
 		t.Fatal("test verifier and challenge fixture diverged")
 	}
 	query := url.Values{"client_id": {"test-client"}, "redirect_uri": {"http://localhost:9999/callback"}, "response_type": {"code"}, "scope": {scopes}, "state": {"state-value"}, "nonce": {"nonce-value"}, "code_challenge": {challenge}, "code_challenge_method": {"S256"}}
+	if verifier == "" {
+		query.Del("code_challenge")
+		query.Del("code_challenge_method")
+	}
 	authorize := requestHandler(t, handler, http.MethodGet, "http://localhost:8080/oauth/authorize?"+query.Encode(), "", cookie)
 	location := authorize.Header().Get("Location")
 	if authorize.Code < 300 || authorize.Code >= 400 || !strings.HasPrefix(location, "/oidc/consent?id=") {
@@ -752,7 +834,7 @@ func completeAuthorizationForScopes(t *testing.T, handler http.Handler, verifier
 		}
 		cookie = cookies[0]
 	}
-	consent := requestHandler(t, handler, http.MethodPost, "http://localhost:8080/oidc/consent", url.Values{"id": {requestID}, "decision": {"allow"}}.Encode(), cookie)
+	consent := requestHandler(t, handler, http.MethodPost, "http://localhost:8080/oidc/consent", url.Values{"id": {requestID}, "decision": {"allow"}, "consent_version": {"2"}}.Encode(), cookie)
 	if consent.Code != http.StatusSeeOther {
 		t.Fatalf("consent status/body = %d %s", consent.Code, consent.Body.String())
 	}
@@ -1064,7 +1146,7 @@ func TestSignedInPasswordChangePreservesAccountAndInvalidatesOlderSessionsAcross
 	if _, err := first.Sessions.Validate(testContext(t), olderSession); !errors.Is(err, sessions.ErrNotFound) {
 		t.Fatalf("older session validation error = %v, want ErrNotFound", err)
 	}
-	replacementSession, _, err := first.Sessions.CreateAtAuthenticationVersion(testContext(t), account.ID, changed.AuthenticationVersion)
+	replacementSession, _, err := first.Sessions.CreateAtAuthenticationVersion(testContext(t), account.ID, changed.AuthenticationVersion, time.Now())
 	if err != nil {
 		t.Fatalf("create replacement session: %v", err)
 	}
@@ -1513,7 +1595,7 @@ func TestCommittedEmailChangeRecoveryDoesNotCrossPasswordReset(t *testing.T) {
 	if _, ok := runtime.Accounts.CompletedEmailChange(target, "recovery-new@example.com"); ok {
 		t.Fatal("email change recovery crossed the later password-reset generation")
 	}
-	if _, _, err := runtime.Sessions.CreateAtAuthenticationVersion(testContext(t), account.ID, completion.AuthenticationVersion); err == nil {
+	if _, _, err := runtime.Sessions.CreateAtAuthenticationVersion(testContext(t), account.ID, completion.AuthenticationVersion, time.Now()); err == nil {
 		t.Fatal("email change completion established a session across the later password-reset generation")
 	}
 }
@@ -1967,6 +2049,7 @@ func TestVerifiedFlowAllowsOnlyOneConcurrentCompletion(t *testing.T) {
 func embeddedTestConfig(t *testing.T) config.Config {
 	t.Helper()
 	return config.Config{
+		Site: config.SiteConfig{Name: "Authling"},
 		NATS: config.NATSConfig{
 			Embedded: config.EmbeddedNATSConfig{
 				Enabled: true,
@@ -2225,4 +2308,393 @@ func eventCount(t *testing.T, runtime *Runtime) uint64 {
 		t.Fatal(err)
 	}
 	return info.State.Msgs
+}
+
+// A stopped inventory used to cancel projectors without releasing Serve's
+// readiness wait, hiding the underlying NATS error until external cancellation.
+func TestServeReturnsInventoryStartupFailure(t *testing.T) {
+	for _, missingTier := range []bool{false, true} {
+		t.Run(fmt.Sprintf("missing_tier=%v", missingTier), func(t *testing.T) {
+			cfg := embeddedTestConfig(t)
+			cfg.HTTP = config.HTTPConfig{BindAddress: "127.0.0.1:0", PublicURL: "http://localhost:8080"}
+			logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+			runtime, err := New(testContext(t), cfg, logging.Events{Logger: logger})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer runtime.Close()
+			js, err := jetstream.New(runtime.connection.NATS)
+			if err != nil {
+				t.Fatal(err)
+			}
+			stream, err := js.Stream(testContext(t), "KV_"+storage.RuntimeStateBucket)
+			if err != nil {
+				t.Fatal(err)
+			}
+			info, err := stream.Info(testContext(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			info.Config.MaxConsumers = 1
+			if _, err := js.UpdateStream(testContext(t), info.Config); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := stream.CreateConsumer(testContext(t), jetstream.ConsumerConfig{Name: "occupy-quota", AckPolicy: jetstream.AckExplicitPolicy}); err != nil {
+				t.Fatal(err)
+			}
+			if missingTier {
+				runtime.Sessions = sessions.New(failingInventoryKV{}, js, make([]byte, 32), runtime.Accounts.AuthenticationVersion)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done := make(chan error, 1)
+			go func() { done <- serveRuntime(ctx, cfg, logger, runtime) }()
+			select {
+			case err := <-done:
+				var apiErr nats.JetStreamError
+				if !errors.As(err, &apiErr) {
+					t.Fatalf("lost NATS API error: %v", err)
+				}
+				if missingTier && apiErr.APIError().ErrorCode != 10120 {
+					t.Fatalf("NATS error code = %d", apiErr.APIError().ErrorCode)
+				}
+				if missingTier && !strings.Contains(err.Error(), "R1 tier") {
+					t.Fatalf("missing quota hint: %v", err)
+				}
+				if !missingTier && !strings.Contains(err.Error(), "maximum consumers limit reached") {
+					t.Fatalf("lost consumer limit error: %v", err)
+				}
+				if !strings.Contains(err.Error(), "watch browser sessions") {
+					t.Fatalf("lost inventory context: %v", err)
+				}
+			case <-time.After(3 * time.Second):
+				cancel()
+				err := <-done
+				t.Fatalf("startup waited for external cancellation: %v", err)
+			}
+		})
+	}
+}
+
+// Missing R1 tiers on an R3 deployment produce this server API error. Inject
+// only Watch's failure; run the real inventory and projection lifecycles.
+type failingInventoryKV struct{ jetstream.KeyValue }
+
+func (failingInventoryKV) Watch(context.Context, string, ...jetstream.WatchOpt) (jetstream.KeyWatcher, error) {
+	return nil, &nats.APIError{Code: 400, ErrorCode: 10120, Description: "no JetStream default or applicable tiered limit present"}
+}
+
+func TestGrantKeyLossFailsClosedAndAllowsRevocation(t *testing.T) {
+	runtime, cancel, errs := startTestRuntime(t, embeddedTestConfig(t))
+	defer stopTestRuntime(t, runtime, cancel, errs)
+	account, err := runtime.Accounts.CreateLocal(testContext(t), "grant@example.com", "a deliberately uncommon password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant, err := runtime.Authorizations.Authorize(testContext(t), account.ID, authorizations.Client{ID: "client-one", Name: "Client One", Host: "client.example"}, []string{"openid"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	event, _ := lastAccountEvent(t, runtime, account.ID)
+	// Key loss must fail closed for reads and automatic consent, but must not block revocation.
+	js, _, err := storage.Open(testContext(t), runtime.connection.NATS, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stores, err := storage.OpenStores(testContext(t), js, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := stores.Keys.Purge(testContext(t), event.GetOidcGrantAuthorized().GetUserKeyRef()); err != nil {
+		t.Fatal(err)
+	}
+	if covered, err := runtime.Authorizations.Covers(testContext(t), account.ID, "client-one", []string{"openid"}); err == nil || covered {
+		t.Fatal("automatic consent accepted missing metadata key")
+	}
+	if _, err := runtime.Authorizations.List(testContext(t), account.ID); err == nil {
+		t.Fatal("listed protected metadata after key loss")
+	}
+	if err := runtime.Authorizations.Revoke(testContext(t), account.ID, grant.ID); err != nil {
+		t.Fatalf("revoke after metadata key loss: %v", err)
+	}
+}
+
+func TestOIDCFreshnessEnforcedAcrossHTTPAndRestart(t *testing.T) {
+	cfg := embeddedTestConfig(t)
+	cfg.HTTP = config.HTTPConfig{BindAddress: "127.0.0.1:8080", PublicURL: "http://localhost:8080"}
+	cfg.OIDC.Clients = []config.OIDCClientConfig{{ID: "test-client", Name: "Test Client", RedirectURIs: []string{"http://localhost:9999/callback"}}}
+	runtime, cancel, runErrors := startTestRuntime(t, cfg)
+	account, err := runtime.Accounts.CreateLocal(t.Context(), "oidc@example.com", "a deliberately uncommon password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// This session was authenticated ten minutes ago, even though it was just created.
+	oldTime := time.Now().UTC().Add(-10 * time.Minute)
+	token, _, err := runtime.Sessions.CreateAtAuthenticationVersion(t.Context(), account.ID, account.AuthenticationVersion, oldTime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cookie := &http.Cookie{Name: "authling_session", Value: token}
+	handlerFor := func() http.Handler {
+		return web.Handler(web.Dependencies{Accounts: runtime.Accounts, Authentication: runtime.Authentication, Sessions: runtime.Sessions, Authorizations: runtime.Authorizations, OIDC: runtime.OIDC, PublicURL: cfg.HTTP.PublicURL})
+	}
+	handler := handlerFor()
+	start := func(parameters url.Values) string {
+		t.Helper()
+		query := url.Values{"client_id": {"test-client"}, "redirect_uri": {"http://localhost:9999/callback"}, "response_type": {"code"}, "scope": {"openid"}, "code_challenge": {"7w_YNF9DSfIdPf_pRjSq646_kPr-2-o9NAl16JGghdM"}, "code_challenge_method": {"S256"}}
+		for key, values := range parameters {
+			query[key] = values
+		}
+		response := requestHandler(t, handler, http.MethodGet, "/oauth/authorize?"+query.Encode(), "", cookie)
+		location := response.Header().Get("Location")
+		if !strings.HasPrefix(location, "/oidc/consent?id=") {
+			t.Fatalf("start status %d, location %q", response.Code, location)
+		}
+		return location
+	}
+	forced := start(url.Values{"prompt": {"login consent"}})
+	// Both the pending request constraints and session evidence survive restart.
+	stopTestRuntime(t, runtime, cancel, runErrors)
+	runtime, cancel, runErrors = startTestRuntime(t, cfg)
+	defer stopTestRuntime(t, runtime, cancel, runErrors)
+	handler = handlerFor()
+	for _, path := range []string{forced, start(url.Values{"max_age": {"0"}}), start(url.Values{"max_age": {"60"}})} {
+		parsed, _ := url.Parse(path)
+		id := parsed.Query().Get("id")
+		for _, method := range []string{http.MethodGet, http.MethodPost} {
+			target, body := path, ""
+			if method == http.MethodPost {
+				target = "/oidc/consent"
+				body = url.Values{"id": {id}, "decision": {"allow"}, "consent_version": {"2"}}.Encode()
+			}
+			response := requestHandler(t, handler, method, target, body, cookie)
+			if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/login?id="+id {
+				t.Fatalf("%s stale consent = %d %q", method, response.Code, response.Header().Get("Location"))
+			}
+		}
+	}
+	grants, err := runtime.Authorizations.List(t.Context(), account.ID)
+	if err != nil || len(grants) != 0 {
+		t.Fatalf("stale approval created grants: %d, %v", len(grants), err)
+	}
+	recentEnough := start(url.Values{"max_age": {"3600"}})
+	if response := requestHandler(t, handler, http.MethodGet, recentEnough, "", cookie); response.Code != http.StatusOK {
+		t.Fatalf("valid existing session = %d", response.Code)
+	}
+	parsed, _ := url.Parse(recentEnough)
+	approved := requestHandler(t, handler, http.MethodPost, "/oidc/consent", url.Values{"id": {parsed.Query().Get("id")}, "decision": {"allow"}, "consent_version": {"2"}}.Encode(), cookie)
+	callback := requestHandler(t, handler, http.MethodGet, approved.Header().Get("Location"), "", cookie)
+	redirect, _ := url.Parse(callback.Header().Get("Location"))
+	tokens := issueOIDCTokens(t, handler, redirect.Query().Get("code"), strings.Repeat("v", 43))
+	claims := verifyIDToken(t, runtime, tokens.IDToken)
+	if claims["auth_time"] != float64(oldTime.Unix()) {
+		t.Fatalf("auth_time = %v, want %d", claims["auth_time"], oldTime.Unix())
+	}
+	// A durable grant cannot bypass forced login either.
+	if response := requestHandler(t, handler, http.MethodGet, forced, "", cookie); !strings.HasPrefix(response.Header().Get("Location"), "/login?id=") {
+		t.Fatalf("grant bypassed login: %d", response.Code)
+	}
+	parsed, _ = url.Parse(forced)
+	id := parsed.Query().Get("id")
+	failed := requestHandler(t, handler, http.MethodPost, "/login", url.Values{"email": {"oidc@example.com"}, "password": {"wrong"}, "oidc_request": {id}}.Encode(), cookie)
+	if failed.Code != http.StatusUnprocessableEntity || len(failed.Result().Cookies()) != 0 {
+		t.Fatal("failed login issued session")
+	}
+	login := requestHandler(t, handler, http.MethodPost, "/login", url.Values{"email": {"oidc@example.com"}, "password": {"a deliberately uncommon password"}, "oidc_request": {id}}.Encode(), cookie)
+	if login.Code != http.StatusSeeOther || len(login.Result().Cookies()) != 1 {
+		t.Fatalf("fresh login = %d", login.Code)
+	}
+	cookie = login.Result().Cookies()[0]
+	if response := requestHandler(t, handler, http.MethodGet, forced, "", cookie); response.Code != http.StatusOK {
+		t.Fatalf("fresh login lost forced consent: %d", response.Code)
+	}
+}
+
+func TestEmailChangeSessionPreservesAuthenticationTime(t *testing.T) {
+	cfg := embeddedTestConfig(t)
+	cfg.HTTP = config.HTTPConfig{BindAddress: "127.0.0.1:8080", PublicURL: "http://localhost:8080"}
+	sender := &capturingSender{}
+	runtime, cancel, runErrors := startTestRuntime(t, cfg, sender)
+	defer stopTestRuntime(t, runtime, cancel, runErrors)
+	account, err := runtime.Accounts.CreateLocal(t.Context(), "before@example.com", "the original uncommon password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Now().UTC().Add(-10 * time.Minute)
+	token, _, err := runtime.Sessions.CreateAtAuthenticationVersion(t.Context(), account.ID, account.AuthenticationVersion, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	flow, err := runtime.EmailChange.Start(t.Context(), account.ID, "the original uncommon password", "after@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	code := regexp.MustCompile(`\b[0-9]{6}\b`).FindString(sender.last().Body)
+	if err := runtime.EmailChange.Verify(t.Context(), account.ID, flow, code); err != nil {
+		t.Fatal(err)
+	}
+	handler := web.Handler(web.Dependencies{Accounts: runtime.Accounts, Sessions: runtime.Sessions, EmailChange: runtime.EmailChange, PublicURL: cfg.HTTP.PublicURL})
+	response := requestHandler(t, handler, http.MethodPost, "/account/email/complete", url.Values{"flow": {flow}}.Encode(), &http.Cookie{Name: "authling_session", Value: token})
+	if response.Code != http.StatusSeeOther || len(response.Result().Cookies()) != 1 {
+		t.Fatalf("complete status %d", response.Code)
+	}
+	state, err := runtime.Sessions.Validate(t.Context(), response.Result().Cookies()[0].Value)
+	if err != nil || !state.AuthenticatedAt.Equal(at) || !state.CreatedAt.After(at) {
+		t.Fatalf("replacement authentication time = %v, %v", state.AuthenticatedAt, err)
+	}
+}
+
+func TestTransactionalEmailsUseConfiguredSiteName(t *testing.T) {
+	cfg := embeddedTestConfig(t)
+	cfg.Site.Name = "chatto.id"
+	sender := &capturingSender{}
+	runtime, cancel, runErrors := startTestRuntime(t, cfg, sender)
+	defer stopTestRuntime(t, runtime, cancel, runErrors)
+	check := func(suffix string) {
+		t.Helper()
+		message := sender.last()
+		if message.Subject != "Your chatto.id "+suffix || !strings.Contains(message.Body, "chatto.id") || strings.Contains(message.Body, "Authling") {
+			t.Fatal("transactional email does not use configured site identity")
+		}
+	}
+	if _, err := runtime.Registration.Start(testContext(t), "signup@example.invalid"); err != nil {
+		t.Fatal(err)
+	}
+	check("verification code")
+	if _, err := runtime.PasswordReset.Start(testContext(t), "absent@example.invalid"); err != nil {
+		t.Fatal(err)
+	}
+	check("password reset code")
+	account, err := runtime.Accounts.CreateLocal(testContext(t), "before@example.invalid", "an uncommon and long password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	flow, err := runtime.EmailChange.Start(testContext(t), account.ID, "an uncommon and long password", "after@example.invalid")
+	if err != nil {
+		t.Fatal(err)
+	}
+	check("email change code")
+	code := regexp.MustCompile(`\b[0-9]{6}\b`).FindString(sender.last().Body)
+	if err := runtime.EmailChange.Verify(testContext(t), account.ID, flow, code); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.EmailChange.Complete(testContext(t), account.ID, flow); err != nil {
+		t.Fatal(err)
+	}
+	check("email address changed")
+}
+
+func TestConfidentialClientOptionalPKCEAndDowngradeProtection(t *testing.T) {
+	cfg := embeddedTestConfig(t)
+	cfg.HTTP = config.HTTPConfig{BindAddress: "127.0.0.1:8080", PublicURL: "http://localhost:8080"}
+	optional := false
+	secret := strings.Repeat("s", 32) + " +&%:"
+	cfg.OIDC.Clients = []config.OIDCClientConfig{{ID: "test-client", Name: "Test Client", Secret: secret, RequirePKCE: &optional, RedirectURIs: []string{"http://localhost:9999/callback"}}}
+	cfg.OIDC.Clients = append(cfg.OIDC.Clients,
+		config.OIDCClientConfig{ID: "default-confidential", Name: "Default Confidential", Secret: secret, RedirectURIs: []string{"http://localhost:9999/callback"}},
+		config.OIDCClientConfig{ID: "public-client", Name: "Public Client", RedirectURIs: []string{"http://localhost:9999/callback"}},
+	)
+	runtime, cancel, runErrors := startTestRuntime(t, cfg)
+	defer stopTestRuntime(t, runtime, cancel, runErrors)
+	if _, err := runtime.Accounts.CreateLocal(testContext(t), "oidc@example.com", "a deliberately uncommon password"); err != nil {
+		t.Fatal(err)
+	}
+	handler := web.Handler(web.Dependencies{Accounts: runtime.Accounts, Authentication: runtime.Authentication, Registration: runtime.Registration, Sessions: runtime.Sessions, Authorizations: runtime.Authorizations, OIDC: runtime.OIDC, PublicURL: cfg.HTTP.PublicURLOrDefault()})
+
+	for _, id := range []string{"default-confidential", "public-client"} {
+		query := url.Values{"client_id": {id}, "redirect_uri": {"http://localhost:9999/callback"}, "response_type": {"code"}, "scope": {"openid"}}
+		response := requestHandler(t, handler, http.MethodGet, "http://localhost:8080/oauth/authorize?"+query.Encode(), "", nil)
+		location, err := url.Parse(response.Header().Get("Location"))
+		if err != nil || response.Code != http.StatusFound || location.Query().Get("error") != "invalid_request" {
+			t.Fatal("client without an exception bypassed PKCE")
+		}
+	}
+	for _, method := range []string{"basic", "post"} {
+		exchange := func(code, verifier, credential string) *httptest.ResponseRecorder {
+			t.Helper()
+			form := url.Values{"grant_type": {"authorization_code"}, "redirect_uri": {"http://localhost:9999/callback"}, "code": {code}}
+			if verifier != "" {
+				form.Set("code_verifier", verifier)
+			}
+			if method == "post" {
+				form.Set("client_id", "test-client")
+				form.Set("client_secret", credential)
+			}
+			req := httptest.NewRequest(http.MethodPost, "http://localhost:8080/oauth/token", strings.NewReader(form.Encode()))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			if method == "basic" {
+				req.SetBasicAuth("test-client", url.QueryEscape(credential))
+			}
+			res := httptest.NewRecorder()
+			handler.ServeHTTP(res, req)
+			return res
+		}
+		for _, tc := range []struct {
+			name, challenge, verifier, credential string
+			ok                                    bool
+		}{
+			{"without PKCE", "", "", secret, true},
+			{"empty secret", "", "", "", false},
+			{"wrong secret", "", "", "incorrect", false},
+			{"unexpected verifier", "", strings.Repeat("v", 43), secret, false},
+			{"missing verifier", strings.Repeat("v", 43), "", secret, false},
+			{"wrong verifier", strings.Repeat("v", 43), strings.Repeat("w", 43), secret, false},
+			{"correct verifier", strings.Repeat("v", 43), strings.Repeat("v", 43), secret, true},
+		} {
+			t.Run(method+"/"+tc.name, func(t *testing.T) {
+				code := completeAuthorization(t, handler, tc.challenge, nil)
+				response := exchange(code, tc.verifier, tc.credential)
+				if (response.Code == http.StatusOK) != tc.ok {
+					t.Fatalf("unexpected token HTTP status: %d", response.Code)
+				}
+				if !tc.ok {
+					if response.Code != http.StatusBadRequest && response.Code != http.StatusUnauthorized {
+						t.Fatalf("expected protocol rejection, got %d", response.Code)
+					}
+					var body struct {
+						Error string `json:"error"`
+					}
+					if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil || body.Error == "" {
+						t.Fatal("missing OAuth error response")
+					}
+					if (tc.name == "wrong secret" || tc.name == "empty secret") && body.Error != "invalid_client" {
+						t.Fatalf("credential failure returned %q", body.Error)
+					}
+				}
+				if tc.ok && exchange(code, tc.verifier, tc.credential).Code == http.StatusOK {
+					t.Fatal("code reuse succeeded")
+				}
+			})
+		}
+	}
+}
+
+func TestDiscoveryReflectsUnregisteredClientAdmission(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		t.Run(fmt.Sprint(enabled), func(t *testing.T) {
+			cfg := embeddedTestConfig(t)
+			cfg.OIDC.AllowUnregisteredClients = enabled
+			cfg.HTTP = config.HTTPConfig{BindAddress: "127.0.0.1:8080", PublicURL: "http://localhost:8080"}
+			runtime, cancel, runErrors := startTestRuntime(t, cfg)
+			defer stopTestRuntime(t, runtime, cancel, runErrors)
+			handler := web.Handler(web.Dependencies{OIDC: runtime.OIDC, PublicURL: cfg.HTTP.PublicURLOrDefault()})
+			response := requestHandler(t, handler, http.MethodGet, "http://localhost:8080/.well-known/openid-configuration", "", nil)
+			if response.Code != http.StatusOK {
+				t.Fatalf("discovery status: %d", response.Code)
+			}
+			var metadata struct {
+				CIMD    bool     `json:"client_id_metadata_document_supported"`
+				Methods []string `json:"token_endpoint_auth_methods_supported"`
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &metadata); err != nil {
+				t.Fatal(err)
+			}
+			if strings.Join(metadata.Methods, ",") != "none,client_secret_basic,client_secret_post" {
+				t.Fatal("discovery does not advertise supported authentication methods")
+			}
+			if metadata.CIMD != enabled {
+				t.Fatal("discovery differs from configured CIMD policy")
+			}
+		})
+	}
 }

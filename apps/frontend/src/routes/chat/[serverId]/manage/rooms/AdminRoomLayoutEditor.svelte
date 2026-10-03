@@ -10,14 +10,23 @@
     AdminSidebarLinkInfo,
     GroupReorderResult,
     RoomMoveFlushResult
-  } from '$lib/state/server/adminRoomLayout.svelte';
-  import { ConfirmDialog, EmptyState, FormDialog, Hint, Pill, ToggleChip } from '$lib/ui';
+  } from '$lib/state/server/adminRoomLayout';
+  import {
+    ConfirmDialog,
+    EmptyState,
+    FormDialog,
+    Hint,
+    Pill,
+    ToggleChip,
+    LoadingFog,
+    PaneHeader
+  } from '$lib/ui';
   import { Button, TextInput } from '$lib/ui/form';
-  import PaneHeader from '$lib/ui/PaneHeader.svelte';
   import { toast } from '$lib/ui/toast';
   import { flip } from 'svelte/animate';
   import { dragHandle, dragHandleZone, dndzone, type DndEvent } from 'svelte-dnd-action';
   import { m } from '$lib/i18n/messages';
+  import { errorMessage } from '$lib/utils/errorMessage';
 
   let {
     layout,
@@ -57,7 +66,9 @@
 
     const result = await layout.createGroup(name);
     if (!result.ok) {
-      toast.error(m('admin.rooms_admin.create_group_failed', { error: result.error }));
+      toast.error(
+        m('admin.rooms_admin.create_group_failed', { error: errorMessage(result.error) })
+      );
       return;
     }
     newGroupName = '';
@@ -80,7 +91,9 @@
     deleteGroupConfirmDialogVisible = false;
     deleteGroupConfirm = null;
     if (!result.ok) {
-      toast.error(m('admin.rooms_admin.delete_group_failed', { error: result.error }));
+      toast.error(
+        m('admin.rooms_admin.delete_group_failed', { error: errorMessage(result.error) })
+      );
       return;
     }
     toast.success(m('admin.rooms_admin.group_deleted'));
@@ -94,7 +107,16 @@
   function handleRoomMoveResult(result: RoomMoveFlushResult | null) {
     if (!result) return;
     if (!result.ok) {
-      for (const error of result.errors) toast.error(error);
+      for (const failure of result.failures) {
+        const error = errorMessage(failure.error);
+        toast.error(
+          failure.step === 'moveRoom'
+            ? m('admin.rooms_admin.move_room_failed', { error })
+            : failure.step === 'moveLink'
+              ? m('admin.rooms_admin.move_link_failed', { error })
+              : m('admin.rooms_admin.reorder_rooms_failed', { error })
+        );
+      }
       return;
     }
     if (result.movedCount > 0) {
@@ -108,7 +130,9 @@
 
   function handleGroupReorderResult(result: GroupReorderResult) {
     if (!result.ok) {
-      toast.error(m('admin.rooms_admin.reorder_groups_failed', { error: result.error }));
+      toast.error(
+        m('admin.rooms_admin.reorder_groups_failed', { error: errorMessage(result.error) })
+      );
     }
   }
 
@@ -160,7 +184,9 @@
     const result = await layout.unarchiveRoom(roomId);
 
     if (!result.ok) {
-      toast.error(m('admin.rooms_admin.unarchive_room_failed', { error: result.error }));
+      toast.error(
+        m('admin.rooms_admin.unarchive_room_failed', { error: errorMessage(result.error) })
+      );
     } else {
       toast.success(m('admin.rooms_admin.room_unarchived'));
     }
@@ -187,7 +213,9 @@
     const result = await layout.archiveRoom(roomId);
 
     if (!result.ok) {
-      toast.error(m('admin.rooms_admin.archive_room_failed', { error: result.error }));
+      toast.error(
+        m('admin.rooms_admin.archive_room_failed', { error: errorMessage(result.error) })
+      );
     } else {
       toast.success(m('admin.rooms_admin.room_archived'));
     }
@@ -278,10 +306,10 @@
       ? await layout.updateSidebarLink(editingLinkId, label, url)
       : linkGroupId
         ? await layout.createSidebarLink(linkGroupId, label, url)
-        : { ok: false as const, error: 'No group selected' };
+        : { ok: false as const, error: new Error('No group selected') };
 
     if (!result.ok) {
-      toast.error(m('admin.rooms_admin.save_link_failed', { error: result.error }));
+      toast.error(m('admin.rooms_admin.save_link_failed', { error: errorMessage(result.error) }));
       return;
     }
 
@@ -305,7 +333,7 @@
     deleteLinkConfirmDialogVisible = false;
     deleteLinkConfirm = null;
     if (!result.ok) {
-      toast.error(m('admin.rooms_admin.delete_link_failed', { error: result.error }));
+      toast.error(m('admin.rooms_admin.delete_link_failed', { error: errorMessage(result.error) }));
       return;
     }
     toast.success(m('admin.rooms_admin.link_deleted'));
@@ -331,7 +359,7 @@
       opts.onclick();
     }}
   >
-    <span class={['iconify text-base', opts.icon]} aria-label={opts.title}></span>
+    <span class={['iconify text-base', opts.icon]} role="img" aria-label={opts.title}></span>
   </ToggleChip>
 {/snippet}
 
@@ -343,14 +371,9 @@
       title: m('admin.rooms_admin.edit_room_action'),
       onclick: () => openRoomSettings(roomInfo)
     })}
-    {@render iconButton({
-      icon: 'icon-[uil--shield]',
-      title: m('admin.rooms_admin.room_permissions_title_fallback'),
-      onclick: () => openRoomSettings(roomInfo)
-    })}
     {#if roomInfo.archived}
       {@render iconButton({
-        icon: 'icon-[uil--redo]',
+        icon: 'icon-[uil--redo] rtl:-scale-x-100',
         title: m('admin.rooms_admin.unarchive_room'),
         disabled: layout.archivingRoomId === roomInfo.id,
         onclick: () => confirmUnarchiveRoom(roomInfo)
@@ -380,17 +403,13 @@
 {/snippet}
 
 <div class="pane-page">
-  <PaneHeader
-    title={m('admin.rooms_admin.title')}
-    subtitle={m('admin.rooms_admin.subtitle')}
-    showMobileNav
-  />
+  <PaneHeader title={m('admin.rooms_admin.title')} subtitle={m('admin.rooms_admin.subtitle')} />
 
   <div class="flex flex-col gap-4 overflow-y-auto p-6">
     {#if layout.loading}
-      <div class="text-muted">{m('admin.rooms_admin.loading')}</div>
+      <LoadingFog class="h-48 w-full" label={m('admin.rooms_admin.loading')} />
     {:else if layout.error}
-      <Hint tone="danger">{layout.error}</Hint>
+      <Hint tone="danger">{errorMessage(layout.error)}</Hint>
     {:else}
       {#if renderGroups.length === 0}
         <EmptyState icon="icon-[uil--layer-group]" title={m('admin.rooms_admin.empty_groups')}>
@@ -436,23 +455,18 @@
               <div class="flex items-center gap-2">
                 {#if group.canCreateRoom}
                   <Button variant="secondary" size="sm" onclick={() => openCreateRoom(group)}>
-                    <span class="iconify icon-[uil--plus]"></span>
+                    <span aria-hidden="true" class="iconify icon-[uil--plus]"></span>
                     {m('admin.rooms_admin.new_room')}
                   </Button>
                 {/if}
                 <Button variant="secondary" size="sm" onclick={() => openCreateLink(group)}>
-                  <span class="iconify icon-[uil--external-link-alt]"></span>
+                  <span aria-hidden="true" class="iconify icon-[uil--external-link-alt]"></span>
                   {m('admin.rooms_admin.new_link')}
                 </Button>
                 <div class="flex items-center gap-1.5">
                   {@render iconButton({
                     icon: 'icon-[uil--pen]',
                     title: m('admin.rooms_admin.rename_group_action'),
-                    onclick: () => openGroupSettings(group)
-                  })}
-                  {@render iconButton({
-                    icon: 'icon-[uil--shield]',
-                    title: m('admin.rooms_admin.group_permissions'),
                     onclick: () => openGroupSettings(group)
                   })}
                   {@render iconButton({
@@ -490,13 +504,14 @@
                   <div
                     animate:flip={{ duration: 200 }}
                     class={[
-                      'group flex cursor-grab items-center gap-3 selectable-list-item py-2 pr-2 pl-3',
+                      'group flex cursor-grab items-center gap-3 selectable-list-item py-2 ps-3 pe-4',
                       room.kind === 'room' && room.room.archived && 'opacity-60'
                     ]}
                   >
                     <span
                       use:dragHandle
                       class="iconify icon-[uil--draggabledots] shrink-0 cursor-grab text-lg text-muted hover:text-text"
+                      role="button"
                       aria-label={m('admin.rooms_admin.drag_room')}
                     ></span>
                     <div class="min-w-0 flex-1">
@@ -510,7 +525,8 @@
                                 <Pill
                                   tone="action"
                                   title={m('admin.rooms_admin.universal_room')}
-                                  class="inline-flex shrink-0 items-center gap-1 rounded-md px-1.5"
+                                  paddingClass="px-1.5 py-0.5"
+                                  class="inline-flex shrink-0 items-center gap-1"
                                 >
                                   <span class="iconify icon-[uil--globe] text-xs" aria-hidden="true"
                                   ></span>
@@ -518,7 +534,7 @@
                                 </Pill>
                               {/if}
                               {#if room.room.archived}
-                                <Pill tone="muted" class="shrink-0 rounded-md px-1.5"
+                                <Pill tone="muted" paddingClass="px-1.5 py-0.5" class="shrink-0"
                                   >{m('admin.rooms_admin.archived')}</Pill
                                 >
                               {/if}
@@ -530,7 +546,10 @@
                         </div>
                       {:else}
                         <div class="flex min-w-0 items-baseline gap-1.5">
-                          <span class="iconify icon-[uil--external-link-alt] text-muted"></span>
+                          <span
+                            aria-hidden="true"
+                            class="iconify icon-[uil--external-link-alt] text-muted"
+                          ></span>
                           <span class="truncate font-medium">{room.link.label}</span>
                         </div>
                         <p class="truncate text-sm text-muted">{room.link.url}</p>
@@ -553,7 +572,7 @@
 
       <div class="flex justify-center">
         <Button variant="secondary" onclick={openCreateGroup}>
-          <span class="iconify icon-[uil--plus]"></span>
+          <span aria-hidden="true" class="iconify icon-[uil--plus]"></span>
           {m('admin.rooms_admin.new_group')}
         </Button>
       </div>
@@ -657,7 +676,7 @@
     title={m('admin.rooms_admin.unarchive_room')}
     tone="warning"
     actionLabel={m('admin.rooms_admin.unarchive_room')}
-    actionIcon="iconify icon-[uil--redo]"
+    actionIcon="iconify icon-[uil--redo] rtl:-scale-x-100"
     loading={!!layout.archivingRoomId}
     onconfirm={unarchiveRoom}
     onclose={cancelUnarchive}

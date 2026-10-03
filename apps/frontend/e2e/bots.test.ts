@@ -86,7 +86,7 @@ async function captureShowOnceWebhookURL(page: Page): Promise<string> {
   await dialog.getByRole('button', { name: 'Got it', exact: true }).click();
   await expect(dialog).toBeHidden();
 
-  let credential = '';
+  let credential: string;
   try {
     credential = new URL(webhookURL).pathname.split('/').at(-1) ?? '';
   } catch {
@@ -150,6 +150,17 @@ async function getRoomAsBot(
   return callAsBot(serverURL, apiKey, 'chatto.api.v1.RoomDirectoryService/GetRoom', { roomId });
 }
 
+async function openBotSection(
+  page: Page,
+  section: 'Overview' | 'Integrations' | 'Permissions'
+): Promise<void> {
+  const tab = page
+    .getByRole('navigation', { name: 'Bot sections' })
+    .getByRole('link', { name: section, exact: true });
+  await tab.click();
+  await expect(tab).toHaveAttribute('aria-current', 'page');
+}
+
 async function createHumanOwner(
   page: Page,
   suffix: string
@@ -167,6 +178,67 @@ async function createHumanOwner(
 }
 
 test.describe('Bot account lifecycle', () => {
+  test('updates bot permissions and join controls when management is armed and unarmed', async ({
+    page
+  }) => {
+    const browserErrors: string[] = [];
+    page.on('pageerror', (error) => browserErrors.push(redactBotKeys(error.message)));
+    page.on('console', (message) => {
+      if (message.type() === 'error') browserErrors.push(redactBotKeys(message.text()));
+    });
+    await loginAsAdminAndUsePrimaryServer(page);
+    const roomGroupId = await getDefaultRoomGroupIdViaConnect(page);
+    const roomName = `bot-mode-${Date.now()}`;
+    await createRoomViaConnect(page, roomName, roomGroupId);
+    const created = await connectPost<{ bot: { user: { id: string } } }>(
+      page,
+      'chatto.api.v1.BotService/CreateBot',
+      { login: `mode_${Date.now()}_bot`, displayName: 'Mode Test Bot' }
+    );
+    await connectPost(page, 'chatto.api.v1.ViewerService/DeactivatePrivilegedMode');
+    await page.goto(`${routes.serverAdminBots}/${created.bot.user.id}/permissions`);
+    await expect(page.getByRole('button', { name: 'Enable privileged mode' })).toBeVisible();
+    const join = page.getByRole('button', { name: `Add account to #${roomName}`, exact: true });
+    const post = page.locator('td[data-scope="server"][data-permission="message.post"] button');
+    await expect(join).toBeDisabled();
+    await expect(post).toBeEnabled();
+    const botURL = page.url();
+    const filter = page.getByTestId('permission-filter');
+    await filter.fill('message');
+    await filter.evaluate((element) => element.setAttribute('data-mount-marker', 'original'));
+    const documentTimeOrigin = await page.evaluate(() => performance.timeOrigin);
+
+    for (const active of [true, false, true]) {
+      await test.step(
+        active ? 'Arm management permissions' : 'Unarm management permissions',
+        async () => {
+          if (active) {
+            await page.getByRole('button', { name: 'Enable privileged mode' }).click();
+            await page
+              .getByRole('dialog', { name: 'Enable privileged mode' })
+              .getByRole('button', { name: 'Enable privileged mode' })
+              .click();
+          } else {
+            await page.getByRole('button', { name: 'Disable privileged mode' }).click();
+          }
+          await expect(
+            page.getByRole('button', {
+              name: active ? 'Disable privileged mode' : 'Enable privileged mode',
+              exact: true
+            })
+          ).toBeEnabled();
+          await expect(join).toBeEnabled({ enabled: active });
+          await expect(post).toBeEnabled();
+          await expect(filter).toHaveValue('message');
+          await expect(filter).toHaveAttribute('data-mount-marker', 'original');
+          expect(await page.evaluate(() => performance.timeOrigin)).toBe(documentTimeOrigin);
+          await expect(page).toHaveURL(botURL);
+        }
+      );
+    }
+    expect(browserErrors).toEqual([]);
+  });
+
   // setup.ts gives every test its own server and removes that server's data
   // directory during fixture teardown, including after an early failure.
   test('create, authorise, manage credentials, and delete through Server Admin', async ({
@@ -197,7 +269,7 @@ test.describe('Bot account lifecycle', () => {
     await expect(page.getByRole('heading', { name: 'Bots', exact: true })).toBeVisible();
 
     const suffix = Date.now().toString(36);
-    const botLogin = `lifecycle_${suffix}_bot`;
+    const botLogin = `lifecycle_${suffix}`;
     const botDisplayName = `Lifecycle Bot ${suffix}`;
     const newOwner = await createHumanOwner(page, suffix);
 
@@ -211,7 +283,7 @@ test.describe('Bot account lifecycle', () => {
     const originalKey = await captureShowOnceBotKey(page);
     await page.waitForURL(routes.patterns.anyAdminBot);
     await expect(
-      page.getByRole('heading', { name: botDisplayName, exact: true, level: 1 })
+      page.getByRole('heading', { name: `${botDisplayName} BOT`, exact: true, level: 1 })
     ).toBeVisible();
 
     const listedBots = await connectPost<ListBotsResponse>(
@@ -233,6 +305,7 @@ test.describe('Bot account lifecycle', () => {
       code: 'permission_denied'
     });
 
+    await openBotSection(page, 'Permissions');
     const permissionFilter = page.getByTestId('permission-filter');
     await expect(permissionFilter).toBeVisible();
     await permissionFilter.fill('room.list');
@@ -251,6 +324,7 @@ test.describe('Bot account lifecycle', () => {
 
     await expect(getRoomAsBot(serverURL, originalKey, roomId)).resolves.toEqual({ status: 200 });
 
+    await openBotSection(page, 'Integrations');
     await page.getByRole('button', { name: 'Create API key', exact: true }).click();
     const createKeyDialog = page.getByRole('dialog', { name: 'Create API key' });
     await createKeyDialog.getByRole('textbox', { name: 'Key name' }).fill('Backup');
@@ -260,7 +334,9 @@ test.describe('Bot account lifecycle', () => {
     await expect(getRoomAsBot(serverURL, backupKey, roomId)).resolves.toEqual({ status: 200 });
 
     const apiKeyList = page.getByTestId('bot-api-keys');
-    const defaultKey = apiKeyList.locator('.selectable-list-item').filter({ hasText: 'Default key' });
+    const defaultKey = apiKeyList
+      .locator('.selectable-list-item')
+      .filter({ hasText: 'Default key' });
     await defaultKey.getByRole('button', { name: 'Revoke key', exact: true }).click();
     const revokeKeyDialog = page.getByRole('dialog', { name: 'Revoke key' });
     await revokeKeyDialog.getByRole('button', { name: 'Revoke key', exact: true }).click();
@@ -271,6 +347,7 @@ test.describe('Bot account lifecycle', () => {
     });
     await expect(getRoomAsBot(serverURL, backupKey, roomId)).resolves.toEqual({ status: 200 });
 
+    await openBotSection(page, 'Permissions');
     await permissionFilter.fill('message.post');
     const disabledMessagePost = page.getByRole('button', {
       name: 'message.post is Disabled for bot at Server',
@@ -285,11 +362,29 @@ test.describe('Bot account lifecycle', () => {
       })
     ).toBeVisible();
 
+    await openBotSection(page, 'Integrations');
     await page.getByRole('button', { name: 'Create Webhook', exact: true }).click();
     const createWebhookDialog = page.getByRole('dialog', { name: 'Create Webhook' });
     await createWebhookDialog.getByRole('textbox', { name: 'Name' }).fill('Production');
+    await createWebhookDialog.getByLabel('Destination room (optional)').selectOption(webhookRoomId);
     await createWebhookDialog.getByRole('button', { name: 'Create Webhook', exact: true }).click();
     const originalWebhookURL = await captureShowOnceWebhookURL(page);
+    expect(new URL(originalWebhookURL).searchParams.get('room_id')).toBe(webhookRoomId);
+    // Use the copied URL without adding a destination or a custom Grafana payload.
+    const grafanaResponse = await fetch(originalWebhookURL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        receiver: 'Chatto',
+        status: 'firing',
+        title: '[FIRING:1] TestAlert',
+        message: '**Firing**\nGrafana test notification',
+        alerts: [],
+        version: '1'
+      })
+    });
+    expect(grafanaResponse.status).toBe(200);
+    expect(await grafanaResponse.text()).toBe('ok');
 
     await page.getByRole('button', { name: 'Create Webhook', exact: true }).click();
     await createWebhookDialog.getByRole('textbox', { name: 'Name' }).fill('Backup');
@@ -369,6 +464,7 @@ test.describe('Bot account lifecycle', () => {
       })
     ).resolves.toEqual({ status: 200 });
 
+    await openBotSection(page, 'Overview');
     await page.getByRole('button', { name: 'Reassign owner', exact: true }).click();
     const reassignDialog = page.getByRole('dialog', { name: 'Reassign owner' });
     await reassignDialog.getByRole('combobox', { name: 'Owner' }).fill(newOwner.login);

@@ -15,32 +15,57 @@ Key and subject schemas are maintained separately in the
 [runtime state](runtime-state.md) and [subject and event](subjects-and-events.md)
 inventories.
 
+## Startup provisioning
+
+Chatto provisions its core streams, KV buckets, and Object Stores through
+`events.CreateJetStreamResourceWithRetry`, including optional projection
+snapshot storage. Chatto owns resource configuration and identity metadata.
+The shared framework owns the bounded retry and cancellation mechanics.
+
+Chatto allows three attempts, with delays of 25 ms and 50 ms. Request deadline
+errors are retried only while the parent startup context remains active. The
+existing transient store-creation and stream-name conflict errors are also
+retried. Parent cancellation or expiry stops provisioning. Permanent errors
+and retry exhaustion fail startup. The JetStream default request timeout is
+30 seconds; nats.go uses a supplied context deadline instead when one exists.
+
 ## Current resources
 
-| Type         | Name                | Storage | Backup | Description                                                                 |
-| ------------ | ------------------- | ------- | ------ | --------------------------------------------------------------------------- |
-| Stream       | `EVT`               | File    | Yes    | Event-sourcing log for durable `evtv1.Event` facts on `evt.>`              |
-| Stream       | `NOTIFICATIONS`     | File    | Yes    | Replicated bounded `notificationv1.NotificationEvent` log for 90-day notification signals, reads, removals, and push outcomes; per-message TTL adds a 24-hour physical-cleanup grace |
-| KV bucket    | `RUNTIME_STATE`     | File    | Yes    | Persisted latest-value records from `chatto.core.runtime_state.v1`, including credentials, telemetry, notification boundaries, wrapped app DEKs, and snapshot pointers |
-| KV bucket    | `MEMORY_CACHE`      | Memory  | No     | Volatile shared records from `chatto.core.cache_state.v1`, plus non-protobuf worker leases, cooldowns, counters, and health heartbeats |
-| KV bucket    | `ENCRYPTION_KEYS`   | File    | No     | KMS records from `chatto.core.key_material.v1`; excluded from backups |
-| Object store | `SERVER_ASSETS`     | File    | Yes    | Default/legacy NATS-backed persisted asset binaries                         |
-| Object store | `PROJECTION_SNAPSHOTS` | File | Yes    | Optional encrypted `chatto.core.projection.v1` snapshot objects; configurable TTL defaults to seven days |
-| Object store | `ASSET_CACHE`       | File    | No     | Optional TTL cache for transformed image bytes                               |
-| NATS Core    | `live.sync.>`       | None    | No     | Transient `livev1.LiveEvent` pubsub signals                                  |
-| Republish    | `live.evt.>`        | None    | No     | Raw committed `EVT` facts republished by JetStream for server-side live delivery |
+| Type         | Name                   | Storage | Backup | Description                                                                                                                                                                                              |
+| ------------ | ---------------------- | ------- | ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Stream       | `EVT`                  | File    | Yes    | Event-sourcing log for durable `evtv1.Event` facts on `evt.>`                                                                                                                                            |
+| Stream       | `LOG`                  | File    | No     | Retained operational protobuf records from `chatto.core.log.v1`; seven-day default age, configurable with `core.log.retention`; no byte/count limit                                                      |
+| Stream       | `NOTIFICATIONS`        | File    | Yes    | Replicated bounded `notificationv1.NotificationEvent` log for 90-day notification signals, reads, removals, and push outcomes; per-message TTL adds a 24-hour physical-cleanup grace                     |
+| KV bucket    | `RUNTIME_STATE`        | File    | Yes    | Persisted latest-value records from `chatto.core.runtime_state.v1`, including current private presence choices, credentials, telemetry, notification boundaries, wrapped app DEKs, and snapshot pointers |
+| KV bucket    | `MEMORY_CACHE`         | Memory  | No     | Volatile shared records from `chatto.core.cache_state.v1`, plus non-protobuf worker leases, cooldowns, counters, and health heartbeats                                                                   |
+| KV bucket    | `ENCRYPTION_KEYS`      | File    | No     | KMS records from `chatto.core.key_material.v1`; excluded from backups                                                                                                                                    |
+| Object store | `SERVER_ASSETS`        | File    | Yes    | Default/legacy NATS-backed persisted asset binaries                                                                                                                                                      |
+| Object store | `PROJECTION_SNAPSHOTS` | File    | Yes    | Optional encrypted `chatto.core.projection.v1` snapshot objects; configurable TTL defaults to seven days                                                                                                 |
+| Object store | `ASSET_CACHE`          | File    | No     | Optional TTL cache for transformed image bytes                                                                                                                                                           |
+| Object store | `NEIGHBORHOOD_IMAGES`  | File    | No     | Content-addressed WebP copies of Neighborhood logos and banners; seven-day TTL (ADR-106)                                                                                                                 |
+| NATS Core    | `live.sync.>`          | None    | No     | Non-durable `pubsubv1.PubSubEvent` values                                                                                                                                                                |
+| Republish    | `live.evt.>`           | None    | No     | Raw committed `EVT` facts republished by JetStream for server-side live delivery                                                                                                                         |
+
+## Projection consumers
+
+Each projector owns one ephemeral ordered consumer. Chatto uses the name
+`projection-<key>-<random>_<generation>` and stores the owner in consumer
+metadata. On exit, the projector stops consumption and attempts to delete only
+its current consumer. Five-minute inactivity expiry remains the fallback if
+cleanup fails or the process crashes. See the [projection inventory](projections.md)
+for the owners and lifecycle.
 
 ## Durable consumers
 
-| Stream | Consumer | Filter | Ack contract | Owner |
-| ------ | -------- | ------ | ------------ | ----- |
-| `EVT` | `chatto-asset-processing-v1` | `evt.asset.*.asset_processing_started`, legacy `evt.room.*.asset_processing_started` | Explicit ack after a terminal asset outcome is projected; interrupted work is redelivered | Shared `asset-processing` runtime-unit replicas |
-| `EVT` | `chatto-user-key-shredding-v1` | `evt.user.*.user_key_shredding_requested` | Explicit ack after idempotent key deletion and projected `UserKeyShreddedEvent`; interrupted or failed work is redelivered | Shared `ChattoCore` replicas |
-| `EVT` | `chatto-user-push-subscription-cleanup-v1` | `evt.user.*.account_deleted` | Explicit ack after idempotent owner-first removal of the account's known push credentials; interrupted or partially failed cleanup is redelivered. The permanent exact deletion fact also fences registration, and a leased global reconciliation pass repairs late writes and orphan owners without rescanning all owners for every historical delivery | Shared `ChattoCore` replicas through `events.DurableWorker` |
-| `EVT` | `chatto-call-key-cleanup-v1` | `evt.room.*.call_ended` | Explicit ack after idempotent call-key shredding; interrupted or failed work is redelivered | Shared `ChattoCore` replicas |
-| `EVT` | `chatto-asset-cleanup-v1` | `evt.asset.*.asset_deleted` | Explicit ack after idempotent binary and transform-cache deletion; interrupted or failed work is redelivered | Shared `ChattoCore` replicas |
-| `EVT` | `chatto-notification-materializer-v1` | Existing message, reaction, membership, room-layout, RBAC, account, and configured-owner facts; the name/filter pair is one immutable capability generation | The materializer waits until current local projections include the source, stores idempotent bounded notification output, then confirms the source acknowledgement. Interrupted, partially completed, failed, or schema-unsupported work is redelivered rather than discarded. New source schemas require a new consumer generation | Shared `ChattoCore` replicas through `events.DurableWorker` |
-| `NOTIFICATIONS` | `chatto-notification-alert-delivery-v1` | `notifications.signalled` | Explicit ack after the projected occurrence has a terminal delivered/suppressed state; transient provider failures are redelivered within the immutable two-minute delivery horizon | Shared `ChattoCore` replicas through `events.DurableWorker` |
+| Stream          | Consumer                                   | Filter                                                                                                                                                      | Ack contract                                                                                                                                                                                                                                                                                                                                             | Owner                                                       |
+| --------------- | ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
+| `EVT`           | `chatto-asset-processing-v1`               | `evt.asset.*.asset_processing_started`, legacy `evt.room.*.asset_processing_started`                                                                        | Explicit ack after a terminal asset outcome is projected; interrupted work is redelivered                                                                                                                                                                                                                                                                | Shared `asset-processing` runtime-unit replicas             |
+| `EVT`           | `chatto-user-key-shredding-v1`             | `evt.user.*.user_key_shredding_requested`                                                                                                                   | Explicit ack after idempotent key deletion and projected `UserKeyShreddedEvent`; interrupted or failed work is redelivered                                                                                                                                                                                                                               | Shared `ChattoCore` replicas                                |
+| `EVT`           | `chatto-user-push-subscription-cleanup-v1` | `evt.user.*.account_deleted`                                                                                                                                | Explicit ack after idempotent owner-first removal of the account's known push credentials; interrupted or partially failed cleanup is redelivered. The permanent exact deletion fact also fences registration, and a leased global reconciliation pass repairs late writes and orphan owners without rescanning all owners for every historical delivery | Shared `ChattoCore` replicas through `events.DurableWorker` |
+| `EVT`           | `chatto-call-key-cleanup-v1`               | `evt.room.*.call_ended`                                                                                                                                     | Explicit ack after idempotent call-key shredding; interrupted or failed work is redelivered                                                                                                                                                                                                                                                              | Shared `ChattoCore` replicas                                |
+| `EVT`           | `chatto-asset-cleanup-v1`                  | `evt.asset.*.asset_deleted`                                                                                                                                 | Explicit ack after idempotent binary and transform-cache deletion; interrupted or failed work is redelivered                                                                                                                                                                                                                                             | Shared `ChattoCore` replicas                                |
+| `EVT`           | `chatto-notification-materializer-v1`      | Existing message, reaction, membership, room-layout, RBAC, account, and configured-owner facts; the name/filter pair is one immutable capability generation | The materializer waits until current local projections include the source, stores idempotent bounded notification output, then confirms the source acknowledgement. Interrupted, partially completed, failed, or schema-unsupported work is redelivered rather than discarded. New source schemas require a new consumer generation                      | Shared `ChattoCore` replicas through `events.DurableWorker` |
+| `NOTIFICATIONS` | `chatto-notification-alert-delivery-v1`    | `notifications.signalled`                                                                                                                                   | Explicit ack after the projected occurrence has a terminal delivered/suppressed state; transient provider failures are redelivered within the immutable two-minute delivery horizon                                                                                                                                                                      | Shared `ChattoCore` replicas through `events.DurableWorker` |
 
 All consumers use file-backed durable consumer state. Most consume domain facts
 from `EVT`: replaying those facts is safe because asset-processing workers
@@ -88,3 +113,13 @@ versioned identity with the `notifications-incarnation-v1:` format. The
 from `EVT`. Notification projection snapshots bind to this identity and the
 notification stream sequence, allowing the shared snapshot framework to
 support more than one application-owned event log without mixing coordinates.
+
+## Outbound bot webhook consumer
+
+`chatto-bot-webhook-source-v1` consumes `evt.room.*.message_posted` from EVT.
+Replicas share this durable consumer, which permits eight unacknowledged
+messages. The handler acknowledges after each selected destination enters
+its process-local delivery pool. Configuration sequence prevents old messages
+from activating new endpoints. HTTP requests and retries have no stream or
+consumer of their own. See
+[ADR-097](../adr/ADR-097-durable-outbound-bot-webhooks.md).

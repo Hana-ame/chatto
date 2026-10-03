@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
+	"hmans.de/chatto/internal/config"
 	evtv1 "hmans.de/chatto/internal/pb/chatto/core/evt/v1"
 )
 
@@ -75,6 +76,7 @@ type RenewableSession struct {
 	FreshAuthAt                time.Time `json:"fresh_auth_at,omitempty"`
 	FreshAuthMethod            string    `json:"fresh_auth_method,omitempty"`
 	FreshAuthSource            string    `json:"fresh_auth_source,omitempty"`
+	PrivilegedModeExpiresAt    time.Time `json:"privileged_mode_expires_at,omitempty"`
 }
 
 func (c *ChattoCore) bearerAccessTokenTTL() time.Duration {
@@ -88,7 +90,33 @@ func (c *ChattoCore) renewableSessionTTL() time.Duration {
 	return c.authTokenTTL()
 }
 
+// renewableSessionTTLForClient returns the initial session window for an OAuth
+// client. Loopback-client sessions use a shorter fixed lifetime.
+func (c *ChattoCore) renewableSessionTTLForClient(clientID string) time.Duration {
+	ttl := c.renewableSessionTTL()
+	if clientID == config.ChattoLoopbackClientID && (ttl <= 0 || ttl > config.ChattoLoopbackSessionLifetime) {
+		return config.ChattoLoopbackSessionLifetime
+	}
+	return ttl
+}
+
+// clampLoopbackSessionWindow limits a loopback-client session to its fixed
+// lifetime from creation. Validation applies it to every stored session, so a
+// longer window written by a replica without this rule cannot outlive the cap.
+func clampLoopbackSessionWindow(session RenewableSession) RenewableSession {
+	if session.ClientID != config.ChattoLoopbackClientID {
+		return session
+	}
+	if deadline := session.CreatedAt.Add(config.ChattoLoopbackSessionLifetime); deadline.Before(session.ExpiresAt) {
+		session.ExpiresAt = deadline
+	}
+	return session
+}
+
 func (c *ChattoCore) renewableSessionWindowNeedsRenewal(session RenewableSession, now time.Time) bool {
+	if session.ClientID == config.ChattoLoopbackClientID {
+		return false
+	}
 	ttl := c.renewableSessionTTL()
 	remaining := session.ExpiresAt.Sub(now)
 	return ttl > 0 && remaining > 0 && remaining <= ttl/4
@@ -246,7 +274,7 @@ func (c *ChattoCore) createBearerSessionForGrant(ctx context.Context, userID, cl
 		Source:            source,
 		Request:           auditRequestMetadata(ctx),
 		CreatedAt:         now,
-		ExpiresAt:         now.Add(c.renewableSessionTTL()),
+		ExpiresAt:         now.Add(c.renewableSessionTTLForClient(clientID)),
 		AuthGeneration:    authGeneration,
 		CurrentGeneration: 0,
 	}
@@ -359,6 +387,7 @@ func (c *ChattoCore) validateRenewableSession(ctx context.Context, sessionID str
 	if err != nil {
 		return RenewableSession{}, nil, err
 	}
+	session = clampLoopbackSessionWindow(session)
 	if !now.Before(session.ExpiresAt) {
 		_ = c.deleteRuntimeStateKey(ctx, c.renewableSessionKey(sessionID), jetstream.LastRevision(entry.Revision()))
 		return RenewableSession{}, nil, ErrRefreshTokenNotFound
@@ -372,9 +401,7 @@ func (c *ChattoCore) validateRenewableSession(ctx context.Context, sessionID str
 			return RenewableSession{}, nil, err
 		}
 	}
-	if _, err := c.ValidateRuntimeCredential(ctx, RuntimeCredential{
-		UserID: session.UserID, CreatedAt: session.CreatedAt, AuthGeneration: session.AuthGeneration,
-	}); err != nil {
+	if err := c.RequireAuthenticationAllowed(ctx, session.UserID, session.AuthGeneration); err != nil {
 		if errors.Is(err, ErrAuthenticationRevoked) {
 			_ = c.deleteRuntimeStateKey(ctx, c.renewableSessionKey(sessionID), jetstream.LastRevision(entry.Revision()))
 			return RenewableSession{}, nil, ErrRefreshTokenNotFound
@@ -508,7 +535,9 @@ func (c *ChattoCore) RevokeRefreshTokenWithReason(ctx context.Context, refreshTo
 
 // RevokeRefreshTokenWithReasonResult revokes a renewable session and returns
 // the owning user when the presented refresh credential was authentic and the
-// session still existed.
+// session still existed. A session that a newer auth generation already revoked
+// is deleted and reported as not revoked, so logout does not terminate the
+// user's current sessions.
 func (c *ChattoCore) RevokeRefreshTokenWithReasonResult(ctx context.Context, refreshToken, reason string) (string, bool, error) {
 	sessionID, _, resourceBound, ok := c.parseRefreshTokenDetails(refreshToken)
 	if !ok {
@@ -522,6 +551,14 @@ func (c *ChattoCore) RevokeRefreshTokenWithReasonResult(ctx context.Context, ref
 		return "", false, err
 	}
 	if renewableSessionIsResourceBound(session) != resourceBound {
+		return "", false, nil
+	}
+	// If the generation check fails, revoke the session as a live logout.
+	// Revocation must not depend on the user projection.
+	if stale, err := c.revokedByAuthGeneration(ctx, session.UserID, session.AuthGeneration); err != nil {
+		c.logger.Warn("Failed to check auth generation during refresh token revocation", "error", err)
+	} else if stale {
+		_ = c.deleteRuntimeStateKey(ctx, c.renewableSessionKey(sessionID))
 		return "", false, nil
 	}
 	if err := c.revokeRenewableSession(ctx, sessionID, reason); err != nil {

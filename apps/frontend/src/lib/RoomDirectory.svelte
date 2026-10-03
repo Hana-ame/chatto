@@ -15,9 +15,9 @@ store owns only optimistic join/leave state.
   import { resolve } from '$app/paths';
   import { toast } from '$lib/ui/toast';
   import { m } from '$lib/i18n/messages';
-  import { ConfirmDialog } from '$lib/ui';
-  import Panel from '$lib/ui/Panel.svelte';
-  import type { RoomDirectoryStore, DirectoryRoom } from '$lib/state/server/roomDirectory.svelte';
+  import { ConfirmDialog, EmptyState, HelpTooltip, Panel, Pill } from '$lib/ui';
+  import { Button, TextInput } from '$lib/ui/form';
+  import type { RoomDirectoryStore, DirectoryRoom } from '$lib/state/server/roomDirectory';
 
   let {
     directory,
@@ -27,6 +27,7 @@ store owns only optimistic join/leave state.
     serverSegment: string;
   } = $props();
 
+  const searchInputId = $props.id();
   let searchQuery = $state('');
   let leaveConfirmVisible = $state(false);
   let leaveConfirmRoom = $state<DirectoryRoom | null>(null);
@@ -175,29 +176,12 @@ store owns only optimistic join/leave state.
   {@const joining = directory.joiningIds.has(room.id)}
   {@const leaving = directory.leavingIds.has(room.id)}
   <!--
-    Every status indicator shares an identical outer box: btn-sm padding
-    + a 1px border + `w-24 shrink-0 justify-center`. Each variant uses
-    `border border-{tone}` so the inner content area stays at 22px
-    regardless of fill style — without explicit borders on the primary
-    variant, btn-secondary's visible border would shrink its content
-    area by 2px and read as a width mismatch.
+    Every status control uses a column of at least w-28, so Join, Joined, and
+    the Universal and Restricted labels line up; longer translations widen the
+    column instead of overflowing it. Joined rests as a quiet
+    danger-ghost button, so the eye goes to the Join buttons; hover and focus
+    reveal the Leave action.
   -->
-  <!--
-    `transition-none` overrides the `transition-colors duration-100`
-    baked into the `btn` utility — hover swaps feel snappier without
-    the fade.
-  -->
-  {@const sizing = 'btn-sm w-28 shrink-0 justify-center border transition-none'}
-  {@const primarySolid = `btn btn-action border-transparent ${sizing}`}
-  <!--
-    Joined rooms get a "ghost"-style button that fades into the card
-    background, so the eye is drawn to the saturated action-colored Join
-    buttons next to rooms the viewer can act on. Hover swaps to a
-    solid danger fill to telegraph the leave action.
-  -->
-  {@const joinedGhost = `btn-danger-ghost ${sizing}`}
-  {@const restrictedSoft = `btn border-border bg-background text-muted/70 !cursor-default opacity-80 ${sizing}`}
-  {@const universalSoft = `btn border-border bg-action/10 text-action !cursor-default ${sizing}`}
   {@const roomHref = resolve('/chat/[serverId]/[roomId]', {
     serverId: serverSegment,
     roomId: room.id
@@ -211,7 +195,7 @@ store owns only optimistic join/leave state.
             <span class="min-w-0 truncate">{room.name}</span>
           </div>
           {#if room.description}
-            <div class="truncate text-xs font-normal text-muted/80">{room.description}</div>
+            <div class="truncate text-xs font-normal text-muted">{room.description}</div>
           {/if}
         </div>
       </div>
@@ -226,45 +210,69 @@ store owns only optimistic join/leave state.
       </div>
     {/if}
 
-    {#if joined && room.isUniversal}
-      <span class={universalSoft} title={m('room.directory.universal_title')}>
-        <span class="iconify icon-[uil--globe]"></span>
-        {m('room.directory.universal')}
-      </span>
-    {:else if joined}
-      <button
-        type="button"
-        class="group {joinedGhost}"
-        onclick={() => promptLeaveRoom(room)}
-        disabled={leaving}
-        title={m('room.directory.joined_title', { room: room.name })}
-      >
-        {#if leaving}
-          <span class="iconify icon-[uil--spinner] animate-spin"></span>
-          {m('room.directory.leaving')}
-        {:else}
-          <span class="iconify icon-[uil--check] group-hover:hidden"></span>
-          <span class="iconify icon-[uil--sign-out-alt] hidden group-hover:inline"></span>
-          <span class="group-hover:hidden">{m('room.directory.joined')}</span>
-          <span class="hidden group-hover:inline">{m('room.directory.leave')}</span>
-        {/if}
-      </button>
-    {:else if joining}
-      <button type="button" class={primarySolid} disabled>
-        <span class="iconify icon-[uil--spinner] animate-spin"></span>
-        {m('room.directory.joining')}
-      </button>
-    {:else if room.viewerCanJoinRoom}
-      <button type="button" class={primarySolid} onclick={() => handleJoin(room.id)}>
-        <span class="iconify icon-[uil--plus]"></span>
-        {m('room.directory.join')}
-      </button>
-    {:else}
-      <span class={restrictedSoft} title={m('room.directory.restricted_title')}>
-        <span class="iconify icon-[uil--lock]"></span>
-        {m('room.directory.restricted')}
-      </span>
-    {/if}
+    <div class="flex min-w-28 shrink-0 items-center justify-center gap-1">
+      {#if joined && room.isUniversal}
+        <Pill tone="action">
+          <span aria-hidden="true" class="iconify icon-[uil--globe]"></span>
+          {m('room.directory.universal')}
+        </Pill>
+        <HelpTooltip>{m('room.directory.universal_title')}</HelpTooltip>
+      {:else if joined}
+        <div class="group/leave w-full">
+          <Button
+            variant="danger-ghost"
+            size="sm"
+            fullWidth
+            loading={leaving}
+            disabled={leaving}
+            title={m('room.directory.joined_title', { room: room.name })}
+            onclick={() => promptLeaveRoom(room)}
+          >
+            {#if leaving}
+              {m('room.directory.leaving')}
+            {:else}
+              <!-- Both states share one grid cell, so the swap does not change the width. -->
+              <span class="grid justify-items-center">
+                <span
+                  class="col-start-1 row-start-1 inline-flex items-center gap-2 group-focus-within/leave:invisible group-hover/leave:invisible"
+                >
+                  <span aria-hidden="true" class="iconify icon-[uil--check]"></span>
+                  <span>{m('room.directory.joined')}</span>
+                </span>
+                <span
+                  class="invisible col-start-1 row-start-1 inline-flex items-center gap-2 group-focus-within/leave:visible group-hover/leave:visible"
+                >
+                  <span aria-hidden="true" class="iconify icon-[uil--sign-out-alt] rtl:-scale-x-100"
+                  ></span>
+                  <span>{m('room.directory.leave')}</span>
+                </span>
+              </span>
+            {/if}
+          </Button>
+        </div>
+      {:else if room.viewerCanJoinRoom || joining}
+        <Button
+          size="sm"
+          fullWidth
+          loading={joining}
+          disabled={joining}
+          onclick={() => handleJoin(room.id)}
+        >
+          {#if joining}
+            {m('room.directory.joining')}
+          {:else}
+            <span aria-hidden="true" class="iconify icon-[uil--plus]"></span>
+            {m('room.directory.join')}
+          {/if}
+        </Button>
+      {:else}
+        <Pill tone="muted">
+          <span aria-hidden="true" class="iconify icon-[uil--lock]"></span>
+          {m('room.directory.restricted')}
+        </Pill>
+        <HelpTooltip>{m('room.directory.restricted_title')}</HelpTooltip>
+      {/if}
+    </div>
   </li>
 {/snippet}
 
@@ -275,22 +283,23 @@ store owns only optimistic join/leave state.
     <Panel title={set.name} noPadding>
       {#snippet actions()}
         {#if canJoinAll || joining}
-          <!-- Matches the per-row primary buttons: w-28 so the card's
-               header action lines up vertically with Join / Joined. -->
-          <button
-            type="button"
-            class="btn-action btn w-28 shrink-0 justify-center border border-transparent btn-sm transition-none"
-            onclick={() => handleJoinGroup(set)}
-            disabled={joining}
-          >
-            {#if joining}
-              <span class="iconify icon-[uil--spinner] animate-spin"></span>
-              {m('room.directory.joining')}
-            {:else}
-              <span class="iconify icon-[uil--plus-circle]"></span>
-              {m('room.directory.join_all')}
-            {/if}
-          </button>
+          <!-- Shares the row status column's minimum width, so it lines up with Join and Joined. -->
+          <div class="min-w-28 shrink-0">
+            <Button
+              size="sm"
+              fullWidth
+              loading={joining}
+              disabled={joining}
+              onclick={() => handleJoinGroup(set)}
+            >
+              {#if joining}
+                {m('room.directory.joining')}
+              {:else}
+                <span aria-hidden="true" class="iconify icon-[uil--plus-circle]"></span>
+                {m('room.directory.join_all')}
+              {/if}
+            </Button>
+          </div>
         {/if}
       {/snippet}
 
@@ -304,18 +313,20 @@ store owns only optimistic join/leave state.
 {/snippet}
 
 <div class="mb-6">
-  <input
-    type="text"
+  <TextInput
+    id={searchInputId}
+    label={m('room.directory.search_placeholder')}
+    labelHidden
+    leadingIcon="iconify icon-[uil--search]"
     placeholder={m('room.directory.search_placeholder')}
     bind:value={searchQuery}
-    class="input w-full"
   />
 </div>
 
 {#if visibleRooms.length === 0}
-  <p class="text-muted">{m('room.directory.empty')}</p>
+  <EmptyState icon="icon-[uil--comments]" title={m('room.directory.empty')} />
 {:else if !hasVisibleResults}
-  <p class="text-muted">{m('room.directory.no_results')}</p>
+  <EmptyState icon="icon-[uil--search-minus]" title={m('room.directory.no_results')} />
 {:else if hasLayout}
   <!-- Row-major masonry via JS row-spans. Each card is measured by the
        `masonryItem` attachment, which sets `grid-row: span N` to fit
@@ -346,7 +357,7 @@ store owns only optimistic join/leave state.
   bind:visible={leaveConfirmVisible}
   title={m('room.leave.title')}
   actionLabel={m('room.leave.action')}
-  actionIcon="iconify icon-[uil--sign-out-alt]"
+  actionIcon="iconify icon-[uil--sign-out-alt] rtl:-scale-x-100"
   onconfirm={confirmLeaveRoom}
   onclose={() => (leaveConfirmVisible = false)}
 >

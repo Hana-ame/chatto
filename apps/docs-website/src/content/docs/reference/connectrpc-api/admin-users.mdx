@@ -35,25 +35,28 @@ POST /api/connect/chatto.admin.v1.AdminUserService/ListMembers
 
 #### Input: ListMembersRequest
 
-Request server-admin member rows.
+Request server-admin member IDs.
+Results use creation time, oldest first. Users without a creation time
+appear last, ordered by case-insensitive login. User IDs break ties.
 
 | Field | Type | Description |
 | --- | --- | --- |
 | `search` | `string` | Case-insensitive login/display-name search term. Empty disables search. |
-| `page` | [`chatto.api.v1.PageRequest`](/reference/connectrpc-api/types/#chatto-api-v1-PageRequest) | Page request. Defaults to 20 results when absent or limit is zero. |
+| `page` | [`chatto.api.v1.PageRequest`](/reference/connectrpc-api/types/#chatto-api-v1-PageRequest) | Defaults to 20 results when absent or limit is zero. Maximum: 100. |
 
 
 <a id="chatto-admin-v1-ListMembersResponse"></a>
 
 #### Result: ListMembersResponse
 
-Server-admin member rows plus role summaries.
+Ordered server-admin member IDs. Load rows and role summaries with
+BatchGetMembers. Advance the offset by the number of IDs, including IDs
+omitted by a later batch read.
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `members` | repeated [`AdminMember`](/reference/connectrpc-api/types/#chatto-admin-v1-AdminMember) | Matching members. |
-| `roles` | `repeated chatto.api.v1.Role` | Public roles for display-name lookup. |
 | `page` | [`chatto.api.v1.PageInfo`](/reference/connectrpc-api/types/#chatto-api-v1-PageInfo) | Page metadata. |
+| `user_ids` | `repeated string` | Matching member IDs in list order. |
 
 
 <a id="chatto-admin-v1-AdminUserService-GetMember"></a>
@@ -199,57 +202,21 @@ Result of revoking a role.
 | `member` | [`AdminMember`](/reference/connectrpc-api/types/#chatto-admin-v1-AdminMember) | Updated admin member row. |
 
 
-<a id="chatto-admin-v1-AdminUserService-UpdateUser"></a>
+<a id="chatto-admin-v1-AdminUserService-ChangeUserPassword"></a>
 
-### UpdateUser
-
-Updates another user's login and/or display name as an admin action.
-Requires user.manage-accounts; the caller cannot target their own account.
-
-```http
-POST /api/connect/chatto.admin.v1.AdminUserService/UpdateUser
-```
-
-<a id="chatto-admin-v1-UpdateUserRequest"></a>
-
-#### Input: UpdateUserRequest
-
-Request to update a user's identity as a server-admin action.
-
-| Field | Type | Description |
-| --- | --- | --- |
-| `user_id` | `string` | Target user ID. |
-| `display_name` | `optional string` | New display name, when changing it. Empty clears the explicit display name. The server also rejects control and confusing invisible characters. |
-| `login` | `optional string` | New login identifier, when changing it. The server accepts ASCII letters, digits, period, underscore, and hyphen, starting with a letter or digit. |
-
-
-<a id="chatto-admin-v1-UpdateUserResponse"></a>
-
-#### Result: UpdateUserResponse
-
-Result of an admin user update.
-
-| Field | Type | Description |
-| --- | --- | --- |
-| `user` | [`chatto.api.v1.User`](/reference/connectrpc-api/types/#chatto-api-v1-User) | Updated user profile. |
-| `member` | [`AdminMember`](/reference/connectrpc-api/types/#chatto-admin-v1-AdminMember) | Updated admin member row. |
-
-
-<a id="chatto-admin-v1-AdminUserService-UpdateUserPassword"></a>
-
-### UpdateUserPassword
+### ChangeUserPassword
 
 Updates another user's password as an admin action. Requires
 user.manage-accounts and a fresh credential for the caller; the caller
 cannot target their own account.
 
 ```http
-POST /api/connect/chatto.admin.v1.AdminUserService/UpdateUserPassword
+POST /api/connect/chatto.admin.v1.AdminUserService/ChangeUserPassword
 ```
 
-<a id="chatto-admin-v1-UpdateUserPasswordRequest"></a>
+<a id="chatto-admin-v1-ChangeUserPasswordRequest"></a>
 
-#### Input: UpdateUserPasswordRequest
+#### Input: ChangeUserPasswordRequest
 
 Request to update a user's password as a server-admin action.
 
@@ -259,9 +226,9 @@ Request to update a user's password as a server-admin action.
 | `password` | `string` | New password. The server applies the same password policy as registration and password reset. |
 
 
-<a id="chatto-admin-v1-UpdateUserPasswordResponse"></a>
+<a id="chatto-admin-v1-ChangeUserPasswordResponse"></a>
 
-#### Result: UpdateUserPasswordResponse
+#### Result: ChangeUserPasswordResponse
 
 Result of an admin password update.
 
@@ -275,7 +242,7 @@ Result of an admin password update.
 ### ClearUsernameCooldown
 
 Clears the target user's self-service username-change cooldown. Requires
-user.manage-accounts.
+user.manage-accounts, including when the caller targets their own account.
 
 ```http
 POST /api/connect/chatto.admin.v1.AdminUserService/ClearUsernameCooldown
@@ -297,10 +264,6 @@ Request to clear a user's self-service username-change cooldown.
 #### Result: ClearUsernameCooldownResponse
 
 Result of clearing a user's username-change cooldown.
-
-| Field | Type | Description |
-| --- | --- | --- |
-| `cleared` | `bool` | True when the request completed. |
 
 
 <a id="chatto-admin-v1-AdminUserService-DeleteUser"></a>
@@ -330,7 +293,3 @@ Request to delete a user account as a server-admin action.
 #### Result: DeleteUserResponse
 
 Result of deleting a user account.
-
-| Field | Type | Description |
-| --- | --- | --- |
-| `deleted` | `bool` | True when the user was deleted. |

@@ -13,17 +13,8 @@ const mocks = vi.hoisted(() => ({
   segmentToServerId: vi.fn((segment: string) => (segment === '-' ? 'origin' : null))
 }));
 
-vi.mock('$app/navigation', () => ({
-  goto: mocks.goto
-}));
-
-vi.mock('$lib/navigation', () => ({
-  serverIdToSegment: (serverId: string) =>
-    serverId === 'origin' ? '-' : serverId === 'chatto-run' ? 'chat.chatto.run' : serverId,
-  segmentToServerId: mocks.segmentToServerId
-}));
-
-vi.mock('$lib/state/server/registry.svelte', () => ({
+vi.mock('$lib/client', async () => ({
+  ...(await import('$lib/test-utils/clientMock')).clientMockDefaults,
   serverRegistry: {
     getServer: (serverId: string) =>
       serverId === 'origin'
@@ -38,6 +29,17 @@ vi.mock('$lib/state/server/registry.svelte', () => ({
       ];
     }
   }
+}));
+
+vi.mock('$app/navigation', () => ({
+  pushState: vi.fn(),
+  goto: mocks.goto
+}));
+
+vi.mock('$lib/navigation', () => ({
+  serverIdToSegment: (serverId: string) =>
+    serverId === 'origin' ? '-' : serverId === 'chatto-run' ? 'chat.chatto.run' : serverId,
+  segmentToServerId: mocks.segmentToServerId
 }));
 
 import MessageContent, { renderMarkdown } from './MessageContent.svelte';
@@ -175,8 +177,9 @@ describe('renderMarkdown', () => {
     it('converts tabs to spaces in code blocks for consistent rendering', async () => {
       const html = await renderMarkdown('```go\nconst (\n\tFoo = 1\n)\n```');
       // Tabs should be converted to spaces to avoid CSS tab-stop issues with line numbers
-      expect(html).not.toContain('\t');
-      expect(html).toContain('    Foo');
+      const displayedCode = html.match(/<code[^>]*>(.*?)<\/code>/s)?.[1];
+      expect(displayedCode).not.toContain('\t');
+      expect(displayedCode).toContain('    Foo');
     });
 
     it('renders code blocks with language hint', async () => {
@@ -295,38 +298,11 @@ describe('renderMarkdown', () => {
   });
 
   describe('forbidden syntax (should render as literal text)', () => {
-    // 【本地改动 2026-08-30】上游原断言是 expect(html).not.toContain('<img'):上游把
-    // ![alt](url) 定为禁用语法,markdown-it 解析成「!」加一个链接,不出 <img>,安全默认。
-    // fork 故意反转这个策略,所以此处的断言与上游相反。
-    // 【目的】内联图片要能显示,且统一走 https://proxy.moonchan.xyz 代理取图,隐藏观看者
-    // 的 IP/Referer(原始图片 host 看不到我们的地址)。代理实现在 src/lib/markdown.ts 的
-    // proxyImageSource,完整行为覆盖在 src/lib/markdown.test.ts(重写 path/query、fragment
-    // 位置、scheme 记录、非 http(s) 降级为 #、img 标签加固)。本 fork 的行为源自
-    // a56c26630「render inline images via proxy」。
-    // 【踩坑】这个红第一次被看到是 2026-08-30 把 build-release 触发分支从 ci/deploy 改到
-    // main 之后:ci.yml 第一次在本仓库 main 上跑完整矩阵,test-workspace 的
-    // 「does not render images as img tags」立刻红,报 expected '<p><img src=
-    // "https://proxy.moonchan.x…' not to contain '<img'。fork 的 markdown.ts 此前从未被
-    // ci.yml 覆盖过(fork 代码只在 fork 自己的 workflow 里编译),冲突一直潜伏。
-    // 【思路】保留上游的 it 位置和它的两条原始注释,只叠加 fork 断言,并改测试名让分歧显式。
-    // 这样上游再次改这个测试时冲突会落在同一个 hunk 上,取舍一目了然;若把本测试挪走或删
-    // 掉上游版本,上游合并回来会「无冲突地」加回一个和本地行为相反的用例,那是更糟的静默
-    // 失败。
-    // 【边界/风险】这是对上游安全不变量的主动放宽,不是笔误。fork 侧现有防护只有:
-    // markdown-it 的 validateLink 拦 javascript:/data:/file:,proxyImageSource 再锁死
-    // http(s),img 加 loading=lazy + referrerpolicy=no-referrer + rel=noopener。附件、头像、
-    // 链接预览等不走这条路,不受影响。若上游将来把「图片禁用」升级为安全修复,必须在此
-    // 重新评估 fork 的取舍。
-    // 【合并提醒】合回 upstream 时,把下面 4 条断言改回上游原版(not.toContain('<img')),
-    // 并同步删除 build-linux.yml 里断言产物含 proxy.moonchan.xyz 的 Verify 步骤。
-    it('renders images through the fork image proxy', async () => {
+    it('does not render images as img tags', async () => {
       const html = await renderMarkdown('![alt](https://example.com/img.png)');
       // Image syntax is disabled, so no <img> tag should be rendered
       // markdown-it parses this as "!" followed by a link, which is safe
-      expect(html).toContain('<img');
-      expect(html).toContain('src="https://proxy.moonchan.xyz/img.png?proxy_host=example.com');
-      expect(html).toContain('proxy_scheme=https');
-      expect(html).toContain('alt="alt"');
+      expect(html).not.toContain('<img');
     });
 
     it('does not render horizontal rules', async () => {
@@ -339,46 +315,6 @@ describe('renderMarkdown', () => {
       expect(html).toContain('<div class="table-scroll" tabindex="0"><table>');
       expect(html).toContain('<th>a</th>');
       expect(html).toContain('<td>1</td>');
-    });
-  });
-
-  // 【本地改动 2026-09-01】LaTeX 公式渲染（KaTeX）——fork 独有，upstream 聊天不支持。
-  // 上游把"公式语法禁用"视为安全不变量；fork 主动放宽（见下方安全边界说明）。
-  // merge 上游时若上游把公式升级为安全修复，必须在此重审 fork 的取舍。
-  describe('math / LaTeX formula rendering', () => {
-    it('renders inline math via KaTeX ($...$)', async () => {
-      const html = await renderMarkdown('the sum is $x^2 + y^2 = z^2$ exactly');
-      expect(html).toContain('class="katex"');
-      expect(html).toContain('katex-html');
-    });
-
-    it('renders display math via KaTeX ($$...$$)', async () => {
-      const html = await renderMarkdown('then $$x + y = z$$ follows');
-      expect(html).toContain('class="katex-display"');
-      expect(html).toContain('katex-mathml');
-    });
-
-    it('does not treat a bare money amount as math ($10)', async () => {
-      const html = await renderMarkdown('price is $10 today');
-      expect(html).not.toContain('class="katex"');
-      expect(html).not.toContain('class="math"');
-      expect(html).toContain('price is $10 today');
-    });
-
-    it('renders $10 $a^2$ as literal $10 followed by math a^2', async () => {
-      // 首个 $10 不含字母 → 视为普通文本；紧随的 $a^2$ 含字母 → 公式。
-      const html = await renderMarkdown('cost $10 $a^2$ each');
-      expect(html).toContain('cost $10 ');
-      expect(html).toContain('class="katex"');
-      expect(html).not.toContain('class="math"');
-    });
-
-    it('renders malformed math safely without throwing (throwOnError=false)', async () => {
-      // 恶意/畸形输入不抛错；katex throwOnError=false 时渲染为 TeX 错误框而非崩溃。
-      // \frac 缺参数（如 \frac{1}{2}）是真会触 katex-error 的输入。
-      const html = await renderMarkdown('$\\frac$');
-      expect(html).toContain('katex-error');
-      expect(html).not.toContain('katex-error-mathml');
     });
   });
 
@@ -443,6 +379,18 @@ describe('renderMarkdown', () => {
 });
 
 describe('MessageContent component', () => {
+  it('lets a right-click on a rendered link reach the message row', async () => {
+    const rendered = renderMessage('[Example **site**](https://example.com/path)');
+    await expect.poll(() => q(rendered.container, 'a strong')).toBeTruthy();
+    const nestedText = q(rendered.container, 'a strong')!;
+    const contextMenu = vi.fn();
+    rendered.container.addEventListener('contextmenu', contextMenu);
+
+    nestedText.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+
+    expect(contextMenu).toHaveBeenCalledOnce();
+  });
+
   it('does not render encoded non-breaking spaces as tall message content', async () => {
     const body = `Magnets, how\n\ndo they work?\n\n- ONCE\n- TWICE\n- THRICE\n\nA haiku by a professional chef,\n\nthis was\n${'&nbsp;\n'.repeat(500)}`;
     const { container } = renderMessage(body);
@@ -558,7 +506,7 @@ describe('MessageContent component', () => {
 
   it('updates the relative timestamp detail while the popover is open', async () => {
     vi.useFakeTimers();
-    vi.setSystemTime(new Date('2025-04-27T14:29:59Z'));
+    vi.setSystemTime(new Date('2025-04-27T14:28:59Z'));
     const { container } = render(MessageContent, {
       props: {
         body: 'Call at <t:1745764200:F>',
@@ -568,6 +516,8 @@ describe('MessageContent component', () => {
     });
 
     await expect.poll(() => q(container, 'button.message-timestamp')).toBeTruthy();
+    // Opening the details must use the current time, even after an idle minute.
+    await vi.advanceTimersByTimeAsync(60_000);
     (q(container, 'button.message-timestamp') as HTMLButtonElement).click();
 
     await expect
@@ -855,15 +805,69 @@ describe('MessageContent component', () => {
   });
 
   describe('mention wiring', () => {
-    // wrapValidMentions itself is exhaustively tested in $lib/mentions.svelte.test.ts.
-    // These tests assert that MessageContent actually invokes it — i.e., that the
-    // wrapper class shows up in the rendered DOM when a matching member is present.
+    // resolveRenderedMentions itself is exhaustively tested in
+    // $lib/mentions.svelte.test.ts. These tests assert that MessageContent renders
+    // mention candidates and resolves them, i.e. that the mention class shows up
+    // in the rendered DOM when a matching member is present.
+    it('keeps a member handle in a URL as literal link text', async () => {
+      const url = 'https://social.5f9.de/@alice/117331230238178837';
+      const { container } = renderMessage(`Zum Thema ${url}`, [
+        { ...member('alice'), displayName: 'Alice Smith' }
+      ]);
+      await expect.poll(() => q(container, 'a')?.textContent).toBe(url);
+      expect(q(container, 'span.mention')).toBeNull();
+    });
+
     it('wraps a known @mention in span.mention when members include the login', async () => {
       const { container } = renderMessage('Hello @alice!', [member('alice')]);
       await expect.poll(() => q(container, 'span.mention')).toBeTruthy();
       const span = q(container, 'span.mention')!;
       expect(span.textContent).toBe('@alice');
       expect(span.getAttribute('data-user-id')).toBe('u_alice');
+    });
+
+    it('shows a member display name without changing the mention target', async () => {
+      const { container } = renderMessage('Hello @alice!', [
+        { ...member('alice'), displayName: 'Alice Smith' }
+      ]);
+      await expect.poll(() => q(container, 'span.mention')?.textContent).toBe('@Alice Smith');
+      const span = q(container, 'span.mention')!;
+      expect(span.getAttribute('data-user-id')).toBe('u_alice');
+      expect(span.getAttribute('dir')).toBe('auto');
+    });
+
+    it('updates a mention when members arrive and when their profile changes', async () => {
+      const rendered = render(MessageContent, { props: { body: 'Hello @alice!', members: [] } });
+      await expect.poll(() => rendered.container.textContent).toContain('Hello @alice!');
+      expect(q(rendered.container, 'span.mention')).toBeNull();
+
+      await rendered.rerender({
+        body: 'Hello @alice!',
+        members: [{ ...member('alice'), displayName: 'Alice Smith' }]
+      });
+      await expect
+        .poll(() => q(rendered.container, 'span.mention')?.textContent)
+        .toBe('@Alice Smith');
+
+      await rendered.rerender({
+        body: 'Hello @alice!',
+        members: [{ ...member('alice'), displayName: 'Alice Jones' }]
+      });
+      await expect
+        .poll(() => q(rendered.container, 'span.mention')?.textContent)
+        .toBe('@Alice Jones');
+    });
+
+    it('opens the target user menu callback when a mention is clicked', async () => {
+      const onMentionClick = vi.fn();
+      const { container } = render(MessageContent, {
+        props: { body: 'Hello @alice!', members: [member('alice')], onMentionClick }
+      });
+      await expect.poll(() => q(container, 'span.mention')).toBeTruthy();
+
+      q(container, 'span.mention')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+      expect(onMentionClick).toHaveBeenCalledWith('u_alice', expect.any(DOMRect));
     });
 
     it('uses the supplied viewer identity for self-mention highlighting', async () => {
@@ -904,27 +908,5 @@ describe('MessageContent component', () => {
       expect(span.textContent).toBe('@admin');
       expect(span.getAttribute('data-role-name')).toBe('admin');
     });
-  });
-
-  it('restricts the image link hit-area to the picture itself', async () => {
-    // 【本地改动 2026-09-02 回归测试】发现背景：<a> 保持 inline 时行盒横跨整行，点击热区=整行宽；
-    // <a> 改 inline-block 但 img 自身带 max-width:50%（相对 <a>，循环解析）时热区=图片两倍
-    // （用户实测）。修复：50% 上限放 <a>（display:inline-block; max-width:50% 相对 <p> 确定），
-    // img 用 width:100% 撑满 → 点击热区（<a> 盒）恒等于图片宽。
-    // 断言：anchor 宽度 == 图片宽度（真实 intrinsic 图），且 < prose 内容宽度。
-    const { container } = renderMessage('![cat](https://images.example.com/cat.png)');
-    await expect.poll(() => q(container, 'img')).toBeTruthy();
-    const prose = q(container, '.prose')!;
-    prose.setAttribute('style', 'width: 400px');
-    const img = q(container, 'img')!;
-    const anchor = q(container, 'a')!;
-    // 真实 800x450 PNG（data URL），让 img 有真实 intrinsic 尺寸
-    const png800x450 = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAyAAAAHCCAIAAACYATqfAAAJU0lEQVR4nO3OAQkAMAwDsEq/9JsYFEqiIHkAAJxKOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsCbtAADAmrQDAABr0g4AAKxJOwAAsOYD687blCgXtNoAAAAASUVORK5CYII=';
-    img.src = png800x450;
-    await expect.poll(() => img.getBoundingClientRect().width).toBeGreaterThan(0);
-    const imgW = img.getBoundingClientRect().width;
-    const aW = anchor.getBoundingClientRect().width;
-    expect(aW).toBeCloseTo(imgW, 0);
-    expect(aW).toBeLessThan(prose.getBoundingClientRect().width);
   });
 });

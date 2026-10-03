@@ -3,7 +3,6 @@ package core
 import (
 	"context"
 	"errors"
-	"hmans.de/chatto/internal/pb/chatto/core/live/v1"
 	"strconv"
 	"strings"
 	"testing"
@@ -12,9 +11,12 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/dynamicpb"
 
 	"hmans.de/chatto/internal/evtstream"
 	evtv1 "hmans.de/chatto/internal/pb/chatto/core/evt/v1"
+	pubsubv1 "hmans.de/chatto/internal/pb/chatto/core/pubsub/v1"
+	realtimev1 "hmans.de/chatto/internal/pb/chatto/realtime/v1"
 	"hmans.de/chatto/pkg/events"
 )
 
@@ -22,12 +24,80 @@ func TestEventPublishingHelpers_RejectInvalidEvents(t *testing.T) {
 	core := &ChattoCore{}
 	ctx := testContext(t)
 
-	t.Run("publishLiveEvent rejects invalid payload", func(t *testing.T) {
-		err := core.publishLiveEvent(ctx, "live.sync.test", &livev1.LiveEvent{})
+	t.Run("publishUserPubSubEvent rejects invalid payload", func(t *testing.T) {
+		err := core.publishUserPubSubEvent(ctx, "user-id", &pubsubv1.PubSubEvent{})
 		if !errors.Is(err, ErrInvalidEvent) {
 			t.Fatalf("expected ErrInvalidEvent, got: %v", err)
 		}
 	})
+}
+
+func TestPubSubPublicationScopeRejectsMismatches(t *testing.T) {
+	typing := newPubSubEvent("actor-id", &pubsubv1.PubSubEvent{Event: &pubsubv1.PubSubEvent_UserTyping{
+		UserTyping: &realtimev1.UserTypingEvent{RoomId: "room-id"},
+	}})
+	if _, err := userPubSubEventPublication("user-id", typing).subject(); err == nil {
+		t.Fatal("user-scoped typing publication succeeded")
+	}
+	if _, err := roomPubSubEventPublication(KindChannel, "other-room", typing).subject(); err == nil {
+		t.Fatal("room-scoped publication accepted a mismatched payload room")
+	}
+	if got, err := roomPubSubEventPublication(KindChannel, "room-id", typing).subject(); err != nil {
+		t.Fatalf("valid room-scoped publication: %v", err)
+	} else if got != "live.sync.room.channel.room-id.user_typing" {
+		t.Fatalf("subject = %q, want canonical typing subject", got)
+	}
+}
+
+func TestPubSubEventWireDoesNotUseTheEVTEnvelope(t *testing.T) {
+	event := newPubSubEvent("actor-id", &pubsubv1.PubSubEvent{Event: &pubsubv1.PubSubEvent_UserTyping{
+		UserTyping: &realtimev1.UserTypingEvent{RoomId: "room-id"},
+	}})
+	wire, err := proto.Marshal(event)
+	if err != nil {
+		t.Fatalf("marshal PubSubEvent: %v", err)
+	}
+	var decoded pubsubv1.PubSubEvent
+	if err := proto.Unmarshal(wire, &decoded); err != nil {
+		t.Fatalf("unmarshal PubSubEvent: %v", err)
+	}
+	if decoded.GetId() != event.GetId() || decoded.GetUserTyping().GetRoomId() != "room-id" {
+		t.Fatalf("decoded PubSubEvent = %+v, want metadata and typing payload", &decoded)
+	}
+	var stored evtv1.Event
+	if err := proto.Unmarshal(wire, &stored); err != nil {
+		t.Fatalf("unmarshal PubSubEvent bytes as Event: %v", err)
+	}
+	if stored.GetEvent() != nil {
+		t.Fatalf("PubSubEvent bytes selected durable EVT variant %T", stored.GetEvent())
+	}
+}
+
+func TestEveryPubSubEventVariantPassesValidation(t *testing.T) {
+	descriptor := (&pubsubv1.PubSubEvent{}).ProtoReflect().Descriptor()
+	oneof := descriptor.Oneofs().ByName("event")
+	if oneof == nil {
+		t.Fatal("PubSubEvent.event descriptor is missing")
+	}
+	for index := 0; index < oneof.Fields().Len(); index++ {
+		field := oneof.Fields().Get(index)
+		if got, want := int(field.Number()), index+10; got != want {
+			t.Errorf("PubSubEvent field %s has tag %d, want compact tag %d", field.FullName(), got, want)
+		}
+		dynamicEvent := dynamicpb.NewMessage(descriptor)
+		dynamicEvent.Set(field, dynamicEvent.NewField(field))
+		wire, err := proto.Marshal(dynamicEvent)
+		if err != nil {
+			t.Fatalf("marshal %s: %v", field.FullName(), err)
+		}
+		var event pubsubv1.PubSubEvent
+		if err := proto.Unmarshal(wire, &event); err != nil {
+			t.Fatalf("unmarshal %s: %v", field.FullName(), err)
+		}
+		if err := validatePubSubEvent(&event); err != nil {
+			t.Errorf("validate %s: %v", field.FullName(), err)
+		}
+	}
 }
 
 func TestRoomMutationsDoNotWriteServerEvents(t *testing.T) {
@@ -50,7 +120,12 @@ func TestRoomMutationsDoNotWriteServerEvents(t *testing.T) {
 	if _, err := core.JoinRoom(ctx, user.Id, KindChannel, user.Id, room.Id); err != nil {
 		t.Fatalf("JoinRoom: %v", err)
 	}
-	if _, err := core.UpdateRoom(ctx, user.Id, KindChannel, room.Id, "serverevents_room_2", "updated"); err != nil {
+	if err := core.GrantUserRoomPermission(ctx, SystemActorID, room.Id, user.Id, PermRoomManage); err != nil {
+		t.Fatalf("GrantUserRoomPermission room.manage: %v", err)
+	}
+	if _, err := core.RoomCommands().UpdateRoom(ctx, RoomUpdateInput{
+		ActorID: user.Id, RoomID: room.Id, Name: proto.String("serverevents_room_2"), Description: proto.String("updated"),
+	}); err != nil {
 		t.Fatalf("UpdateRoom: %v", err)
 	}
 	if _, err := core.ArchiveRoom(ctx, user.Id, KindChannel, room.Id); err != nil {
@@ -69,34 +144,6 @@ func TestRoomMutationsDoNotWriteServerEvents(t *testing.T) {
 	if _, err := core.js.Stream(ctx, "SERVER_EVENTS"); !errors.Is(err, jetstream.ErrStreamNotFound) {
 		t.Fatalf("legacy stream SERVER_EVENTS lookup error = %v, want ErrStreamNotFound", err)
 	}
-}
-
-// setupRoomWithMessage creates a user, a room, joins the user, and posts one
-// message. Returns the resulting event so the test can use the durable envelope id.
-func setupRoomWithMessage(t *testing.T, core *ChattoCore, ctx context.Context, body string) (room, user struct{ Id string }, event *evtv1.Event) {
-	t.Helper()
-
-	createdUser, err := core.CreateUser(ctx, "system", "msguser", "msguser", "password123")
-	if err != nil {
-		t.Fatalf("CreateUser: %v", err)
-	}
-	createdRoom, err := core.CreateRoom(ctx, createdUser.Id, KindChannel, "", "general", "")
-	if err != nil {
-		t.Fatalf("CreateRoom: %v", err)
-	}
-	if _, err := core.JoinRoom(ctx, createdUser.Id, KindChannel, createdUser.Id, createdRoom.Id); err != nil {
-		t.Fatalf("JoinRoom: %v", err)
-	}
-
-	posted, err := core.PostMessage(ctx, KindChannel, createdRoom.Id, createdUser.Id, body, nil, "", "", nil, false)
-	if err != nil {
-		t.Fatalf("PostMessage: %v", err)
-	}
-
-	room.Id = createdRoom.Id
-	user.Id = createdUser.Id
-	event = posted
-	return
 }
 
 // TestStreamMyEvents_DeliversMessageRetracted is the integration test for
@@ -194,9 +241,10 @@ func TestStreamMyEvents_DeliversRBACChangeWithoutClosingLegacyStream(t *testing.
 	if _, err := core.JoinRoom(ctx, author.Id, KindChannel, author.Id, room.Id); err != nil {
 		t.Fatalf("JoinRoom author: %v", err)
 	}
-	if _, err := core.SetRoomUniversal(ctx, author.Id, KindChannel, room.Id, true); err != nil {
-		t.Fatalf("SetRoomUniversal: %v", err)
+	if err := core.GrantUserRoomPermission(ctx, SystemActorID, room.Id, author.Id, PermRoomManage); err != nil {
+		t.Fatalf("GrantUserRoomPermission room.manage: %v", err)
 	}
+	setRoomUniversalForTest(t, ctx, core, author.Id, room.Id, true)
 
 	subCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -403,15 +451,14 @@ func TestMyEventsFilter_DeliversUniversalDisableToPriorEffectiveMember(t *testin
 	if err != nil {
 		t.Fatalf("CreateRoom: %v", err)
 	}
-	if _, err := core.SetRoomUniversal(ctx, actor.Id, KindChannel, room.Id, true); err != nil {
-		t.Fatalf("SetRoomUniversal true: %v", err)
+	if err := core.GrantUserRoomPermission(ctx, SystemActorID, room.Id, actor.Id, PermRoomManage); err != nil {
+		t.Fatalf("GrantUserRoomPermission room.manage: %v", err)
 	}
+	setRoomUniversalForTest(t, ctx, core, actor.Id, room.Id, true)
 	if exists, err := core.RoomMembershipExists(ctx, KindChannel, viewer.Id, room.Id); err != nil || !exists {
 		t.Fatalf("RoomMembershipExists before disable = %v, %v; want true, nil", exists, err)
 	}
-	if _, err := core.SetRoomUniversal(ctx, actor.Id, KindChannel, room.Id, false); err != nil {
-		t.Fatalf("SetRoomUniversal false: %v", err)
-	}
+	setRoomUniversalForTest(t, ctx, core, actor.Id, room.Id, false)
 	if exists, err := core.RoomMembershipExists(ctx, KindChannel, viewer.Id, room.Id); err != nil || exists {
 		t.Fatalf("RoomMembershipExists after disable = %v, %v; want false, nil", exists, err)
 	}
@@ -429,7 +476,7 @@ func TestMyEventsFilter_DeliversUniversalDisableToPriorEffectiveMember(t *testin
 		},
 	}
 
-	delivered, ok := service.filterReadyEVTRoomSubjectEvent(viewer.Id, memberRooms, room.Id, event, 123)
+	delivered, ok := service.filterReadyEVTRoomSubjectEvent(context.Background(), viewer.Id, memberRooms, room.Id, event, 123)
 	if !ok || delivered == nil {
 		t.Fatalf("filterReadyEVTRoomSubjectEvent delivered %T/%v, want RoomUniversalChangedEvent", delivered, ok)
 	}
@@ -450,7 +497,7 @@ func TestMyEventsFilter_DeliversUniversalDisableToPriorEffectiveMember(t *testin
 			RoomUpdated: &evtv1.RoomUpdatedEvent{RoomId: room.Id},
 		},
 	}
-	delivered, ok = service.filterReadyEVTRoomSubjectEvent(viewer.Id, memberRooms, room.Id, nextEvent, 124)
+	delivered, ok = service.filterReadyEVTRoomSubjectEvent(context.Background(), viewer.Id, memberRooms, room.Id, nextEvent, 124)
 	if ok || delivered != nil {
 		t.Fatalf("next room event delivered %T/%v after universal disable, want dropped", delivered, ok)
 	}
@@ -474,7 +521,7 @@ func TestMyEventsFilter_DropsMessageAndAssetFactsWithoutMessageRead(t *testing.T
 
 	service := NewMyEventsModel(chatto)
 	memberRooms := map[string]struct{}{room.Id: {}}
-	if delivered, ok := service.filterReadyEVTRoomSubjectEvent(viewer.Id, memberRooms, room.Id, message, 123); ok || delivered != nil {
+	if delivered, ok := service.filterReadyEVTRoomSubjectEvent(context.Background(), viewer.Id, memberRooms, room.Id, message, 123); ok || delivered != nil {
 		t.Fatalf("message event delivered %T/%v without a message read mode, want dropped", delivered, ok)
 	}
 
@@ -484,7 +531,7 @@ func TestMyEventsFilter_DropsMessageAndAssetFactsWithoutMessageRead(t *testing.T
 			AssetId: "asset-1", MessageEventId: messageID,
 		}},
 	}
-	if delivered, ok := service.filterReadyEVTAssetSubjectEvent(viewer.Id, memberRooms, room.Id, assetEvent, 124); ok || delivered != nil {
+	if delivered, ok := service.filterReadyEVTAssetSubjectEvent(context.Background(), viewer.Id, memberRooms, room.Id, assetEvent, 124); ok || delivered != nil {
 		t.Fatalf("asset event delivered %T/%v without a message read mode, want dropped", delivered, ok)
 	}
 }
@@ -514,7 +561,7 @@ func TestMyEventsFilter_DeliversDMFactsDespiteMessageReadDenial(t *testing.T) {
 
 	service := NewMyEventsModel(chatto)
 	memberRooms := map[string]struct{}{dm.GetId(): {}}
-	if delivered, ok := service.filterReadyEVTRoomSubjectEvent(viewer.GetId(), memberRooms, dm.GetId(), message, 123); !ok || delivered == nil {
+	if delivered, ok := service.filterReadyEVTRoomSubjectEvent(context.Background(), viewer.GetId(), memberRooms, dm.GetId(), message, 123); !ok || delivered == nil {
 		t.Fatalf("DM message event delivered %T/%v, want delivery", delivered, ok)
 	}
 	assetEvent := &evtv1.Event{
@@ -523,7 +570,7 @@ func TestMyEventsFilter_DeliversDMFactsDespiteMessageReadDenial(t *testing.T) {
 			AssetId: "dm-asset-1", MessageEventId: message.GetId(),
 		}},
 	}
-	if delivered, ok := service.filterReadyEVTAssetSubjectEvent(viewer.GetId(), memberRooms, dm.GetId(), assetEvent, 124); !ok || delivered == nil {
+	if delivered, ok := service.filterReadyEVTAssetSubjectEvent(context.Background(), viewer.GetId(), memberRooms, dm.GetId(), assetEvent, 124); !ok || delivered == nil {
 		t.Fatalf("DM asset event delivered %T/%v, want delivery", delivered, ok)
 	}
 }
@@ -661,7 +708,7 @@ func TestStreamMyEvents_DeliversDMEventsWhenMessagePostDenied(t *testing.T) {
 			if !ok {
 				t.Fatal("event stream closed unexpectedly")
 			}
-			if liveEventRoomID(ev) == room.Id && EventMessagePosted(ev) != nil {
+			if pubsubEventRoomID(ev) == room.Id && EventMessagePosted(ev) != nil {
 				return
 			}
 		case <-timeout:
@@ -735,7 +782,7 @@ func TestStreamMyEvents_DeliversRawEVTRepublish(t *testing.T) {
 	}
 }
 
-func liveEventRoomID(event EventEnvelope) string {
+func pubsubEventRoomID(event EventEnvelope) string {
 	evt := event.EVTEvent()
 	if evt == nil {
 		return ""

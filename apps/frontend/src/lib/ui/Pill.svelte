@@ -16,18 +16,19 @@ clickable toggleable variants use `<ToggleChip>`.
 <script lang="ts">
   import type { Snippet } from 'svelte';
 
-  type Tone = 'success' | 'danger' | 'action' | 'neutral' | 'muted' | 'subtle' | 'server';
+  type Tone = 'success' | 'danger' | 'action' | 'neutral' | 'muted' | 'server' | 'default';
 
   let {
     children,
     tone = 'muted',
     dimmed = false,
     compact = false,
+    paddingClass,
     title,
     class: className
   }: {
     children: Snippet;
-    /** Color tone of the pill. */
+    /** Color tone. Default uses full-contrast text on a neutral surface. */
     tone?: Tone;
     /**
      * Render dimmed with a strikethrough — useful for "this value is
@@ -36,6 +37,8 @@ clickable toggleable variants use `<ToggleChip>`.
     dimmed?: boolean;
     /** Reduce horizontal padding for pills embedded in constrained chrome. */
     compact?: boolean;
+    /** Replace the default padding utilities for precisely sized inline labels. */
+    paddingClass?: string;
     /** Native title attribute for hover hints. */
     title?: string;
     /**
@@ -47,12 +50,12 @@ clickable toggleable variants use `<ToggleChip>`.
   } = $props();
 
   const toneClasses: Record<Tone, string> = {
+    default: 'bg-surface-emphasized text-text',
     success: 'bg-success/10 text-success',
     danger: 'bg-danger/10 text-danger',
     action: 'bg-action/10 text-action',
     neutral: 'bg-neutral-action/10 text-neutral-action',
     muted: 'bg-surface-emphasized text-muted',
-    subtle: 'bg-text/5 text-muted ring-1 ring-text/10 shadow-xs shadow-text/5',
     server: 'bg-server/10 text-server'
   };
 </script>
@@ -60,8 +63,8 @@ clickable toggleable variants use `<ToggleChip>`.
 <span
   {title}
   class={[
-    'inline-block rounded py-0.5 text-xs font-medium',
-    compact ? 'px-1' : 'px-2',
+    'inline-block rounded text-xs font-medium',
+    paddingClass ?? ['py-0.5', compact ? 'px-1' : 'px-2'],
     toneClasses[tone],
     dimmed ? 'line-through' : '',
     className

@@ -26,9 +26,11 @@ export class AdminPage {
     return this.page.locator('div.flex-1.flex-col').first();
   }
 
-  /** Settings entry point in the server sidebar. */
+  /** Settings gear in the app frame. */
   get settingsLink(): Locator {
-    return this.page.getByRole('link', { name: 'Settings', exact: true });
+    return this.page
+      .getByRole('banner')
+      .getByRole('link', { name: 'App Preferences', exact: true });
   }
 
   /** General settings link inside the dedicated admin sidebar. */
@@ -312,7 +314,7 @@ export class AdminPage {
    * instance-admin → manage/server merge.)
    */
   async expectUsersPageVisible(): Promise<void> {
-    await expect(this.page.getByRole('heading', { name: 'Members' })).toBeVisible();
+    await expect(this.page.getByRole('heading', { name: 'Members', level: 1 })).toBeVisible();
   }
 
   /**
@@ -339,6 +341,18 @@ export class AdminPage {
    */
   async expectUserManagementVisible(): Promise<void> {
     await expect(this.page.getByRole('heading', { name: 'Member Details' })).toBeVisible();
+  }
+
+  /**
+   * Open a section of the member details page through its tab and wait until
+   * the tab marks it as the current page.
+   */
+  async openMemberSection(section: 'Profile' | 'Account' | 'Roles' | 'Permissions'): Promise<void> {
+    const tab = this.page
+      .getByRole('navigation', { name: 'Member sections' })
+      .getByRole('link', { name: section, exact: true });
+    await tab.click();
+    await expect(tab).toHaveAttribute('aria-current', 'page');
   }
 
   /**
@@ -551,7 +565,7 @@ export class AdminPage {
 
   /** MOTD input — on /manage/server/general. */
   get motdInput(): Locator {
-    return this.page.getByLabel('Message of the Day');
+    return this.page.getByRole('textbox', { name: 'Message of the Day', exact: true });
   }
 
   /** Welcome Message textarea — on /manage/server/general. */

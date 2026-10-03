@@ -5,13 +5,71 @@ repository-wide [Loom Architecture](../../docs/adr/ADR-073-define-the-loom-archi
 It is an envelope-neutral event-sourcing framework for NATS JetStream,
 providing optimistic-concurrency-controlled publication, ordered projection
 replay, startup and read-your-writes barriers, optional snapshot or checkpoint
-restore, bounded subject reads, and bounded durable pull-worker execution.
+restore, exact stream-message reads with optional process-local caching,
+bounded subject reads, and bounded durable pull-worker execution.
 
 The intended reader is an application integrator. This module owns ordering,
 OCC, replay, and delivery mechanics; the application owns event codecs,
 subjects, authorization, stream identity, consumer configuration, and domain
 completion rules. The package must not import an application's envelope or
 domain types.
+
+## Provision JetStream resources
+
+`CreateJetStreamResourceWithRetry` runs a repeatable resource callback with a
+bounded `JetStreamResourceRetryPolicy`. Applications choose `MaxAttempts`
+(including the first call) and `RetryDelay`. After failed attempt N, the helper
+waits for N times `RetryDelay`. The helper rejects invalid policy values.
+
+The helper retries request deadline errors only while the parent context is
+active. It also retries the specific JetStream store-creation and stream-name
+conflict errors used during concurrent provisioning. Parent cancellation or
+expiry stops the operation and takes precedence over the callback result.
+Other errors and retry exhaustion remain fatal to the caller.
+
+Callbacks must honor the context and be safe to repeat when the server has
+already committed an operation but its response was lost. Use this helper for
+streams, KV buckets, and Object Stores, not event writes. Applications retain
+resource names, configuration, identity metadata, and timeout policy. With
+nats.go, the default request timeout applies only when the supplied context
+has no deadline; an expired parent deadline cannot be retried.
+
+## Read exact stream messages
+
+`StreamMessageReader` loads opaque records by exact stream sequence. It limits
+concurrent broker reads across requests, removes duplicate sequences in one
+call, and preserves caller order. Set `CacheIdleTTL`, `CacheMaxBytes`, or both
+to keep successful reads in a process-local cache. Idle expiry is sliding.
+The byte limit uses least-recently-used eviction and estimates each entry from
+its payload, metadata strings, and fixed storage overhead. The cache copies
+record bytes and never stores a decoded application object. The framework uses
+`ttlcache` for synchronized storage, touch-on-hit expiry, and eviction.
+
+Run the reader once with the application lifecycle so expired entries are
+reclaimed when they are not accessed again. Use `Forget` after
+application-owned physical deletion. Use `Clear` when the complete local cache
+must be discarded, including when a stream can be recreated with the same
+name. Pass a `Logger` to get debug summaries for direct cache misses, batch
+hits and misses, expiry cleanup, and cache clearing. These summaries include
+counts, LRU evictions, and read durations. They do not include subjects or
+payloads.
+
+```go
+reader, err := events.NewStreamMessageReader(stream, events.StreamMessageReaderConfig{
+	CacheIdleTTL:  15 * time.Minute,
+	CacheMaxBytes: 256 << 20,
+	Logger:        logger,
+})
+if err != nil {
+	return err
+}
+go reader.Run(ctx)
+
+records, err := reader.Messages(ctx, sequences)
+```
+
+The cache is a disposable read accelerator. EVT or another application-owned
+stream remains the source of truth.
 
 ## Publish opaque events
 
@@ -52,6 +110,9 @@ one mutable state object.
 ```go
 projection := &MyProjection{}
 projector := events.NewDecodedProjector(js, stream, projection, decodeEvent, logger)
+if err := projector.ConfigureConsumerIdentity("my_projection", "Application read model"); err != nil {
+	return err
+}
 
 go projector.Run(ctx) // one Run call per Projector instance
 if err := projector.WaitForStartup(ctx); err != nil {
@@ -60,6 +121,14 @@ if err := projector.WaitForStartup(ctx); err != nil {
 ```
 
 `Run` is single-use. After cancellation or failure, construct a new projector.
+The optional consumer identity gives each consumer a readable name and
+description metadata. Use static labels without personal data or secrets.
+The framework adds a random suffix to separate replicas and the SDK adds a
+generation number for recovery. Labels do not change snapshot contracts.
+On exit, `Run` stops consumption and attempts to delete its current ephemeral
+consumer with an independent two-second request timeout. Deletion failure does
+not replace the run error. Five-minute inactivity expiry remains the fallback
+after a crash or a failed cleanup request. Durable workers keep their consumers.
 Use `WaitFor`, `WaitForCurrent`, or a subject-aware `StreamPosition` when a
 caller needs read-your-writes visibility.
 

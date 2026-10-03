@@ -36,7 +36,7 @@ and exposes a typed API for text manipulation (mentions, emoji, drafts).
     getSerializedMarkdown,
     hasDefaultEmptyDocument,
     isHttpMarkdownAutolink,
-    prepareMarkdownForEditor
+    parseMarkdownForEditor
   } from './markdown';
   import { normalizeQuoteInsertionContent } from './quotes';
 
@@ -327,15 +327,17 @@ and exposes a typed API for text manipulation (mentions, emoji, drafts).
 
       setContent: (markdown: string) => {
         if (e.isDestroyed) return;
-        e.commands.setContent(prepareMarkdownForEditor(markdown), {
-          contentType: 'markdown',
-          emitUpdate: false
-        });
+        const parser = e.markdown;
+        if (!parser) return;
+        e.commands.setContent(
+          parseMarkdownForEditor(markdown, (source) => parser.parse(source)),
+          { emitUpdate: false }
+        );
         ensureEditorCodeLanguages(e);
         tick().then(syncControls);
       },
 
-      focus: (position: 'start' | 'end' = 'end') => {
+      focus: (position) => {
         if (e.isDestroyed) return;
         e.commands.focus(position);
         tick().then(syncControls);
@@ -460,6 +462,10 @@ and exposes a typed API for text manipulation (mentions, emoji, drafts).
           autofocus: autofocus ? 'end' : false,
           editorProps: {
             attributes: {
+              // ProseMirror renders a contenteditable div, which needs a role
+              // before it can carry an accessible name.
+              role: 'textbox',
+              'aria-multiline': 'true',
               'aria-label': placeholder,
               ...(testid ? { 'data-testid': testid } : {})
             },
@@ -473,7 +479,7 @@ and exposes a typed API for text manipulation (mentions, emoji, drafts).
               const destinationMarks = view.state.storedMarks ?? context.marks();
               const document = markdown
                 ? view.state.schema.nodeFromJSON(
-                    markdown.parse(prepareMarkdownForEditor(normalizedText))
+                    parseMarkdownForEditor(normalizedText, (source) => markdown.parse(source))
                   )
                 : null;
               const content =
@@ -489,14 +495,17 @@ and exposes a typed API for text manipulation (mentions, emoji, drafts).
               const text = event.clipboardData?.getData('text/plain');
               const normalizedText = text?.replace(/\r\n?/g, '\n');
               const html = event.clipboardData?.getData('text/html');
+              const markdown = editor?.markdown;
               if (
                 normalizedText &&
                 isHttpMarkdownAutolink(normalizedText) &&
-                !editor?.isActive('codeBlock')
+                editor &&
+                !editor.isActive('codeBlock') &&
+                markdown
               ) {
-                editor?.commands.insertContent(prepareMarkdownForEditor(normalizedText), {
-                  contentType: 'markdown'
-                });
+                editor.commands.insertContent(
+                  parseMarkdownForEditor(normalizedText, (source) => markdown.parse(source))
+                );
                 return true;
               }
               if (!text || !html || editor?.isActive('codeBlock')) return false;
@@ -541,7 +550,8 @@ and exposes a typed API for text manipulation (mentions, emoji, drafts).
   // React to editable prop changes
   $effect(() => {
     if (editor && editor.isEditable !== editable) {
-      editor.setEditable(editable);
+      // Editability changes do not change the document or the parent draft.
+      editor.setEditable(editable, false);
     }
   });
 
@@ -584,7 +594,7 @@ and exposes a typed API for text manipulation (mentions, emoji, drafts).
             }
           }}
           onblur={applyLinkHref}
-          class="h-10 w-48 min-w-0 rounded border border-border bg-surface-emphasized px-2 text-xs text-text transition-[background-color,border-color] outline-none hover:bg-surface-strong focus:border-action disabled:cursor-not-allowed disabled:opacity-50"
+          class="input w-48 min-w-0 px-2 text-xs"
         />
         <button
           type="button"
@@ -592,9 +602,9 @@ and exposes a typed API for text manipulation (mentions, emoji, drafts).
           title={m('composer.open_link')}
           disabled={!activeLinkHref}
           onclick={openActiveLink}
-          class="flex h-10 w-10 cursor-pointer items-center justify-center rounded text-muted transition-[background-color,color,scale] hover:bg-surface-strong hover:text-text active:scale-[0.96]"
+          class="icon-action"
         >
-          <span class="iconify icon-[uil--external-link-alt] text-base"></span>
+          <span aria-hidden="true" class="iconify icon-[uil--external-link-alt] text-base"></span>
         </button>
         <button
           type="button"
@@ -602,9 +612,9 @@ and exposes a typed API for text manipulation (mentions, emoji, drafts).
           title={m('composer.remove_link')}
           disabled={!editable}
           onclick={removeLink}
-          class="flex h-10 w-10 cursor-pointer items-center justify-center rounded text-muted transition-[background-color,color,scale] hover:bg-surface-strong hover:text-text active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-50"
+          class="icon-action"
         >
-          <span class="iconify icon-[uil--link-broken] text-base"></span>
+          <span aria-hidden="true" class="iconify icon-[uil--link-broken] text-base"></span>
         </button>
       </div>
     </div>
@@ -614,7 +624,7 @@ and exposes a typed API for text manipulation (mentions, emoji, drafts).
     bind:this={editorElement}
     onscroll={() => editor && updateActiveControls(editor)}
     class={[
-      'composer-code-palette tiptap-editor max-h-50 min-h-8 min-w-0 flex-1 select-text overflow-x-hidden overflow-y-auto bg-transparent py-1 text-text',
+      'composer-code-palette tiptap-editor max-h-50 min-h-8 min-w-0 flex-1 overflow-x-hidden overflow-y-auto bg-transparent py-1 text-text select-text',
       !editable && 'cursor-not-allowed'
     ]}
   ></div>
@@ -625,7 +635,7 @@ and exposes a typed API for text manipulation (mentions, emoji, drafts).
         class="group relative inline-flex h-6 items-center gap-1 rounded-tl-md rounded-br-md bg-surface-emphasized pr-1.5 pl-2 font-mono text-xs tracking-wide text-muted uppercase focus-within:bg-surface-strong focus-within:text-text focus-within:ring-1 focus-within:ring-action hover:bg-surface-strong hover:text-text"
       >
         <span>{activeCodeBlockLanguageLabel}</span>
-        <span class="iconify icon-[uil--angle-down] size-3"></span>
+        <span aria-hidden="true" class="iconify icon-[uil--angle-down] size-3"></span>
         <select
           name="composer-code-language"
           aria-label={m('composer.code_language')}
@@ -705,7 +715,7 @@ and exposes a typed API for text manipulation (mentions, emoji, drafts).
     color: var(--color-link);
     text-decoration: underline;
     text-underline-offset: 2px;
-    overflow-wrap: anywhere;
+    overflow-wrap: break-word;
   }
 
   :global(.tiptap-editor .ProseMirror ul),

@@ -321,19 +321,30 @@ func TestOIDCProviderWithoutEmailAutoProvisionLinkAndLogin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreatePendingExternalIdentityLinkStart: %v", err)
 	}
-	linkToken := completeNoEmailOIDCHandshakeWithQuery(t, client, ts.URL, "oidc-no-email", url.Values{
+	linkLocation := startNoEmailOIDC(t, client, ts.URL, "oidc-no-email", url.Values{
 		"intent":     {"link"},
 		"link_start": {linkStart},
 	})
-	linkFlow, err := chattoCore.GetPendingExternalIdentityLinkFlow(t.Context(), linkToken, linkUser.Id)
-	if err != nil {
-		t.Fatalf("GetPendingExternalIdentityLinkFlow: %v", err)
+	linkState := authStateFromLocation(t, linkLocation)
+	loginCookies := make(map[string]string)
+	for _, cookie := range client.Jar.Cookies(serverURL) {
+		if isBrowserSessionCookieName(cookie.Name) {
+			loginCookies[cookie.Name] = cookie.Value
+		}
 	}
-	if linkFlow.VerifiedEmail != "" {
-		t.Fatalf("link flow VerifiedEmail = %q, want empty", linkFlow.VerifiedEmail)
+	if len(loginCookies) == 0 {
+		t.Fatal("expected an existing browser login before linking")
 	}
-	if _, err := chattoCore.ConfirmPendingExternalIdentityLink(t.Context(), linkFlow); err != nil {
-		t.Fatalf("ConfirmPendingExternalIdentityLink: %v", err)
+	if location := finishNoEmailOIDCCallback(t, client, ts.URL, "oidc-no-email", linkState); location != "/chat/-/settings/account" {
+		t.Fatalf("link callback Location = %q, want account settings without confirmation", location)
+	}
+	for _, cookie := range client.Jar.Cookies(serverURL) {
+		if isBrowserSessionCookieName(cookie.Name) && cookie.Value != loginCookies[cookie.Name] {
+			t.Fatal("link callback replaced the existing browser login")
+		}
+	}
+	if location := finishNoEmailOIDCCallback(t, client, ts.URL, "oidc-no-email", linkState); location != "/login?error=provider_failed" {
+		t.Fatalf("replayed link callback Location = %q, want provider failure", location)
 	}
 	linked, err := chattoCore.GetUserByExternalIdentity(t.Context(), issuer.URL(), "subject-link")
 	if err != nil {
@@ -382,8 +393,28 @@ func TestOIDCProviderWithoutEmailAutoProvisionLinkAndLogin(t *testing.T) {
 		t.Fatalf("conflict Location = %q, want settings conflict error redirect (linked user %s)", conflictLocation, conflictUser.Id)
 	}
 
-	if issuer.UserInfoRequests() == 0 {
-		t.Fatal("expected userinfo fallback when ID token has no email claim")
+	if issuer.UserInfoRequests() != 0 {
+		t.Fatal("unexpected userinfo fallback when names are present and email was not requested")
+	}
+
+	// A valid provider response cannot restore an account deleted during the flow.
+	issuer.SetSubject("subject-deleted-target")
+	deletedStart, err := chattoCore.CreatePendingExternalIdentityLinkStart(t.Context(), "oidc-no-email", "/chat/-/settings/account", linkUser.Id)
+	if err != nil {
+		t.Fatalf("CreatePendingExternalIdentityLinkStart deleted target: %v", err)
+	}
+	deletedLocation := startNoEmailOIDC(t, client, ts.URL, "oidc-no-email", url.Values{
+		"intent":     {"link"},
+		"link_start": {deletedStart},
+	})
+	if err := chattoCore.DeleteUser(t.Context(), linkUser.Id, linkUser.Id); err != nil {
+		t.Fatalf("DeleteUser link target: %v", err)
+	}
+	if location := finishNoEmailOIDCCallback(t, client, ts.URL, "oidc-no-email", authStateFromLocation(t, deletedLocation)); location != "/chat/-/settings/account?error=provider_failed" {
+		t.Fatalf("deleted target callback Location = %q, want provider failure", location)
+	}
+	if linked, err := chattoCore.GetUserByExternalIdentity(t.Context(), issuer.URL(), "subject-deleted-target"); err != nil || linked != nil {
+		t.Fatalf("deleted target identity = %v, %v; want no link", linked, err)
 	}
 }
 
@@ -460,6 +491,7 @@ func TestOIDCProviderWithoutEmailIgnoresUserInfoFailure(t *testing.T) {
 	requestEmail := false
 	issuer := newNoEmailOIDCIssuer(t, "client-id")
 	issuer.failUserInfo = true
+	issuer.tokenClaims = map[string]any{"preferred_username": "no-email-user"}
 	defer issuer.Close()
 
 	ts, client, chattoCore := setupTestHTTPServerWithHook(t, func(s *HTTPServer) {
@@ -677,6 +709,13 @@ type noEmailOIDCIssuer struct {
 	subject          string
 	failUserInfo     bool
 	userInfoRequests int
+	tokenClaims      map[string]any
+	userInfoClaims   map[string]any
+	methods          json.RawMessage
+	tokenRequests    int
+	tokenCheck       func(*http.Request) bool
+	extraKeys        []any
+	omitSigningKey   bool
 }
 
 func newNoEmailOIDCIssuer(t *testing.T, clientID string) *noEmailOIDCIssuer {
@@ -714,16 +753,27 @@ func (i *noEmailOIDCIssuer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
 	case "/.well-known/openid-configuration":
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		metadata := map[string]any{
 			"issuer":                 i.server.URL,
 			"authorization_endpoint": i.server.URL + "/authorize",
 			"token_endpoint":         i.server.URL + "/token",
 			"jwks_uri":               i.server.URL + "/keys",
 			"userinfo_endpoint":      i.server.URL + "/userinfo",
-		})
+		}
+		if i.methods != nil {
+			metadata["token_endpoint_auth_methods_supported"] = i.methods
+		}
+		_ = json.NewEncoder(w).Encode(metadata)
 	case "/authorize":
 		http.Redirect(w, r, r.URL.Query().Get("redirect_uri")+"?state="+url.QueryEscape(r.URL.Query().Get("state"))+"&code=test-code", http.StatusTemporaryRedirect)
 	case "/token":
+		i.tokenRequests++
+		if i.tokenCheck != nil && !i.tokenCheck(r) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":"invalid_client","error_description":"private provider response"}`))
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"access_token": "access-token",
@@ -733,12 +783,16 @@ func (i *noEmailOIDCIssuer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		})
 	case "/keys":
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{
-			Key:       &i.key.PublicKey,
-			KeyID:     "test-key",
-			Algorithm: string(jose.RS256),
-			Use:       "sig",
-		}}})
+		keys := append([]any(nil), i.extraKeys...)
+		if !i.omitSigningKey {
+			keys = append(keys, jose.JSONWebKey{
+				Key:       &i.key.PublicKey,
+				KeyID:     "test-key",
+				Algorithm: string(jose.RS256),
+				Use:       "sig",
+			})
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"keys": keys})
 	case "/userinfo":
 		i.userInfoRequests++
 		if i.failUserInfo {
@@ -746,6 +800,10 @@ func (i *noEmailOIDCIssuer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
+		if i.userInfoClaims != nil {
+			_ = json.NewEncoder(w).Encode(i.userInfoClaims)
+			return
+		}
 		_ = json.NewEncoder(w).Encode(map[string]string{
 			"sub":                i.subject,
 			"name":               "No Email User",
@@ -772,12 +830,9 @@ func (i *noEmailOIDCIssuer) idToken(_ context.Context) string {
 		Expiry:   josejwt.NewNumericDate(now.Add(time.Hour)),
 		IssuedAt: josejwt.NewNumericDate(now),
 	}
-	profileClaims := struct {
-		Name          string `json:"name"`
-		PreferredUser string `json:"preferred_username"`
-	}{
-		Name:          "No Email User",
-		PreferredUser: "no-email-user",
+	profileClaims := i.tokenClaims
+	if profileClaims == nil {
+		profileClaims = map[string]any{"name": "No Email User", "preferred_username": "no-email-user"}
 	}
 	raw, err := josejwt.Signed(signer).Claims(claims).Claims(profileClaims).Serialize()
 	if err != nil {

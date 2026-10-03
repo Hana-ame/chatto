@@ -3,6 +3,8 @@ import { Fragment, type Mark, type Node as ProseMirrorNode, type Schema } from '
 import type { SelectedQuoteBlock } from '$lib/state/room';
 
 const markdownLinkPasteRegex = /\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g;
+const tiptapEscapedTextCharacter = /[\\`*_[\]~]/;
+const alphanumeric = /[a-zA-Z0-9]/;
 
 /** Return whether text is one complete HTTP(S) Markdown autolink. */
 export function isHttpMarkdownAutolink(text: string): boolean {
@@ -41,7 +43,8 @@ function decodeSerializedTextEntities(text: string): string {
 
 function transformOutsideMarkdownLinkDestinations(
   text: string,
-  transformText: (text: string) => string
+  transformText: (text: string) => string,
+  transformAutolink?: (autolink: string) => string
 ): string {
   let result = '';
   let index = 0;
@@ -87,26 +90,36 @@ function transformOutsideMarkdownLinkDestinations(
     }
 
     if (destinationEnd >= text.length) {
-      result += transformOutsideMarkdownAutolinks(text.slice(textStart), transformText);
+      result += transformOutsideMarkdownAutolinks(
+        text.slice(textStart),
+        transformText,
+        transformAutolink
+      );
       return result;
     }
 
     result += transformOutsideMarkdownAutolinks(
       text.slice(textStart, destinationContentStart),
-      transformText
+      transformText,
+      transformAutolink
     );
     result += text.slice(destinationContentStart, destinationEnd + 1);
     index = destinationEnd + 1;
     textStart = index;
   }
 
-  result += transformOutsideMarkdownAutolinks(text.slice(textStart), transformText);
+  result += transformOutsideMarkdownAutolinks(
+    text.slice(textStart),
+    transformText,
+    transformAutolink
+  );
   return result;
 }
 
 function transformOutsideMarkdownAutolinks(
   text: string,
-  transformText: (text: string) => string
+  transformText: (text: string) => string,
+  transformAutolink?: (autolink: string) => string
 ): string {
   let result = '';
   let index = 0;
@@ -114,7 +127,7 @@ function transformOutsideMarkdownAutolinks(
 
   for (const match of text.matchAll(autolinkPattern)) {
     result += transformText(text.slice(index, match.index));
-    result += match[0];
+    result += transformAutolink?.(match[0]) ?? match[0];
     index = match.index + match[0].length;
   }
 
@@ -125,15 +138,17 @@ function transformOutsideMarkdownAutolinks(
 type MarkdownTransformOptions = {
   skipLinkDestinations?: boolean;
   preserveInlineCode?: boolean;
+  recognizeEscapedBackticks?: boolean;
+  transformAutolink?: (autolink: string) => string;
 };
 
 function transformMarkdownTextSegment(
   text: string,
   transformText: (text: string) => string,
-  { skipLinkDestinations = false }: MarkdownTransformOptions = {}
+  { skipLinkDestinations = false, transformAutolink }: MarkdownTransformOptions = {}
 ): string {
   return skipLinkDestinations
-    ? transformOutsideMarkdownLinkDestinations(text, transformText)
+    ? transformOutsideMarkdownLinkDestinations(text, transformText, transformAutolink)
     : transformText(text);
 }
 
@@ -146,7 +161,15 @@ function transformOutsideInlineCode(
   let index = 0;
 
   while (index < line.length) {
-    const codeStart = line.indexOf('`', index);
+    let codeStart = line.indexOf('`', index);
+    if (options.recognizeEscapedBackticks) {
+      while (codeStart !== -1) {
+        let slashes = 0;
+        for (let position = codeStart - 1; line[position] === '\\'; position--) slashes++;
+        if (slashes % 2 === 0) break;
+        codeStart = line.indexOf('`', codeStart + 1);
+      }
+    }
     if (codeStart === -1) {
       result += transformMarkdownTextSegment(line.slice(index), transformText, options);
       break;
@@ -296,28 +319,105 @@ function escapeGfmTablesForEditor(markdown: string): string {
   );
 }
 
-function escapeImagesForEditor(markdown: string): string {
-  // 【本地改动】编辑框没有 image 节点：把 `![alt](url)` 直接交给 tiptap-markdown 解析会被当成图片 token 丢弃，
-  // 导致「编辑含内联图的消息」时图丢失。目的：编辑/草稿回填/粘贴含 ![]() 的消息时，让它在编辑框里以纯文本
-  // 保留、保存后照常渲染。思路：在 `](` 之间插入零宽连字符 \u2060 破坏 image/link 的 `](` 边界，解析器于是
-  // 当作普通文本；序列化时由 normalizeSerializedImages 还原。复用 GFM 表格「隐形字符保护」的套路。边界：
-  // 只影响 composer 的进出往返，渲染路径（lib/markdown.ts）不受影响；普通链接 [alt](url) 与引用式 ![alt][1] 不触碰。
-  return transformMarkdownOutsideCode(markdown, (text) =>
-    // The composer intentionally has no image node. Keep `![alt](url)` as
-    // editable prose by inserting an invisible word joiner right after the
-    // opening paren of the destination, so TipTap's markdown parser no longer
-    // treats it as an image (or link) token. The character is removed again
-    // when serializing, so the source is visually unchanged.
-    text.replace(/(!\[[^\]\n]*\]\()/g, '$1\u2060')
-  );
+export function prepareMarkdownForEditor(markdown: string): string {
+  return escapeGfmTablesForEditor(escapeMarkdownHtml(markdown));
 }
 
-export function prepareMarkdownForEditor(markdown: string): string {
-  return escapeImagesForEditor(escapeGfmTablesForEditor(escapeMarkdownHtml(markdown)));
+/**
+ * Parse stored Markdown for the Visual editor. TipTap consumes backslash escapes,
+ * while Chatto renders them literally. Temporary markers keep those characters
+ * and generated numeric references out of TipTap's Markdown rules until parsed.
+ */
+export function parseMarkdownForEditor(
+  markdown: string,
+  parse: (source: string) => JSONContent
+): JSONContent {
+  let marker = '\uE000';
+  while (markdown.includes(marker)) marker += '\uE000';
+  const literals: string[] = [];
+  const protect = (literal: string): string => {
+    const token = `${marker}${literals.length}\uE001`;
+    literals.push(literal);
+    return token;
+  };
+  const protectedMarkdown = transformMarkdownOutsideCode(
+    markdown,
+    (text) => {
+      let result = '';
+      for (let index = 0; index < text.length; index++) {
+        const entity =
+          text[index] === '&' ? text.slice(index).match(/^&#(35|42|91|92|93|95|96|126);/) : null;
+        if (entity) {
+          result += protect(String.fromCharCode(Number(entity[1])));
+          index += entity[0].length - 1;
+        } else if (text[index] === '\\' && tiptapEscapedTextCharacter.test(text[index + 1] ?? '')) {
+          result += protect(text.slice(index, index + 2));
+          index++;
+        } else {
+          result += text[index];
+        }
+      }
+      return result;
+    },
+    { skipLinkDestinations: true }
+  );
+  const parsed = parse(prepareMarkdownForEditor(protectedMarkdown));
+  if (literals.length === 0) return parsed;
+
+  const restore = (node: JSONContent): JSONContent => ({
+    ...node,
+    ...(node.text
+      ? {
+          text: node.text.replace(
+            new RegExp(`${marker}(\\d+)\\uE001`, 'g'),
+            (_, index: string) => literals[Number(index)] ?? ''
+          )
+        }
+      : {}),
+    ...(node.content ? { content: node.content.map(restore) } : {})
+  });
+  return restore(parsed);
 }
 
 function decodeSerializedMarkdownText(markdown: string): string {
   return transformMarkdownOutsideCode(markdown, decodeSerializedTextEntities);
+}
+
+function normalizeSerializedTextEscapes(text: string): string {
+  let result = '';
+  for (let index = 0; index < text.length; index++) {
+    const char = text[index];
+    const next = text[index + 1];
+    if (char !== '\\' || !next || !tiptapEscapedTextCharacter.test(next)) {
+      result += char;
+      continue;
+    }
+
+    if (next === '\\') {
+      result += '\\';
+    } else if (
+      next === '_' &&
+      alphanumeric.test(text[index - 1] ?? '') === alphanumeric.test(text[index + 2] ?? '') &&
+      text[index - 1] !== next &&
+      text[index + 2] !== next
+    ) {
+      result += next;
+    } else {
+      // Chatto does not interpret backslash escapes. A character reference
+      // keeps literal punctuation visible without creating Markdown syntax.
+      result += `&#${next.charCodeAt(0)};`;
+    }
+    index++;
+  }
+  return result;
+}
+
+function normalizeSerializedMarkdownText(markdown: string): string {
+  return transformMarkdownOutsideCode(markdown, normalizeSerializedTextEscapes, {
+    skipLinkDestinations: true,
+    recognizeEscapedBackticks: true,
+    transformAutolink: (autolink) => autolink.replace(/\\([\\`*_[\]~])/g, '$1')
+  });
 }
 
 function hasTrailingEmptyParagraph(e: Editor): boolean {
@@ -360,15 +460,6 @@ function normalizeSerializedGfmTableHardBreaks(markdown: string): string {
   );
 }
 
-function normalizeSerializedImages(markdown: string): string {
-  // 【本地改动】撤销 escapeImagesForEditor 插入的 \u2060，使序列化后的 body 恢复原始 `![alt](url)` 源。
-  return transformMarkdownOutsideCode(markdown, (text) =>
-    // Undo the invisible marker inserted by escapeImagesForEditor so the
-    // serialized body keeps the original `![alt](url)` source.
-    text.replace(/(!\[[^\]\n]*\]\()\u2060/g, '$1')
-  );
-}
-
 function encodeSerializedHeadingClosingHashes(markdown: string): string {
   return transformMarkdownOutsideCode(
     markdown,
@@ -387,7 +478,7 @@ export function getSerializedMarkdown(e: Editor): string {
     normalizeSerializedGfmTableHardBreaks(
       encodeSerializedHeadingClosingHashes(
         trimSerializedTrailingEmptyParagraph(
-          normalizeSerializedImages(decodeSerializedMarkdownText(e.getMarkdown())),
+          normalizeSerializedMarkdownText(decodeSerializedMarkdownText(e.getMarkdown())),
           e
         )
       )

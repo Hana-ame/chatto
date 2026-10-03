@@ -162,6 +162,50 @@
   </div>
 </Story>
 
+<Story name="Scope columns loading" asChild>
+  <div class="max-w-3xl rounded-lg bg-background p-4">
+    <MatrixTable
+      {rows}
+      {columns}
+      getRowKey={(row) => row.id}
+      getColumnKey={(column) => column.id}
+      {columnClass}
+      emptyMessage="No rows"
+      leadingHeader={activityHeader}
+      rowHeader={labelRow}
+      columnHeader={labelColumn}
+      cell={interactiveCell}
+      hasMore
+      loadingMore
+      onLoadMore={() => undefined}
+    />
+  </div>
+</Story>
+
+<Story name="Narrow pane" asChild>
+  <div class="w-80 max-w-full bg-background">
+    <MatrixTable
+      rows={[
+        ...rows,
+        { id: 'long', label: 'A long permission label that wraps onto another line' }
+      ]}
+      columns={[...columns, ...columns.map((column) => ({ ...column, id: `${column.id}-extra` }))]}
+      getRowKey={(row) => row.id}
+      getColumnKey={(column) => column.id}
+      getGroupKey={() => 'permissions'}
+      {columnClass}
+      stickyHeader
+      emptyMessage="No rows"
+      leadingHeader={activityHeader}
+      rowHeader={labelRow}
+      columnHeader={labelColumn}
+      cell={interactiveCell}
+    >
+      {#snippet group()}Permissions{/snippet}
+    </MatrixTable>
+  </div>
+</Story>
+
 {#snippet activityHeader()}
   Activity
 {/snippet}

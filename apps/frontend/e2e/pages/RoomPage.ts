@@ -119,7 +119,20 @@ export class RoomPage {
   async openMembersPanel(): Promise<void> {
     if (await this.memberList.isVisible()) return;
 
-    await this.page.getByRole('button', { name: 'Show members' }).click();
+    const actions = this.page.getByRole('button', { name: /^Actions for #/ });
+    const membersToggle = this.page
+      .locator('[data-testid="room-sidebar-toggle"]:visible')
+      .getByRole('button', { name: 'Members', exact: true });
+    await expect(membersToggle.or(actions).first()).toBeVisible();
+    if ((await actions.isVisible()) && (await actions.getAttribute('aria-expanded')) === 'false') {
+      await actions.click();
+    }
+
+    // The persisted panel can open before its member list has finished loading.
+    await expect(membersToggle).toBeVisible();
+    if ((await membersToggle.getAttribute('aria-pressed')) !== 'true') {
+      await membersToggle.click();
+    }
     await expect(this.memberList).toBeVisible();
   }
 
@@ -127,14 +140,14 @@ export class RoomPage {
    * Get a member's list item by their display name or login.
    */
   getMember(name: string): Locator {
-    return this.memberList.locator('button.sidebar-item', { hasText: name });
+    return this.memberList.getByTestId('room-member-card').filter({ hasText: name });
   }
 
   /**
    * Get a member's display name element.
    */
   getMemberDisplayName(name: string): Locator {
-    return this.getMember(name).locator('.min-w-0 > div').first();
+    return this.getMember(name).getByTestId('user-card-name');
   }
 
   /**
@@ -179,15 +192,16 @@ export class RoomPage {
   }
 
   /**
-   * Send a text message and wait for it to appear.
+   * Send a text message and wait for it to appear. Supply renderedText when
+   * the posted content differs from the composer text, such as a user mention.
    * Returns a MessageComponent for the new message.
    */
-  async sendMessage(text: string): Promise<MessageComponent> {
+  async sendMessage(text: string, renderedText = text): Promise<MessageComponent> {
     await this.waitForInputEditable();
     await this.messageInput.fill(text);
     await this.dismissAutocompleteIfOpen(this.messageInput);
     await this.messageInput.press('Control+Enter');
-    const message = this.getMessage(text);
+    const message = this.getMessage(renderedText);
     await expect(message.locator).toBeVisible({ timeout: TIMEOUTS.UI_FAST });
     await this.waitForInputEditable();
     return message;
@@ -334,6 +348,53 @@ export class RoomPage {
   }
 
   /**
+   * Assert that exactly one unread separator is in the room or thread
+   * timeline, that the row directly after it is the message that contains
+   * `firstUnreadText`, and that the message that contains `lastReadText` is
+   * above it. System rows, such as joins, count as rows. Rows are ordered by
+   * their rendered position, so the check does not depend on the DOM order of
+   * the virtualized list. All of these rows must be rendered.
+   */
+  async expectUnreadSeparatorBetween(
+    lastReadText: string,
+    firstUnreadText: string,
+    options?: { timeline?: 'room' | 'thread'; timeout?: number }
+  ): Promise<void> {
+    const container =
+      options?.timeline === 'thread'
+        ? this.threadPane.getByTestId('messages-container')
+        : this.page.locator(
+            '[data-testid="messages-container"]:not([data-testid="thread-pane"] *)'
+          );
+    await expect(async () => {
+      const rows = await container.evaluate((root) =>
+        Array.from(
+          root.querySelectorAll(
+            '[data-testid="unread-separator"], [data-testid="system-event-group"], [role="article"]'
+          )
+        )
+          .map((element) => ({
+            top: element.getBoundingClientRect().top,
+            label: element.matches('[data-testid="unread-separator"]')
+              ? '<separator>'
+              : (element.textContent ?? '')
+          }))
+          .sort((a, b) => a.top - b.top)
+          .map((row) => row.label)
+      );
+      expect(rows.filter((row) => row === '<separator>')).toHaveLength(1);
+      const index = rows.indexOf('<separator>');
+      expect(rows[index + 1] ?? '').toContain(firstUnreadText);
+      const lastReadIndex = rows.findIndex((row) => row.includes(lastReadText));
+      expect(lastReadIndex).toBeGreaterThanOrEqual(0);
+      expect(lastReadIndex).toBeLessThan(index);
+    }).toPass({
+      timeout: options?.timeout ?? TIMEOUTS.REALTIME_EVENT,
+      intervals: [100, 250, 500, 1000]
+    });
+  }
+
+  /**
    * Assert that the "New messages" unread separator is NOT visible.
    */
   async expectNoUnreadSeparator(): Promise<void> {
@@ -456,15 +517,18 @@ export class RoomPage {
   /**
    * Get all member display names in the order they appear in the list.
    * Returns an array of display name strings.
+   *
+   * The member list is virtualized, so this reads only mounted rows. Use it for
+   * rooms whose members fit in the visible part of the list.
    */
   async getMemberDisplayNamesInOrder(): Promise<string[]> {
     await this.openMembersPanel();
-    const memberItems = this.memberList.locator('button.sidebar-item');
+    const memberItems = this.memberList.getByTestId('room-member-card');
     const count = await memberItems.count();
     const displayNames: string[] = [];
 
     for (let i = 0; i < count; i++) {
-      const displayNameElement = memberItems.nth(i).locator('.min-w-0 > div').first();
+      const displayNameElement = memberItems.nth(i).getByTestId('user-card-name');
       const text = await displayNameElement.textContent();
       if (text) {
         displayNames.push(text);
@@ -677,14 +741,14 @@ export class RoomPage {
    */
   async closeThread(): Promise<void> {
     await this.page.getByTitle('Back to room').click();
-    await expect(this.page.getByRole('heading', { name: /^Thread in #/ })).not.toBeVisible();
+    await expect(this.threadPane).not.toBeVisible();
   }
 
   /**
    * Assert that the thread pane is visible.
    */
   async expectThreadPaneVisible(): Promise<void> {
-    await expect(this.page.getByRole('heading', { name: /^Thread in #/ })).toBeVisible();
+    await expect(this.threadPane).toBeVisible();
   }
 
   /**
@@ -948,17 +1012,14 @@ export class RoomPage {
     return this.page.getByText('Drop files here');
   }
 
-  /** The main room content div (where the drop zone is attached) */
+  /** The room conversation pane, which owns the room's drop zone. */
   get roomDropZone(): Locator {
-    // Target the room content area that contains both the message input and the room header
-    return this.page.locator('div.relative.flex.min-h-0.min-w-0.flex-1.flex-col').filter({
-      has: this.page.getByTestId('message-input')
-    });
+    return this.page.getByTestId('room-main-pane');
   }
 
-  /** The active thread pane, which owns its thread-scoped drop zone. */
+  /** The thread conversation pane, which owns the thread's drop zone. */
   get threadDropZone(): Locator {
-    return this.page.getByTestId('thread-pane');
+    return this.page.getByTestId('thread-conversation-pane');
   }
 
   /**

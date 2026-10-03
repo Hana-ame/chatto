@@ -1,7 +1,7 @@
 # FDR-033: Message Search
 
 **Status:** Experimental
-**Last reviewed:** 2026-08-25
+**Last reviewed:** 2026-09-23
 
 ## Overview
 
@@ -11,6 +11,9 @@ server feature: operators decide whether to expose it and which trusted search
 provider supplies results.
 
 ## Behavior
+
+- The bundled provider indexes each original message once. Thread reply echoes
+  do not create separate matches or retain a separate searchable body.
 
 - Search covers the current bodies of messages in rooms the viewer may
   currently read, including direct messages, threads, and accessible archived
@@ -24,12 +27,28 @@ provider supplies results.
   the operator-selected Bleve language analyzers, CJK token matching when its
   analyzer is selected, and conservative one-character spelling mistakes in
   longer words. The bundled provider enables all analyzers by default.
+- The bundled provider finds complete HTTP(S) URLs and email addresses in
+  message text. A hostname search also finds that host within a URL or email
+  address, including its subdomains. Searches for ordinary words can find parts
+  of these addresses; a hostname search does not match scattered words.
 - Structured filters support a room (`in:`), author (`from:`), messages before
   or after a date, and messages with attachments. Any recognized filter can be
   used on its own without an additional word or phrase.
+- My Threads uses the same query syntax to search only accessible followed
+  threads, including DM threads. It returns one row per matching thread in
+  activity order. Both views use one search API, with message results as the
+  default and explicit thread scope and grouping for My Threads. Scope and
+  grouping are independent: integrations can group all accessible matches or
+  request individual matches within followed threads. Grouped relevance uses
+  the best matching message; newest order uses the newest matching message.
+  Activity order includes nonmatching replies. A root without replies is also
+  a group. See FDR-044.
 - Search is available as a server-level page reached from the server sidebar
   between Overview and My Threads, and as a room-sidebar tab that searches only
   the current room or direct-message conversation.
+- Opening the room Search tab with its button or Cmd/Ctrl+/ puts focus in the
+  query input. Restoring an open tab after reload or room navigation does not
+  move focus to that input.
 - Both entry points search automatically after a short typing pause, while
   Enter submits immediately. Leading or trailing whitespace is ignored for
   search requests without replacing the text in the field or repeating an
@@ -104,6 +123,12 @@ search implementation would require.
 **Decision:** A provider may decrypt message bodies into a local derived index
 that is excluded from normal backups and can be rebuilt from retained `EVT`
 history.
+The bundled provider derives address search terms from the current body in
+that index without keeping a second durable address record.
+Known search-index format and language changes automatically discard the old
+index and rebuild it. Search reports indexing until replay completes. Unknown
+or unreadable indexes require operator recovery, with instructions linked from
+the startup error.
 **Why:** Useful server-side full-text search requires a plaintext-derived
 representation even though durable message bodies remain encrypted. Bleve
 logically removes retracted and crypto-shredded documents immediately and
@@ -166,9 +191,8 @@ independent transient query state.
 
 ## Permissions
 
-Channel-room search requires `message.read` at the applicable server,
-room-group, or room scope, or `message.read-interactions` with a relationship
-to each result's thread. DM membership authorizes DM search. Search omits each
+Search requires `message.read` at the applicable scope, or
+`message.read-interactions` with a relationship to each result's thread. Search omits each
 result where the viewer does not have current read authority.
 
 ## Related

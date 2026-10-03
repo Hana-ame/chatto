@@ -16,6 +16,7 @@ const (
 	ScopeServer PermissionScope = "server"
 	ScopeGroup  PermissionScope = "group"
 	ScopeRoom   PermissionScope = "room"
+	ScopeDM     PermissionScope = "dm"
 )
 
 // PermissionCategory groups related permissions for UI organization.
@@ -24,6 +25,7 @@ type PermissionCategory string
 const (
 	CategoryServer  PermissionCategory = "server"
 	CategoryRoom    PermissionCategory = "room"
+	CategoryCall    PermissionCategory = "call"
 	CategoryMessage PermissionCategory = "message"
 	CategoryRole    PermissionCategory = "role"
 	CategoryAdmin   PermissionCategory = "admin"
@@ -65,29 +67,48 @@ const (
 	// PermRoomManage allows updating or deleting channel rooms.
 	PermRoomManage Permission = "room.manage"
 
-	// PermRoomMemberBan allows banning members from channel rooms.
-	PermRoomMemberBan Permission = "room.ban-member"
+	// PermRoomMemberRemove allows moderated removal from channel rooms,
+	// with an optional suspension that prevents rejoining.
+	PermRoomMemberRemove Permission = "room.remove-member"
+
+	// ===== Call Permissions =====
+
+	// PermCallStart allows starting a call. Joining also requires PermCallJoin.
+	PermCallStart Permission = "call.start"
+	// PermCallJoin allows joining an active call, including as a listener.
+	PermCallJoin Permission = "call.join"
+	// PermCallVoice allows publishing microphone audio.
+	PermCallVoice Permission = "call.voice"
+	// PermCallCamera allows publishing camera video.
+	PermCallCamera Permission = "call.camera"
+	// PermCallScreenShare allows screen/window/tab video and captured audio,
+	// including native application sharing. It does not grant microphone use.
+	PermCallScreenShare Permission = "call.screenshare"
 
 	// ===== Message Permissions =====
 
-	// PermMessageRead allows reading message content in channel rooms. Room
-	// membership remains a separate requirement. DM membership authorizes DM
-	// reads without this permission.
+	// PermMessageRead allows reading message content. Room or direct-message
+	// membership remains a separate requirement.
 	PermMessageRead Permission = "message.read"
 
-	// PermMessageReadInteractions allows reading channel-room threads that the
+	// PermMessageReadInteractions allows reading threads that the
 	// account authored or where another account directly mentioned it. Room
 	// membership remains a separate requirement. PermMessageRead explicitly
 	// includes this permission.
 	PermMessageReadInteractions Permission = "message.read-interactions"
 
-	// PermMessagePost allows posting new root messages in rooms. Server-scope
+	// PermMessagePost allows posting root messages and thread replies. It includes
+	// PermMessagePostInThread and PermMessagePostInInteractions. Server-scope
 	// decisions act as global defaults/overrides; room or group denies can narrow
 	// that default where a room should be more restrictive.
 	PermMessagePost Permission = "message.post"
 
 	// PermMessagePostInThread allows posting messages in a thread (first or subsequent reply).
 	PermMessagePostInThread Permission = "message.post-in-thread"
+
+	// PermMessagePostInInteractions allows replies only in threads with an existing
+	// interaction relationship. It does not grant read access or root posting.
+	PermMessagePostInInteractions Permission = "message.post-in-interactions"
 
 	// PermMessageAttach allows attaching files to new messages.
 	PermMessageAttach Permission = "message.attach"
@@ -100,7 +121,7 @@ const (
 	// PermMessageReact allows adding/removing reactions to messages.
 	PermMessageReact Permission = "message.react"
 
-	// PermMessageEcho allows echoing thread replies to the main channel.
+	// PermMessageEcho allows echoing thread replies to the room timeline.
 	PermMessageEcho Permission = "message.echo"
 
 	// ===== Role Management Permissions =====
@@ -163,53 +184,65 @@ const (
 // permissions that an allow for this permission also grants. Each relationship
 // is direct and explicit. Denials do not follow inclusion relationships.
 type PermissionMetadata struct {
-	Permission Permission
-	Category   PermissionCategory
-	Scopes     []PermissionScope // Scopes where this permission can be configured
-	Includes   []Permission      // Permissions granted by an allow for this permission
+	Permission             Permission
+	Category               PermissionCategory
+	Scopes                 []PermissionScope // Scopes where this permission can be configured
+	Includes               []Permission      // Permissions granted by an allow for this permission
+	RequiresPrivilegedMode bool              // Whether a human session must explicitly activate this permission
 }
 
-// allPermissions holds metadata for all permissions.
+// allPermissions holds metadata for all permissions. The frontend copies the
+// categories, scopes, inclusions, and privileged-mode requirements into
+// apps/frontend/src/lib/permissions.ts for its permission help. Update both
+// catalogs together.
 var allPermissions = []PermissionMetadata{
 	// Server
-	{Permission: PermServerManage, Category: CategoryServer, Scopes: []PermissionScope{ScopeServer}, Includes: []Permission{PermServerManageNeighbors}},
-	{Permission: PermServerManageNeighbors, Category: CategoryServer, Scopes: []PermissionScope{ScopeServer}},
+	{Permission: PermServerManage, Category: CategoryServer, Scopes: []PermissionScope{ScopeServer}, Includes: []Permission{PermServerManageNeighbors}, RequiresPrivilegedMode: true},
+	{Permission: PermServerManageNeighbors, Category: CategoryServer, Scopes: []PermissionScope{ScopeServer}, RequiresPrivilegedMode: true},
 
 	// Room
-	{Permission: PermRoomCreate, Category: CategoryRoom, Scopes: []PermissionScope{ScopeServer, ScopeGroup}},
+	{Permission: PermRoomCreate, Category: CategoryRoom, Scopes: []PermissionScope{ScopeServer, ScopeGroup}, RequiresPrivilegedMode: true},
 	{Permission: PermRoomJoin, Category: CategoryRoom, Scopes: []PermissionScope{ScopeServer, ScopeGroup, ScopeRoom}},
 	{Permission: PermRoomList, Category: CategoryRoom, Scopes: []PermissionScope{ScopeServer, ScopeGroup, ScopeRoom}},
-	{Permission: PermRoomManage, Category: CategoryRoom, Scopes: []PermissionScope{ScopeServer, ScopeGroup, ScopeRoom}},
-	{Permission: PermRoomMemberBan, Category: CategoryRoom, Scopes: []PermissionScope{ScopeServer, ScopeGroup, ScopeRoom}},
+	{Permission: PermRoomManage, Category: CategoryRoom, Scopes: []PermissionScope{ScopeServer, ScopeGroup, ScopeRoom}, RequiresPrivilegedMode: true},
+	{Permission: PermRoomMemberRemove, Category: CategoryRoom, Scopes: []PermissionScope{ScopeServer, ScopeGroup, ScopeRoom}, RequiresPrivilegedMode: true},
+
+	// Calls
+	{Permission: PermCallStart, Category: CategoryCall, Scopes: []PermissionScope{ScopeServer, ScopeGroup, ScopeRoom, ScopeDM}},
+	{Permission: PermCallJoin, Category: CategoryCall, Scopes: []PermissionScope{ScopeServer, ScopeGroup, ScopeRoom, ScopeDM}},
+	{Permission: PermCallVoice, Category: CategoryCall, Scopes: []PermissionScope{ScopeServer, ScopeGroup, ScopeRoom, ScopeDM}},
+	{Permission: PermCallCamera, Category: CategoryCall, Scopes: []PermissionScope{ScopeServer, ScopeGroup, ScopeRoom, ScopeDM}},
+	{Permission: PermCallScreenShare, Category: CategoryCall, Scopes: []PermissionScope{ScopeServer, ScopeGroup, ScopeRoom, ScopeDM}},
 
 	// Message
-	{Permission: PermMessageRead, Category: CategoryMessage, Scopes: []PermissionScope{ScopeServer, ScopeGroup, ScopeRoom}, Includes: []Permission{PermMessageReadInteractions}},
-	{Permission: PermMessageReadInteractions, Category: CategoryMessage, Scopes: []PermissionScope{ScopeServer, ScopeGroup, ScopeRoom}},
-	{Permission: PermMessagePost, Category: CategoryMessage, Scopes: []PermissionScope{ScopeServer, ScopeGroup, ScopeRoom}},
-	{Permission: PermMessagePostInThread, Category: CategoryMessage, Scopes: []PermissionScope{ScopeServer, ScopeGroup, ScopeRoom}},
-	{Permission: PermMessageAttach, Category: CategoryMessage, Scopes: []PermissionScope{ScopeServer, ScopeGroup, ScopeRoom}},
-	{Permission: PermMessageManage, Category: CategoryMessage, Scopes: []PermissionScope{ScopeServer, ScopeGroup, ScopeRoom}},
-	{Permission: PermMessageReact, Category: CategoryMessage, Scopes: []PermissionScope{ScopeServer, ScopeGroup, ScopeRoom}},
-	{Permission: PermMessageEcho, Category: CategoryMessage, Scopes: []PermissionScope{ScopeServer, ScopeGroup, ScopeRoom}},
+	{Permission: PermMessageRead, Category: CategoryMessage, Scopes: []PermissionScope{ScopeServer, ScopeGroup, ScopeRoom, ScopeDM}, Includes: []Permission{PermMessageReadInteractions}},
+	{Permission: PermMessageReadInteractions, Category: CategoryMessage, Scopes: []PermissionScope{ScopeServer, ScopeGroup, ScopeRoom, ScopeDM}},
+	{Permission: PermMessagePost, Category: CategoryMessage, Scopes: []PermissionScope{ScopeServer, ScopeGroup, ScopeRoom, ScopeDM}, Includes: []Permission{PermMessagePostInThread, PermMessagePostInInteractions}},
+	{Permission: PermMessagePostInThread, Category: CategoryMessage, Scopes: []PermissionScope{ScopeServer, ScopeGroup, ScopeRoom, ScopeDM}},
+	{Permission: PermMessagePostInInteractions, Category: CategoryMessage, Scopes: []PermissionScope{ScopeServer, ScopeGroup, ScopeRoom, ScopeDM}},
+	{Permission: PermMessageAttach, Category: CategoryMessage, Scopes: []PermissionScope{ScopeServer, ScopeGroup, ScopeRoom, ScopeDM}},
+	{Permission: PermMessageManage, Category: CategoryMessage, Scopes: []PermissionScope{ScopeServer, ScopeGroup, ScopeRoom, ScopeDM}, RequiresPrivilegedMode: true},
+	{Permission: PermMessageReact, Category: CategoryMessage, Scopes: []PermissionScope{ScopeServer, ScopeGroup, ScopeRoom, ScopeDM}},
+	{Permission: PermMessageEcho, Category: CategoryMessage, Scopes: []PermissionScope{ScopeServer, ScopeGroup, ScopeRoom, ScopeDM}},
 
 	// Role management
-	{Permission: PermRoleManage, Category: CategoryRole, Scopes: []PermissionScope{ScopeServer}},
-	{Permission: PermRoleAssign, Category: CategoryRole, Scopes: []PermissionScope{ScopeServer}},
+	{Permission: PermRoleManage, Category: CategoryRole, Scopes: []PermissionScope{ScopeServer}, RequiresPrivilegedMode: true},
+	{Permission: PermRoleAssign, Category: CategoryRole, Scopes: []PermissionScope{ScopeServer}, RequiresPrivilegedMode: true},
 
 	// Admin
-	{Permission: PermAdminUsersView, Category: CategoryAdmin, Scopes: []PermissionScope{ScopeServer}},
-	{Permission: PermAdminAuditView, Category: CategoryAdmin, Scopes: []PermissionScope{ScopeServer}},
+	{Permission: PermAdminUsersView, Category: CategoryAdmin, Scopes: []PermissionScope{ScopeServer}, RequiresPrivilegedMode: true},
+	{Permission: PermAdminAuditView, Category: CategoryAdmin, Scopes: []PermissionScope{ScopeServer}, RequiresPrivilegedMode: true},
 
 	// User management
-	{Permission: PermUserDeleteAny, Category: CategoryUser, Scopes: []PermissionScope{ScopeServer}},
+	{Permission: PermUserDeleteAny, Category: CategoryUser, Scopes: []PermissionScope{ScopeServer}, RequiresPrivilegedMode: true},
 	{Permission: PermUserDeleteSelf, Category: CategoryUser, Scopes: []PermissionScope{ScopeServer}},
-	{Permission: PermUserInvite, Category: CategoryUser, Scopes: []PermissionScope{ScopeServer}},
-	{Permission: PermUserManageAccounts, Category: CategoryUser, Scopes: []PermissionScope{ScopeServer}},
-	{Permission: PermUserManagePermissions, Category: CategoryUser, Scopes: []PermissionScope{ScopeServer}},
+	{Permission: PermUserInvite, Category: CategoryUser, Scopes: []PermissionScope{ScopeServer}, RequiresPrivilegedMode: true},
+	{Permission: PermUserManageAccounts, Category: CategoryUser, Scopes: []PermissionScope{ScopeServer}, RequiresPrivilegedMode: true},
+	{Permission: PermUserManagePermissions, Category: CategoryUser, Scopes: []PermissionScope{ScopeServer}, RequiresPrivilegedMode: true},
 
 	// Bot accounts
 	{Permission: PermBotCreate, Category: CategoryBot, Scopes: []PermissionScope{ScopeServer}},
-	{Permission: PermBotManage, Category: CategoryBot, Scopes: []PermissionScope{ScopeServer}},
+	{Permission: PermBotManage, Category: CategoryBot, Scopes: []PermissionScope{ScopeServer}, RequiresPrivilegedMode: true},
 }
 
 // permissionIndex provides fast lookup of permission metadata by permission value.
@@ -248,6 +281,9 @@ func validatePermissionCatalog(catalog []PermissionMetadata) (map[Permission]Per
 			}
 			if !samePermissionScopes(metadata.Scopes, included.Scopes) {
 				return nil, fmt.Errorf("permission %s and included permission %s use different scopes", metadata.Permission, includedPermission)
+			}
+			if metadata.RequiresPrivilegedMode != included.RequiresPrivilegedMode {
+				return nil, fmt.Errorf("permission %s and included permission %s use different privileged-mode requirements", metadata.Permission, includedPermission)
 			}
 		}
 	}
@@ -369,6 +405,11 @@ func DefaultEveryonePermissions() []Permission {
 		PermMessageReact,
 		PermMessageEcho,
 		PermBotCreate,
+		PermCallStart,
+		PermCallJoin,
+		PermCallVoice,
+		PermCallCamera,
+		PermCallScreenShare,
 	}
 }
 
@@ -378,7 +419,7 @@ func DefaultEveryonePermissions() []Permission {
 func DefaultModeratorPermissions() []Permission {
 	return []Permission{
 		PermMessageManage,
-		PermRoomMemberBan,
+		PermRoomMemberRemove,
 	}
 }
 
@@ -394,7 +435,7 @@ func DefaultAdminPermissions() []Permission {
 		PermRoomJoin,
 		PermRoomList,
 		PermRoomManage,
-		PermRoomMemberBan,
+		PermRoomMemberRemove,
 		PermMessageManage,
 		PermRoleManage,
 		PermRoleAssign,
@@ -406,13 +447,6 @@ func DefaultAdminPermissions() []Permission {
 		PermUserManagePermissions,
 		PermBotManage,
 	}
-}
-
-// DefaultOwnerPermissions returns the persisted permissions granted to owners
-// by default. Owners are resolved through the effective-owner override instead
-// of stored grants, so fresh servers do not materialize owner permission rows.
-func DefaultOwnerPermissions() []Permission {
-	return nil
 }
 
 // AnnouncementsRoomName is the canonical name for the seeded announcement-only

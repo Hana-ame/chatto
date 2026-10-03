@@ -21,7 +21,7 @@ func TestAdminOAuthClientServiceLifecycleAndAuthorization(t *testing.T) {
 	if err := env.core.RecordOAuthClientAuthorization(env.ctx, env.viewer.Id, clientID, "Remote Chatto", "https://remote.example", "https://remote.example", evtv1.OAuthClientSource_OAUTH_CLIENT_SOURCE_CIMD); err != nil {
 		t.Fatalf("RecordOAuthClientAuthorization: %v", err)
 	}
-	if _, err := env.adminOAuthClients.ListOAuthClients(withCaller(env.ctx, env.viewer), connect.NewRequest(&adminv1.ListOAuthClientsRequest{})); err == nil || connect.CodeOf(err) != connect.CodePermissionDenied {
+	if _, err := env.adminOAuthClients.ListOAuthClients(withCaller(env.ctx, env.viewer), connect.NewRequest(&adminv1.ListOAuthClientsRequest{})); err == nil || errorCode(err) != connect.CodePermissionDenied {
 		t.Fatalf("regular ListOAuthClients error = %v, want permission denied", err)
 	}
 	if err := env.core.AssignAdminRole(env.ctx, env.viewer.Id); err != nil {
@@ -37,19 +37,19 @@ func TestAdminOAuthClientServiceLifecycleAndAuthorization(t *testing.T) {
 	}
 	updated, err := env.adminOAuthClients.UpdateOAuthClientPolicy(ctx, connect.NewRequest(&adminv1.UpdateOAuthClientPolicyRequest{
 		ClientId: clientID,
-		Policy:   adminv1.OAuthClientPolicy_OAUTH_CLIENT_POLICY_TRUSTED,
+		Policy:   adminv1.OauthClientPolicy_OAUTH_CLIENT_POLICY_TRUSTED,
 	}))
 	if err != nil {
 		t.Fatalf("UpdateOAuthClientPolicy: %v", err)
 	}
-	if updated.Msg.GetOauthClient().GetPolicy() != adminv1.OAuthClientPolicy_OAUTH_CLIENT_POLICY_TRUSTED {
+	if updated.Msg.GetOauthClient().GetPolicy() != adminv1.OauthClientPolicy_OAUTH_CLIENT_POLICY_TRUSTED {
 		t.Fatalf("updated client = %+v", updated.Msg.GetOauthClient())
 	}
 	got, err := env.adminOAuthClients.GetOAuthClient(ctx, connect.NewRequest(&adminv1.GetOAuthClientRequest{ClientId: clientID}))
-	if err != nil || got.Msg.GetOauthClient().GetPolicy() != adminv1.OAuthClientPolicy_OAUTH_CLIENT_POLICY_TRUSTED {
+	if err != nil || got.Msg.GetOauthClient().GetPolicy() != adminv1.OauthClientPolicy_OAUTH_CLIENT_POLICY_TRUSTED {
 		t.Fatalf("GetOAuthClient = %+v, %v", got, err)
 	}
-	if _, err := env.adminOAuthClients.GetOAuthClient(ctx, connect.NewRequest(&adminv1.GetOAuthClientRequest{ClientId: "https://missing.example/client.json"})); err == nil || connect.CodeOf(err) != connect.CodeNotFound {
+	if _, err := env.adminOAuthClients.GetOAuthClient(ctx, connect.NewRequest(&adminv1.GetOAuthClientRequest{ClientId: "https://missing.example/client.json"})); err == nil || errorCode(err) != connect.CodeNotFound {
 		t.Fatalf("missing GetOAuthClient error = %v, want not found", err)
 	}
 }
@@ -136,14 +136,14 @@ func TestAdminOAuthClientServicePreservesFutureEnumValues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetOAuthClient: %v", err)
 	}
-	if got.Msg.GetOauthClient().GetPolicy() != adminv1.OAuthClientPolicy(futurePolicy) {
+	if got.Msg.GetOauthClient().GetPolicy() != adminv1.OauthClientPolicy(futurePolicy) {
 		t.Fatalf(
 			"future policy = %d, want preserved %d",
 			got.Msg.GetOauthClient().GetPolicy(),
 			futurePolicy,
 		)
 	}
-	if got.Msg.GetOauthClient().GetSource() != adminv1.OAuthClientSource(futureSource) {
+	if got.Msg.GetOauthClient().GetSource() != adminv1.OauthClientSource(futureSource) {
 		t.Fatalf(
 			"future source = %d, want preserved %d",
 			got.Msg.GetOauthClient().GetSource(),
@@ -162,9 +162,9 @@ func TestAdminOAuthClientServicePreservesFutureEnumValues(t *testing.T) {
 		withCaller(env.ctx, env.viewer),
 		connect.NewRequest(&adminv1.UpdateOAuthClientPolicyRequest{
 			ClientId: clientID,
-			Policy:   adminv1.OAuthClientPolicy_OAUTH_CLIENT_POLICY_DEFAULT,
+			Policy:   adminv1.OauthClientPolicy_OAUTH_CLIENT_POLICY_DEFAULT,
 		}),
-	); err == nil || connect.CodeOf(err) != connect.CodeInvalidArgument {
+	); err == nil || errorCode(err) != connect.CodeInvalidArgument {
 		t.Fatalf("overwrite future policy error = %v, want invalid argument", err)
 	}
 }

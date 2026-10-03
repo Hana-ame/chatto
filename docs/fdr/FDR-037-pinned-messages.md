@@ -1,7 +1,7 @@
 # FDR-037: Pinned Messages
 
 **Status:** Active
-**Last reviewed:** 2026-08-25
+**Last reviewed:** 2026-09-01
 
 ## Overview
 
@@ -70,15 +70,16 @@ protects room lifecycle, message retraction, and pin state.
 **Tradeoff:** Unrelated writes in the same room may cause a retry, matching the
 existing room mutation boundary.
 
-### 4. Reuse the existing realtime operation
+### 4. Use a semantic pin event
 
-**Decision:** Pin events emit the established `server_state_upsert` realtime
-operation with an additive `pinned_message_change` field.
-**Why:** Existing clients already know how to safely process and ignore unknown
-fields on this operation, while current clients receive an ordered pin refresh
-without another top-level operation.
-**Tradeoff:** A pin change causes the retained room pin store to refresh its
-canonical page rather than applying an untrusted partial message payload.
+**Decision:** Pin creation and deletion emit semantic public pin events with
+the room and message references that clients need to refresh or update their
+authorized pin view.
+**Why:** The event describes the domain change directly for bots and the
+frontend. Clients can ignore an event type they do not use and still advance
+the common cursor. See ADR-091.
+**Tradeoff:** A pin change causes the loaded room pin store to refresh its
+canonical page rather than apply an untrusted partial message payload.
 
 ### 5. Keep unseen state local
 
@@ -113,11 +114,10 @@ The RoomService RPCs and response marker, pinned-message resource,
 `Message.pinned` field, persisted event variants, snapshot fields, and realtime
 change field are additive protobuf changes. Normal timeline, singular message,
 and batched message reads all expose authoritative pin state without a parallel
-pin-status lookup. The bundled client exposes the feature only for servers at
-`0.5.0-0` or newer.
+pin-status lookup. The bundled client supports only servers that include the
+feature (see FDR-031).
 Older clients can continue processing `server_state_upsert` and ignore its new
-field. Older servers return an unimplemented RPC, which gated clients do not
-call. Persisted message events are additive and the disposable Room Timeline
+field. Persisted message events are additive and the disposable Room Timeline
 snapshot schema receives a new fingerprinted contract namespace automatically.
 
 ## Permissions
@@ -130,8 +130,8 @@ snapshot schema receives a new fingerprinted contract namespace automatically.
 
 ## Related
 
-- **ADRs:** ADR-016 (OCC for message publishing), ADR-033 (event-sourced state), ADR-045 (public API stability), ADR-050 (projection snapshots), ADR-051 (resumable client projection), ADR-080 (explicit message-read permissions), ADR-082 (derived thread interactions), ADR-087 (request-time authorization with aggregate OCC)
-- **FDRs:** FDR-002 (Replies & Threads), FDR-003 (Thread Reply Echo), FDR-004 (Message Editing & Deletion), FDR-019 (Room Lifecycle), FDR-031 (Client–Server Compatibility Discovery), FDR-033 (Message Search), FDR-039 (Message Access & Interactions)
+- **ADRs:** ADR-016 (OCC for message publishing), ADR-033 (event-sourced state), ADR-045 (public API stability), ADR-050 (projection snapshots), ADR-080 (explicit message-read permissions), ADR-082 (derived thread interactions), ADR-087 (request-time authorization with aggregate OCC), ADR-089 (server content view), ADR-091 (semantic realtime events)
+- **FDRs:** FDR-002 (Replies & Threads), FDR-003 (Thread Reply Echo), FDR-004 (Message Editing & Deletion), FDR-019 (Room Lifecycle), FDR-031 (Client–Server Compatibility Discovery), FDR-033 (Message Search), FDR-039 (Message Access & Interactions), FDR-045 (Realtime Event Stream)
 - **Issue:** [#1982](https://github.com/chattocorp/chatto/issues/1982)
 
 ## Open Questions

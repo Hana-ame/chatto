@@ -71,7 +71,9 @@
     },
     "timeline": {
       "beginning": "Jen la komenco de ĉi tiu konversacio.",
-      "read_denied": "Vi ne havas permeson legi mesaĝojn en ĉi tiu ĉambro."
+      "read_denied": "Vi ne havas permeson legi mesaĝojn en ĉi tiu ĉambro.",
+      "limited_empty": "Ankoraŭ neniuj konversacioj, kiujn vi povas legi.",
+      "loading": "Ŝarĝante mesaĝojn..."
     },
     "message": {
       "empty": "Ankoraŭ neniuj mesaĝoj",
@@ -87,6 +89,7 @@
         "remove_reaction": "Forigi {emoji}",
         "add_reaction": "Aldonu reagon",
         "more_reactions": "Pli da reagoj",
+        "reactions": "Reagoj",
         "reply": "Respondu",
         "reply_room": "Respondi en la ĉambro",
         "reply_thread": "Respondu en fadeno",
@@ -96,9 +99,18 @@
         "edit_short": "Redaktu",
         "copy_text": "Kopiu tekston",
         "copy_text_failed": "Malsukcesis kopii tekston",
-        "copy_link": "Kopiu ligilon"
+        "copy_link": "Kopiu ligilon",
+        "copy_message_link": "Kopiu mesaĝan ligilon",
+        "copy_image": "Kopiu bildon",
+        "link_copied": "Ligilo kopiita",
+        "message_link_copied": "Mesaĝligilo kopiita",
+        "copy_link_failed": "Ne eblis kopii ligilon",
+        "image_copied": "Bildo kopiita",
+        "copy_image_failed": "Ne eblis kopii bildon"
       },
       "meta": {
+        "echo": "Eĥo",
+        "edited_short": "Redaktita",
         "pinned": "Alpinglita mesaĝo",
         "thread": "Fadeno",
         "edited": "Redaktita mesaĝo",
@@ -142,6 +154,14 @@
       },
       "show_less": "montri malpli"
     },
+    "typing": {
+      "one": "{name} skribas",
+      "two": "{first} kaj {second} skribas",
+      "many_count": {
+        "one": "{names} kaj {count} alia skribas",
+        "other": "{names} kaj {count} aliaj skribas"
+      }
+    },
     "attachment": {
       "delete_title": "Forigi Aldonaĵon",
       "delete_prompt": "Ĉu vi certas, ke vi volas forigi ĉi tiun aldonaĵon? Ĉi tio ne povas esti malfarita.",
@@ -150,7 +170,27 @@
       "view_label": "Vidu {filename}",
       "download_label": "Elŝutu {filename}",
       "image_refresh_failed": "Ne eblis refreŝigi bildan ligilon",
-      "download_refresh_failed": "Ne eblis refreŝigi elŝutan ligilon"
+      "download_refresh_failed": "Ne eblis refreŝigi elŝutan ligilon",
+      "add_description": "Aldoni priskribon",
+      "edit_description": "Redakti priskribon",
+      "description_title": "Priskribo de aldonaĵo",
+      "description_label": "Priskribo (nedeviga)",
+      "description_help": "Priskribu la aldonaĵon por homoj, kiuj ne povas vidi aŭ aŭdi ĝin.",
+      "description_too_long": "Priskriboj povas enhavi maksimume {max} signojn.",
+      "description_update_failed": "Ne eblis ĝisdatigi la priskribon de la aldonaĵo",
+      "html_viewer": {
+        "download": "Elŝuti",
+        "show_preview": "Montri antaŭrigardon",
+        "warning": "Ĉi tiu dokumento povas ŝargi enhavon de eksteraj retejoj. Tiuj retejoj povas vidi vian IP-adreson.",
+        "preview_title": "Antaŭrigardo de {filename}",
+        "preview_failed": "Ne eblis ŝargi la antaŭrigardon. Bonvolu reprovi.",
+        "document_type": "Dokumenttipo",
+        "html_document": "HTML-dokumento",
+        "xhtml_document": "XHTML-dokumento",
+        "file_size": "Dosiergrando",
+        "unavailable": "Ne disponebla",
+        "no_preview": "Antaŭrigardo ne disponeblas por ĉi tiu dosiero. Elŝutu ĝin por konservi ĝin."
+      }
     },
     "link_preview": {
       "delete_title": "Forigi ligilon antaŭrigardon",
@@ -158,6 +198,7 @@
       "delete_failed": "Malsukcesis forigi ligilon antaŭrigardon"
     },
     "sidebar": {
+      "go_to_message": "Iri al mesaĝo",
       "extras": "Ĉambrokromaĵoj",
       "resize": "Regrandigi la fenestron de ekstraj ĉambroj",
       "hide": "Kaŝi ekstrajn ĉambrojn",
@@ -170,24 +211,25 @@
       "clear_member_search": "Klarigi membroserĉon",
       "no_members": "Neniuj membroj trovitaj.",
       "online": "Enreta ({count})",
+      "bots": "Bots ({count})",
       "offline": "Senkonekta ({count})",
       "no_files": "Ankoraŭ neniuj dosieroj en ĉi tiu ĉambro.",
       "files": "Dosieroj",
       "pins": "Alpinglitaj mesaĝoj",
-      "call": "Voku",
+      "call": "Voko",
       "jump_to_file": "Saltu al {filename}",
       "loading_files": "Ŝarĝante dosierojn...",
+      "loading_members": "Ŝarĝante membrojn...",
       "calls_unavailable": "Vokoj ne disponeblas en ĉi tiu servilo.",
       "view_profile": "Rigardu profilon de {name}",
       "in_voice_call": "En voĉvoko",
       "in_video_call": "En videovoko",
-      "ban_failed": "Malsukcesis malpermesi membron de ĉambro",
-      "ban_success": "Malpermesita {name} de ĉambro"
+      "remove_failed": "Ne eblis forigi uzanton el ĉambro",
+      "remove_success": "{name} estis forigita el ĉambro",
+      "search": "Serĉi"
     },
     "pins": {
-      "show": "Montri alpinglitajn mesaĝojn",
       "unseen": "Novaj alpinglitaj mesaĝoj",
-      "hide": "Kaŝi alpinglitajn mesaĝojn",
       "pin": "Alpingli mesaĝon",
       "unpin": "Malpingli mesaĝon",
       "unpin_prompt": "Ĉu vi certas, ke vi volas forigi ĉi tiun alpinglon?",

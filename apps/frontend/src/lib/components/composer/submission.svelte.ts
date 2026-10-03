@@ -1,12 +1,13 @@
+import { toastError } from '$lib/utils/errorMessage';
 import { SvelteMap } from 'svelte/reactivity';
 import type {
   AttachmentUploadUpdate,
   CreateMessageInput,
   CreateMessageResult,
   UpdateMessageInput
-} from '$lib/api-client/messages';
-import type { TimelineEventView } from '$lib/render/timelineEvents';
-import type { MentionRolesStatus } from '$lib/state/server/mentionRoles.svelte';
+} from '@chatto/client/api/messages';
+import type { TimelineEventView } from '@chatto/client/timeline/timelineEvents';
+import type { MentionRolesStatus } from '@chatto/client/server/mentionRoles';
 import { extractMentions, hasRoleOrVirtualMention } from '$lib/mentions';
 import { toast } from '$lib/ui/toast';
 import { m } from '$lib/i18n/messages';
@@ -22,6 +23,7 @@ export type PreparedPost = {
   roomId: string;
   bodyToSend: string;
   filesToSend: File[] | null;
+  attachmentDescriptions?: Array<{ file: File; description: string }>;
   attachmentAssetIds?: string[];
   threadRootEventId: string | null;
   inReplyTo: string | null;
@@ -42,7 +44,8 @@ type ComposerSubmissionDependencies = {
   getMentionRoleNames: () => string[];
   onPostSuccess: (post: PreparedPost, event: TimelineEventView | null) => void;
   onPostError?: (error: unknown) => boolean;
-  onEditSuccess: () => void;
+  /** Receives the saved edit so the composer can ignore a superseded edit. */
+  onEditSuccess: (input: UpdateMessageInput) => void;
 };
 
 /**
@@ -123,9 +126,9 @@ export class ComposerSubmissionState {
     this.loading = true;
     try {
       await this.#dependencies.getAPI().updateMessage(input);
-      this.#dependencies.onEditSuccess();
+      this.#dependencies.onEditSuccess(input);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : m('composer.edit_failed'));
+      toastError(error, m('composer.edit_failed'));
     } finally {
       this.loading = false;
     }
@@ -157,6 +160,7 @@ export class ComposerSubmissionState {
           body: post.bodyToSend,
           attachmentAssetIds: post.attachmentAssetIds,
           attachments: post.attachmentAssetIds?.length ? null : post.filesToSend,
+          attachmentDescriptions: post.attachmentDescriptions,
           onAttachmentUploadUpdate: (update) => this.updateAttachmentStatus(update),
           threadRootEventId: post.threadRootEventId,
           inReplyTo: post.inReplyTo,

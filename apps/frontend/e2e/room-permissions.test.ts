@@ -1,6 +1,7 @@
 import { expect, type Page } from '@playwright/test';
 import { test } from './setup';
 import {
+  activatePrivilegedMode,
   createAndLoginTestUser,
   logoutCurrentUser,
   loginAsAdminAndUsePrimaryServer,
@@ -213,6 +214,8 @@ test.describe('Room-Level Permission Overrides', () => {
       const browserErrors: string[] = [];
 
       await withLoggedInServerWindow(browser, serverURL, member, async ({ page: memberPage }) => {
+        let connections = 0;
+        memberPage.on('websocket', () => connections++);
         memberPage.on('console', (message) => {
           // The denied request and the nonfatal realtime availability signal
           // are expected when read authority is removed. Keep all other
@@ -230,6 +233,11 @@ test.describe('Room-Level Permission Overrides', () => {
         await joinRoomViaAPI(memberPage, roomId);
         await memberPage.goto(routes.room(roomId));
         await expect(memberPage.getByText(visibleBody)).toBeVisible();
+        const originalComposer = await memberPage.getByTestId('message-input').elementHandle();
+        const originalShell = await memberPage
+          .getByRole('button', { name: 'Toggle sidebar', exact: true })
+          .elementHandle();
+        const initialConnections = connections;
 
         await denyRoomPermission(page, roomId, 'everyone', 'message.read');
         await denyRoomPermission(page, roomId, 'everyone', 'message.read-interactions');
@@ -240,6 +248,9 @@ test.describe('Room-Level Permission Overrides', () => {
         await expect(denial).toBeVisible({ timeout: TIMEOUTS.REALTIME_EVENT });
         await expect(memberPage.getByText(visibleBody)).toHaveCount(0);
         await expect(memberPage.locator('[role="article"]')).toHaveCount(0);
+        expect(await originalComposer!.evaluate((node) => node.isConnected)).toBe(true);
+        expect(await originalShell!.evaluate((node) => node.isConnected)).toBe(true);
+        expect(connections).toBe(initialConnections);
         await expect(memberPage.getByTestId('message-input')).toHaveAttribute(
           'contenteditable',
           'true'
@@ -276,6 +287,8 @@ test.describe('Room-Level Permission Overrides', () => {
         await expect(memberPage.getByText(writeOnlyBody)).toBeVisible({
           timeout: TIMEOUTS.REALTIME_EVENT
         });
+        expect(await originalComposer!.evaluate((node) => node.isConnected)).toBe(true);
+        expect(connections).toBe(initialConnections);
       });
 
       expect(browserErrors, 'browser console and page errors').toEqual([]);
@@ -314,7 +327,14 @@ test.describe('Room-Level Permission Overrides', () => {
         );
         expect(beforeMention.page?.events ?? []).toEqual([]);
 
-        const mentionBody = `@${member.login} interaction access ${Date.now()}`;
+        await memberPage.goto(routes.room(roomId));
+        await expect(memberPage.getByText('No conversations you can read yet.')).toBeVisible();
+        await expect(
+          memberPage.getByText('This is the beginning of this conversation.')
+        ).toHaveCount(0);
+
+        const mentionSuffix = `interaction access ${Date.now()}`;
+        const mentionBody = `@${member.login} ${mentionSuffix}`;
         const mentionReply = await replyToMessageViaAPI(page, roomId, root!.id, mentionBody);
         expect(mentionReply).not.toBeNull();
 
@@ -339,8 +359,16 @@ test.describe('Room-Level Permission Overrides', () => {
         await memberPage.goto(routes.thread(roomId, root!.id));
         await expect(memberPage.getByTestId('thread-pane').getByText(rootBody)).toBeVisible();
         await expect(memberPage.getByText(earlierBody)).toBeVisible();
-        await expect(memberPage.getByText(mentionBody)).toBeVisible();
+        await expect(memberPage.getByText(`@${member.displayName} ${mentionSuffix}`)).toBeVisible();
         await expect(memberPage.getByText(unrelatedBody)).toHaveCount(0);
+
+        await memberPage.goto(routes.room(roomId));
+        await expect(memberPage.getByTestId('room-main-pane').getByText(rootBody)).toBeVisible();
+        await expect(memberPage.getByText(unrelatedBody)).toHaveCount(0);
+        await grantRoomPermission(page, roomId, 'everyone', 'message.read');
+        await expect(memberPage.getByText(unrelatedBody)).toBeVisible({
+          timeout: TIMEOUTS.REALTIME_EVENT
+        });
       });
     });
   });
@@ -519,6 +547,7 @@ test.describe('Room-Level Permission Overrides', () => {
       const member = await createSecondTestUser(page);
       await logoutUser(page);
       await loginUser(page, member.login, member.password);
+      await activatePrivilegedMode(page);
       await joinRoomViaAPI(page, roomId);
 
       await page.goto(routes.room(roomId));
@@ -706,6 +735,8 @@ test.describe('Permission-only Resolution', () => {
       await page.goto(routes.chat);
 
       const roomLink = page.locator(`a[href="${routes.room(roomId)}"]`).first();
+      await expect(roomLink).toHaveCount(0);
+      await page.getByTestId('room-group-more').click();
       await expect(roomLink).toBeVisible();
       await roomLink.click();
 
@@ -867,6 +898,8 @@ test.describe('Permission-only Resolution', () => {
 
       // Deny message.post-in-thread at room level for everyone
       await denyRoomPermission(page, roomId, 'everyone', 'message.post-in-thread');
+      await denyRoomPermission(page, roomId, 'everyone', 'message.post');
+      await denyRoomPermission(page, roomId, 'everyone', 'message.post-in-interactions');
 
       // Create second user, join the room
       const member = await createSecondTestUser(page);
@@ -896,6 +929,8 @@ test.describe('Permission-only Resolution', () => {
 
       // Deny message.post-in-thread at room level for everyone
       await denyRoomPermission(page, roomId, 'everyone', 'message.post-in-thread');
+      await denyRoomPermission(page, roomId, 'everyone', 'message.post');
+      await denyRoomPermission(page, roomId, 'everyone', 'message.post-in-interactions');
 
       // Create second user, join the room
       const member = await createSecondTestUser(page);
@@ -908,7 +943,7 @@ test.describe('Permission-only Resolution', () => {
       expect(replied).toBeNull();
     });
 
-    test('message.post-in-thread denied permits ordinary roots but blocks explicit thread creation', async ({
+    test('message.post includes explicit thread creation despite a narrower denial', async ({
       page
     }) => {
       // Admin creates server and room
@@ -928,17 +963,17 @@ test.describe('Permission-only Resolution', () => {
 
       await page.goto(routes.room(roomId));
       await expect(page.getByTestId('message-input')).toHaveAttribute('contenteditable', 'true');
-      await expect(page.getByRole('button', { name: 'Post as thread' })).toHaveCount(0);
+      await expect(page.getByRole('button', { name: 'Post as thread' })).toBeVisible();
 
       // Root posting should still work
       const posted = await postMessageViaAPI(page, roomId, 'Member can still post root');
       expect(posted).not.toBeNull();
 
-      // Explicit thread creation requires both root and thread posting permissions.
-      const thread = await postMessageViaAPI(page, roomId, 'Member cannot create a thread', {
+      // Broad posting includes explicit thread creation.
+      const thread = await postMessageViaAPI(page, roomId, 'Member can create a thread', {
         createThread: true
       });
-      expect(thread).toBeNull();
+      expect(thread).not.toBeNull();
     });
   });
 

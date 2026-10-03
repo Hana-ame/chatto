@@ -1,19 +1,22 @@
 <script lang="ts">
   import { PresenceStatus } from '@chatto/api-types/api/v1/presence_pb';
   import MessageMetaBar from './MessageMetaBar.svelte';
-  import { ServerConnection } from '$lib/state/server/serverConnection.svelte';
+  import { ServerConnection } from '@chatto/client/server/serverConnection';
   import { provideServerScope } from '$lib/state/server/scope.svelte';
-  import type { ServerStateStore } from '$lib/state/server/store.svelte';
-  import { createPresenceCache } from '$lib/state/presenceCache.svelte';
-  import { createUserProfileCache } from '$lib/state/userProfiles.svelte';
-  import type { ReactionSummaryView } from '$lib/render/reactions';
-  import type { UserAvatarUserView } from '$lib/render/users';
+  import type { ServerStateStore } from '@chatto/client/server/store';
+  import { provideUserProfiles } from '$lib/state/userProfiles.svelte';
+  import type { ReactionSummaryView } from '@chatto/client/timeline/reactions';
+  import type { UserAvatarUserView } from '@chatto/client/timeline/users';
   import type { MessageActionModel } from './messageActionModel';
   type Variant =
     | 'reactions'
     | 'replies-and-reactions'
     | 'unread-followed-thread'
     | 'thread-echo'
+    | 'edited-thread-echo'
+    | 'edited-only'
+    | 'echoed-to-channel'
+    | 'edited-and-echoed-to-channel'
     | 'read-only-reactions'
     | 'short-reaction-popover'
     | 'high-count-reaction-popover';
@@ -32,8 +35,7 @@
     store: {} as ServerStateStore,
     isCurrent: () => true
   });
-  createPresenceCache();
-  createUserProfileCache();
+  provideUserProfiles();
 
   const roomId = 'room-design';
   const serverSegment = '-';
@@ -167,7 +169,18 @@
       onOpenThread={noop}
       onOpenEmojiPicker={noop}
     />
-  {:else if variant === 'thread-echo'}
+  {:else if variant === 'edited-only'}
+    <MessageMetaBar {roomId} {serverSegment} reactions={[]} edited />
+  {:else if variant === 'echoed-to-channel' || variant === 'edited-and-echoed-to-channel'}
+    <MessageMetaBar
+      {roomId}
+      {serverSegment}
+      reactions={variant === 'echoed-to-channel' ? [] : reactions}
+      {action}
+      edited={variant === 'edited-and-echoed-to-channel'}
+      channelEchoEventId="evt-channel-echo"
+    />
+  {:else if variant === 'thread-echo' || variant === 'edited-thread-echo'}
     <MessageMetaBar
       {roomId}
       {serverSegment}
@@ -175,6 +188,7 @@
       reactions={reactions.slice(0, 1)}
       {action}
       isEchoEvent
+      edited={variant === 'edited-thread-echo'}
       onOpenThread={noop}
       onOpenEmojiPicker={noop}
     />

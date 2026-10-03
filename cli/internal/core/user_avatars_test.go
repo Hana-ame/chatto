@@ -8,12 +8,11 @@ import (
 	"image/png"
 	"io"
 	"testing"
-	"time"
 
 	"hmans.de/chatto/internal/evtstream"
 )
 
-func TestRequireCanManageUserAvatarAuthorizationMatrix(t *testing.T) {
+func TestRequireCanManageUserIdentityAuthorizationMatrix(t *testing.T) {
 	c, _ := setupTestCore(t)
 	ctx := testContext(t)
 	owner, err := c.CreateUser(ctx, SystemActorID, "avatarowner", "Avatar Owner", "")
@@ -67,9 +66,9 @@ func TestRequireCanManageUserAvatarAuthorizationMatrix(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			_, err := c.requireCanManageUserAvatar(ctx, test.actorID, test.targetID)
+			_, err := c.requireCanManageUserIdentity(ctx, test.actorID, test.targetID)
 			if !errors.Is(err, test.wantErr) {
-				t.Fatalf("requireCanManageUserAvatar() error = %v, want %v", err, test.wantErr)
+				t.Fatalf("requireCanManageUserIdentity() error = %v, want %v", err, test.wantErr)
 			}
 		})
 	}
@@ -87,7 +86,7 @@ func TestRequireCanManageUserAvatarAuthorizationMatrix(t *testing.T) {
 }
 
 func TestManagedBotAvatarUsesCanonicalProjectionAndIdempotentClear(t *testing.T) {
-	c, nc := setupTestCore(t)
+	c, _ := setupTestCore(t)
 	ctx := testContext(t)
 	owner, err := c.CreateUser(ctx, SystemActorID, "managedavatarowner", "Managed Avatar Owner", "")
 	if err != nil {
@@ -97,11 +96,6 @@ func TestManagedBotAvatarUsesCanonicalProjectionAndIdempotentClear(t *testing.T)
 	if err != nil {
 		t.Fatalf("CreateBot: %v", err)
 	}
-	sub, err := nc.SubscribeSync("live.sync.user." + bot.User.GetId() + ".profile_updated")
-	if err != nil {
-		t.Fatalf("SubscribeSync: %v", err)
-	}
-
 	updated, err := c.UpdateUserAvatar(ctx, owner.GetId(), bot.User.GetId(), createTestImage(100, 100))
 	if err != nil {
 		t.Fatalf("UpdateUserAvatar: %v", err)
@@ -112,9 +106,6 @@ func TestManagedBotAvatarUsesCanonicalProjectionAndIdempotentClear(t *testing.T)
 	if avatar, _ := c.GetUserAvatar(ctx, bot.User.GetId()); avatar == nil {
 		t.Fatal("bot avatar was not projected")
 	}
-	if _, err := sub.NextMsg(time.Second); err != nil {
-		t.Fatalf("profile update after upload: %v", err)
-	}
 	uploadEvents, _, err := c.EventPublisher.SubjectEvents(ctx, evtstream.UserAggregate(bot.User.GetId()).Subject(evtstream.EventAssetCreated))
 	if err != nil || len(uploadEvents) != 1 || uploadEvents[0].GetActorId() != owner.GetId() {
 		t.Fatalf("avatar upload events = %+v, %v; want one event by owner", uploadEvents, err)
@@ -122,9 +113,6 @@ func TestManagedBotAvatarUsesCanonicalProjectionAndIdempotentClear(t *testing.T)
 
 	if _, err := c.ClearUserAvatar(ctx, owner.GetId(), bot.User.GetId()); err != nil {
 		t.Fatalf("ClearUserAvatar: %v", err)
-	}
-	if _, err := sub.NextMsg(time.Second); err != nil {
-		t.Fatalf("profile update after clear: %v", err)
 	}
 	if _, err := c.ClearUserAvatar(ctx, owner.GetId(), bot.User.GetId()); err != nil {
 		t.Fatalf("idempotent ClearUserAvatar: %v", err)
@@ -305,12 +293,12 @@ func TestChattoCore_GetUserAvatarURL(t *testing.T) {
 	}
 }
 
-func TestChattoCore_GetUserAvatarURL_AbsoluteURL(t *testing.T) {
+func TestChattoCore_GetUserAvatarURL_ServerRelative(t *testing.T) {
 	core, _ := setupTestCore(t)
 	ctx := testContext(t)
 
 	// Create a user with an avatar
-	user, err := core.CreateUser(ctx, "system", "absurl-user", "Abs URL User", "")
+	user, err := core.CreateUser(ctx, "system", "relurl-user", "Rel URL User", "")
 	if err != nil {
 		t.Fatalf("Failed to create user: %v", err)
 	}
@@ -318,43 +306,23 @@ func TestChattoCore_GetUserAvatarURL_AbsoluteURL(t *testing.T) {
 	asset, _ := core.UploadUserAvatar(ctx, user.Id, testImage)
 	core.SetUserAvatar(ctx, user.Id, asset)
 
-	t.Run("returns relative URL when AssetBaseURL is empty", func(t *testing.T) {
-		core.AssetBaseURL = ""
-		url, err := core.GetUserAvatarURL(ctx, user.Id, nil, nil, "")
-		if err != nil {
-			t.Fatalf("Failed to get avatar URL: %v", err)
-		}
-		if !bytes.HasPrefix([]byte(url), []byte("/assets/server/")) {
-			t.Errorf("Expected relative URL starting with /assets/server/, got '%s'", url)
-		}
-	})
+	// The API layer adds the public origin of each request.
+	url, err := core.GetUserAvatarURL(ctx, user.Id, nil, nil, "")
+	if err != nil {
+		t.Fatalf("Failed to get avatar URL: %v", err)
+	}
+	if !bytes.HasPrefix([]byte(url), []byte("/assets/server/")) {
+		t.Errorf("Expected relative URL starting with /assets/server/, got '%s'", url)
+	}
 
-	t.Run("returns absolute URL when AssetBaseURL is set", func(t *testing.T) {
-		core.AssetBaseURL = "https://chat.example.com"
-		defer func() { core.AssetBaseURL = "" }()
-
-		url, err := core.GetUserAvatarURL(ctx, user.Id, nil, nil, "")
-		if err != nil {
-			t.Fatalf("Failed to get avatar URL: %v", err)
-		}
-		if !bytes.HasPrefix([]byte(url), []byte("https://chat.example.com/assets/server/")) {
-			t.Errorf("Expected absolute URL, got '%s'", url)
-		}
-	})
-
-	t.Run("returns absolute transformed URL when AssetBaseURL is set", func(t *testing.T) {
-		core.AssetBaseURL = "https://chat.example.com"
-		defer func() { core.AssetBaseURL = "" }()
-
-		w, h := 64, 64
-		url, err := core.GetUserAvatarURL(ctx, user.Id, &w, &h, "cover")
-		if err != nil {
-			t.Fatalf("Failed to get avatar URL: %v", err)
-		}
-		if !bytes.HasPrefix([]byte(url), []byte("https://chat.example.com/assets/server/")) {
-			t.Errorf("Expected absolute transformed URL, got '%s'", url)
-		}
-	})
+	w, h := 64, 64
+	url, err = core.GetUserAvatarURL(ctx, user.Id, &w, &h, "cover")
+	if err != nil {
+		t.Fatalf("Failed to get avatar URL: %v", err)
+	}
+	if !bytes.HasPrefix([]byte(url), []byte("/assets/server/")) {
+		t.Errorf("Expected relative transformed URL, got '%s'", url)
+	}
 }
 
 func TestChattoCore_UploadUserAvatar_ReplacesOld(t *testing.T) {

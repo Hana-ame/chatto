@@ -1,18 +1,15 @@
-import { PresenceStatus } from '@chatto/api-types/api/v1/presence_pb';
-import {
-  onProjectionEvent,
-  onPresenceChange,
-  onSessionTerminated,
-  onTypingEvent,
-  type ProjectionHandler,
-  type TypingEventData
-} from '$lib/eventBus.svelte';
+import type { ProjectionHandler } from '@chatto/client/realtime/eventBus';
+import { eventBusManager } from '$lib/client';
 import { useServerScope } from '$lib/state/server/scope.svelte';
 
 type ServerIdSelector = () => string;
-type EventSubscription<Handler> = (serverId: string, handler: Handler) => () => void;
-type PresenceHandler = (userId: string, status: PresenceStatus) => void;
-type SessionTerminatedHandler = (reason: string) => void;
+
+export interface TypingEventData {
+  userId: string;
+  roomId: string;
+  threadRootEventId: string | null;
+}
+
 type TypingHandler = (data: TypingEventData) => void;
 
 function resolveServerIdSelector(getServerId?: ServerIdSelector): ServerIdSelector {
@@ -21,42 +18,29 @@ function resolveServerIdSelector(getServerId?: ServerIdSelector): ServerIdSelect
   return () => serverScope.serverId;
 }
 
-function useServerEvent<Handler>(
-  handler: Handler,
-  subscribe: EventSubscription<Handler>,
-  getServerId?: ServerIdSelector
-): void {
-  const selectServerId = resolveServerIdSelector(getServerId);
-  $effect(() => subscribe(selectServerId(), handler));
-}
-
-/** Subscribe to canonical projection operations on the route or explicitly selected server. */
+/**
+ * Subscribe to canonical realtime events and snapshot resource updates for one
+ * server. The subscription follows the selected server and ends with the owner.
+ */
 export function useProjectionEvent(
   handler: ProjectionHandler,
   getServerId?: ServerIdSelector
 ): void {
-  useServerEvent(handler, onProjectionEvent, getServerId);
-}
-
-/** Subscribe to presence changes on the route or explicitly selected server. */
-export function usePresenceChange(handler: PresenceHandler, getServerId?: ServerIdSelector): void {
-  useServerEvent(handler, onPresenceChange, getServerId);
-}
-
-/**
- * Subscribe to session termination from another device, an admin boot, or
- * account deletion on the route or explicitly selected server.
- */
-export function useSessionTerminated(
-  handler: SessionTerminatedHandler,
-  getServerId?: ServerIdSelector
-): void {
-  useServerEvent(handler, onSessionTerminated, getServerId);
+  const selectServerId = resolveServerIdSelector(getServerId);
+  $effect(() => {
+    const serverId = selectServerId();
+    return serverId ? eventBusManager.getBus(serverId)?.subscribe(handler) : undefined;
+  });
 }
 
 /** Subscribe to typing signals on the selected server with automatic cleanup. */
 export function useTypingEvent(handler: TypingHandler, getServerId?: ServerIdSelector): void {
-  useServerEvent(handler, onTypingEvent, getServerId);
+  useProjectionEvent(({ event }) => {
+    if (event?.event.case !== 'userTyping' || !event.actorId) return;
+    handler({
+      userId: event.actorId,
+      roomId: event.event.value.roomId,
+      threadRootEventId: event.event.value.threadRootEventId ?? null
+    });
+  }, getServerId);
 }
-
-export type { TypingEventData };

@@ -1,17 +1,18 @@
 <script lang="ts">
+  import { accountNameToken } from '@chatto/client/timeline/accountName';
   import { startDMWith } from '$lib/dm/startDM';
-  import { createRoomCommandAPI } from '$lib/api-client/rooms';
+  import { createRoomCommandAPI } from '@chatto/client/api/rooms';
   import { useServerScope } from '$lib/state/server/scope.svelte';
   import type { RoomMember } from '$lib/state/room';
-  import ContextMenu from '$lib/ui/ContextMenu.svelte';
-  import { Dialog } from '$lib/ui';
+  import type { RoomSuspensionChoice } from '@chatto/client/api/rooms';
+  import { ContextMenu, Dialog, LoadingFog, LoadRetry } from '$lib/ui';
   import { toast } from '$lib/ui/toast';
   import { m } from '$lib/i18n/messages';
   import type { MessageUserInteractionState } from './messageUserInteractions.svelte';
 
   type UserContextMenuModule = typeof import('$lib/components/menus/UserContextMenu.svelte');
   type BanRoomMemberModalModule =
-    typeof import('$lib/components/moderation/BanRoomMemberModal.svelte');
+    typeof import('$lib/components/moderation/RemoveRoomUserModal.svelte');
 
   let userContextMenuModule: Promise<UserContextMenuModule> | null = null;
   let userContextMenuLoadAttempt = $state(0);
@@ -23,7 +24,7 @@
   }
 
   function importBanRoomMemberModal(): Promise<BanRoomMemberModalModule> {
-    return import('$lib/components/moderation/BanRoomMemberModal.svelte');
+    return import('$lib/components/moderation/RemoveRoomUserModal.svelte');
   }
 
   function loadUserContextMenu(_attempt: number) {
@@ -49,6 +50,7 @@
     currentUserId,
     canStartDMs,
     canBanRoomMembers,
+    isUniversal = false,
     onOpenProfile,
     userContextMenuLoader = importUserContextMenu,
     banRoomMemberModalLoader = importBanRoomMemberModal
@@ -59,6 +61,7 @@
     currentUserId?: string;
     canStartDMs: boolean;
     canBanRoomMembers: boolean;
+    isUniversal?: boolean;
     onOpenProfile?: (userId: string) => void;
     userContextMenuLoader?: () => Promise<UserContextMenuModule>;
     banRoomMemberModalLoader?: () => Promise<BanRoomMemberModalModule>;
@@ -91,39 +94,41 @@
   async function banFromRoom(
     member: RoomMember,
     reason: string,
-    expiresAt: string | null
+    suspension: RoomSuspensionChoice
   ): Promise<void> {
     if (banningMemberId) return;
 
     banningMemberId = member.id;
     banError = null;
-    const displayName = member.displayName || member.login;
     try {
       const api = serverScope.connection.getAPI(createRoomCommandAPI);
-      await api.banMember({ roomId, userId: member.id, reason, expiresAt });
+      await api.removeUser({ roomId, userId: member.id, reason, suspension });
     } catch (error) {
       if (!serverScope.isCurrent()) return;
       banningMemberId = null;
-      banError = m('room.sidebar.ban_failed');
+      banError = m('room.sidebar.remove_failed');
       toast.error(banError);
-      console.error('Failed to ban member from room:', error);
+      console.error('Failed to remove user from room:', error);
       return;
     }
     if (!serverScope.isCurrent()) return;
     banningMemberId = null;
 
-    toast.success(m('room.sidebar.ban_success', { name: displayName }));
+    toast.success({
+      text: m('room.sidebar.remove_success', { name: accountNameToken(0) }),
+      accounts: [
+        {
+          name: member.displayName || member.login,
+          identity: { isBot: member.isBot, deleted: member.deleted }
+        }
+      ]
+    });
     banDialogUser = null;
   }
 </script>
 
 {#snippet loadError(onretry: () => void)}
-  <div class="flex flex-col items-center gap-3 p-4 text-center" role="alert">
-    <p class="text-sm text-muted">{m('common.error.network')}</p>
-    <button type="button" class="btn-secondary" onclick={onretry}>
-      {m('common.retry')}
-    </button>
-  </div>
+  <LoadRetry {onretry} />
 {/snippet}
 
 {#if interactions.user && interactions.anchorRect}
@@ -133,7 +138,7 @@
       ariaLabel={m('common.loading')}
       onclose={() => interactions.close()}
     >
-      <p class="p-4 text-center text-sm text-muted" aria-busy="true">{m('common.loading')}</p>
+      <LoadingFog class="m-2 h-28 w-64 max-w-full" />
     </ContextMenu>
   {:then { default: UserContextMenu }}
     <UserContextMenu
@@ -162,15 +167,20 @@
 
 {#if banDialogUser}
   {#await loadBanRoomMemberModal(banRoomMemberModalLoadAttempt)}
-    <Dialog visible title={m('admin.moderation.ban_action')} onclose={() => (banDialogUser = null)}>
-      <p class="text-sm text-muted" aria-busy="true">{m('common.loading')}</p>
+    <Dialog
+      visible
+      title={m('admin.moderation.remove_action')}
+      onclose={() => (banDialogUser = null)}
+    >
+      <LoadingFog class="h-24 w-full" />
     </Dialog>
-  {:then { default: BanRoomMemberModal }}
-    <BanRoomMemberModal
+  {:then { default: RemoveRoomUserModal }}
+    <RemoveRoomUserModal
       user={banDialogUser}
+      {isUniversal}
       submitting={banningMemberId === banDialogUser.id}
       error={banError}
-      onconfirm={(reason, expiresAt) => banFromRoom(banDialogUser!, reason, expiresAt)}
+      onconfirm={(reason, suspension) => banFromRoom(banDialogUser!, reason, suspension)}
       onclose={() => (banDialogUser = null)}
     />
   {:catch}

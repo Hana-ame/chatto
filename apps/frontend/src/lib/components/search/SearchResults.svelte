@@ -1,0 +1,72 @@
+<!-- @component
+Renders search states and loads more results at the scroll edge. The owner
+supplies each result and keeps navigation and the scroll container. Both
+variants show `LoadingFog` while the first page of a search loads. Compact mode
+keeps the sidebar's spacing and shorter prompt.
+-->
+<script lang="ts">
+  import type { Snippet } from 'svelte';
+  import type { MessageSearchResult } from '@chatto/client/api/messageSearch';
+  import type { MessageSearchStore } from '$lib/state/server/messageSearch';
+  import { useLoadMoreWhenVisible } from '$lib/hooks/useLoadMoreWhenVisible.svelte';
+  import { EmptyState, LoadingFog } from '$lib/ui';
+  import { m } from '$lib/i18n/messages';
+
+  let {
+    store,
+    compact = false,
+    children
+  }: {
+    store: Pick<
+      MessageSearchStore,
+      'error' | 'loading' | 'loadingMore' | 'hasSearched' | 'results' | 'nextCursor' | 'loadMore'
+    >;
+    compact?: boolean;
+    children: Snippet<[MessageSearchResult]>;
+  } = $props();
+
+  const loadMoreWhenVisible = useLoadMoreWhenVisible({
+    getCursor: () => store.nextCursor,
+    loadMore: () => store.loadMore(),
+    hasError: () => store.error
+  });
+</script>
+
+{#snippet promptDescription()}{m('search.prompt.description')}{/snippet}
+
+<div class="flex min-h-full flex-col" aria-live="polite">
+  {#if store.error}
+    <EmptyState icon="icon-[uil--exclamation-triangle]" title={m('search.error.title')}>
+      {m('search.error.description')}
+    </EmptyState>
+  {:else if store.loading && store.results.length === 0}
+    <LoadingFog class="m-3 min-h-32 flex-1" label={m('search.searching')} />
+  {:else if store.hasSearched && !store.loading && store.results.length === 0 && !store.nextCursor}
+    <EmptyState icon="icon-[uil--search-minus]" title={m('search.no_results.title')}>
+      {m('search.no_results.description')}
+    </EmptyState>
+  {:else if !store.hasSearched}
+    <EmptyState
+      icon="icon-[uil--search]"
+      title={m('search.prompt.title')}
+      children={compact ? undefined : promptDescription}
+    />
+  {:else}
+    <ol class={['selectable-list', compact ? 'gap-3 py-2' : 'gap-4']}>
+      {#each store.results as result (result.id)}
+        <li>{@render children(result)}</li>
+      {/each}
+    </ol>
+    {#if store.nextCursor}
+      <div
+        {@attach loadMoreWhenVisible}
+        class={['flex h-12 items-center justify-center text-muted', compact && 'text-sm']}
+      >
+        {#if store.loadingMore}<LoadingFog
+            class="h-10 w-full"
+            label={m('search.loading_more')}
+          />{/if}
+      </div>
+    {/if}
+  {/if}
+</div>

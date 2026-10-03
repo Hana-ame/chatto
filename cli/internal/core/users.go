@@ -2,8 +2,8 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"hmans.de/chatto/internal/pb/chatto/core/live/v1"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -11,7 +11,6 @@ import (
 	"golang.org/x/crypto/bcrypt"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	"hmans.de/chatto/internal/core/subjects"
 	"hmans.de/chatto/internal/evtstream"
 	evtv1 "hmans.de/chatto/internal/pb/chatto/core/evt/v1"
 )
@@ -39,6 +38,7 @@ func (c *ChattoCore) CreateUser(ctx context.Context, actorID string, login, disp
 }
 
 type userCreationOptions struct {
+	setup         *ServerSetupInput // Only the first-run command may supply completion facts.
 	verifiedEmail string
 	external      *PendingExternalIdentityFlow
 	invitationID  string
@@ -50,19 +50,24 @@ type userCreationOptions struct {
 }
 
 func (c *ChattoCore) createUserWithOptions(ctx context.Context, actorID string, login, displayName, password string, options userCreationOptions) (*evtv1.User, error) {
+	if options.setup == nil && (options.verifiedEmail != "" || options.external != nil) {
+		required, err := c.SetupRequired(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if required {
+			return nil, ErrSetupRequired
+		}
+	}
 	// Trim and validate login (preserve original casing)
 	login = strings.TrimSpace(login)
 	isBot := options.isBot
+	if err := ValidateLogin(login); err != nil {
+		return nil, err
+	}
 	if isBot {
-		if err := ValidateBotLogin(login); err != nil {
-			return nil, err
-		}
 		if strings.TrimSpace(options.botOwnerID) == "" || password != "" || options.verifiedEmail != "" || options.external != nil || options.invitationID != "" {
 			return nil, ErrInvalidArgument
-		}
-	} else {
-		if err := ValidateHumanLogin(login); err != nil {
-			return nil, err
 		}
 	}
 
@@ -278,7 +283,27 @@ func (c *ChattoCore) createUserWithOptions(ctx context.Context, actorID string, 
 		entries = append(entries, evtstream.BatchEntry{Subject: agg.SubjectFor(externalEvent), Event: externalEvent})
 	}
 
+	if options.setup != nil {
+		entries = append(entries, setupCompletionEntries(userID, options.setup)...)
+		// An ambiguous publish acknowledgement can still mean the batch committed.
+		// Retain these keys once setup attempts a publish; deleting them could
+		// destroy the only owner's credentials and profile after successful setup.
+		cleanupEncryptionKey = false
+	}
 	_, err = c.appendUserBatchWithMentionableCheck(ctx, userID, entries, func() error {
+		if options.setup != nil {
+			if err := c.requireSetupAvailable(ctx); err != nil {
+				return err
+			}
+		} else if options.verifiedEmail != "" || options.external != nil {
+			required, err := c.SetupRequired(ctx)
+			if err != nil {
+				return err
+			}
+			if required {
+				return ErrSetupRequired
+			}
+		}
 		if options.authorize != nil {
 			if err := options.authorize(); err != nil {
 				return err
@@ -319,6 +344,10 @@ func (c *ChattoCore) createUserWithOptions(ctx context.Context, actorID string, 
 		return nil
 	})
 	if err != nil {
+		if options.setup != nil && errors.Is(err, ErrSetupUnavailable) {
+			// A rejected OCC recheck is a definite non-commit for this user.
+			cleanupEncryptionKey = true
+		}
 		return nil, err
 	}
 	cleanupEncryptionKey = false
@@ -337,21 +366,6 @@ func (c *ChattoCore) createUserWithOptions(ctx context.Context, actorID string, 
 		if err := c.AssignServerRoleToExistingUser(ctx, SystemActorID, userID, RoleOwner); err != nil {
 			c.logger.Warn("Failed to auto-assign owner role on signup", "user_id", userID, "error", err)
 		}
-	}
-
-	// Publish a best-effort transient signal for the new public user.
-	event := newLiveEvent(eventActorID, &livev1.LiveEvent{
-		Event: &livev1.LiveEvent_UserCreated{
-			UserCreated: &livev1.UserCreatedSyncEvent{
-				UserId:      userID,
-				Login:       login,
-				DisplayName: displayName,
-			},
-		},
-	})
-	subject := subjects.LiveSyncUserEvent(userID, "created")
-	if err := c.publishLiveEvent(ctx, subject, event); err != nil {
-		c.logger.Error("failed to publish user created event", "error", err, "user_id", userID)
 	}
 
 	c.logger.Info("Created user", "id", userID)
@@ -428,42 +442,10 @@ func (c *ChattoCore) GetUserReference(ctx context.Context, userID string) (*evtv
 	return nil, ErrNotFound
 }
 
-// GetUsers retrieves multiple users by ID from the user projection.
-// Returns users in the same order as userIDs. nil entries indicate not-found users.
-// More efficient than calling GetUser() in a loop for batched operations.
-func (c *ChattoCore) GetUsers(ctx context.Context, userIDs []string) ([]*evtv1.User, error) {
-	if len(userIDs) == 0 {
-		return []*evtv1.User{}, nil
-	}
-
-	// Deduplicate IDs to avoid redundant fetches
-	seen := make(map[string]bool, len(userIDs))
-	uniqueIDs := make([]string, 0, len(userIDs))
-	for _, id := range userIDs {
-		if !seen[id] {
-			seen[id] = true
-			uniqueIDs = append(uniqueIDs, id)
-		}
-	}
-
-	userMap := make(map[string]*evtv1.User, len(uniqueIDs))
-	for _, id := range uniqueIDs {
-		user, ok, err := c.userModel.user(ctx, id)
-		if err != nil {
-			return nil, err
-		}
-		if ok {
-			userMap[id] = user
-		}
-	}
-
-	// Return in original order (nil for not-found users)
-	result := make([]*evtv1.User, len(userIDs))
-	for i, id := range userIDs {
-		result[i] = userMap[id] // nil if not found
-	}
-
-	return result, nil
+// GetUserReferences returns public user references in request order. A deleted
+// account has an explicit tombstone; an unknown or not-yet-projected ID is nil.
+func (c *ChattoCore) GetUserReferences(ctx context.Context, userIDs []string) ([]*evtv1.User, error) {
+	return c.userModel.userReferences(ctx, userIDs)
 }
 
 // GetUserByLogin retrieves a user by their login name using the login index.
@@ -497,11 +479,6 @@ var ErrLoginAlreadyTaken = fmt.Errorf("login name is already taken")
 
 // ErrUsernameBlocked is returned when the login name is in the blocked list.
 var ErrUsernameBlocked = fmt.Errorf("this username is not available")
-
-// CheckLoginExists checks if a login name is already taken.
-func (c *ChattoCore) CheckLoginExists(ctx context.Context, login string) (bool, error) {
-	return c.userModel.loginExists(login), nil
-}
 
 // IsLoginAvailable reports whether a login currently passes validation and
 // conflicts with neither reserved names nor existing mention handles. The

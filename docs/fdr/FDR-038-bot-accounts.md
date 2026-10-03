@@ -1,7 +1,7 @@
 # FDR-038: Bot Accounts
 
 **Status:** Experimental
-**Last reviewed:** 2026-09-01
+**Last reviewed:** 2026-09-27
 
 ## Overview
 
@@ -12,26 +12,85 @@ exercise more authority than its human owner currently possesses.
 
 ## Behavior
 
+- Public `User.bot` metadata identifies a bot by its presence and contains
+  `owner_user_id`. It is absent for humans and deleted-account references.
+  The stored account model keeps its existing bot fields.
+
+- The client shows a small **BOT** badge after each bot display name. This
+  includes messages, direct-message lists, profiles, account pickers, typing
+  indicators, notifications, reaction details, and confirmation text. Each bot
+  in a group direct message has its own badge. Selected account pickers show
+  the badge beside the text field. Plain-text values, such as accessibility
+  labels and page titles, use **Name (BOT)** when they must identify the bot.
+  The badge stays visible when a long name is shortened. Deleted accounts do
+  not have it. Avatars keep their custom-status indicators. Bot avatars show
+  presence dots only for Online, Away, and Do Not Disturb.
+  This makes account type clear without covering the avatar or implying verification.
+
+- The room sidebar lists bots in a **Bots** section between Online and Offline.
+  It shows the section only when the room has bots. Bot presence does not move
+  them to another section. Offline bots are not dimmed and have no presence
+  dot. Bots with Online, Away, or Do Not Disturb presence show their normal dot.
+
+- Bot profiles show an **Owned by** row below the bot identity. The owner's
+  avatar and name open the shared user profile card on click or tap. The card
+  includes the room’s message and profile actions, subject to viewer permissions. This row
+  stays visible when permissions are collapsed. Owner identity refreshes every
+  30 seconds while the bot profile is open.
+
+- A bot's profile pane shows **What it can do** to all authenticated
+  members. It describes effective permissions after the owner's current
+  authority is applied. Channel rooms and direct messages have separate
+  descriptions. Message and call actions still require membership and other
+  action-specific conditions.
+- Actions appear as short lists aligned below scope headings, with bundled
+  icons in a separate column. Room browsing and
+  joining share one bullet when both apply to the same scope. The section
+  starts expanded and remembers its collapsed state for each server on this
+  device.
+- The profile reads `chatto.api.v1.PermissionService.ListEffectivePermissions`.
+  Any authenticated member can read bot effective permissions. Human targets,
+  including the caller, require `user.manage-permissions`. The read returns only
+  effective grants; it never returns stored overrides or inactive grants.
+- The client groups these grants for display. The API reports whether each
+  grant covers all applicable child scopes, including rooms hidden from the
+  viewer. It returns all viewer-visible effective grants in one coherent read, without
+  pagination or truncation.
+- The summary combines broader and narrower grants only when every applicable
+  narrower scope has the same effective access. It omits permissions already
+  included by another displayed permission. Named rooms follow the viewer's
+  normal room visibility. No DM participants or credential details are exposed.
+- Bot owners and authorised human bot managers can expand **Inactive grants** to see saved
+  grants that are not active, with an explanation that the owner's current permissions do not allow them.
+  The profile loads these separately through the existing admin user matrix
+  read. Other members cannot see inactive grants.
+- The summary refreshes every 30 seconds while the pane is open. A failed read
+  shows an error instead of stale grants. Closing the pane stops refreshes and clears its cache.
+
 - A human user with `bot.create` can create a bot account and becomes its
   owner.
 - Server Admin's Bots page lists the bots visible to the caller and creates new
-  bots. Selecting a bot opens its own detail page for login and display-name
-  editing, avatar management, API-key management, deletion, metadata, and
-  permissions. An account manager who does not manage bots can see all bots and
-  can manage their avatars, but cannot manage their credentials or lifecycle.
+  bots. Selecting a bot opens its detail page. The page has three sections,
+  and each section has its own route: **Overview** edits the login, display
+  name, bio, and avatar, and shows the metadata, owner reassignment, and
+  deletion; **Integrations** manages outbound webhooks, incoming webhooks, and
+  API keys; **Permissions** manages the permissions of the bot. Tabs link the
+  sections. The owner and bot managers see all three sections. An account
+  manager who does not manage bots can see all bots and manage their profiles
+  and avatars, and sees only **Overview**. The account manager cannot manage
+  their credentials or lifecycle.
   Bot custom-status and personal-settings management are not supported.
+- The user context menu of a bot shows **Manage bot** to its owner, to a human
+  with `bot.manage`, and to a human with `user.manage-accounts`. The item
+  opens the detail page of the bot. The client finds the owner from the public
+  `User.bot` reference.
 - On a fresh RBAC bootstrap, `everyone` receives `bot.create`, while `admin`
   and `owner` have `bot.manage`. The owner grant follows Chatto's normal
   effective-owner override rather than being stored as an editable permission
   row.
-- Bot status and ownership are explicit, durable account properties. A login
-  suffix is a naming rule, not the source of truth for whether an account is a
-  bot.
-- Bot logins must end in `_bot`, matched case-insensitively. New human accounts
-  and human login changes cannot claim that suffix.
-- Existing human accounts that already use an `_bot` login remain human
-  accounts. They are not silently converted into bots, but other human
-  accounts cannot newly claim or rename into the reserved suffix.
+- Bot status and ownership are explicit, durable account properties. Human and
+  bot accounts use the same username rules. A username does not identify the
+  account kind.
 - Bot accounts are visible wherever ordinary users are visible, including
   messages, profiles, directories, mentions, direct messages, and member
   management. User identity displays mark them as bots with an accessible
@@ -61,12 +120,19 @@ exercise more authority than its human owner currently possesses.
   this optional telemetry, the page shows that it is temporarily unavailable.
 - An incoming webhook can post plain-text messages as the bot. It accepts
   Slack-compatible `text` and `channel` fields, Chatto `body` and `room_id`
-  aliases, an optional `room_id` query parameter, and the Chatto
-  `create_thread` extension. All specified destinations and bodies must agree.
+  aliases, Grafana `message`, an optional `room_id` query parameter, and the Chatto
+  `create_thread` extension. All non-empty destinations and bodies must agree.
+- Webhook creation has an optional destination channel selector. It lists
+  visible, active channel rooms and adds the selected room ID to the copied
+  URL. The bot still needs membership and posting permission. This choice
+  does not restrict the credential to that room.
+- Grafana can send its default webhook payload without a custom template.
+  Chatto posts its formatted message, including firing or resolved status.
 - An incoming webhook uses stable room IDs. It can select any channel room
   where the bot is a member and has the normal posting permissions. It can
   select an existing human-started DM that contains the bot. It cannot create
-  or find a DM, and it cannot create a thread in a DM.
+  or find a DM. It can create or reply in a DM thread when its DM-scoped
+  allowlist and owner ceiling permit it.
 - Newly issued keys use a 128-bit random secret to remain compact enough for
   copy-and-paste workflows. Previously issued 256-bit keys remain valid until
   a manager revokes them.
@@ -77,14 +143,19 @@ exercise more authority than its human owner currently possesses.
 - A bot API key authenticates normal public API and realtime requests as that
   bot. The bot can otherwise participate like a user wherever its explicit
   permissions allow.
-- A bot uses the normal `subscribe_events` realtime subscription. Chatto sends
-  its visible notification occurrences through
-  `notification_occurrences_replace`; there is no bot-only realtime channel.
-- Direct-message, direct-mention, reply, and followed-thread occurrences are
-  the supported activation causes for bot integrations. The bot uses the
-  message reference in the occurrence to fetch context through the normal API.
-  Other notification causes can be present, so the integration must filter by
-  cause.
+- A bot uses the normal realtime event subscription. There is no bot-only
+  channel. It receives the same authorized semantic events as other clients,
+  including message posts, edits, retractions, reactions, membership changes,
+  room changes, and other public activity.
+- A bot can use stable event IDs to deduplicate delivery. It uses event
+  resource references with the normal ConnectRPC API when it needs more
+  context.
+- A recent reconnect can resume from the bot's last safe cursor. A long,
+  invalid, unsafe, or expensive gap returns current snapshot state instead of
+  every historical transition.
+- Notification occurrences remain available through `NotificationService` and
+  current-state snapshots. They are not the only activation contract for bot
+  integrations.
 - A delivered direct mention in a channel-room root or reply attempts to
   follow that thread if the bot has no prior follow state. Later replies can
   then create followed-thread occurrences for the bot.
@@ -93,20 +164,37 @@ exercise more authority than its human owner currently possesses.
   durable mention fact.
 - Bots do not inherit the implicit `everyone` role, named-role permissions, or
   any other baseline grants. An absent bot permission is denied.
+- The account permission matrix has a **Joined** row above the permission rows.
+  Owners and human bot managers can add and remove the bot in each visible
+  channel room that is not archived. A confirmation dialog explains that the
+  change takes effect immediately after confirmation. Cancel leaves membership
+  unchanged; grants stay unchanged.
+  `user.manage-accounts` or `room.manage` for the room can override a
+  missing join permission. Otherwise joining requires the bot's effective
+  `room.join`, including the owner's permission ceiling. Bans and archived
+  rooms prevent joining. Bot owners do not need `room.manage`. Removal does
+  not require `room.join`. Archived channels have no matrix column; their
+  permissions and membership stay unchanged. Unarchiving restores their columns
+  on the next matrix fetch. Universal membership is automatic; server,
+  group, and DM columns have no membership control.
 - Channel-room membership does not give a bot message content. The bot needs
   an explicit `message.read` grant for broad access or an explicit
   `message.read-interactions` grant for related threads. The broad grant
   includes the narrow permission. Each grant is bounded by sufficient
-  effective authority on its owner. DM membership authorizes the bot to read
-  that DM.
+  effective authority on its owner. DM membership remains necessary, and the
+  bot also needs a DM-scoped broad or interaction read grant.
 - A bot cannot start or fetch a DM through `RoomService.StartDM`, even if it
   has `message.post` or the DM already exists. A human must start a DM that
   includes the bot. The bot can then interact in that DM through its normal
   message permissions.
 - Bot permissions are granted explicitly at their applicable server, room
   group, or room scope. The bot's effective permission is allowed only when
-  both the bot's allowlist and its owner's current effective permissions allow
-  it at that scope.
+  both the bot's allowlist and its owner's current RBAC entitlement allow
+  it at that scope. The owner ceiling does not depend on privileged mode in
+  any human session. Bot permission inspection uses the same rule.
+- Granting an elevation-required permission requires the acting human to have
+  that permission active at the target scope. Clearing a grant uses the normal
+  bot management checks and does not require activation of that permission.
 - Bot permission mutations accept only allow or clear; explicit denials are
   rejected. The editor therefore presents each applicable permission as
   enabled or disabled instead of exposing RBAC's general three-state control.
@@ -139,12 +227,18 @@ exercise more authority than its human owner currently possesses.
   bot-management permission appears in their stored allowlist.
 - Bots cannot have passwords, verified emails, external identities, browser
   sessions, OAuth access tokens, password-reset flows, or other human sign-in
-  methods. A bot API key can update its own public profile through
-  `MyAccountService.UpdateProfile` and can manage its own avatar through
+  methods. A bot API key can update its own public profile and avatar through
   `UserService`. It cannot change ownership, permissions, or API keys.
 - A bot owner, a human with `bot.manage`, or a human with
-  `user.manage-accounts` can upload or delete a bot's avatar. A bot cannot
-  target another account.
+  `user.manage-accounts` can change a bot's login, display name, and bio, and
+  can upload or delete its avatar. A login change by the owner or a human with
+  `bot.manage` checks and starts the 30-day username cooldown of the bot. A
+  human with `user.manage-accounts` bypasses the cooldown. A case-only change
+  does not check or start it. The owner and bot managers can see the start of
+  the cooldown through `BotService`, without `admin.view-users`. The bot detail page
+  asks for confirmation before a login change that starts the cooldown, and it
+  locks the username field while the cooldown runs. `Bot.last_login_change`
+  reports the start of the cooldown. A bot cannot target another account.
 - Bots cannot request their own deletion. Only their owner or a human user with
   `bot.manage` can delete them through `BotService`.
 - Deleting a bot uses the normal account-deletion and crypto-shredding
@@ -155,14 +249,12 @@ exercise more authority than its human owner currently possesses.
 
 ## Design Decisions
 
-### 1. Explicit account kind, independent of the login suffix
+### 1. Explicit account kind
 
-**Decision:** Bot status is an immutable account kind. The `_bot` suffix is a
-separate validation rule for current bot and human logins.
+**Decision:** Bot status is an immutable account kind. Human and bot usernames
+use the same rules.
 **Why:** Clients and authorization rules need a stable way to distinguish bots
-from people. Inferring identity from a name would make existing accounts
-ambiguous and would prevent the suffix rule from changing or becoming
-operator-configurable later.
+from people. Inferring identity from a name would make accounts ambiguous.
 **Tradeoff:** Account creation, profile projection, public user shapes, and
 identity rendering all need to carry the account kind explicitly.
 
@@ -176,8 +268,9 @@ APIs as people without requiring parallel bot-only resource models. Separating
 authentication keeps an API credential from becoming an interactive login.
 **Tradeoff:** Account-security and credential-enrolment operations must enforce
 the account-kind boundary rather than treating every passwordless account as
-eligible for a password or external identity. Self-profile operations can stay
-shared because they always target the authenticated identity.
+eligible for a password or external identity. Profile and avatar operations stay
+shared in `UserService`. They take a target user ID, so the bot itself and its
+human managers use the same methods.
 
 ### 3. Explicit allowlist instead of normal role inheritance
 
@@ -257,7 +350,9 @@ their keys.
 ### 8. Bot identity is visible on canonical user surfaces
 
 **Decision:** Public user representations identify bot accounts, and clients
-render an accessible bot marker anywhere user identity is presented.
+render an accessible bot marker on user identity surfaces. The bundled client
+omits this marker from extra-small avatars to keep them clear. Larger avatars
+keep the marker.
 **Why:** People should know when messages or other actions come from automation.
 Using the canonical user representation keeps the distinction consistent
 across existing and future surfaces.
@@ -276,25 +371,23 @@ incorrect permission grant.
 existing DM. It must use the room state that Chatto sends after a human starts
 the DM.
 
-### 10. Notification occurrences are the bot activation contract
+### 10. Semantic public events are the bot activation contract
 
-**Decision:** Bots receive the same exact notification occurrences as human
-accounts through `NotificationService` and the normal realtime projection.
-Integrations use direct messages, direct mentions, replies, and
-followed-thread activity as activation causes. A future webhook transport must
-deliver these same occurrences instead of introducing separate bot events.
+**Decision:** Bots receive every authorized public realtime event type through
+the normal client stream. Notification occurrences remain a separate current
+state and triage feature. They do not limit which message, reaction, room,
+membership, profile, or call changes a bot can observe. See ADR-091 and
+FDR-045.
 
-**Why:** Notification occurrences already own recipient selection, user policy,
-current visibility, stable identity, and bounded recovery. Reusing them keeps
-activation semantics independent of transport and avoids a second event model
-that can disagree with the notification model.
+**Why:** A bot author should react to what happened in Chatto instead of
+interpreting frontend projection replacements or relying only on notification
+policy. The same public event meaning can serve bots, the bundled frontend,
+alternate clients, and a future reliable delivery transport.
 
-**Tradeoff:** Realtime replacements can repeat occurrences and can contain
-more than one cause for the same message. Integrations must checkpoint
-occurrence IDs and can deduplicate by the referenced message event ID when they
-want one action for each source message. The current realtime replacement
-contains only the newest finite page; longer recovery uses the paginated
-notification API.
+**Tradeoff:** Realtime provides bounded reconnect recovery, not indefinite
+delivery. Bots must deduplicate stable event IDs. An integration that must
+process every event after a long outage needs a future acknowledged transport
+or paged activity feature. Outbound webhooks are also best effort.
 
 ### 11. Incoming webhooks use a separate action credential
 
@@ -319,18 +412,74 @@ best-effort and can be delayed, unavailable, or missing after a process or
 storage failure. Rich Slack payloads and replies to existing threads are
 deferred.
 
+### 12. Independent outbound webhooks
+
+**Decision:** A bot manager can create up to 20 named outbound endpoints, each
+with its own URL, optional Authorization value, and signing secret. Each enabled endpoint receives new direct mentions and messages in
+DMs that include the bot, including replies. A DM mention produces one
+request with both trigger values. The bot's own messages do not activate it.
+Channel messages without a direct mention, edits, reactions, and notification
+preferences do not activate an outbound webhook.
+
+**Why:** A fixed JSON structure and explicit event type let the receiving tool
+route requests without a separate event selection UI. See ADR-097.
+
+**Tradeoff:** Generic tools must accept the Chatto JSON body. Signing headers
+are available, but signature verification is the receiver's responsibility.
+The bot uses the normal API to reply. Webhook response bodies have no action.
+
+The saved name and URL remain visible to bot managers; Authorization remains
+write-only. Creation opens the signing-secret dialog immediately. Closing the
+dialog clears the secret. New endpoints start enabled in the UI.
+Names and signing secrets are fixed. The edit dialog changes the URL and lets
+managers type a replacement Authorization header directly. A blank field keeps
+the saved header; a clear action removes it and can be undone before saving.
+The saved value is never loaded into the field. Edits preserve the
+creation time and signing secret, and cancel retries for the previous settings.
+Row actions use icons with accessible labels and hover hints.
+Pause and resume preserve credentials. Resume accepts
+only new messages and does not revive cancelled retries. Revocation stops one
+endpoint permanently; an HTTP request already in flight can still finish.
+Paused endpoints count toward the limit. Bot accounts cannot manage endpoints.
+The UI uses the same collection and dialog layout as API keys and incoming
+webhooks, with toast feedback for completed actions.
+
+Chatto retries failed requests within an operator-configured lifetime and
+attempt limit. Delivery is best effort: pending work and retries live in memory
+and are lost on restart, without a failure record. Eight workers per process
+use a channel with 64 slots; a full channel blocks source handoff. Requests
+have a stable delivery ID. A receiver must tolerate duplicates. The bot page shows recent failures for each endpoint. Failures expire after
+the operator-configured retention period, seven days by default. Later success
+does not clear an earlier failure. An empty history does not prove successful
+delivery. Access is checked before sending. The message body is
+the currently readable version, so it can change between attempts after an
+edit. Retracted or inaccessible messages are not sent.
+
 ## Permissions
 
 - `bot.create` — create bot accounts and become their owner.
 - `bot.manage` — view and manage every bot on the server, including reassigning
   its owner, while preserving the current owner's permission ceiling.
 - `message.read` — give the bot broad message access in configured channel
-  rooms, subject to membership and the owner's effective broad-read authority.
+  rooms or in DMs, subject to membership and the owner's effective broad-read
+  authority at the same scope.
   This grant includes `message.read-interactions`.
 - `message.read-interactions` — give the bot complete access to a
-  channel-room thread that it started or where another account directly
-  mentioned it, subject to membership and the owner's effective broad or
+  thread that it started, where another account directly mentioned it, or
+  where it received a DM, subject to membership and the owner's effective broad or
   narrow read authority.
+- `message.post` — post roots and thread replies at configured scopes. Includes
+  `message.post-in-thread` and `message.post-in-interactions`. A bot can
+  receive this permission only at Direct messages scope when it must not post
+  in channels.
+- `message.post-in-thread` — post replies, including the first reply to a root,
+  in readable threads at configured scopes.
+  A bot that responds only in private-conversation threads can combine this
+  DM-scoped allow with DM-scoped `message.read`. It does not need
+  `message.post`.
+- `message.post-in-interactions` — reply only in related threads, with separate
+  read access. A broad reader can use this grant to speak only in conversations
+  involving it. The owner's effective authority must also include this grant.
 
 Notification delivery modes are user preferences, not permissions. A bot can
 change its own notification policy through the normal notification policy API
@@ -345,6 +494,13 @@ separate permission. Effective owners retain their normal all-permissions
 override, but bots themselves cannot exercise bot-management operations.
 
 ## API Compatibility
+
+Account membership uses the existing room APIs. Targeted reads now permit
+account managers and managers of the requested bot. Add and remove operations
+accept account managers and bot managers in addition to room managers. Room
+and account managers can override a missing join permission. Membership events
+and permission grants keep their existing storage format. No data migration
+is required.
 
 Bot identity, management, reassignment, permission ceilings, and named
 credentials are additive in Chatto 0.5. The removal of the experimental
@@ -389,25 +545,33 @@ client hides avatar editors when the server version is earlier than
 0.5.0-alpha.6. Custom clients must regenerate their bindings, change the
 service, and send the target user ID.
 
+Profile updates move from `MyAccountService.UpdateProfile` and
+`AdminUserService.UpdateUser` to the target-aware
+`UserService.UpdateUserProfile` in Chatto 0.5.0-beta.9. This is an intentional
+pre-1.0 breaking change. Bots that update their own profile must call the new
+method and send their own user ID. The bundled client shows the bot profile
+editor only when the server version is 0.5.0-beta.9 or later.
+
 ## Related
 
-- **ADRs:** ADR-007 (per-user encryption and crypto-shredding), ADR-033
+- **ADRs:** ADR-100 (shared integration client), ADR-111 (client state layer in `@chatto/client`), ADR-098 (retained operational log), ADR-097 (best-effort outbound bot webhooks), ADR-007 (per-user encryption and crypto-shredding), ADR-033
   (event-sourced state), ADR-036 (runtime state), ADR-040 (permission-only RBAC
   with owner override), ADR-045 (public API stability tiers), ADR-046 (typed
-  runtime credentials), ADR-051 (resumable client projection), ADR-052
+  runtime credentials), ADR-052
   (subject-specific RBAC), ADR-076 (deterministic notification occurrences),
   ADR-077 (persistent notification list), ADR-080 (explicit message-read
   permissions), ADR-083 (action-limited bot incoming webhooks), ADR-085
   (user-scoped MCP integration), ADR-087 (request-time authorization with
-  aggregate OCC)
+  aggregate OCC), ADR-089 (server content view), ADR-091 (semantic realtime
+  events)
 - **FDRs:** FDR-001 (Roles & Permissions), FDR-002 (Replies & Threads), FDR-006
   (@Mentions), FDR-007 (Direct Messages), FDR-012 (Notifications), FDR-018
   (Account Lifecycle), FDR-022 (User Profile), FDR-023 (Authentication &
   Sessions), FDR-025 (User Search & Member Directory), FDR-039 (Message Access
-  & Interactions), FDR-043 (Model Context Protocol Integration)
+  & Interactions), FDR-043 (Model Context Protocol Integration), FDR-045
+  (Realtime Event Stream)
 
 ## Open Questions
 
 - API-key expiry is deferred.
-- Define durable webhook registration, signing, retry, and delivery status for
-  the same bot activation occurrences.
+- Additional outbound event types are deferred.

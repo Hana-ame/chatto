@@ -1,50 +1,54 @@
 import { PresenceStatus } from '@chatto/api-types/api/v1/presence_pb';
-import { RoomViewerState, RoomWithViewerState } from '@chatto/api-types/api/v1/room_directory_pb';
+import { RealtimeProjectionUpdate } from '@chatto/client/realtime/eventBus';
+import {
+  ListRoomsResponse,
+  RoomViewerState,
+  RoomWithViewerState
+} from '@chatto/api-types/api/v1/room_directory_pb';
 import { Room } from '@chatto/api-types/api/v1/rooms_pb';
+import { RealtimeResourceUpdate } from '@chatto/client/api/realtimeResources';
+import { UserAccountDeletedEvent } from '@chatto/api-types/realtime/v1/events_pb';
+import { RealtimeEvent as PublicRealtimeEvent } from '@chatto/api-types/realtime/v1/realtime_pb';
 import { Code, ConnectError } from '@connectrpc/connect';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync } from 'svelte';
 import { render } from 'vitest-browser-svelte';
-import {
-  RealtimeProjectionEvent,
-  RealtimeProjectionOperation,
-  RealtimeProjectionRoom,
-  RealtimeProjectionRoomRemove,
-  RealtimeProjectionUserRemove
-} from '@chatto/api-types/realtime/v1/realtime_pb';
 import type {
   DirectoryMember,
   MemberDirectoryAPI,
   MemberDirectoryPage
-} from '$lib/api-client/memberDirectory';
+} from '@chatto/client/api/memberDirectory';
 
-import type { RoomCommandAPI } from '$lib/api-client/rooms';
+import type { RoomCommandAPI } from '@chatto/client/api/rooms';
 import { queryClient } from '$lib/query/client';
+import { removeRegisteredAdminQueries } from '$lib/query/cacheRegistry';
+import { accountNameToken } from '@chatto/client/timeline/accountName';
 import RoomMembersPanel from './RoomMembersPanel.svelte';
 
 const mocks = vi.hoisted(() => ({
   toastSuccess: vi.fn(),
   toastError: vi.fn(),
-  projectionHandler: null as ((event: RealtimeProjectionEvent) => void) | null,
+  projectionHandler: null as ((event: RealtimeProjectionUpdate) => void) | null,
   directoryAPI: null as MemberDirectoryAPI | null,
   commandAPI: null as RoomCommandAPI | null,
+  serverId: 'server-1',
   queryScope: 'session-1',
   scopeCurrent: true
 }));
 
-vi.mock('$lib/state/presenceCache.svelte', () => ({
-  getPresenceCache: () => ({ get: (_key: unknown, fallback: unknown) => fallback })
-}));
-
 vi.mock('$lib/state/userProfiles.svelte', () => ({
-    getLiveBio: () => null,
-    getLiveTimezone: () => null,
+  getLiveBotOwnerUserId: (_userId: string, fallback: string | null) => fallback,
+  getLiveBio: () => null,
+  getLiveTimezone: () => null,
   getLiveAvatarUrl: (_userId: string, fallback: string | null) => fallback,
   getLiveCustomStatus: (_userId: string, fallback: unknown) => fallback
 }));
 
 vi.mock('$lib/state/server/scope.svelte', () => ({
   useServerScope: () => ({
+    get serverId() {
+      return mocks.serverId;
+    },
     get connection() {
       return {
         queryScope: mocks.queryScope,
@@ -55,13 +59,13 @@ vi.mock('$lib/state/server/scope.svelte', () => ({
   })
 }));
 
-vi.mock('$lib/api-client/memberDirectory', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('$lib/api-client/memberDirectory')>();
+vi.mock('@chatto/client/api/memberDirectory', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@chatto/client/api/memberDirectory')>();
   return { ...actual, createMemberDirectoryAPI: () => mocks.directoryAPI };
 });
 
-vi.mock('$lib/api-client/rooms', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('$lib/api-client/rooms')>();
+vi.mock('@chatto/client/api/rooms', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@chatto/client/api/rooms')>();
   return { ...actual, createRoomCommandAPI: () => mocks.commandAPI };
 });
 
@@ -77,7 +81,7 @@ vi.mock('$lib/ui/ConfirmDialog.svelte', async () => ({
 }));
 
 vi.mock('$lib/hooks', () => ({
-  useProjectionEvent: (handler: (event: RealtimeProjectionEvent) => void) => {
+  useProjectionEvent: (handler: (event: RealtimeProjectionUpdate) => void) => {
     mocks.projectionHandler = handler;
   }
 }));
@@ -148,9 +152,9 @@ function renderPanel(
     canManageMembers: boolean;
   }> = {}
 ) {
+  mocks.serverId = overrides.serverId ?? 'server-1';
   return render(RoomMembersPanel, {
     props: {
-      serverId: overrides.serverId ?? 'server-1',
       roomId: overrides.roomId ?? 'room-1',
       roomName: 'general',
       isUniversal: overrides.isUniversal ?? false,
@@ -189,6 +193,28 @@ function deferred<T>() {
     reject = rejectPromise;
   });
   return { promise, resolve, reject };
+}
+
+function roomSnapshot(room: RoomWithViewerState | null): RealtimeProjectionUpdate {
+  return new RealtimeProjectionUpdate({
+    resource: new RealtimeResourceUpdate({
+      resource: {
+        case: 'rooms',
+        value: new ListRoomsResponse({ rooms: room ? [room] : [] })
+      }
+    })
+  });
+}
+
+function userRemoved(userId: string): RealtimeProjectionUpdate {
+  return new RealtimeProjectionUpdate({
+    event: new PublicRealtimeEvent({
+      event: {
+        case: 'userAccountDeleted',
+        value: new UserAccountDeletedEvent({ userId })
+      }
+    })
+  });
 }
 
 describe('RoomMembersPanel', () => {
@@ -231,7 +257,12 @@ describe('RoomMembersPanel', () => {
     expect(addMember).toHaveBeenCalledWith({ roomId: 'room-1', userId: 'bob' });
     expect(container.textContent).toContain('Bob');
     await vi.waitFor(() =>
-      expect(mocks.toastSuccess).toHaveBeenCalledWith('Added Bob to the room')
+      expect(mocks.toastSuccess).toHaveBeenCalledWith(
+        expect.objectContaining({
+          text: `Added ${accountNameToken(0)} to the room`,
+          accounts: [expect.objectContaining({ name: 'Bob' })]
+        })
+      )
     );
   });
 
@@ -250,7 +281,12 @@ describe('RoomMembersPanel', () => {
 
     expect(removeMember).toHaveBeenCalledWith({ roomId: 'room-1', userId: 'alice' });
     await vi.waitFor(() =>
-      expect(mocks.toastSuccess).toHaveBeenCalledWith('Removed Alice from the room')
+      expect(mocks.toastSuccess).toHaveBeenCalledWith(
+        expect.objectContaining({
+          text: `Removed ${accountNameToken(0)} from the room`,
+          accounts: [expect.objectContaining({ name: 'Alice' })]
+        })
+      )
     );
   });
 
@@ -301,18 +337,7 @@ describe('RoomMembersPanel', () => {
     await settle();
     expect(container.textContent).toContain('Alice');
 
-    mocks.projectionHandler?.(
-      new RealtimeProjectionEvent({
-        operations: [
-          new RealtimeProjectionOperation({
-            operation: {
-              case: 'roomRemove',
-              value: new RealtimeProjectionRoomRemove({ roomId: 'room-1' })
-            }
-          })
-        ]
-      })
-    );
+    mocks.projectionHandler?.(roomSnapshot(null));
     flushSync();
 
     expect(container.textContent).not.toContain('Alice');
@@ -333,21 +358,12 @@ describe('RoomMembersPanel', () => {
     await settle();
 
     mocks.projectionHandler?.(
-      new RealtimeProjectionEvent({
-        operations: [
-          new RealtimeProjectionOperation({
-            operation: {
-              case: 'roomUpsert',
-              value: new RealtimeProjectionRoom({
-                room: new RoomWithViewerState({
-                  room: new Room({ id: 'room-1' }),
-                  viewerState: new RoomViewerState({ isMember: false })
-                })
-              })
-            }
-          })
-        ]
-      })
+      roomSnapshot(
+        new RoomWithViewerState({
+          room: new Room({ id: 'room-1' }),
+          viewerState: new RoomViewerState({ isMember: false })
+        })
+      )
     );
     await settle();
 
@@ -419,18 +435,7 @@ describe('RoomMembersPanel', () => {
     flushSync();
     expect(buttonByText(rendered.container, 'Add member').disabled).toBe(false);
 
-    mocks.projectionHandler?.(
-      new RealtimeProjectionEvent({
-        operations: [
-          new RealtimeProjectionOperation({
-            operation: {
-              case: 'userRemove',
-              value: new RealtimeProjectionUserRemove({ userId: 'bob' })
-            }
-          })
-        ]
-      })
-    );
+    mocks.projectionHandler?.(userRemoved('bob'));
     flushSync();
 
     expect(buttonByText(rendered.container, 'Add member').disabled).toBe(true);
@@ -446,18 +451,7 @@ describe('RoomMembersPanel', () => {
     flushSync();
     expect(document.querySelector('dialog')).not.toBeNull();
 
-    mocks.projectionHandler?.(
-      new RealtimeProjectionEvent({
-        operations: [
-          new RealtimeProjectionOperation({
-            operation: {
-              case: 'userRemove',
-              value: new RealtimeProjectionUserRemove({ userId: 'alice' })
-            }
-          })
-        ]
-      })
-    );
+    mocks.projectionHandler?.(userRemoved('alice'));
     flushSync();
 
     expect(document.querySelector('dialog')).toBeNull();
@@ -518,9 +512,40 @@ describe('RoomMembersPanel', () => {
     buttonByText(rendered.container, 'Add member').click();
     await settle();
 
-    expect(mocks.toastSuccess).toHaveBeenCalledWith('Added Bob to the room');
-    expect(rendered.container.textContent).toContain('projection temporarily unavailable');
+    expect(mocks.toastSuccess).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: `Added ${accountNameToken(0)} to the room`,
+        accounts: [expect.objectContaining({ name: 'Bob' })]
+      })
+    );
+    expect(rendered.container.textContent).toContain('You do not have permission to do that.');
     expect(rendered.container.textContent).not.toContain('Bob');
+  });
+
+  it('ignores a mutation result that settles after the server removes private data', async () => {
+    const bob = member('bob', 'Bob');
+    const pending = deferred<null>();
+    const { addMember } = setup({ directoryUsers: [bob] });
+    addMember.mockReturnValueOnce(pending.promise);
+    const rendered = renderPanel();
+    await settle();
+
+    const input = rendered.container.querySelector('#room-member-picker') as HTMLInputElement;
+    input.value = 'bob';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    await settleDirectorySearch();
+    (document.querySelector('[role="option"]') as HTMLButtonElement).click();
+    flushSync();
+    buttonByText(rendered.container, 'Add member').click();
+    await vi.waitFor(() => expect(addMember).toHaveBeenCalled());
+
+    removeRegisteredAdminQueries('server-1');
+    pending.resolve(null);
+    await vi.waitFor(() => expect(queryClient.isMutating()).toBe(0));
+    await settle();
+
+    expect(mocks.toastSuccess).not.toHaveBeenCalled();
+    expect(mocks.toastError).not.toHaveBeenCalled();
   });
 
   it('suppresses a mutation error that settles after the server scope is destroyed', async () => {

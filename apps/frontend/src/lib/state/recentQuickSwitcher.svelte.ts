@@ -6,7 +6,7 @@
  * URLs already encode the instance segment, so no per-instance namespacing needed.
  */
 
-import { Codecs, globalSlot } from '$lib/storage/slot';
+import { Codecs, globalSlot } from '@chatto/client/storage/slot';
 
 const MAX_RECENTS = 15;
 
@@ -20,9 +20,7 @@ export class RecentQuickSwitcherState {
   // Filter on read: the codec only validates that we have an array, so
   // individual corrupt entries are dropped here without invalidating the
   // entire payload (matches the original loader's behaviour).
-  private recents = $state<string[]>(
-    slot.get().filter((e): e is string => typeof e === 'string')
-  );
+  private recents = $state<string[]>(slot.get().filter((e): e is string => typeof e === 'string'));
 
   /** Ordered list of recent destination URLs, most recent first. */
   get urls(): readonly string[] {

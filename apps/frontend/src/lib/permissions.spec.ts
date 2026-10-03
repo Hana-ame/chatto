@@ -14,21 +14,27 @@ describe('PERMISSION_METADATA', () => {
       'admin.view-users',
       'bot.create',
       'bot.manage',
+      'call.camera',
+      'call.join',
+      'call.screenshare',
+      'call.start',
+      'call.voice',
       'message.attach',
       'message.echo',
       'message.manage',
       'message.post',
+      'message.post-in-interactions',
       'message.post-in-thread',
       'message.react',
       'message.read',
       'message.read-interactions',
       'role.assign',
       'role.manage',
-      'room.ban-member',
       'room.create',
       'room.join',
       'room.list',
       'room.manage',
+      'room.remove-member',
       'server.manage',
       'server.manage-neighbors',
       'user.delete-any',
@@ -37,6 +43,38 @@ describe('PERMISSION_METADATA', () => {
       'user.manage-accounts',
       'user.manage-permissions'
     ]);
+  });
+
+  it('mirrors the backend privileged-mode requirements', () => {
+    expect(
+      Object.entries(PERMISSION_METADATA)
+        .filter(([, metadata]) => metadata.privileged)
+        .map(([permission]) => permission)
+        .sort()
+    ).toEqual([
+      'admin.view-audit',
+      'admin.view-users',
+      'bot.manage',
+      'message.manage',
+      'role.assign',
+      'role.manage',
+      'room.create',
+      'room.manage',
+      'room.remove-member',
+      'server.manage',
+      'server.manage-neighbors',
+      'user.delete-any',
+      'user.invite',
+      'user.manage-accounts',
+      'user.manage-permissions'
+    ]);
+  });
+
+  it('gives every permission help text and at least one scope', () => {
+    for (const [permission, metadata] of Object.entries(PERMISSION_METADATA)) {
+      expect(metadata.help(), permission).not.toMatch(/^rbac\./);
+      expect(metadata.scopes.length, permission).toBeGreaterThan(0);
+    }
   });
 
   it('does not list retired message edit/delete permissions', () => {
@@ -51,6 +89,11 @@ describe('PERMISSION_METADATA', () => {
     expect(getIncludedByPermission(permissions, 'message.read-interactions')).toBe('message.read');
     expect(getIncludedByPermission(permissions, 'message.read')).toBeNull();
     expect(getIncludedByPermission(permissions, 'message.post-in-thread')).toBeNull();
+    for (const permission of ['message.post-in-thread', 'message.post-in-interactions']) {
+      expect(getIncludedByPermission(['message.post', permission], permission)).toBe(
+        'message.post'
+      );
+    }
     expect(
       getIncludedByPermission(
         ['server.manage', 'server.manage-neighbors'],

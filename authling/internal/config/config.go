@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"hmans.de/chatto/pkg/appconfig"
 )
@@ -20,6 +22,7 @@ const (
 
 // Config is Authling's canonical process configuration.
 type Config struct {
+	Site           SiteConfig           `toml:"site"`
 	HTTP           HTTPConfig           `toml:"http"`
 	Authentication AuthenticationConfig `toml:"authentication"`
 	OIDC           OIDCConfig           `toml:"oidc"`
@@ -27,9 +30,36 @@ type Config struct {
 	SMTP           SMTPConfig           `toml:"smtp"`
 }
 
+// SiteConfig contains operator-controlled display text, independent of issuer identity.
+type SiteConfig struct {
+	// Name is the public service name, not the software name.
+	Name string `toml:"name" env:"AUTHLING_SITE_NAME"`
+	// Description is optional plain text for the home page and page metadata.
+	Description string `toml:"description" env:"AUTHLING_SITE_DESCRIPTION"`
+}
+
+// Resolve trims display text and defaults the name to the configured public
+// hostname. Request headers never determine the site's identity.
+func (c SiteConfig) Resolve(publicURL string) SiteConfig {
+	c.Name = strings.TrimSpace(c.Name)
+	c.Description = strings.TrimSpace(c.Description)
+	if c.Name == "" {
+		if parsed, err := url.Parse(publicURL); err == nil {
+			c.Name = parsed.Hostname()
+		}
+		if c.Name == "" {
+			c.Name = "Account service"
+		}
+	}
+	return c
+}
+
 // OIDCConfig controls Authling's OpenID Provider and conventional clients.
-// URL-identified CIMD clients require no configuration.
+// Registration-less CIMD clients require explicit operator opt-in.
 type OIDCConfig struct {
+	// AllowUnregisteredClients permits clients not declared in operator configuration.
+	// It defaults to false. Currently, admission uses HTTPS CIMD discovery.
+	AllowUnregisteredClients       bool               `toml:"allow_unregistered_clients" env:"AUTHLING_OIDC_ALLOW_UNREGISTERED_CLIENTS"`
 	Clients                        []OIDCClientConfig `toml:"clients"`
 	CIMDTrustedPrivateHosts        []string           `toml:"cimd_trusted_private_hosts" env:"AUTHLING_OIDC_CIMD_TRUSTED_PRIVATE_HOSTS"`
 	CIMDTrustedLoopbackHosts       []string           `toml:"cimd_trusted_loopback_hosts" env:"AUTHLING_OIDC_CIMD_TRUSTED_LOOPBACK_HOSTS"`
@@ -47,12 +77,15 @@ func (c OIDCConfig) SigningKeyRotationInterval() time.Duration {
 }
 
 // OIDCClientConfig declares one conventional OpenID Connect client. An empty
-// secret creates a public client; a non-empty secret enables client_secret_basic.
+// secret creates a public client; a non-empty secret enables client_secret_basic
+// and client_secret_post.
 type OIDCClientConfig struct {
 	ID           string   `toml:"id"`
 	Name         string   `toml:"name"`
 	Secret       string   `toml:"secret"`
 	RedirectURIs []string `toml:"redirect_uris"`
+	// RequirePKCE defaults to true. Only clients with a secret may set it to false.
+	RequirePKCE *bool `toml:"require_pkce"`
 }
 
 // TrustedPrivateCIMDHosts returns normalized hostnames whose CIMD documents
@@ -128,6 +161,26 @@ func (c SMTPConfig) TLSPolicyOrDefault() SMTPTLSPolicy {
 		return SMTPTLSMandatory
 	}
 	return policy
+}
+
+// InsecureTransportSettings returns the names of enabled SMTP settings that
+// reduce transport security. Opportunistic TLS permits plaintext fallback, and
+// skipped certificate verification permits interception. Both can expose
+// verification and password-reset codes on the network. The result contains
+// only configuration key names, so callers may log it. It is empty when SMTP
+// is disabled.
+func (c SMTPConfig) InsecureTransportSettings() []string {
+	if !c.Enabled {
+		return nil
+	}
+	var settings []string
+	if c.TLSPolicyOrDefault() == SMTPTLSOpportunistic {
+		settings = append(settings, "smtp.tls=opportunistic")
+	}
+	if c.TLSSkipVerify {
+		settings = append(settings, "smtp.tls_skip_verify=true")
+	}
+	return settings
 }
 
 // HTTPConfig controls Authling's public HTTP listener.
@@ -223,6 +276,16 @@ func (c *Config) applyDefaults() {
 // Validate checks that Authling has exactly one usable NATS deployment mode.
 func (c Config) Validate() error {
 	var problems []string
+	for _, field := range []struct {
+		name, value string
+		limit       int
+	}{
+		{"site.name", c.Site.Name, 120}, {"site.description", c.Site.Description, 500},
+	} {
+		if !utf8.ValidString(field.value) || utf8.RuneCountInString(field.value) > field.limit || strings.ContainsFunc(field.value, unicode.IsControl) {
+			problems = append(problems, field.name+" must be valid single-line text within its length limit")
+		}
+	}
 	if days := c.OIDC.SigningKeyRotationIntervalDays; days < 0 || days > 3650 {
 		problems = append(problems, "oidc.signing_key_rotation_interval_days must be between 1 and 3650 when set")
 	}
@@ -269,6 +332,9 @@ func (c Config) Validate() error {
 		}
 		if client.Secret != "" && len(client.Secret) < 32 {
 			problems = append(problems, field+".secret must contain at least 32 characters when configured")
+		}
+		if client.RequirePKCE != nil && !*client.RequirePKCE && client.Secret == "" {
+			problems = append(problems, field+".require_pkce may be false only for confidential clients")
 		}
 		if len(client.RedirectURIs) == 0 {
 			problems = append(problems, field+".redirect_uris must contain at least one URI")
@@ -384,12 +450,34 @@ func validConventionalClientID(value string) bool {
 	return true
 }
 
+// isLoopbackHost reports whether host is a loopback IP address, localhost, or
+// a well-formed name beneath the special-use .localhost domain. RFC 6761
+// reserves .localhost names for loopback, and browsers resolve them without
+// DNS. Named loopback hosts give concurrent local development stacks separate
+// cookie scopes while keeping plain HTTP restricted to the local machine.
 func isLoopbackHost(host string) bool {
-	if strings.EqualFold(host, "localhost") {
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	if host == "localhost" {
 		return true
 	}
-	address := net.ParseIP(host)
-	return address != nil && address.IsLoopback()
+	if address := net.ParseIP(host); address != nil {
+		return address.IsLoopback()
+	}
+	labels, ok := strings.CutSuffix(host, ".localhost")
+	if !ok {
+		return false
+	}
+	for _, label := range strings.Split(labels, ".") {
+		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, character := range label {
+			if (character < 'a' || character > 'z') && (character < '0' || character > '9') && character != '-' {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func validNATSScheme(scheme string) bool {

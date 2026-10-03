@@ -24,6 +24,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/descriptorpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 	"hmans.de/chatto/internal/authctx"
 	"hmans.de/chatto/internal/config"
 	"hmans.de/chatto/internal/connectapi"
@@ -77,6 +78,56 @@ func TestConnectOperatorAPISeparation(t *testing.T) {
 		if got := resp.Msg.GetMember().GetUser().GetLogin(); got != "operator-connect" {
 			t.Fatalf("GetUser login = %q, want operator-connect", got)
 		}
+		roomClient := operatorv1connect.NewOperatorRoomServiceClient(operatorTS.Client(), operatorTS.URL+connectAPIPrefix)
+		if _, err := roomClient.ListRooms(ctx, connect.NewRequest(&operatorv1.ListRoomsRequest{})); err != nil {
+			t.Fatalf("OperatorRoomService on operator server: %v", err)
+		}
+		created, err := roomClient.CreateRoom(ctx, connect.NewRequest(&operatorv1.CreateRoomRequest{Name: "operator-connect-room"}))
+		if err != nil {
+			t.Fatalf("OperatorRoomService.CreateRoom on operator server: %v", err)
+		}
+		added, err := roomClient.AddMember(ctx, connect.NewRequest(&operatorv1.AddMemberRequest{RoomId: created.Msg.GetRoom().GetId(), UserId: user.GetId()}))
+		if err != nil {
+			t.Fatalf("OperatorRoomService.AddMember on operator server: %v", err)
+		}
+		if added.Msg.GetRoomId() != created.Msg.GetRoom().GetId() || added.Msg.GetMember().GetUser().GetId() != user.GetId() {
+			t.Fatalf("OperatorRoomService.AddMember response = %+v", added.Msg)
+		}
+		for _, request := range []*operatorv1.AddMemberRequest{
+			{UserId: user.GetId()},
+			{RoomId: created.Msg.GetRoom().GetId()},
+		} {
+			if _, err := roomClient.AddMember(ctx, connect.NewRequest(request)); connect.CodeOf(err) != connect.CodeInvalidArgument {
+				t.Fatalf("OperatorRoomService.AddMember empty ID error = %v, want invalid argument", err)
+			}
+		}
+		assetClient := operatorv1connect.NewOperatorAssetServiceClient(operatorTS.Client(), operatorTS.URL+connectAPIPrefix)
+		for _, request := range []*operatorv1.CreateUploadRequest{
+			{AuthorId: user.GetId(), Filename: "empty.txt", Sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},
+			{RoomId: created.Msg.GetRoom().GetId(), Filename: "empty.txt", Sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},
+		} {
+			if _, err := assetClient.CreateUpload(ctx, connect.NewRequest(request)); connect.CodeOf(err) != connect.CodeInvalidArgument {
+				t.Fatalf("OperatorAssetService.CreateUpload empty ID error = %v, want invalid argument", err)
+			}
+		}
+		assetUpload, err := assetClient.CreateUpload(ctx, connect.NewRequest(&operatorv1.CreateUploadRequest{
+			RoomId: created.Msg.GetRoom().GetId(), AuthorId: user.GetId(), Filename: "empty.txt",
+			Sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+		}))
+		if err != nil {
+			t.Fatalf("OperatorAssetService.CreateUpload: %v", err)
+		}
+		assetDone, err := assetClient.CompleteUpload(ctx, connect.NewRequest(&operatorv1.CompleteUploadRequest{UploadId: assetUpload.Msg.GetUpload().GetUploadId()}))
+		if err != nil || assetDone.Msg.GetAssetId() == "" {
+			t.Fatalf("OperatorAssetService.CompleteUpload = %+v, err = %v", assetDone, err)
+		}
+		messageClient := operatorv1connect.NewOperatorMessageServiceClient(operatorTS.Client(), operatorTS.URL+connectAPIPrefix)
+		imported, err := messageClient.ImportMessage(ctx, connect.NewRequest(&operatorv1.ImportMessageRequest{
+			RoomId: created.Msg.GetRoom().GetId(), AuthorId: user.GetId(), CreatedAt: timestamppb.New(time.Now()), Body: "historical",
+		}))
+		if err != nil || imported.Msg.GetMessageId() == "" {
+			t.Fatalf("OperatorMessageService.ImportMessage = %+v, err = %v", imported, err)
+		}
 
 		adminClient := adminv1connect.NewAdminUserServiceClient(operatorTS.Client(), operatorTS.URL+connectAPIPrefix)
 		if _, err := adminClient.ListMembers(ctx, connect.NewRequest(&adminv1.ListMembersRequest{})); connect.CodeOf(err) != connect.CodeUnimplemented {
@@ -89,6 +140,24 @@ func TestConnectOperatorAPISeparation(t *testing.T) {
 		operatorClient := operatorv1connect.NewOperatorUserServiceClient(publicTS.Client(), publicTS.URL+connectAPIPrefix)
 		if _, err := operatorClient.ListUsers(context.Background(), connect.NewRequest(&operatorv1.ListUsersRequest{})); connect.CodeOf(err) != connect.CodeUnimplemented {
 			t.Fatalf("OperatorUserService on public server err = %v, want unimplemented", err)
+		}
+		roomClient := operatorv1connect.NewOperatorRoomServiceClient(publicTS.Client(), publicTS.URL+connectAPIPrefix)
+		if _, err := roomClient.ListRooms(context.Background(), connect.NewRequest(&operatorv1.ListRoomsRequest{})); connect.CodeOf(err) != connect.CodeUnimplemented {
+			t.Fatalf("OperatorRoomService on public server err = %v, want unimplemented", err)
+		}
+		if _, err := roomClient.CreateRoom(context.Background(), connect.NewRequest(&operatorv1.CreateRoomRequest{Name: "public-operator-room"})); connect.CodeOf(err) != connect.CodeUnimplemented {
+			t.Fatalf("OperatorRoomService.CreateRoom on public server err = %v, want unimplemented", err)
+		}
+		if _, err := roomClient.AddMember(context.Background(), connect.NewRequest(&operatorv1.AddMemberRequest{RoomId: "room", UserId: "user"})); connect.CodeOf(err) != connect.CodeUnimplemented {
+			t.Fatalf("OperatorRoomService.AddMember on public server err = %v, want unimplemented", err)
+		}
+		assetClient := operatorv1connect.NewOperatorAssetServiceClient(publicTS.Client(), publicTS.URL+connectAPIPrefix)
+		if _, err := assetClient.CreateUpload(context.Background(), connect.NewRequest(&operatorv1.CreateUploadRequest{})); connect.CodeOf(err) != connect.CodeUnimplemented {
+			t.Fatalf("OperatorAssetService on public server err = %v, want unimplemented", err)
+		}
+		messageClient := operatorv1connect.NewOperatorMessageServiceClient(publicTS.Client(), publicTS.URL+connectAPIPrefix)
+		if _, err := messageClient.ImportMessage(context.Background(), connect.NewRequest(&operatorv1.ImportMessageRequest{})); connect.CodeOf(err) != connect.CodeUnimplemented {
+			t.Fatalf("OperatorMessageService on public server err = %v, want unimplemented", err)
 		}
 	})
 }
@@ -301,8 +370,8 @@ func TestConnectServerDiscoveryServiceGetServer(t *testing.T) {
 		if msg.GetProfile().GetVersion() != "1.2.3" {
 			t.Fatalf("profile version = %q, want 1.2.3", msg.GetProfile().GetVersion())
 		}
-		if !msg.GetLogin().GetDirectRegistrationEnabled() {
-			t.Fatal("DirectRegistrationEnabled = false, want true")
+		if !msg.GetSetupRequired() || msg.GetLogin().GetDirectRegistrationEnabled() {
+			t.Fatal("fresh server must offer setup before normal registration")
 		}
 		if msg.GetLogin().GetAccountCreationPolicy() != apiv1.AccountCreationPolicy_ACCOUNT_CREATION_POLICY_OPEN {
 			t.Fatalf("AccountCreationPolicy = %v, want OPEN", msg.GetLogin().GetAccountCreationPolicy())
@@ -664,7 +733,7 @@ func TestConnectPushSubscriptionCapabilityCleanupIsPublic(t *testing.T) {
 		t.Fatalf("SavePushSubscriptionWithCleanupToken: %v", err)
 	}
 
-	cleanupClient := authv1connect.NewPushSubscriptionCleanupServiceClient(ts.Client(), ts.URL+connectAPIPrefix)
+	cleanupClient := authv1connect.NewPushSubscriptionCleanupServiceClient(ts.Client(), ts.URL+connectAPIPrefix, connect.WithProtoJSON())
 	cleanup, err := cleanupClient.DeleteSubscription(ctx, connect.NewRequest(&authv1.DeleteSubscriptionRequest{
 		Endpoint:     endpoint,
 		Auth:         auth,
@@ -673,15 +742,15 @@ func TestConnectPushSubscriptionCapabilityCleanupIsPublic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unauthenticated DeleteSubscription: %v", err)
 	}
-	if !cleanup.Msg.GetCompleted() {
-		t.Fatal("DeleteSubscription completed = false, want true")
+	if data, err := protojson.Marshal(cleanup.Msg); err != nil || string(data) != "{}" {
+		t.Fatalf("DeleteSubscription JSON = %s, err = %v; want {}", data, err)
 	}
 	if owned, err := s.core.PushSubscriptionOwnedByUser(ctx, user.GetId(), endpoint); err != nil || owned {
 		t.Fatalf("subscription ownership after cleanup = %t, err = %v", owned, err)
 	}
 
 	pushClient := apiv1connect.NewPushNotificationServiceClient(ts.Client(), ts.URL+connectAPIPrefix)
-	_, err = pushClient.Subscribe(ctx, connect.NewRequest(&apiv1.SubscribePushRequest{}))
+	_, err = pushClient.Subscribe(ctx, connect.NewRequest(&apiv1.SubscribeRequest{}))
 	if connect.CodeOf(err) != connect.CodeUnauthenticated {
 		t.Fatalf("unauthenticated Subscribe code = %v, want unauthenticated", connect.CodeOf(err))
 	}
@@ -971,7 +1040,7 @@ func TestConnectBotAPIKeyAuthenticatesPublicAPIRequests(t *testing.T) {
 	}
 	bot := created.Msg.GetBot().GetUser()
 	apiKey := created.Msg.GetApiKey()
-	if bot.GetId() == "" || !bot.GetIsBot() || apiKey == "" {
+	if bot.GetId() == "" || bot.GetBot() == nil || apiKey == "" {
 		t.Fatalf("created bot response = %+v", created.Msg)
 	}
 
@@ -985,7 +1054,7 @@ func TestConnectBotAPIKeyAuthenticatesPublicAPIRequests(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetViewer with bot API key: %v", err)
 	}
-	if got := viewer.Msg.GetUser().GetProfile(); got.GetId() != bot.GetId() || !got.GetIsBot() {
+	if got := viewer.Msg.GetUser().GetProfile(); got.GetId() != bot.GetId() || got.GetBot() == nil {
 		t.Fatalf("bot API viewer profile = %+v, want bot %q", got, bot.GetId())
 	}
 
@@ -1023,6 +1092,35 @@ func TestConnectRequestBaseURLTrustModel(t *testing.T) {
 		}}
 		req := httptest.NewRequest(http.MethodGet, "http://request.example.com/api/connect", nil)
 		req.Header.Set("X-Forwarded-Proto", "https")
+
+		if got, want := s.requestBaseURL(req), "https://configured.example.com"; got != want {
+			t.Fatalf("requestBaseURL = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("uses the configured origin that matches the request host", func(t *testing.T) {
+		s := &HTTPServer{config: config.ChattoConfig{
+			Webserver: config.WebserverConfig{
+				URL:            "https://configured.example.com",
+				AllowedOrigins: []string{"https://alias.example.com", "*"},
+			},
+		}}
+		// A TLS-terminating proxy forwards plain HTTP; the configured scheme applies.
+		req := httptest.NewRequest(http.MethodGet, "http://alias.example.com/api/connect", nil)
+
+		if got, want := s.requestBaseURL(req), "https://alias.example.com"; got != want {
+			t.Fatalf("requestBaseURL = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("ignores a request host that no exact origin configures", func(t *testing.T) {
+		s := &HTTPServer{config: config.ChattoConfig{
+			Webserver: config.WebserverConfig{
+				URL:            "https://configured.example.com",
+				AllowedOrigins: []string{"*"},
+			},
+		}}
+		req := httptest.NewRequest(http.MethodGet, "https://spoofed.example.com/api/connect", nil)
 
 		if got, want := s.requestBaseURL(req), "https://configured.example.com"; got != want {
 			t.Fatalf("requestBaseURL = %q, want %q", got, want)
@@ -1075,4 +1173,38 @@ func TestConnectRequestBaseURLTrustModel(t *testing.T) {
 			t.Fatalf("requestBaseURL = %q, want %q", got, want)
 		}
 	})
+}
+
+// A valid credential whose user cannot be loaded must not look revoked: the
+// client would otherwise discard a working session.
+func TestConnectAPIReportsCredentialUserLookupFailureAsUnavailable(t *testing.T) {
+	s, ts := setupConnectTestServer(t, config.AuthConfig{})
+	ctx := context.Background()
+	user, err := s.core.CreateUser(ctx, core.SystemActorID, "connect-user-lookup", "Connect User Lookup", "password")
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	token, err := s.core.CreateAuthToken(ctx, user.Id)
+	if err != nil {
+		t.Fatalf("CreateAuthToken: %v", err)
+	}
+	client := apiv1connect.NewViewerServiceClient(ts.Client(), ts.URL+connectAPIPrefix)
+	getViewer := func() error {
+		req := connect.NewRequest(&apiv1.GetViewerRequest{})
+		req.Header().Set("Authorization", "Bearer "+token)
+		_, err := client.GetViewer(ctx, req)
+		return err
+	}
+
+	s.credentialUserLookup = func(context.Context, string) (*evtv1.User, error) {
+		return nil, errors.New("key store unavailable")
+	}
+	if err := getViewer(); connect.CodeOf(err) != connect.CodeUnavailable {
+		t.Fatalf("GetViewer with failed user lookup err = %v, want unavailable", err)
+	}
+
+	s.credentialUserLookup = nil
+	if err := getViewer(); err != nil {
+		t.Fatalf("GetViewer after recovery: %v", err)
+	}
 }

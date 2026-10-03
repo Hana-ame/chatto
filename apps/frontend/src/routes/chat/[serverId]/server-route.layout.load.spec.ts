@@ -16,6 +16,16 @@ const { mocks } = vi.hoisted(() => ({
   }
 }));
 
+vi.mock('$lib/client', async () => ({
+  ...(await import('$lib/test-utils/clientMock')).clientMockDefaults,
+  serverRegistry: {
+    tryGetStore: () => (mocks.serverId ? mocks.store : undefined),
+    getServer: () =>
+      mocks.serverId ? { id: mocks.serverId, reauthRequiredAt: mocks.reauthRequiredAt } : undefined,
+    isOriginServer: () => mocks.origin
+  }
+}));
+
 vi.mock('$app/paths', () => ({
   resolve: (path: string) => path
 }));
@@ -28,21 +38,12 @@ vi.mock('$lib/navigation', () => ({
   segmentToServerId: () => mocks.serverId
 }));
 
-vi.mock('$lib/state/server/registry.svelte', () => ({
-  serverRegistry: {
-    tryGetStore: () => (mocks.serverId ? mocks.store : undefined),
-    getServer: () =>
-      mocks.serverId ? { id: mocks.serverId, reauthRequiredAt: mocks.reauthRequiredAt } : undefined,
-    isOriginServer: () => mocks.origin
-  }
-}));
-
 import { load } from './+layout';
 
-function routeLoad(user: { id: string } | null = { id: 'viewer-1' }) {
+function routeLoad(user: { id: string } | null = { id: 'viewer-1' }, setupRequired = false) {
   return load({
     params: { serverId: '-' },
-    parent: async () => ({ user }),
+    parent: async () => ({ user, serverInfo: { setupRequired } }),
     url: new URL('https://chat.example.test/chat/-/overview')
   } as never);
 }
@@ -63,10 +64,41 @@ describe('server route layout load', () => {
     mocks.store.currentUser.load.mockResolvedValue(undefined);
   });
 
+  it('opens setup for the origin before requiring authentication', async () => {
+    await expect(routeLoad(null, true)).rejects.toMatchObject({ status: 302, location: '/setup' });
+    expect(mocks.saveReturnUrl).not.toHaveBeenCalled();
+  });
+
+  it('allows an authenticated remote server while origin setup is pending', async () => {
+    mocks.origin = false;
+    mocks.serverId = 'remote';
+    await expect(routeLoad(null, true)).resolves.toMatchObject({ serverSegment: '-' });
+  });
+
   it('redirects an unresolved server before the layout component mounts', async () => {
     mocks.serverId = null;
 
     await expectLoginRedirect();
+  });
+
+  it('does not read the room param, so room switches do not re-run it', async () => {
+    const params = new Proxy(
+      { serverId: '-', roomId: 'room-1' },
+      {
+        get(target, key) {
+          if (key === 'roomId') throw new Error('server layout load read params.roomId');
+          return Reflect.get(target, key);
+        }
+      }
+    );
+
+    await expect(
+      load({
+        params,
+        parent: async () => ({ user: { id: 'viewer-1' }, serverInfo: { setupRequired: false } }),
+        url: new URL('https://chat.example.test/chat/-/room-1')
+      } as never)
+    ).resolves.toEqual({ serverSegment: '-' });
   });
 
   it('uses the parent origin viewer without a second viewer request', async () => {
@@ -91,6 +123,17 @@ describe('server route layout load', () => {
 
     await expect(routeLoad(null)).resolves.toMatchObject({ serverSegment: '-' });
 
+    expect(mocks.store.currentUser.load).toHaveBeenCalledOnce();
+    expect(mocks.saveReturnUrl).not.toHaveBeenCalled();
+  });
+
+  it('keeps a signed-out remote server on its route instead of the origin login', async () => {
+    mocks.serverId = 'remote';
+    mocks.origin = false;
+    mocks.store.currentUser.loading = true;
+    mocks.store.currentUser.user = undefined;
+
+    await expect(routeLoad(null)).resolves.toMatchObject({ serverSegment: '-' });
     expect(mocks.store.currentUser.load).toHaveBeenCalledOnce();
     expect(mocks.saveReturnUrl).not.toHaveBeenCalled();
   });

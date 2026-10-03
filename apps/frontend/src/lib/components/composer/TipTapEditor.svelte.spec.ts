@@ -3,7 +3,9 @@ import { render } from 'vitest-browser-svelte';
 import { describe, expect, it, vi } from 'vitest';
 import '../../../app.css';
 import TipTapEditor from './TipTapEditor.svelte';
+import MarkdownEditor from './MarkdownEditor.svelte';
 import type { ComposerEditorApi } from './editorTypes';
+import { renderInlineMarkdown } from '$lib/markdown';
 
 function selectEditorContents(editor: Element) {
   editor.dispatchEvent(
@@ -16,11 +18,53 @@ function selectEditorContents(editor: Element) {
   );
 }
 
+describe('Composer editor focus', () => {
+  it.each([TipTapEditor, MarkdownEditor])(
+    'preserves selection on API focus and supports explicit positions (%#)',
+    async (Component) => {
+      const readyApis: ComposerEditorApi[] = [];
+      const { container } = render(Component, {
+        props: {
+          placeholder: 'Focus test',
+          onReady: (api: ComposerEditorApi) => readyApis.push(api)
+        }
+      });
+      await vi.waitFor(() => expect(readyApis).toHaveLength(1));
+      const api = readyApis[0]!;
+      const editor = page.getByRole('textbox', { name: 'Focus test' }).element();
+      api.setContent('First paragraph');
+      api.focus('start');
+      // TipTap applies DOM focus on the next animation frame, after its selection changes.
+      await expect.element(editor).toHaveFocus();
+      await expect.poll(() => api.getTextBeforeCursor()).toBe('');
+      await userEvent.keyboard(
+        '{ArrowRight}{ArrowRight}{ArrowRight}{Shift>}{ArrowRight}{ArrowRight}{/Shift}'
+      );
+      expect(window.getSelection()?.toString()).toBe('st');
+      const outside = document.createElement('button');
+      outside.textContent = 'Outside';
+      container.append(outside);
+      await userEvent.click(outside);
+      api.focus();
+      await expect.element(editor).toHaveFocus();
+      await expect.poll(() => window.getSelection()?.toString()).toBe('st');
+      await userEvent.keyboard('X');
+      expect(api.getText()).toBe('FirX paragraph');
+      api.focus('end');
+      await expect.poll(() => api.getTextBeforeCursor()).toBe('FirX paragraph');
+    }
+  );
+});
+
 describe('TipTapEditor accessibility', () => {
   it('keeps its accessible name synchronized with the placeholder', async () => {
     const rendered = render(TipTapEditor, { props: { placeholder: 'Write a message' } });
 
-    await expect.element(page.getByRole('textbox', { name: 'Write a message' })).toBeVisible();
+    const editor = page.getByRole('textbox', { name: 'Write a message' });
+    await expect.element(editor).toBeVisible();
+    // An aria-label on a contenteditable div needs an explicit role.
+    await expect.element(editor).toHaveAttribute('role', 'textbox');
+    await expect.element(editor).toHaveAttribute('aria-multiline', 'true');
 
     await rendered.rerender({ placeholder: 'Edit your message' });
 
@@ -42,6 +86,182 @@ describe('TipTapEditor accessibility', () => {
   });
 });
 
+describe('TipTapEditor literal Markdown text', () => {
+  it('preserves typed mentions and backslashes as source text', async () => {
+    const updates: string[] = [];
+    render(TipTapEditor, {
+      props: {
+        placeholder: 'Write a message',
+        onUpdate: (markdown: string) => updates.push(markdown)
+      }
+    });
+    const editor = page.getByRole('textbox', { name: 'Write a message' });
+
+    await userEvent.click(editor);
+    await userEvent.type(editor, '@chatto_bot \\o/');
+
+    await vi.waitFor(() => expect(updates.at(-1)).toBe('@chatto_bot \\o/'));
+  });
+
+  it.each(['@chatto_bot', '\\o/', 'C:\\Users\\foo', '¯\\_(ツ)_/¯'])(
+    'preserves %s when restoring and editing a draft',
+    async (source) => {
+      const readyApis: ComposerEditorApi[] = [];
+      const updates: string[] = [];
+      render(TipTapEditor, {
+        props: {
+          placeholder: 'Write a message',
+          onReady: (api: ComposerEditorApi) => readyApis.push(api),
+          onUpdate: (markdown: string) => updates.push(markdown)
+        }
+      });
+      await vi.waitFor(() => expect(readyApis).toHaveLength(1));
+      const api = readyApis[0]!;
+
+      api.setContent(source);
+      expect(api.getText()).toBe(source);
+      api.focus('end');
+      api.insertText('!');
+
+      await vi.waitFor(() => expect(updates.at(-1)).toBe(`${source}!`));
+      expect(renderInlineMarkdown(updates.at(-1)!)).toContain(`${source}!`);
+    }
+  );
+
+  it('keeps literal emphasis markers visible without creating formatting', async () => {
+    const readyApis: ComposerEditorApi[] = [];
+    const updates: string[] = [];
+    const { container } = render(TipTapEditor, {
+      props: {
+        placeholder: 'Write a message',
+        onReady: (api: ComposerEditorApi) => readyApis.push(api),
+        onUpdate: (markdown: string) => updates.push(markdown)
+      }
+    });
+    await vi.waitFor(() => expect(readyApis).toHaveLength(1));
+    const api = readyApis[0]!;
+
+    api.insertText('*literal*');
+
+    await vi.waitFor(() => expect(updates.at(-1)).toBe('&#42;literal&#42;'));
+    expect(renderInlineMarkdown(updates.at(-1)!)).toContain('*literal*');
+    expect(renderInlineMarkdown(updates.at(-1)!)).not.toContain('<em>');
+    expect(container.querySelector('em')).toBeNull();
+    api.setContent(updates.at(-1)!);
+    expect(api.getText()).toBe('*literal*');
+  });
+
+  it('keeps literal asterisks inside words from becoming emphasis', async () => {
+    const readyApis: ComposerEditorApi[] = [];
+    const updates: string[] = [];
+    render(TipTapEditor, {
+      props: {
+        placeholder: 'Write a message',
+        onReady: (api: ComposerEditorApi) => readyApis.push(api),
+        onUpdate: (markdown: string) => updates.push(markdown)
+      }
+    });
+    await vi.waitFor(() => expect(readyApis).toHaveLength(1));
+    const api = readyApis[0]!;
+
+    api.insertText('foo*bar*');
+
+    await vi.waitFor(() => expect(updates.at(-1)).toBe('foo&#42;bar&#42;'));
+    expect(renderInlineMarkdown(updates.at(-1)!)).not.toContain('<em>');
+  });
+
+  it('keeps formatting and code while normalizing adjacent literal text', async () => {
+    const readyApis: ComposerEditorApi[] = [];
+    const updates: string[] = [];
+    render(TipTapEditor, {
+      props: {
+        placeholder: 'Write a message',
+        onReady: (api: ComposerEditorApi) => readyApis.push(api),
+        onUpdate: (markdown: string) => updates.push(markdown)
+      }
+    });
+    await vi.waitFor(() => expect(readyApis).toHaveLength(1));
+    const api = readyApis[0]!;
+    const source = '**bold** `code_with_underscore` @chatto_bot \\o/';
+
+    api.setContent(source);
+    api.focus('end');
+    api.insertText('!');
+
+    await vi.waitFor(() => expect(updates.at(-1)).toBe(`${source}!`));
+    const html = renderInlineMarkdown(updates.at(-1)!);
+    expect(html).toContain('<strong>bold</strong>');
+    expect(html).toContain('@chatto_bot \\o/');
+    expect(html).toContain('<code>code_with_underscore</code>');
+  });
+
+  it('preserves a Markdown link with underscores in its label and URL', async () => {
+    const readyApis: ComposerEditorApi[] = [];
+    const updates: string[] = [];
+    render(TipTapEditor, {
+      props: {
+        placeholder: 'Write a message',
+        onReady: (api: ComposerEditorApi) => readyApis.push(api),
+        onUpdate: (markdown: string) => updates.push(markdown)
+      }
+    });
+    await vi.waitFor(() => expect(readyApis).toHaveLength(1));
+    const api = readyApis[0]!;
+    const source = '[chatto_bot](https://example.com/chatto_bot)';
+
+    api.setContent(source);
+    api.focus('end');
+    api.insertText(' after');
+
+    await vi.waitFor(() => expect(updates.at(-1)).toBe(`${source} after`));
+    expect(renderInlineMarkdown(updates.at(-1)!)).toContain(
+      'href="https://example.com/chatto_bot"'
+    );
+  });
+
+  it('preserves literal text pasted into the Visual editor', async () => {
+    const updates: string[] = [];
+    render(TipTapEditor, {
+      props: {
+        placeholder: 'Write a message',
+        onUpdate: (markdown: string) => updates.push(markdown)
+      }
+    });
+    const editor = page.getByRole('textbox', { name: 'Write a message' }).element();
+    const dataTransfer = new DataTransfer();
+    dataTransfer.setData('text/plain', '@chatto_bot \\o/');
+
+    editor.dispatchEvent(
+      new ClipboardEvent('paste', {
+        bubbles: true,
+        cancelable: true,
+        clipboardData: dataTransfer
+      })
+    );
+
+    await vi.waitFor(() => expect(updates.at(-1)).toBe('@chatto_bot \\o/'));
+  });
+});
+
+describe('TipTapEditor editability', () => {
+  it('does not emit content changes when disabled or enabled', async () => {
+    const onUpdate = vi.fn();
+    const rendered = render(TipTapEditor, {
+      props: { placeholder: 'Write a bio', onUpdate }
+    });
+    const editor = page.getByRole('textbox', { name: 'Write a bio' }).element();
+    await expect.element(editor).toHaveAttribute('contenteditable', 'true');
+
+    await rendered.rerender({ editable: false });
+    await expect.element(editor).toHaveAttribute('contenteditable', 'false');
+    expect(onUpdate).not.toHaveBeenCalled();
+
+    await rendered.rerender({ editable: true });
+    await expect.element(editor).toHaveAttribute('contenteditable', 'true');
+    expect(onUpdate).not.toHaveBeenCalled();
+  });
+});
+
 describe('TipTapEditor wrapping', () => {
   it('formats selected text as inline code when backtick is pressed', async () => {
     const readyApis: ComposerEditorApi[] = [];
@@ -56,7 +276,8 @@ describe('TipTapEditor wrapping', () => {
     const editor = page.getByRole('textbox', { name: 'Write a message' }).element();
 
     api.setContent('moo');
-    api.focus();
+    api.focus('end');
+    await expect.element(editor).toHaveFocus();
     selectEditorContents(editor);
     editor.dispatchEvent(
       new KeyboardEvent('keydown', { key: '`', bubbles: true, cancelable: true })
@@ -65,7 +286,8 @@ describe('TipTapEditor wrapping', () => {
     await vi.waitFor(() => expect(container.querySelector('code')?.textContent).toBe('moo'));
 
     api.setContent('moo');
-    api.focus();
+    api.focus('end');
+    await expect.element(editor).toHaveFocus();
     await userEvent.keyboard('`');
     await vi.waitFor(() => expect(editor.textContent).toBe('moo`'));
     expect(container.querySelector('code')).toBeNull();
@@ -180,6 +402,28 @@ describe('TipTapEditor wrapping', () => {
 });
 
 describe('TipTapEditor Markdown autolinks', () => {
+  it('preserves underscores in restored Markdown autolinks', async () => {
+    const readyApis: ComposerEditorApi[] = [];
+    const updates: string[] = [];
+    render(TipTapEditor, {
+      props: {
+        placeholder: 'Write a message',
+        onReady: (api: ComposerEditorApi) => readyApis.push(api),
+        onUpdate: (markdown: string) => updates.push(markdown)
+      }
+    });
+    await vi.waitFor(() => expect(readyApis).toHaveLength(1));
+    const api = readyApis[0]!;
+    api.setContent('<https://example.com/chatto_bot>');
+    api.focus('end');
+    api.insertText(' after');
+
+    await vi.waitFor(() => expect(updates.at(-1)).toBe('<https://example.com/chatto_bot> after'));
+    expect(renderInlineMarkdown(updates.at(-1)!)).toContain(
+      'href="https://example.com/chatto_bot"'
+    );
+  });
+
   it('preserves a restored angle-bracket autolink after a later edit', async () => {
     const readyApis: ComposerEditorApi[] = [];
     const updates: string[] = [];
@@ -251,9 +495,7 @@ describe('TipTapEditor Markdown autolinks', () => {
     api.insertText(' after');
 
     await vi.waitFor(() => expect(updates.at(-1)).toBe('<https://example.com/unclosed after'));
-    expect(container.querySelector('a')?.getAttribute('href')).toBe(
-      'https://example.com/unclosed'
-    );
+    expect(container.querySelector('a')?.getAttribute('href')).toBe('https://example.com/unclosed');
   });
 
   it('preserves an angle-bracket URL pasted into the visual editor', async () => {

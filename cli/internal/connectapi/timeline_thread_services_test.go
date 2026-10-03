@@ -6,11 +6,13 @@ import (
 	"errors"
 	"hmans.de/chatto/internal/pb/chatto/core/notification/v1"
 	"hmans.de/chatto/internal/pb/chatto/core/runtime_state/v1"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"hmans.de/chatto/internal/core"
@@ -19,6 +21,43 @@ import (
 	apiv1 "hmans.de/chatto/internal/pb/chatto/api/v1"
 	evtv1 "hmans.de/chatto/internal/pb/chatto/core/evt/v1"
 )
+
+func TestTimelineIncludesDistinguishMissingAndDeletedUsers(t *testing.T) {
+	env := newConnectAPITestEnv(t)
+	user, err := env.core.CreateUser(env.ctx, core.SystemActorID, "timeline-includes", "Timeline Includes", "password")
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	read := func() map[string]*apiv1.User {
+		t.Helper()
+		users, err := (&timelineHydrator{
+			api:     env.api,
+			ctx:     env.ctx,
+			userIDs: map[string]struct{}{user.Id: {}, "not-projected": {}},
+		}).users()
+		if err != nil {
+			t.Fatalf("hydrate timeline users: %v", err)
+		}
+		return users
+	}
+
+	users := read()
+	if users[user.Id] == nil || users[user.Id].GetDeleted() {
+		t.Fatalf("active user reference = %+v, want active", users[user.Id])
+	}
+	if _, exists := users["not-projected"]; exists {
+		t.Fatal("missing projection was included as a deleted account")
+	}
+
+	if err := env.core.DeleteUser(env.ctx, core.SystemActorID, user.Id); err != nil {
+		t.Fatalf("DeleteUser: %v", err)
+	}
+	users = read()
+	if users[user.Id] == nil || !users[user.Id].GetDeleted() {
+		t.Fatalf("deleted user reference = %+v, want tombstone", users[user.Id])
+	}
+}
 
 func TestRoomTimelineKeepsDMReadableWhenMessageBodyCannotHydrate(t *testing.T) {
 	env := newConnectAPITestEnv(t)
@@ -255,7 +294,7 @@ func TestRoomAndThreadTimelineGetThreadEventsAroundRootAndReply(t *testing.T) {
 		EventId:           "missing-anchor",
 		Limit:             3,
 	}))
-	if got := connect.CodeOf(err); got != connect.CodeNotFound {
+	if got := errorCode(err); got != connect.CodeNotFound {
 		t.Fatalf("missing anchor code = %v, want %v", got, connect.CodeNotFound)
 	}
 }
@@ -271,16 +310,16 @@ func TestRoomAndThreadTimelineGetMessageForPermalinks(t *testing.T) {
 		RoomId:  room.Id,
 		EventId: reply.Id,
 	})
-	if _, err := env.messages.GetMessage(env.ctx, req); connect.CodeOf(err) != connect.CodeUnauthenticated {
-		t.Fatalf("unauthenticated GetMessage code = %v, want %v", connect.CodeOf(err), connect.CodeUnauthenticated)
+	if _, err := env.messages.GetMessage(env.ctx, req); errorCode(err) != connect.CodeUnauthenticated {
+		t.Fatalf("unauthenticated GetMessage code = %v, want %v", errorCode(err), connect.CodeUnauthenticated)
 	}
 
 	outsider, err := env.core.CreateUser(env.ctx, core.SystemActorID, "message-link-outsider", "Message Link Outsider", "password")
 	if err != nil {
 		t.Fatalf("CreateUser outsider: %v", err)
 	}
-	if _, err := env.messages.GetMessage(withCaller(env.ctx, outsider), req); connect.CodeOf(err) != connect.CodePermissionDenied {
-		t.Fatalf("non-member GetMessage code = %v, want %v", connect.CodeOf(err), connect.CodePermissionDenied)
+	if _, err := env.messages.GetMessage(withCaller(env.ctx, outsider), req); errorCode(err) != connect.CodePermissionDenied {
+		t.Fatalf("non-member GetMessage code = %v, want %v", errorCode(err), connect.CodePermissionDenied)
 	}
 
 	ctx := withCaller(env.ctx, env.viewer)
@@ -314,8 +353,8 @@ func TestRoomAndThreadTimelineGetMessageForPermalinks(t *testing.T) {
 	if _, err := env.messages.GetMessage(ctx, connect.NewRequest(&apiv1.GetMessageRequest{
 		RoomId:  room.Id,
 		EventId: "missing-anchor",
-	})); connect.CodeOf(err) != connect.CodeNotFound {
-		t.Fatalf("missing message code = %v, want %v", connect.CodeOf(err), connect.CodeNotFound)
+	})); errorCode(err) != connect.CodeNotFound {
+		t.Fatalf("missing message code = %v, want %v", errorCode(err), connect.CodeNotFound)
 	}
 }
 
@@ -328,16 +367,16 @@ func TestRoomAndThreadTimelineGetThreadEventsRequiresMembership(t *testing.T) {
 		RoomId:            room.Id,
 		ThreadRootEventId: root.Id,
 	})
-	if _, err := env.threads.GetThreadEvents(env.ctx, req); connect.CodeOf(err) != connect.CodeUnauthenticated {
-		t.Fatalf("unauthenticated GetThreadEvents code = %v, want %v", connect.CodeOf(err), connect.CodeUnauthenticated)
+	if _, err := env.threads.GetThreadEvents(env.ctx, req); errorCode(err) != connect.CodeUnauthenticated {
+		t.Fatalf("unauthenticated GetThreadEvents code = %v, want %v", errorCode(err), connect.CodeUnauthenticated)
 	}
 
 	outsider, err := env.core.CreateUser(env.ctx, core.SystemActorID, "thread-outsider", "Thread Outsider", "password")
 	if err != nil {
 		t.Fatalf("CreateUser outsider: %v", err)
 	}
-	if _, err := env.threads.GetThreadEvents(withCaller(env.ctx, outsider), req); connect.CodeOf(err) != connect.CodePermissionDenied {
-		t.Fatalf("non-member GetThreadEvents code = %v, want %v", connect.CodeOf(err), connect.CodePermissionDenied)
+	if _, err := env.threads.GetThreadEvents(withCaller(env.ctx, outsider), req); errorCode(err) != connect.CodePermissionDenied {
+		t.Fatalf("non-member GetThreadEvents code = %v, want %v", errorCode(err), connect.CodePermissionDenied)
 	}
 }
 
@@ -615,16 +654,16 @@ func TestRoomAndThreadServicesRequiresAuthAndMembership(t *testing.T) {
 	room := env.createJoinedRoom("read-state-authz")
 
 	req := connect.NewRequest(&apiv1.MarkRoomAsReadRequest{RoomId: room.Id})
-	if _, err := env.rooms.MarkRoomAsRead(env.ctx, req); connect.CodeOf(err) != connect.CodeUnauthenticated {
-		t.Fatalf("unauthenticated MarkRoomAsRead code = %v, want %v", connect.CodeOf(err), connect.CodeUnauthenticated)
+	if _, err := env.rooms.MarkRoomAsRead(env.ctx, req); errorCode(err) != connect.CodeUnauthenticated {
+		t.Fatalf("unauthenticated MarkRoomAsRead code = %v, want %v", errorCode(err), connect.CodeUnauthenticated)
 	}
 
 	outsider, err := env.core.CreateUser(env.ctx, core.SystemActorID, "read-state-outsider", "Read State Outsider", "password")
 	if err != nil {
 		t.Fatalf("CreateUser outsider: %v", err)
 	}
-	if _, err := env.rooms.MarkRoomAsRead(withCaller(env.ctx, outsider), req); connect.CodeOf(err) != connect.CodePermissionDenied {
-		t.Fatalf("non-member MarkRoomAsRead code = %v, want %v", connect.CodeOf(err), connect.CodePermissionDenied)
+	if _, err := env.rooms.MarkRoomAsRead(withCaller(env.ctx, outsider), req); errorCode(err) != connect.CodePermissionDenied {
+		t.Fatalf("non-member MarkRoomAsRead code = %v, want %v", errorCode(err), connect.CodePermissionDenied)
 	}
 }
 
@@ -690,8 +729,8 @@ func TestRoomAndThreadServicesMarkRoomAsReadAnchorsAndDoesNotRegress(t *testing.
 	if _, err := env.rooms.MarkRoomAsRead(ctx, connect.NewRequest(&apiv1.MarkRoomAsReadRequest{
 		RoomId:      room.Id,
 		UpToEventId: reply.Id,
-	})); connect.CodeOf(err) != connect.CodeInvalidArgument {
-		t.Fatalf("MarkRoomAsRead reply anchor code = %v, want %v", connect.CodeOf(err), connect.CodeInvalidArgument)
+	})); errorCode(err) != connect.CodeInvalidArgument {
+		t.Fatalf("MarkRoomAsRead reply anchor code = %v, want %v", errorCode(err), connect.CodeInvalidArgument)
 	}
 	if got, err := env.core.GetLastReadEventID(env.ctx, core.KindChannel, reader.Id, room.Id); err != nil || got != e2.Id {
 		t.Fatalf("marker after reply anchor = %q, %v; want %s", got, err, e2.Id)
@@ -700,8 +739,8 @@ func TestRoomAndThreadServicesMarkRoomAsReadAnchorsAndDoesNotRegress(t *testing.
 	if _, err := env.rooms.MarkRoomAsRead(ctx, connect.NewRequest(&apiv1.MarkRoomAsReadRequest{
 		RoomId:      room.Id,
 		UpToEventId: "missing-event",
-	})); connect.CodeOf(err) != connect.CodeNotFound {
-		t.Fatalf("MarkRoomAsRead missing event code = %v, want %v", connect.CodeOf(err), connect.CodeNotFound)
+	})); errorCode(err) != connect.CodeNotFound {
+		t.Fatalf("MarkRoomAsRead missing event code = %v, want %v", errorCode(err), connect.CodeNotFound)
 	}
 	if got, err := env.core.GetLastReadEventID(env.ctx, core.KindChannel, reader.Id, room.Id); err != nil || got != e2.Id {
 		t.Fatalf("marker after missing event = %q, %v; want %s", got, err, e2.Id)
@@ -745,8 +784,8 @@ func TestRoomAndThreadServicesMarkRoomAsReadRejectsMissingAnchorWithoutLazyMarke
 	if _, err := env.rooms.MarkRoomAsRead(ctx, connect.NewRequest(&apiv1.MarkRoomAsReadRequest{
 		RoomId:      room.Id,
 		UpToEventId: "missing-event",
-	})); connect.CodeOf(err) != connect.CodeNotFound {
-		t.Fatalf("MarkRoomAsRead missing event code = %v, want %v", connect.CodeOf(err), connect.CodeNotFound)
+	})); errorCode(err) != connect.CodeNotFound {
+		t.Fatalf("MarkRoomAsRead missing event code = %v, want %v", errorCode(err), connect.CodeNotFound)
 	}
 	if marker, exists, err := env.core.PeekLastReadEventID(env.ctx, reader.Id, room.Id); err != nil || exists || marker != "" {
 		t.Fatalf("reader marker after rejected request = %q exists=%v err=%v, want absent", marker, exists, err)
@@ -803,12 +842,15 @@ func TestRoomAndThreadServicesMarkThreadAsReadAnchorsAndDoesNotRegress(t *testin
 	if err != nil {
 		t.Fatalf("MarkThreadAsRead reply2: %v", err)
 	}
-	if resp.Msg.PreviousReadAt != nil {
-		t.Fatalf("first previous read at = %v, want nil", resp.Msg.PreviousReadAt)
+	if resp.Msg.PreviousLastReadAt != nil {
+		t.Fatalf("first previous read at = %v, want nil", resp.Msg.PreviousLastReadAt)
 	}
 	marker2, err := env.core.GetThreadLastOpened(env.ctx, core.KindChannel, reader.Id, room.Id, root.Id)
 	if err != nil {
 		t.Fatalf("GetThreadLastOpened after reply2: %v", err)
+	}
+	if resp.Msg.LastReadAt == nil || !resp.Msg.LastReadAt.AsTime().Equal(marker2) {
+		t.Fatalf("first last_read_at = %v, want %v", resp.Msg.LastReadAt, marker2)
 	}
 	assertAPINotificationStates(t, env, ctx,
 		[]string{futureThreadNotification.Id, otherThreadNotification.Id, roomNotification.Id},
@@ -823,12 +865,15 @@ func TestRoomAndThreadServicesMarkThreadAsReadAnchorsAndDoesNotRegress(t *testin
 	if err != nil {
 		t.Fatalf("MarkThreadAsRead stale reply1: %v", err)
 	}
-	if resp.Msg.PreviousReadAt == nil {
+	if resp.Msg.PreviousLastReadAt == nil {
 		t.Fatalf("second previous read at = nil, want previous marker")
 	}
 	markerAfter, err := env.core.GetThreadLastOpened(env.ctx, core.KindChannel, reader.Id, room.Id, root.Id)
 	if err != nil {
 		t.Fatalf("GetThreadLastOpened after stale reply1: %v", err)
+	}
+	if resp.Msg.LastReadAt == nil || !resp.Msg.LastReadAt.AsTime().Equal(marker2) || !resp.Msg.PreviousLastReadAt.AsTime().Equal(marker2) {
+		t.Fatalf("stale response = %+v, want previous and current %v", resp.Msg, marker2)
 	}
 	if !markerAfter.Equal(marker2) {
 		t.Fatalf("thread marker regressed from %v to %v", marker2, markerAfter)
@@ -842,8 +887,8 @@ func TestRoomAndThreadServicesMarkThreadAsReadAnchorsAndDoesNotRegress(t *testin
 		RoomId:            room.Id,
 		ThreadRootEventId: root.Id,
 		UpToEventId:       otherReply.Id,
-	})); connect.CodeOf(err) != connect.CodeInvalidArgument {
-		t.Fatalf("MarkThreadAsRead cross-thread anchor code = %v, want %v", connect.CodeOf(err), connect.CodeInvalidArgument)
+	})); errorCode(err) != connect.CodeInvalidArgument {
+		t.Fatalf("MarkThreadAsRead cross-thread anchor code = %v, want %v", errorCode(err), connect.CodeInvalidArgument)
 	}
 	markerAfterInvalid, err := env.core.GetThreadLastOpened(env.ctx, core.KindChannel, reader.Id, room.Id, root.Id)
 	if err != nil {
@@ -857,8 +902,8 @@ func TestRoomAndThreadServicesMarkThreadAsReadAnchorsAndDoesNotRegress(t *testin
 		RoomId:            room.Id,
 		ThreadRootEventId: root.Id,
 		UpToEventId:       "missing-event",
-	})); connect.CodeOf(err) != connect.CodeNotFound {
-		t.Fatalf("MarkThreadAsRead missing anchor code = %v, want %v", connect.CodeOf(err), connect.CodeNotFound)
+	})); errorCode(err) != connect.CodeNotFound {
+		t.Fatalf("MarkThreadAsRead missing anchor code = %v, want %v", errorCode(err), connect.CodeNotFound)
 	}
 	markerAfterMissing, err := env.core.GetThreadLastOpened(env.ctx, core.KindChannel, reader.Id, room.Id, root.Id)
 	if err != nil {
@@ -867,6 +912,15 @@ func TestRoomAndThreadServicesMarkThreadAsReadAnchorsAndDoesNotRegress(t *testin
 	if !markerAfterMissing.Equal(marker2) {
 		t.Fatalf("thread marker changed after missing anchor from %v to %v", marker2, markerAfterMissing)
 	}
+	// An omitted anchor advances to the latest reply and reports the retained pair.
+	resp, err = env.threads.MarkThreadAsRead(ctx, connect.NewRequest(&apiv1.MarkThreadAsReadRequest{RoomId: room.Id, ThreadRootEventId: root.Id}))
+	if err != nil {
+		t.Fatalf("MarkThreadAsRead latest: %v", err)
+	}
+	if resp.Msg.LastReadAt == nil || !resp.Msg.LastReadAt.AsTime().Equal(reply3.CreatedAt.AsTime()) || !resp.Msg.PreviousLastReadAt.AsTime().Equal(marker2) {
+		t.Fatalf("latest response = %+v, want previous %v and current %v", resp.Msg, marker2, reply3.CreatedAt)
+	}
+
 }
 
 func createReadTestOccurrence(t *testing.T, env *connectAPITestEnv, recipientID, actorID, roomID string, event *evtv1.Event, threadRootID string, reason notificationTestSignalKind) *notificationv1.NotificationOccurrence {
@@ -931,38 +985,35 @@ func TestThreadServiceRequiresMembershipAndTogglesFollowState(t *testing.T) {
 		RoomId:            room.Id,
 		ThreadRootEventId: root.Id,
 	})
-	if _, err := env.threads.FollowThread(env.ctx, req); connect.CodeOf(err) != connect.CodeUnauthenticated {
-		t.Fatalf("unauthenticated FollowThread code = %v, want %v", connect.CodeOf(err), connect.CodeUnauthenticated)
+	if _, err := env.threads.FollowThread(env.ctx, req); errorCode(err) != connect.CodeUnauthenticated {
+		t.Fatalf("unauthenticated FollowThread code = %v, want %v", errorCode(err), connect.CodeUnauthenticated)
 	}
 
 	outsider, err := env.core.CreateUser(env.ctx, core.SystemActorID, "thread-follow-outsider", "Thread Follow Outsider", "password")
 	if err != nil {
 		t.Fatalf("CreateUser outsider: %v", err)
 	}
-	if _, err := env.threads.FollowThread(withCaller(env.ctx, outsider), req); connect.CodeOf(err) != connect.CodePermissionDenied {
-		t.Fatalf("non-member FollowThread code = %v, want %v", connect.CodeOf(err), connect.CodePermissionDenied)
+	if _, err := env.threads.FollowThread(withCaller(env.ctx, outsider), req); errorCode(err) != connect.CodePermissionDenied {
+		t.Fatalf("non-member FollowThread code = %v, want %v", errorCode(err), connect.CodePermissionDenied)
 	}
 
 	ctx := withCaller(env.ctx, env.viewer)
 	if _, err := env.threads.FollowThread(ctx, connect.NewRequest(&apiv1.FollowThreadRequest{
 		RoomId:            room.Id,
 		ThreadRootEventId: "missing-root",
-	})); connect.CodeOf(err) != connect.CodeNotFound {
-		t.Fatalf("missing root FollowThread code = %v, want %v", connect.CodeOf(err), connect.CodeNotFound)
+	})); errorCode(err) != connect.CodeNotFound {
+		t.Fatalf("missing root FollowThread code = %v, want %v", errorCode(err), connect.CodeNotFound)
 	}
 	if _, err := env.threads.FollowThread(ctx, connect.NewRequest(&apiv1.FollowThreadRequest{
 		RoomId:            room.Id,
 		ThreadRootEventId: reply.Id,
-	})); connect.CodeOf(err) != connect.CodeInvalidArgument {
-		t.Fatalf("reply root FollowThread code = %v, want %v", connect.CodeOf(err), connect.CodeInvalidArgument)
+	})); errorCode(err) != connect.CodeInvalidArgument {
+		t.Fatalf("reply root FollowThread code = %v, want %v", errorCode(err), connect.CodeInvalidArgument)
 	}
 
 	followResp, err := env.threads.FollowThread(ctx, req)
 	if err != nil {
 		t.Fatalf("FollowThread: %v", err)
-	}
-	if !followResp.Msg.Following {
-		t.Fatalf("FollowThread following = false, want true")
 	}
 	if state := followResp.Msg.GetState(); state.GetRoomId() != room.Id || state.GetThreadRootEventId() != root.Id || !state.GetFollowing() {
 		t.Fatalf("FollowThread state = %+v, want current followed thread", state)
@@ -981,9 +1032,6 @@ func TestThreadServiceRequiresMembershipAndTogglesFollowState(t *testing.T) {
 	}))
 	if err != nil {
 		t.Fatalf("UnfollowThread: %v", err)
-	}
-	if unfollowResp.Msg.Following {
-		t.Fatalf("UnfollowThread following = true, want false")
 	}
 	if state := unfollowResp.Msg.GetState(); state.GetRoomId() != room.Id || state.GetThreadRootEventId() != root.Id || state.GetFollowing() {
 		t.Fatalf("UnfollowThread state = %+v, want current unfollowed thread", state)
@@ -1012,8 +1060,8 @@ func TestThreadServiceListFollowedThreadsReturnsHydratedPage(t *testing.T) {
 
 	if _, err := env.threads.ListFollowedThreads(env.ctx, connect.NewRequest(&apiv1.ListFollowedThreadsRequest{
 		Page: &apiv1.PageRequest{Limit: 20},
-	})); connect.CodeOf(err) != connect.CodeUnauthenticated {
-		t.Fatalf("unauthenticated ListFollowedThreads code = %v, want %v", connect.CodeOf(err), connect.CodeUnauthenticated)
+	})); errorCode(err) != connect.CodeUnauthenticated {
+		t.Fatalf("unauthenticated ListFollowedThreads code = %v, want %v", errorCode(err), connect.CodeUnauthenticated)
 	}
 
 	ctx := withCaller(env.ctx, env.viewer)
@@ -1061,6 +1109,63 @@ func TestThreadServiceListFollowedThreadsReturnsHydratedPage(t *testing.T) {
 	}
 }
 
+func TestThreadServiceListFollowedThreadsUnreadOnly(t *testing.T) {
+	env := newConnectAPITestEnv(t)
+	room := env.createJoinedRoom("followed-unread-only")
+	participant, err := env.core.CreateUser(env.ctx, core.SystemActorID, "thread-unread-participant", "Thread Unread Participant", "password")
+	if err != nil {
+		t.Fatalf("CreateUser participant: %v", err)
+	}
+	if _, err := env.core.JoinRoom(env.ctx, participant.Id, core.KindChannel, participant.Id, room.Id); err != nil {
+		t.Fatalf("JoinRoom participant: %v", err)
+	}
+	ctx := withCaller(env.ctx, env.viewer)
+	var roots []string
+	for _, body := range []string{"read root", "unread root", "newest read root"} {
+		root := env.post(room.Id, env.viewer.Id, body, "")
+		env.post(room.Id, participant.Id, "reply to "+body, root.Id)
+		if _, err := env.threads.FollowThread(ctx, connect.NewRequest(&apiv1.FollowThreadRequest{
+			RoomId:            room.Id,
+			ThreadRootEventId: root.Id,
+		})); err != nil {
+			t.Fatalf("FollowThread: %v", err)
+		}
+		roots = append(roots, root.Id)
+	}
+	for _, rootID := range []string{roots[0], roots[2]} {
+		if _, err := env.core.SetThreadLastOpened(env.ctx, core.KindChannel, env.viewer.Id, room.Id, rootID); err != nil {
+			t.Fatalf("SetThreadLastOpened: %v", err)
+		}
+	}
+
+	resp, err := env.threads.ListFollowedThreads(ctx, connect.NewRequest(&apiv1.ListFollowedThreadsRequest{
+		Page:       &apiv1.PageRequest{Limit: 1},
+		UnreadOnly: true,
+	}))
+	if err != nil {
+		t.Fatalf("ListFollowedThreads unread only: %v", err)
+	}
+	if resp.Msg.GetPage().GetTotalCount() != 1 || resp.Msg.GetPage().GetHasMore() {
+		t.Fatalf("unread page metadata = total %d hasMore %v, want total 1 hasMore false", resp.Msg.GetPage().GetTotalCount(), resp.Msg.GetPage().GetHasMore())
+	}
+	if len(resp.Msg.GetThreads()) != 1 || resp.Msg.GetThreads()[0].GetThread().GetThreadRootEventId() != roots[1] {
+		t.Fatalf("unread page threads = %+v, want only %s", resp.Msg.GetThreads(), roots[1])
+	}
+	if !resp.Msg.GetThreads()[0].GetThread().GetViewerState().GetHasUnreadReplies() {
+		t.Fatal("unread page thread has hasUnreadReplies = false")
+	}
+
+	resp, err = env.threads.ListFollowedThreads(ctx, connect.NewRequest(&apiv1.ListFollowedThreadsRequest{
+		Page: &apiv1.PageRequest{Limit: 1},
+	}))
+	if err != nil {
+		t.Fatalf("ListFollowedThreads all: %v", err)
+	}
+	if resp.Msg.GetPage().GetTotalCount() != 3 || !resp.Msg.GetPage().GetHasMore() {
+		t.Fatalf("complete page metadata = total %d hasMore %v, want total 3 hasMore true", resp.Msg.GetPage().GetTotalCount(), resp.Msg.GetPage().GetHasMore())
+	}
+}
+
 func TestThreadServiceListFollowedThreadsFiltersMembershipLoss(t *testing.T) {
 	env := newConnectAPITestEnv(t)
 	room := env.createJoinedRoom("followed-loss")
@@ -1099,7 +1204,7 @@ func TestThreadServiceListFollowedThreadsFiltersMembershipLoss(t *testing.T) {
 	}
 }
 
-func TestThreadServiceListFollowedThreadsFiltersOtherRoomKinds(t *testing.T) {
+func TestThreadServiceListFollowedThreadsRequiresDMOptIn(t *testing.T) {
 	env := newConnectAPITestEnv(t)
 	participant, err := env.core.CreateUser(env.ctx, core.SystemActorID, "thread-dm-participant", "Thread DM Participant", "password")
 	if err != nil {
@@ -1129,6 +1234,65 @@ func TestThreadServiceListFollowedThreadsFiltersOtherRoomKinds(t *testing.T) {
 	if resp.Msg.GetPage().GetTotalCount() != 0 || resp.Msg.GetPage().GetHasMore() {
 		t.Fatalf("ListFollowedThreads page metadata = total %d hasMore %v, want total 0 hasMore false", resp.Msg.GetPage().GetTotalCount(), resp.Msg.GetPage().GetHasMore())
 	}
+
+	resp, err = env.threads.ListFollowedThreads(withCaller(env.ctx, env.viewer), connect.NewRequest(&apiv1.ListFollowedThreadsRequest{
+		Page:                        &apiv1.PageRequest{Limit: 20},
+		IncludeDirectMessageThreads: true,
+	}))
+	if err != nil {
+		t.Fatalf("ListFollowedThreads with DM opt-in: %v", err)
+	}
+	if got := len(resp.Msg.GetThreads()); got != 1 {
+		t.Fatalf("ListFollowedThreads with DM opt-in returned %d threads, want 1", got)
+	}
+	thread := resp.Msg.GetThreads()[0]
+	if thread.GetRoom().GetId() != dm.Id || thread.GetThread().GetThreadRootEventId() != root.Id {
+		t.Fatalf("DM followed thread = %+v, want room %q root %q", thread, dm.Id, root.Id)
+	}
+	if got := thread.GetDirectMessageParticipantUserIds(); len(got) != 2 {
+		t.Fatalf("DM participant IDs = %v, want two participants", got)
+	}
+}
+
+func TestThreadServiceListFollowedThreadsLabelsDeletedDMParticipant(t *testing.T) {
+	env := newConnectAPITestEnv(t)
+	participant, err := env.core.CreateUser(env.ctx, core.SystemActorID, "thread-dm-deleted", "Thread DM Deleted", "password")
+	if err != nil {
+		t.Fatalf("CreateUser participant: %v", err)
+	}
+	dm, _, err := env.core.FindOrCreateDM(env.ctx, env.viewer.Id, []string{participant.Id})
+	if err != nil {
+		t.Fatalf("FindOrCreateDM: %v", err)
+	}
+	root, err := env.core.PostMessage(env.ctx, core.KindDM, dm.Id, env.viewer.Id, "root body", nil, "", "", nil, false)
+	if err != nil {
+		t.Fatalf("PostMessage root: %v", err)
+	}
+	if err := env.core.FollowThread(env.ctx, core.KindDM, env.viewer.Id, dm.Id, root.Id); err != nil {
+		t.Fatalf("FollowThread: %v", err)
+	}
+	if err := env.core.DeleteUser(env.ctx, participant.Id, participant.Id); err != nil {
+		t.Fatalf("DeleteUser: %v", err)
+	}
+
+	resp, err := env.threads.ListFollowedThreads(withCaller(env.ctx, env.viewer), connect.NewRequest(&apiv1.ListFollowedThreadsRequest{
+		Page:                        &apiv1.PageRequest{Limit: 20},
+		IncludeDirectMessageThreads: true,
+	}))
+	if err != nil {
+		t.Fatalf("ListFollowedThreads: %v", err)
+	}
+	if got := len(resp.Msg.GetThreads()); got != 1 {
+		t.Fatalf("ListFollowedThreads returned %d threads, want 1", got)
+	}
+	got := resp.Msg.GetThreads()[0].GetDirectMessageParticipantUserIds()
+	if !slices.Contains(got, env.viewer.Id) || !slices.Contains(got, participant.Id) || len(got) != 2 {
+		t.Fatalf("DM participant IDs = %v, want the viewer and the deleted participant", got)
+	}
+	deleted := resp.Msg.GetIncludes().GetUsers()[participant.Id]
+	if deleted == nil || !deleted.GetDeleted() {
+		t.Fatalf("included deleted participant = %+v, want a deleted user", deleted)
+	}
 }
 
 func TestFollowedThreadsResponseOmitsUnavailableRooms(t *testing.T) {
@@ -1148,5 +1312,61 @@ func TestFollowedThreadsResponseOmitsUnavailableRooms(t *testing.T) {
 	}
 	if got := len(resp.GetThreads()); got != 0 {
 		t.Fatalf("followedThreadsResponse returned %d unavailable threads, want 0", got)
+	}
+}
+
+func TestRoomTimelineEchoUsesUnavailableOriginalWithoutStaleContent(t *testing.T) {
+	env := newConnectAPITestEnv(t)
+	ctx := withCaller(env.ctx, env.viewer)
+	room := env.createJoinedRoom("echo-unavailable")
+	root := env.post(room.Id, env.viewer.Id, "root", "")
+	reply, err := env.core.PostMessage(env.ctx, core.KindChannel, room.Id, env.viewer.Id, "original", nil, root.Id, "", nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	echoID, ok := env.core.ChannelEchoEventID(reply.Id)
+	if !ok {
+		t.Fatal("missing echo")
+	}
+	corruptMessageBody(t, env.ctx, env, room.Id, reply.Id, env.viewer.Id)
+	response, err := env.rooms.GetRoomEvents(ctx, connect.NewRequest(&apiv1.GetRoomEventsRequest{RoomId: room.Id, Limit: 20}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	echo := timelinePageEvent(response.Msg.GetPage(), echoID)
+	if echo == nil {
+		t.Fatal("missing echo row")
+	}
+	message := echo.GetMessagePosted().GetMessage()
+	if message == nil || message.Body != nil || message.DeletedAt != nil {
+		t.Fatalf("echo should be unavailable without a deletion: %v", message)
+	}
+}
+
+func TestMessageBatchHydratesEchoAndOriginalAfterAuthorizedAliasEdit(t *testing.T) {
+	env := newConnectAPITestEnv(t)
+	ctx := withCaller(env.ctx, env.viewer)
+	room := env.createJoinedRoom("echo-batch")
+	root := env.post(room.Id, env.viewer.Id, "root", "")
+	reply, err := env.core.PostMessage(env.ctx, core.KindChannel, room.Id, env.viewer.Id, "original", nil, root.Id, root.Id, nil, true)
+	require.NoError(t, err)
+	echoID, ok := env.core.ChannelEchoEventID(reply.Id)
+	require.True(t, ok)
+	other, err := env.core.CreateUser(env.ctx, core.SystemActorID, "echo-other", "Echo Other", "password123")
+	require.NoError(t, err)
+	_, err = env.core.JoinRoom(env.ctx, other.Id, core.KindChannel, other.Id, room.Id)
+	require.NoError(t, err)
+	text := "alias edit"
+	_, err = env.messages.UpdateMessage(withCaller(env.ctx, other), connect.NewRequest(&apiv1.UpdateMessageRequest{RoomId: room.Id, EventId: echoID, Body: &text}))
+	require.Equal(t, connect.CodePermissionDenied, errorCode(err))
+	_, err = env.messages.UpdateMessage(ctx, connect.NewRequest(&apiv1.UpdateMessageRequest{RoomId: room.Id, EventId: echoID, Body: &text}))
+	require.NoError(t, err)
+	batch, err := env.messages.BatchGetMessages(ctx, connect.NewRequest(&apiv1.BatchGetMessagesRequest{RoomId: room.Id, EventIds: []string{reply.Id, echoID}}))
+	require.NoError(t, err)
+	require.Len(t, batch.Msg.GetMessages(), 2)
+	for _, message := range batch.Msg.GetMessages() {
+		require.Equal(t, text, message.GetBody())
+		require.Equal(t, root.Id, message.GetInReplyTo())
+		require.NotNil(t, message.GetUpdatedAt())
 	}
 }

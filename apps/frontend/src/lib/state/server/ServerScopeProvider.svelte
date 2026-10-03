@@ -1,8 +1,9 @@
 <script lang="ts">
   import { onDestroy, untrack, type Snippet } from 'svelte';
-  import type { ServerConnection } from './serverConnection.svelte';
+  import type { ServerConnection } from '@chatto/client/server/serverConnection';
   import { provideServerScope } from './scope.svelte';
-  import type { ServerStateStore } from './store.svelte';
+  import type { ServerStateStore } from '@chatto/client/server/store';
+  import { provideUserProfiles } from '$lib/state/userProfiles.svelte';
 
   let {
     serverId,
@@ -25,6 +26,7 @@
   // pending work from an old subtree attached to its original server, while
   // isCurrent() lets continuations suppress UI effects after that teardown.
   const snapshot = untrack(() => ({ serverId, connection, store }));
+  provideUserProfiles(() => snapshot.store.projection.users);
   provideServerScope({
     ...snapshot,
     isCurrent: () => current

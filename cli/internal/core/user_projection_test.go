@@ -17,6 +17,28 @@ import (
 	evtv1 "hmans.de/chatto/internal/pb/chatto/core/evt/v1"
 )
 
+func TestUserAuthProjectionUnlinkCredentialReplay(t *testing.T) {
+	for _, preserve := range []bool{false, true} {
+		t.Run(fmt.Sprintf("preserve=%t", preserve), func(t *testing.T) {
+			p := newUserAuthProjection()
+			p.ensureUserLocked("U1").authGeneration = 10
+			require.NoError(t, p.Apply(&evtv1.Event{
+				Id: "unlink",
+				Event: &evtv1.Event_UserExternalIdentityUnlinked{UserExternalIdentityUnlinked: &evtv1.UserExternalIdentityUnlinkedEvent{
+					UserId: "U1", SubjectHash: "identity", PreserveExistingCredentials: preserve,
+				}},
+			}, 20))
+			generation, active := p.AuthGeneration("U1")
+			require.True(t, active)
+			if preserve {
+				require.Equal(t, uint64(10), generation)
+			} else {
+				require.Equal(t, uint64(20), generation, "historical unlink events must still revoke credentials")
+			}
+		})
+	}
+}
+
 func BenchmarkUserProjectionGetReferences(b *testing.B) {
 	const memberCount = 10_000
 	key, err := encryption.GenerateKey()
@@ -39,7 +61,7 @@ func BenchmarkUserProjectionGetReferences(b *testing.B) {
 			b.Fatal(err)
 		}
 		p.users[userID] = &projectedUser{
-			user:        &evtv1.User{Id: userID},
+			user:        &evtv1.User{Id: userID, CreatedAt: timestamppb.New(time.Unix(int64(i), 0))},
 			login:       newProjectedUserPII(eventID, evtstream.EventUserAccountCreated, "login", encryptedLogin),
 			displayName: newProjectedUserPII(eventID, evtstream.EventUserAccountCreated, "display_name", encryptedDisplayName),
 		}
@@ -50,13 +72,47 @@ func BenchmarkUserProjectionGetReferences(b *testing.B) {
 		}
 	}
 
-	b.ResetTimer()
-	b.ReportAllocs()
-	for b.Loop() {
-		if got := p.GetReferences(userIDs); len(got) != memberCount {
-			b.Fatalf("GetReferences() returned %d users, want %d", len(got), memberCount)
+	for _, method := range []string{"hydrate-profiles", "active-ids", "admin-metadata"} {
+		b.Run(method, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				var count int
+				if method == "hydrate-profiles" {
+					count = len(p.GetReferences(userIDs))
+				} else if method == "admin-metadata" {
+					count = len(p.ActiveDirectoryMetadata())
+				} else {
+					count = len(p.ActiveIDs(userIDs))
+				}
+				if count != memberCount {
+					b.Fatalf("returned %d users, want %d", count, memberCount)
+				}
+			}
+		})
+	}
+}
+
+func TestUserProjectionActiveIDsDoesNotHydrateProfiles(t *testing.T) {
+	// No key resolver is installed. Hydrating these encrypted fields would fail.
+	p := NewUserProjection(nil, nil)
+	for _, id := range []string{"active", "deleted", "shredded"} {
+		p.users[id] = &projectedUser{
+			user:     &evtv1.User{Id: id},
+			login:    newProjectedUserPII("event", evtstream.EventUserAccountCreated, "login", &evtv1.EncryptedUserString{}),
+			deleted:  id == "deleted",
+			shredded: id == "shredded",
 		}
 	}
+	require.Equal(t, []string{"active"}, p.ActiveIDs([]string{"deleted", "active", "missing", "shredded"}))
+	require.Equal(t, []string{"active"}, p.AllActiveIDs())
+	created := timestamppb.Now()
+	p.users["active"].user.CreatedAt = created
+	metadata := p.ActiveDirectoryMetadata()
+	require.Len(t, metadata, 1)
+	require.Equal(t, "active", metadata[0].ID)
+	require.Equal(t, created, metadata[0].CreatedAt)
+	metadata[0].CreatedAt.Seconds++
+	require.NotEqual(t, created.Seconds, metadata[0].CreatedAt.Seconds)
 }
 
 func userEvent(id string, ts time.Time, event *evtv1.Event) *evtv1.Event {
@@ -240,6 +296,36 @@ func TestUserProjection_RetainsEncryptedPIIAndDecryptsOnRead(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, "U1", byEmail.GetId())
 	require.Equal(t, 4, unwrapCalls, "profile and email hydration should share one DEK unwrap")
+}
+
+func TestUserProjectionContentSnapshotDefersHydrationAndKeepsCapturedGeneration(t *testing.T) {
+	key, err := encryption.GenerateKey()
+	require.NoError(t, err)
+	unwrapCalls := 0
+	p := NewUserProjection(staticProjectionKeyWrapper{key: key, unwrapCalls: &unwrapCalls}, staticProjectionDEKStore{})
+	require.NoError(t, p.Apply(&evtv1.Event{
+		Id: "K1",
+		Event: &evtv1.Event_UserDekGenerated{UserDekGenerated: &evtv1.UserDEKGeneratedEvent{
+			UserId:        "U1",
+			Epoch:         1,
+			Purpose:       evtv1.UserDEKPurpose_USER_DEK_PURPOSE_USER_PII,
+			ContentKeyRef: "dek.test",
+		}},
+	}, 1))
+	contentKey := &messageContentKey{epoch: 1, purpose: evtv1.UserDEKPurpose_USER_DEK_PURPOSE_USER_PII, key: key}
+	require.NoError(t, p.Apply(userEvent("E1", time.Now(), accountCreated(t, contentKey, "E1", "U1", "alice", "Alice")), 2))
+	require.Equal(t, 1, unwrapCalls, "projection apply derives the login index")
+
+	snapshot := p.contentSnapshot("U1")
+	require.NotNil(t, snapshot)
+	require.Equal(t, 1, unwrapCalls, "capturing projected state must not resolve a key")
+
+	require.NoError(t, p.Apply(userEvent("E2", time.Now(), displayNameChanged(t, contentKey, "E2", "U1", "Alice Updated")), 3))
+	user, ok, err := p.hydrateUserSnapshot(WithDEKRequestCache(context.Background()), snapshot, time.Now())
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, "Alice", user.GetDisplayName(), "hydration must use the captured generation")
+	require.Equal(t, 2, unwrapCalls, "hydration resolves the captured key after the copy")
 }
 
 func TestUserProjection_ReadErrorsDoNotBecomeAbsenceOrTombstones(t *testing.T) {

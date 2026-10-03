@@ -93,7 +93,7 @@ describe('MessageUserOverlays', () => {
     await vi.waitFor(() => {
       banButton =
         Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find(
-          (button) => button.textContent?.trim() === 'Ban from room'
+          (button) => button.textContent?.trim() === 'Remove from room'
         ) ?? null;
       expect(banButton).not.toBeNull();
     });
@@ -102,7 +102,8 @@ describe('MessageUserOverlays', () => {
     let dialog: HTMLDialogElement | null = null;
     await vi.waitFor(() => {
       dialog = document.querySelector<HTMLDialogElement>('dialog[open]');
-      expect(dialog?.querySelector('[aria-busy="true"]')?.textContent).toContain('Loading');
+      expect(dialog).not.toBeNull();
+      expect(dialog?.querySelector('[data-loading-fog][aria-busy="true"]')).toBeTruthy();
     });
 
     dialog!.dispatchEvent(new Event('cancel', { cancelable: true }));

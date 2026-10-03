@@ -31,6 +31,67 @@ using the browser's window/tab/screen chooser.
 
 Chatto records call start/join/leave/end facts durably and reconciles active participants against LiveKit webhooks, so call indicators recover after server restarts. These call facts update the active call UI without appearing as room timeline messages. LiveKit media is end-to-end encrypted by current Chatto clients; older clients that do not support this call encryption cannot decode encrypted media.
 
+## Connection quality
+
+An amber network icon on a participant card means a poor connection; a red
+disconnected icon means the connection is lost. Click the icon to read its status.
+Your current-user card shows the same warning for your connection, even outside
+the call sidebar. These warnings describe network quality, not microphone volume.
+
+## Adjust another participant's volume
+
+During a call, open the three-dot menu in a participant card's header, or
+right-click the card. On touch devices, long-press the card. Adjust
+**Voice volume** for their microphone. Open the screen-share card's menu to
+adjust **Stream volume** for shared audio.
+Microphone volume is also available on camera cards and from that
+participant's entry in the members list.
+Each control ranges from 0% to 200%; 100% keeps the original level. Higher
+levels amplify quiet audio and can distort audio that is already loud.
+
+These settings affect only what you hear. This browser remembers them per
+server and participant. **Mute locally** silences both sources and keeps your
+levels. Sliders move in 5% steps, with a mark at 100% to help restore the original level.
+The volume curve approximates perceived loudness: 50% applies -10 dB and 200% applies
++10 dB. Existing saved positions use this curve; 100% stays unchanged.
+
+Boost requires browser Web Audio support. If boost is unavailable, the controls
+show a 100% limit. Browsers without Web Audio output selection use the system
+output for calls. Select **Enable call audio** if playback is blocked.
+
+## Call permissions
+
+Room membership is required for all calls. Configure these permissions at
+Server, Room group, Room, or Direct messages scope:
+
+| Permission | Action |
+| --- | --- |
+| `call.start` | Start a call. Also requires `call.join`. |
+| `call.join` | Join an active call, including as a listener. |
+| `call.voice` | Publish microphone audio. |
+| `call.camera` | Publish camera video. |
+| `call.screenshare` | Share a screen, window, tab, or native application, including captured audio. |
+
+To create a listening audience, allow `call.join` and deny the three media
+permissions. Allow `call.start` only for people who can start the conversation.
+DM policy uses the shared Direct messages scope.
+
+On upgrade, Chatto grants these new permissions to `everyone` only if that
+permission has no previous server-level `everyone` decision. Restarting never
+restores a permission that you cleared or denied. Bots require explicit grants
+and sufficient authority from their owner.
+
+The client stops revoked media when it receives updated room permissions. The
+server also checks connected participants on its 30-second LiveKit reconciliation
+cycle. It removes participants who lose `call.join` and updates allowed media
+sources. Failed checks retry on later cycles. Revocation is not immediate:
+an unexpired old token can reconnect until a subsequent check removes it again.
+Browser tokens expire after five minutes; native publisher tokens after one
+minute. Token expiry alone does not stop an established media connection.
+
+Members without `call.join` can still see the active call. Leaving a call does
+not require a call permission. Call management is not part of these permissions.
+
 ## Requirements
 
 - A running [LiveKit server](https://docs.livekit.io/home/self-hosting/local/) (self-hosted or cloud)
@@ -209,7 +270,43 @@ Use a dedicated TURN server such as [coturn](https://github.com/coturn/coturn) w
 - **Camera toggle** — Turn your camera on and off during a call
 - **Video device selection** — Switch between cameras without leaving the call
 - **Active call indicators** — Rooms with active calls show a call indicator in the room list
-- **Audio level visualization** — Participant avatars pulse with accent-colored rings based on speaking volume
+- **Audio level visualization** — A soft accent-coloured glow behind participant names grows brighter and broader with speaking volume, then fades away in silence. Screen-share tiles use their own shared audio, not the microphone. Video stays clear. Reduced motion keeps the glow stationary.
+
+## Device preferences and microphone test
+
+The glow on your participant card shows microphone activity. If it does not
+appear when you speak, use the call toolbar's gear to open Voice & video
+preferences and test your input device.
+
+Open **App Preferences → Voice & video** to choose a microphone, speaker,
+and camera for the selected server. Choices stay in this browser. Enable
+**Join calls with microphone muted** to start calls quietly. Selecting a
+camera does not turn it on.
+Changing a device here during a call also switches that call's device.
+
+If a saved device is missing, calls use the system default and keep the saved
+choice for a later call. Successful device changes during a call are also
+saved. Speaker selection depends on browser support.
+
+Select **Start microphone test** to see the input level while the browser
+records a local sample. The speaker stays silent during recording. Select
+**Stop and play**, or wait 10 seconds, to end capture and hear the sample through
+the selected speaker. Select **Play again** to repeat it. The sample stays in
+browser memory until you start another test, change the microphone, or leave
+the page. The test does not connect to LiveKit. Leave the selected server's call
+before running it.
+
+Under **Microphone processing**, **Voice Boosting** enhances your microphone
+audio and is enabled by default. Clear the checkbox if it causes audio problems.
+Use the microphone test to compare the sound with Voice Boosting on and off.
+Your choice is saved for this browser and server.
+
+Use **Noise gate threshold** to suppress quiet background sounds. Set the marker
+above the background noise level but below your speech level. Select **Off** to
+disable the gate. You can also adjust this threshold from the call's device menu.
+
+If camera names are unavailable, opening this page requests camera access
+through the browser. Capture stops immediately after discovery.
 
 ## Disabling Voice & Video Calls
 

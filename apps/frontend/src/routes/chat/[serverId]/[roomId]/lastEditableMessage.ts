@@ -1,7 +1,7 @@
 import {
   isMessagePostedEvent,
   type TimelineEventView
-} from '$lib/render/timelineEvents';
+} from '@chatto/client/timeline/timelineEvents';
 import type { EditableMessage, RoomPermissions } from '$lib/state/room';
 
 type FindLastEditableMessageOptions = {
@@ -38,15 +38,15 @@ export function findLastEditableMessage({
       : (message.threadRootEventId ?? null);
     const channelEchoEventId = isEcho ? event.id : (message.channelEchoEventId ?? null);
     const canAddChannelEcho =
-      !!threadRootEventId &&
-      (!!channelEchoEventId || (roomPermissions.canEchoMessage && roomPermissions.canPostMessage));
+      !!threadRootEventId && roomPermissions.canEchoMessage && roomPermissions.canPostMessage;
 
     return {
       eventId,
       body: message.body,
       threadRootEventId,
       channelEchoEventId,
-      canAddChannelEcho
+      canAddChannelEcho,
+      canRemoveChannelEcho: !!threadRootEventId && !!channelEchoEventId
     };
   }
 

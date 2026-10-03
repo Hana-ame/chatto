@@ -1,192 +1,209 @@
 ---
 title: API Compatibility
-description: Plan for breaking API changes while Chatto is pre-1.0.
+description: Plan for API changes while Chatto is pre-1.0, and migrate integrations from Chatto 0.4 to 0.5.
 ---
 
-import { Aside } from "@astrojs/starlight/components";
+import { Aside, Steps } from "@astrojs/starlight/components";
 
-Chatto's API is experimental. Until the project publishes a stable API policy,
-any release may change RPCs, protobuf messages, error behaviour, authentication,
-or the realtime protocol in ways that require client changes.
-
-The `v1` in package names such as `chatto.api.v1` is part of the current wire
-name. It does not mean that every Chatto release exposes the same API.
+Chatto's public API is experimental until 1.0. Chatto prefers additive changes,
+but a minor release can change RPCs, messages, error codes, authentication, or
+the realtime protocol in ways that require client changes.
 
 <Aside type="caution">
-  Pin an exact Chatto version for any deployment used by an integration. Test
-  your integration against a new version before upgrading that deployment.
+  Pin the Chatto versions that your integration supports. Test the integration
+  against each new release before you upgrade a server that it uses.
 </Aside>
 
-## Target a server release
+## Compatibility policy
 
-Use the protobuf definitions and API reference from the same Chatto release as
-the server you target. Do not assume that a client generated from the latest
-source works with an older server, or that an older client works unchanged with
-a newer server.
+The public API has these tiers:
 
-Release notes can call out important API changes, but they are not a complete
-compatibility report. When an integration matters in production, test its main
-workflows against the exact upgrade candidate.
+| Tier           | Package                                 | Contents                                                                    |
+| -------------- | --------------------------------------- | --------------------------------------------------------------------------- |
+| Discovery      | `chatto.discovery.v1`                   | Unauthenticated bootstrap: server profile, version, and login options.      |
+| Auth           | `chatto.auth.v1`                        | Sign-in flows that use a short-lived capability token.                      |
+| Integration    | `chatto.api.v1`                         | Authenticated operations for clients and bots.                              |
+| Administrative | `chatto.admin.v1`                       | Server settings, roles, permissions, member administration, and audit reads. |
+| Realtime       | `chatto.realtime.v1` at `/api/realtime` | Snapshots, events, and resume over a WebSocket.                             |
 
-## Inspect the server version
+All tiers are pre-1.0. The `v1` suffix is the current wire name, not a
+stability promise. The bundled web client uses the same packages. The operator
+socket (`chatto.operator.v1`) is for local automation and is not part of the
+public network API.
 
-Call `chatto.discovery.v1.ServerDiscoveryService.GetServer` before
-authentication to read the server's public profile and software version.
-Decide explicitly which Chatto releases your integration supports, and test
-against each supported release rather than inferring method-level compatibility
-from discovery metadata.
+The realtime protocol has its own version in
+`RealtimeSubscribe.protocol_version`. The package name does not select a
+protocol version. When clients must change their realtime behavior, Chatto adds
+a new protocol version.
 
-The bundled 0.5 web client requires a 0.5 server. It does not fall back to the
-0.4 room-at-a-time ConnectRPC bootstrap, so it reports 0.4 servers as
-unsupported and asks the operator to upgrade them. A 0.5 server accepts only
-realtime protocol 2; older clients must migrate to the server-scoped projection
-stream.
+Between minor releases, expect these changes:
 
-Protocol 2 uses `room_viewer_activity_replace` for room unread and Slow Mode
-changes. This operation does not repeat room membership and permission state.
+- **Additions.** New fields, enum values, methods, and services. Older clients
+  ignore them.
+- **Renames.** The binary wire format stays compatible, but generated code and
+  ProtoJSON names change.
+- **Removals.** A removed method returns `Unimplemented`. Chatto reserves the
+  numbers and names of removed fields.
+- **Behavior changes.** Error codes, pagination, defaults, and permission
+  checks can change.
 
-The 0.5 authentication boundary also replaces sliding human bearer tokens with
-short-lived access tokens and rotating refresh credentials. A 0.5 server
-rejects bearer records issued before that change, so affected users sign in
-once after upgrade. Older clients can read the initial access token from a 0.5
-login or OAuth response but cannot renew it and become unauthenticated when it
-expires. A remote 0.5 client connection requires the refresh credential and
-expiry fields from its OAuth response. The bundled same-origin client uses only
-its HttpOnly cookie. Its dedicated login and registration routes do not create
-or return bearer credentials. A separately hosted browser client must use
-Chatto OAuth. Upgrade serving replicas and bundled clients together; mixed replicas
-or rollback after new credentials have been issued can incorrectly extend
-fixed-expiry access records.
+The release notes describe each intentional breaking change and the required
+migration. They are not a complete compatibility report.
 
-Chatto 0.5.0-alpha.1 publishes the canonical `webserver.url` identity from the
-bundled frontend CIMD route, even when a browser uses an exact
-`webserver.allowed_origins` alias. A frontend on that alias cannot connect to a
-remote Chatto server because the client ID does not match its metadata
-document. Later 0.5 servers publish a matching frontend identity for each
-exact alias. Upgrade all replicas that serve an alias before you use that alias
-for remote-server connections.
+## Check the server version
 
-The new fields on
-`chatto.auth.v1.CreateExternalIdentityAccountResponse` are additive at the
-protobuf wire level. Programmatic clients can use the complete renewable pair.
-The bundled same-origin client completes this flow with its HttpOnly cookie.
+Call `ServerDiscoveryService.GetServer` before sign-in. `profile.version`
+contains the server software version:
 
-Chatto 0.5 renames `ThreadViewerState.has_unread` to
-`has_unread_replies`. Regenerate clients and update
-ProtoJSON consumers. Protobuf tag `2` keeps its Boolean wire type, but its
-source and JSON names change. Its meaning is now limited to replies after the
-thread read cursor. Notification state is not part of the thread viewer-state
-contract. `FollowedThread.latest_reply` is additive.
-Deploy 0.5 clients and servers together. Existing stored follow facts, read
-cursors, and notification state remain valid.
+```bash
+curl -s https://chat.example.com/api/connect/chatto.discovery.v1.ServerDiscoveryService/GetServer \
+  -H 'Content-Type: application/json' \
+  -H 'Connect-Protocol-Version: 1' \
+  -d '{}'
+```
 
-Chatto 0.5 removes `current_password` from
-`chatto.admin.v1.DeleteUserRequest`. Regenerate custom clients and stop sending
-that field. An older binary client can send protobuf tag `2` to a 0.5 server;
-the server treats it as an unknown field and ignores it. The field is not part
-of the 0.5 ProtoJSON schema. A 0.5 client does not send the field to an older
-server, so that server can return `failed_precondition` when the current
-session is not fresh. A 0.5 server authorizes deletion with `user.delete-any`
-for another user or `user.delete-self` for the caller. It does not use password
-proof or a fresh credential for this operation.
+```json
+{
+  "profile": { "name": "Example Chat", "version": "0.5.0" }
+}
+```
 
-The 0.5 notification matrix uses the additive
-`chatto.api.v1.NotificationPolicyService`. An older server returns
-`Unimplemented` for this service. It cannot misapply a room-group update as a
-server update because the new service uses an explicit scope oneof. The
-existing `NotificationService` server and room policy methods remain available
-for integrations. A rollback makes new room-group overrides temporarily
-inactive; it does not convert them to server overrides. The group map changes
-the affected projection snapshot contract IDs, so an older binary cannot
-replace a newer snapshot with data that omits the group overrides.
+The response also contains `login` and `setup_required`.
 
-The delivery-mode enum keeps numeric values 1, 2, and 3. The names
-`IN_APP_NOTIFICATION` and `PUSH_NOTIFICATION` are additive aliases for values 2
-and 3. The previous `SILENT` and `ALERT` names remain as deprecated aliases.
-Existing protobuf JSON responses continue to use the previous names so older
-JSON clients can decode them. A JSON client that sends a new alias requires a
-server that includes the new schema.
+- Keep an explicit minimum server version in your client, and compare it with
+  `profile.version`. Discovery has no feature flags and no list of supported
+  methods.
+- Generate your client from the `proto/` directory of the release tag that
+  you target, for example `v0.5.0`. A client from newer source can fail on an
+  older server, and an older client can fail on a newer server.
+- Treat `Unimplemented` from a method as "this server does not have this
+  method".
+- Request realtime protocol version `4`. A server that does not support the
+  requested version closes with `REALTIME_CLOSE_CODE_UNSUPPORTED_PROTOCOL`.
 
-Chatto 0.5 adds Neighbor CRUD methods to `AdminServerService` and the public
-`ServerDiscoveryService.ListNeighbors` method. These additions do not change
-existing methods. An older server returns `Unimplemented` for the new method.
-Treat that result as no available Neighbor directory. Do not infer support from
-a discovery capability flag. The bundled client continues with other
-registered servers when one directory is unavailable, and it keeps an
-advertised origin visible when only that origin's public profile request fails.
-
-Chatto 0.5 also requires `message.read` for channel-room message-content APIs
-and realtime message delivery. Fresh servers grant it to `everyone`. Existing
-servers do not receive an automatic grant because startup never changes
-operator-owned RBAC state. Operators must update RBAC and replace every old
-replica before they rely on the channel-room permission boundary. DM membership
-continues to authorize DM reads. New clients treat a missing `message.read`
-room-permission row from an older server as unsupported and keep the former
-membership-based channel-room navigation behavior.
-
-Chatto 0.5 adds `message.read-interactions` for relationship-scoped channel
-reads. An effective `message.read` allow includes this permission, so fresh
-servers store only the broad `everyone` grant. Existing servers do not receive
-an automatic grant. A direct mention or an authored root establishes access to
-the complete thread while room membership and the permission remain active.
-Clients supply known thread roots to the existing thread API. Chatto does not
-provide a relationship-list API. Older replicas do not know the narrow
-permission and deny this mode when `message.read` is absent. Complete the
-replica rollout before you depend on narrow-read availability.
-
-Chatto 0.5 also denies `RoomService.StartDM` to bot callers. This rule applies
-when the requested DM already exists. A human must start the DM, after which
-the bot can interact through its normal permissions. A bot integration that
-used `StartDM` must stop that call and use its room state or realtime events.
-During a mixed-replica rollout, an older replica can still accept the call.
-Upgrade all replicas before you depend on this boundary.
-
-Chatto 0.5.0-alpha.6 moves avatar upload and deletion from
-`MyAccountService` to `UserService`. The two methods now require a target user
-ID. There are no compatibility aliases. An old client gets `Unimplemented`
-from a new server because it calls the removed service paths. A new client gets
-`Unimplemented` from an old server because it calls the new paths. Regenerate
-your client, change the service, and send the caller's own user ID for a
-self-avatar change. The bundled client hides all avatar editors on servers
-earlier than 0.5.0-alpha.6.
-
-The protobuf source for `UserService` and its request and response messages is
-now `chatto/api/v1/user_service.proto`. The protobuf package, message names,
-service name, wire format, and ConnectRPC procedure paths do not change. Go and
-TypeScript consumers that import generated code by source filename must change
-their imports from `member_directory` to `user_service`. Regenerate clients to
-apply this source-only migration.
-
-This breaking realtime migration does not retire the `chatto.api.v1`
-ConnectRPC namespace. It remains Chatto's resource-oriented public integrations
-API. Do not replace explicit resource reads, pagination, mutation responses, or
-read-your-writes handling with assumptions about projection internals.
-
-Protocol 2 resume cursors are opaque, viewer-bound, and valid for up to 24
-hours. Retain a cursor only with the projection state produced before it, and
-replace it after each `caught_up` frame. A missing, expired, or unusable cursor
-does not fail convergence: the server sends a compacted `reset` and current
-projection state through the same operation stream. An integration that is
-offline for more than 24 hours recovers current state but cannot request every
-historical transition from that interval.
-
-### Migrating from 0.5 development snapshots
-
-An unreleased 0.5 development version of server discovery exposed
-`compatibility.protocolCapabilities`. The final 0.5 contract removes that
-field and the containing `compatibility` message: capabilities such as
-individual RPCs or frontend implementation details are not a stable,
-user-facing compatibility model. Replace checks against that list with an
-explicit minimum supported server release in your client.
-
-Regenerate protobuf clients from the final 0.5 schema. Do not mix generated
-clients and servers from opposite sides of that development-only change.
+The bundled web client uses the same approach. The 0.5 client does not connect
+to 0.4 servers.
 
 ## Before upgrading
 
-1. Check the release's data-migration and rollback constraints, and prepare a
-   tested recovery plan.
-2. Regenerate or update your client from the candidate release's protobufs.
-3. Test authentication, required RPCs, error handling, pagination, and realtime
-   reconnect behaviour that your integration depends on.
-4. Deploy the server and client changes together when the API changed.
+<Steps>
+
+1. Read the release notes of each release between your current version and the
+   target version. For 0.4 to 0.5, also read
+   [Migrate from 0.4 to 0.5](#migrate-from-04-to-05).
+2. Regenerate your client from the protobufs of the target release.
+3. Test sign-in, token renewal, the RPCs that you use, error handling,
+   pagination, and realtime reconnects against the exact target version.
+4. Deploy the updated integration together with the server upgrade.
+
+</Steps>
+
+## Migrate from 0.4 to 0.5
+
+Chatto 0.5 has breaking changes in the public API and in the realtime protocol.
+Regenerate every client from the 0.5 protobufs. Regeneration shows most
+changes as compile errors. The behavior changes in the table do not cause
+compile errors.
+
+Operators stop all 0.4 processes before they start 0.5, so a client never talks
+to a mix of 0.4 and 0.5 servers. See the
+[0.5.0 release notes](/releases/0-5-0/) for the operator steps.
+
+| Area | What changed | What to do |
+| ---- | ------------ | ---------- |
+| Realtime | 0.5 accepts only protocol 4. The protocol 1 frames, such as `hello`, `subscribe_events`, `ping`, and `error`, are removed. | Send one `RealtimeSubscribe` with protocol version `4`. Handle `snapshot`, `event`, `caught_up`, `heartbeat`, and `close`. See [Realtime](/guides/integrations/realtime-protocol/). |
+| Human sessions | Access tokens are short-lived. A rotating refresh credential renews them. 0.5 rejects bearer tokens from 0.4. | Sign in again once. Store `refresh_token` and renew at `/oauth/token` before `expires_in` ends. `CreateExternalIdentityAccountResponse` also returns these fields. A browser client on a different origin must use OAuth. See [Chatto API](/guides/integrations/chatto-api/). |
+| Privileged mode | Administrative and moderation permissions are inactive until the user activates them. | Call `ViewerService.ActivatePrivilegedMode` before administrative or moderation calls. Activation lasts 15 minutes and does not extend. See [Privileged mode](/guides/operations/permissions/#privileged-mode). |
+| Message access | Channel messages and realtime message delivery require `message.read`. Upgraded servers do not grant it automatically. | Make sure that the operator grants `message.read`. Without it, message reads fail with a permission error. |
+| Notifications | `NotificationService` uses notification occurrences. `ListNotifications`, `GetNotification`, `BatchGetNotifications`, `DismissNotification`, `DismissAllNotifications`, `HasNotifications`, `ListRoomNotifications`, and `ListRoomNotificationCounts` are removed. | Use `ListNotificationOccurrences`, `GetNotificationOccurrence`, `BatchGetNotificationOccurrences`, `MarkNotificationRead`, and the `Delete…NotificationOccurrence…` methods. Read `unread_count` and `room_unread_counts` from the list response. |
+| Notification settings | `NotificationPreferencesService` and its notification levels are removed. `GetViewer` no longer returns notification preferences. | Use `NotificationPolicyService` with an explicit `NotificationPolicyScope`: server, room group, or room. JSON responses show delivery modes 2 and 3 as `SILENT` and `ALERT`. `IN_APP_NOTIFICATION` and `PUSH_NOTIFICATION` are aliases for these values. |
+| Room members | `RoomService.ListMembers` returns `user_ids`, not member rows. | Load profiles with `UserService.BatchGetUsers`, at most 100 IDs for each call. Advance the offset by the number of returned IDs. |
+| Admin members | `AdminUserService.ListMembers` returns `user_ids` and `page`, without member rows or roles. | Load rows and role summaries with `AdminUserService.BatchGetMembers`, at most 100 IDs for each call. |
+| Role members | `AdminRoleService.GetRole` no longer returns `users`. | Page through `AdminRoleService.ListMembers` (default 20, maximum 100). It requires `role.assign`. |
+| Room directory | `RoomDirectoryService.ListRooms` returns pages (default 50, maximum 100) and accepts `archive_filter`, which defaults to active rooms. It also returns accessible empty DMs. | Read pages until `page.hasMore` is false. Set `ROOM_ARCHIVE_FILTER_ARCHIVED` or `ROOM_ARCHIVE_FILTER_ALL` to get archived rooms. Hide a DM when `has_message_history` is false. |
+| Permission matrices | `AdminPermissionService` matrix and decision-list methods return pages of scopes. | See [Page through permission matrices](#page-through-permission-matrices). |
+| Followed threads | In `ListFollowedThreadsRequest`, `unread_only` moved from field 4 to field 5. Field 4 is now `include_direct_message_threads`. The JSON names do not change. | Regenerate binary clients. An old binary client that sends `unread_only` gets DM threads instead of the unread filter. |
+| Thread state | `ThreadViewerState.has_unread` is now `has_unread_replies`. `FollowThread` and `UnfollowThread` no longer return `following`. `MarkThreadAsReadResponse.previous_read_at` is now `previous_last_read_at`, and the response adds `last_read_at`. | Update the names, including the JSON names `hasUnreadReplies` and `previousLastReadAt`. Read `state.following`. |
+| Room moderation | `BanMember`, `UnbanMember`, `ListBans`, and `RoomBan` are removed. | Use `RemoveUser`, `LiftSuspension`, `ListSuspensions`, and `RoomSuspension`. `RemoveUser` requires a reason. Omit the suspension to let the user rejoin, or set `suspension_expires_at` or `suspend_indefinitely`. Universal rooms require a suspension. Existing bans show as suspensions. |
+| Avatars | `UploadAvatar` and `DeleteAvatar` moved from `MyAccountService` to `UserService`. | Call `UserService` and send the target `user_id`, also for your own avatar. |
+| Profiles | `MyAccountService.UpdateProfile` is now `UserService.UpdateUserProfile`. `AdminUserService.UpdateUser` is removed. | Call `UserService.UpdateUserProfile` and send the target `user_id`, also for your own profile. To change another person, you need `user.manage-accounts`. To change a bot, you must own it or have `bot.manage` or `user.manage-accounts`. The response contains only `user`. `UpdateUser` also returned `member`. To get the updated `AdminMember`, call `AdminUserService.BatchGetMembers`. |
+| Account deletion | `AdminUserService.DeleteUser` no longer accepts `current_password`. | Stop sending it. The call requires `user.delete-any`, or `user.delete-self` for your own account. |
+| Sidebar order | Sidebar item inputs no longer use `kind` and `id`. `AdminRoomLayoutItemKind` is removed. | Send exactly one of `roomId` or `sidebarLinkId`, for example `{"roomId":"room-123"}`. This applies to `item`, `items`, and `before`. Omit `before` to move an item to the end. |
+| Empty responses | Delete, leave, cancel, clear, disconnect, typing, and push subscription commands return empty messages, for example `DeleteMessageResponse` and `LeaveRoomResponse`. | Treat a successful call as success. A failed call returns a Connect error. Fields that report a real result, such as `LeaveCallResponse.left`, remain. |
+| Type names | `SubscribePush*` is now `Subscribe*` and `UnsubscribePush*` is now `Unsubscribe*`. `ListRoomMembers*`, `GetRoomMember*`, and `BatchGetRoomMembers*` drop `Room`. | Update type references. The RPC paths do not change. |
+| Generated files | `UserService` moved from `member_directory.proto` to `user_service.proto`. | Update imports that use the generated file name. |
+| Error codes | A username change during the 30-day cooldown returns `FAILED_PRECONDITION`. An unknown permission in `SetRolePermission` or `SetUserPermission` returns `INVALID_ARGUMENT`. Both returned `INTERNAL` before. | Handle these as request errors. Do not retry them unchanged. |
+| Updates | All resource `Update*` RPCs accept `update_mask`. | See [Resource updates in 0.5](#resource-updates-in-05). |
+
+### Renamed methods
+
+The old methods and their request and response types are removed.
+
+| 0.4 method                             | 0.5 method                              |
+| -------------------------------------- | --------------------------------------- |
+| `MyAccountService.UpdateCustomStatus`  | `MyAccountService.SetCustomStatus`      |
+| `MyAccountService.UpdatePassword`      | `MyAccountService.ChangePassword`       |
+| `MyAccountService.UpdatePresence`      | `MyAccountService.SetPresence`          |
+| `AdminUserService.UpdateUserPassword`  | `AdminUserService.ChangeUserPassword`   |
+| `RoomService.UpdateTypingIndicator`    | `RoomService.RefreshTypingIndicator`    |
+| `VoiceCallService.GetCallToken`        | `VoiceCallService.CreateCallToken`      |
+
+`SetCustomStatus` replaces the complete status. Send both emoji and text. Omit
+`expires_at` to remove an expiry. Use `DeleteCustomStatus` to clear the status.
+
+`SetPresence` is a legacy report. Use `SetPresencePreference` to save the
+user's choice, and call `RefreshPresence` every 30 seconds while the client is
+active. Liveness expires after 60 seconds without a refresh.
+
+### Resource updates in 0.5
+
+Each resource `Update*` RPC in `chatto.api.v1` and `chatto.admin.v1` accepts
+`google.protobuf.FieldMask update_mask`. In Connect JSON, the mask is a
+comma-separated string of camelCase paths. This
+`MyAccountService.UpdateSettings` request clears the timezone, disables
+sharing, and keeps the time format:
+
+```json
+{
+  "updateMask": "timezone,shareTimezone",
+  "timezone": null,
+  "shareTimezone": false
+}
+```
+
+- Fields outside the mask do not change, even if the request contains values.
+- A selected field without a value resets to its default. Validation still
+  applies: you can clear a bio or a timezone, but not a login, display name, or
+  room name.
+- A selected list replaces the old list. An empty list clears it.
+- Without a mask, populated fields select themselves. An explicit default in
+  an optional field counts as populated. An empty list or JSON `null` does not
+  select itself, so use a mask to clear a value.
+- For notification policies, paths name fields in `overrides`. A selected
+  override without a value restores inheritance.
+- An empty mask or an unknown path returns `INVALID_ARGUMENT`. You cannot
+  select IDs or revision tokens.
+- `*` selects all editable fields, including fields that later releases add.
+  Use explicit paths.
+
+Generated clients use snake_case paths, such as `share_timezone`.
+
+### Page through permission matrices
+
+`GetRolePermissionMatrix`, `GetUserPermissionMatrix`,
+`ListRolePermissionDecisions`, and `ListUserPermissionDecisions` return pages of
+scopes: 20 by default, and 100 at most. A client that expects one complete
+response shows an incomplete configuration.
+
+```json
+{ "roleName": "moderator", "page": { "limit": 20, "offset": 0 } }
+```
+
+- Advance `offset` by the number of returned scopes, not decisions. Matrix
+  scopes are in `matrix.scopes`. Decision-list scopes are in `scopes`.
+- Repeat with the same filters while `page.hasMore` is true. Pages are live
+  reads, so remove duplicates by scope and permission.
+- To read one scope, add
+  `"scope": { "kind": "PERMISSION_SCOPE_KIND_ROOM", "id": "<room-id>" }`.
+- The Direct messages scope appears only when you set
+  `includeDirectMessageScope` to `true`.

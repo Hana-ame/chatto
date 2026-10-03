@@ -1,24 +1,23 @@
 <!--
 @component
 
-Renders the standard user record table. The caller owns the surrounding panel
-and supplies an optional row-navigation callback.
+Renders the standard user record table. The caller owns the surrounding panel.
+When `clickable` is set, each row links to the member's Server Admin page.
 -->
 <script lang="ts">
+  import AccountName from '$lib/components/users/AccountName.svelte';
   import { useServerScope } from '$lib/state/server/scope.svelte';
-  import { goto } from '$app/navigation';
   import { resolve } from '$app/paths';
   import { serverIdToSegment } from '$lib/navigation';
-  import { CopyId } from '$lib/ui';
-  import DataTable from '$lib/ui/DataTable.svelte';
+  import { CopyId, LoadingFog, DataTable } from '$lib/ui';
   import { m } from '$lib/i18n/messages';
 
   type User = {
     id: string;
     login: string;
     displayName: string;
-    hasVerifiedEmail?: boolean;
-    verifiedEmails?: string[];
+    isBot?: boolean;
+    deleted?: boolean;
   };
 
   let {
@@ -26,64 +25,65 @@ and supplies an optional row-navigation callback.
     loading = false,
     clickable = true,
     emptyMessage = m('admin.users.empty'),
-    onUserClick
+    totalCount = users.length,
+    hasMore = false,
+    loadingMore = false,
+    onLoadMore,
+    loadMoreRoot
   }: {
     users: User[];
     loading?: boolean;
     clickable?: boolean;
     emptyMessage?: string;
-    onUserClick?: (user: User) => void;
+    /** Total matching users, including pages not yet loaded. */
+    totalCount?: number;
+    hasMore?: boolean;
+    loadingMore?: boolean;
+    onLoadMore?: () => void | Promise<void>;
+    loadMoreRoot?: HTMLElement;
   } = $props();
 
   const serverScope = useServerScope();
 
-  function handleRowClick(user: User) {
-    if (!clickable) return;
-    if (onUserClick) {
-      onUserClick(user);
-    } else {
-      goto(
-        resolve('/chat/[serverId]/manage/server/members/[userId]', {
-          serverId: serverIdToSegment(serverScope.serverId),
-          userId: user.id
-        })
-      );
-    }
+  function memberHref(user: User) {
+    return resolve('/chat/[serverId]/manage/server/members/[userId]', {
+      serverId: serverIdToSegment(serverScope.serverId),
+      userId: user.id
+    });
   }
 </script>
 
 {#if loading}
-  <div class="p-5 text-muted">{m('admin.users.loading')}</div>
+  <LoadingFog class="m-5 h-32" label={m('admin.users.loading')} />
 {:else}
   <DataTable
     items={users}
-    columns={4}
+    columns={3}
     {emptyMessage}
-    onRowClick={clickable ? handleRowClick : undefined}
+    {hasMore}
+    {loadingMore}
+    {onLoadMore}
+    {loadMoreRoot}
   >
     {#snippet header()}
       <th class="table-header-cell">{m('admin.users.login')}</th>
       <th class="table-header-cell">{m('admin.users.display_name')}</th>
-      <th class="table-header-cell">{m('admin.users.email')}</th>
       <th class="table-header-cell">{m('admin.users.id')}</th>
     {/snippet}
     {#snippet row(user: User)}
-      <td class="px-4 py-3 font-medium">{user.login}</td>
-      <td class="px-4 py-3">{user.displayName}</td>
-      <td class="px-4 py-3 text-muted">
-        {#if user.verifiedEmails && user.verifiedEmails.length > 0}
-          <span class="flex items-center gap-1">
-            <span class="iconify icon-[uil--check-circle] text-success"></span>
-            {user.verifiedEmails[0]}
-            {#if user.verifiedEmails.length > 1}
-              <span class="text-xs">+{user.verifiedEmails.length - 1}</span>
-            {/if}
-          </span>
+      <td class="px-4 py-3 font-medium">
+        {#if clickable}
+          <a class="data-table-row-link" href={memberHref(user)}>{user.login}</a>
+        {:else}
+          {user.login}
         {/if}
       </td>
+      <td class="px-4 py-3"><AccountName name={user.displayName} identity={user} /></td>
       <td class="px-4 py-3 text-muted"><CopyId value={user.id} /></td>
     {/snippet}
   </DataTable>
 
-  <div class="px-5 py-3 text-sm text-muted">{m('admin.users.total', { count: users.length })}</div>
+  <div class="px-5 py-3 text-sm text-muted">
+    {m('admin.members.showing', { shown: users.length, total: totalCount })}
+  </div>
 {/if}

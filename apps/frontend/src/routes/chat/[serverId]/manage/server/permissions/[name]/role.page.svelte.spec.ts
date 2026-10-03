@@ -1,13 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync } from 'svelte';
 import { render } from 'vitest-browser-svelte';
-import type { RoleDetails, ServerRole } from '$lib/api-client/roles';
+import type { RoleDetails, RoleMemberPage, ServerRole } from '@chatto/client/api/roles';
 import { adminQueryKeys } from '$lib/query/admin';
 import { queryClient } from '$lib/query/client';
+import { createTestServerScope, type TestServerScope } from '$lib/test-utils/serverScope.svelte';
 
 const { mocks } = vi.hoisted(() => ({
   mocks: {
     getRole: vi.fn(),
+    listMembers: vi.fn(),
     updateRole: vi.fn(),
     deleteRole: vi.fn(),
     goto: vi.fn()
@@ -33,22 +35,11 @@ vi.mock('$app/paths', () => ({
     )
 }));
 vi.mock('$lib/navigation', () => ({ serverIdToSegment: (serverId: string) => serverId }));
-vi.mock('$lib/state/server/scope.svelte', () => ({
-  useServerScope: () => ({
-    serverId: 'origin',
-    store: {},
-    connection: {
-      queryScope: 'role-page-test',
-      getAPI: () => ({
-        getRole: mocks.getRole,
-        updateRole: mocks.updateRole,
-        deleteRole: mocks.deleteRole
-      })
-    },
-    isCurrent: () => true
-  })
-}));
-vi.mock('$lib/api-client/roles', () => ({ createRoleAPI: vi.fn() }));
+vi.mock(
+  '$lib/state/server/scope.svelte',
+  async () => (await import('$lib/test-utils/serverScope.svelte')).serverScopeModule
+);
+vi.mock('@chatto/client/api/roles', () => ({ createRoleAPI: vi.fn() }));
 vi.mock('$lib/components/admin', async () => ({
   UserList: (await import('./RolePageUserListMock.svelte')).default
 }));
@@ -56,6 +47,10 @@ vi.mock('$lib/ui/Panel.svelte', async () => ({
   default: (await import('./RolePageSnippetMock.svelte')).default
 }));
 vi.mock('$lib/ui', async () => ({
+  PaneHeader: (await import('$lib/ui/PaneHeader.svelte')).default,
+  PageTitle: (await import('$lib/ui/PageTitle.svelte')).default,
+  LoadingFog: (await import('$lib/ui/LoadingFog.svelte')).default,
+  Panel: (await import('$lib/ui/Panel.svelte')).default,
   Hint: (await import('./RolePageSnippetMock.svelte')).default,
   PaneContent: (await import('./RolePageSnippetMock.svelte')).default
 }));
@@ -74,6 +69,7 @@ vi.mock('$lib/ui/toast', () => ({
 }));
 
 let activeRoleName = $state('role-a');
+let server: TestServerScope;
 
 import RolePage from './+page.svelte';
 
@@ -102,7 +98,6 @@ function details(name: string, displayName: string, description: string): RoleDe
   return {
     roles: [],
     role: role(name, displayName, description),
-    users: [{ id: `${name}-user`, login: `${name}-user`, displayName: `${displayName} User` }],
     viewerCanManageRoles: true,
     viewerCanAssignRoles: true
   };
@@ -120,6 +115,78 @@ describe('role management page identity', () => {
     queryClient.clear();
     vi.clearAllMocks();
     activeRoleName = 'role-a';
+    server = createTestServerScope({
+      serverId: 'origin',
+      api: {
+        getRole: mocks.getRole,
+        listMembers: mocks.listMembers,
+        updateRole: mocks.updateRole,
+        deleteRole: mocks.deleteRole
+      }
+    });
+    mocks.listMembers.mockImplementation((name: string) =>
+      Promise.resolve({
+        users: [
+          {
+            id: `${name}-user`,
+            login: `${name}-user`,
+            displayName: `${name === 'role-a' ? 'Role A' : 'Role B'} User`,
+            isBot: false
+          }
+        ],
+        totalCount: 1,
+        hasMore: false
+      })
+    );
+  });
+
+  it('loads member pages separately and fences a late page after a role switch', async () => {
+    mocks.getRole.mockImplementation((name: string) => Promise.resolve(details(name, name, '')));
+    const late = deferred<RoleMemberPage>();
+    mocks.listMembers.mockImplementation((name: string, page: { offset: number }) => {
+      if (name === 'role-a' && page.offset === 1) return late.promise;
+      return Promise.resolve({
+        users: [{ id: name, login: name, displayName: `${name} member`, isBot: false }],
+        totalCount: name === 'role-a' ? 2 : 1,
+        hasMore: name === 'role-a'
+      });
+    });
+    const { container } = render(RolePage);
+    await vi.waitFor(() => expect(container.textContent).toContain('role-a member'));
+    (
+      Array.from(container.querySelectorAll('button')).find(
+        (button) => button.textContent === 'Load next test page'
+      ) as HTMLButtonElement
+    ).click();
+    await vi.waitFor(() =>
+      expect(mocks.listMembers).toHaveBeenCalledWith(
+        'role-a',
+        { limit: 20, offset: 1 },
+        expect.objectContaining({ signal: expect.any(AbortSignal) })
+      )
+    );
+    activeRoleName = 'role-b';
+    flushSync();
+    await vi.waitFor(() => expect(container.textContent).toContain('role-b member'));
+    late.resolve({
+      users: [{ id: 'late', login: 'late', displayName: 'Late A member', isBot: false }],
+      totalCount: 2,
+      hasMore: false
+    });
+    await settle();
+    expect(container.textContent).not.toContain('Late A member');
+    expect(container.textContent).not.toContain('role-a member');
+  });
+
+  it('does not request or render a roster without assignment authority', async () => {
+    mocks.getRole.mockResolvedValue({
+      ...details('role-a', 'Role A', ''),
+      viewerCanAssignRoles: false
+    });
+    const { container } = render(RolePage);
+    await vi.waitFor(() => expect(container.querySelector('#displayName')).not.toBeNull());
+    expect(mocks.listMembers).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="role-users"]')).toBeNull();
   });
 
   it('does not let a delayed role response overwrite a reused route', async () => {
@@ -167,7 +234,7 @@ describe('role management page identity', () => {
   });
 
   it('reuses a fresh cached role snapshot after remounting', async () => {
-    const connection = { queryScope: 'role-page-test' };
+    const connection = server.scope.connection;
     queryClient.setQueryData(
       adminQueryKeys.role('origin', connection, 'role-a'),
       details('role-a', 'Cached Role', 'Cached description')
@@ -190,7 +257,7 @@ describe('role management page identity', () => {
   });
 
   it('invalidates the cached permission tier after role metadata changes', async () => {
-    const connection = { queryScope: 'role-page-test' };
+    const connection = server.scope.connection;
     const tierKey = adminQueryKeys.permissionTiers('origin', connection);
     queryClient.setQueryData(tierKey, { roles: [] });
     mocks.getRole.mockResolvedValue(details('role-a', 'Role A', 'Original description'));
@@ -254,7 +321,7 @@ describe('role management page identity', () => {
   });
 
   it('removes a deleted role query and invalidates its derived caches', async () => {
-    const connection = { queryScope: 'role-page-test' };
+    const connection = server.scope.connection;
     const tierKey = adminQueryKeys.permissionTiers('origin', connection);
     const roleKey = adminQueryKeys.rolePermissions('origin', connection, 'role-a');
     const roleDetailsKey = adminQueryKeys.role('origin', connection, 'role-a');

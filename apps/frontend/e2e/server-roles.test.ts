@@ -1,6 +1,10 @@
 import { expect, type Page } from '@playwright/test';
+import { RealtimeServerFrame } from '@chatto/api-types/realtime/v1/realtime_pb';
 import { test } from './setup';
+import { GetRolePermissionMatrixRequest } from '@chatto/api-types/admin/v1/permissions_pb';
+import { AdminRoleServiceListMembersRequest } from '@chatto/api-types/admin/v1/roles_pb';
 import {
+  activatePrivilegedMode,
   createAndLoginTestUser,
   denyPermission as denyServerPermission,
   generateRoleName,
@@ -136,6 +140,341 @@ async function denyPermission(
 }
 
 test.describe('Server Roles Management', () => {
+  test('non-owner permission edits and access revocation update in place', async ({
+    page,
+    browser,
+    serverURL
+  }) => {
+    await usePrimaryServerViaAPI(page);
+    await grantServerPermission(page, 'everyone', 'role.manage');
+    const context = await browser.newContext({ baseURL: serverURL });
+    try {
+      const member = await context.newPage();
+      await createAndLoginTestUser(member);
+      await activatePrivilegedMode(member);
+      let connections = 0;
+      let reads = 0;
+      const errors: string[] = [];
+      member.on('pageerror', (error) => errors.push(error.message));
+      member.on('websocket', () => connections++);
+      member.on('response', (response) => {
+        if (response.url().includes('/GetRolePermissionTierMatrix') && response.ok()) reads++;
+      });
+      await member.goto(routes.serverAdminPermissions);
+      const filter = member.getByTestId('permission-filter');
+      await filter.fill('message.post');
+      const originalFilter = await filter.elementHandle();
+      const shell = await member
+        .getByRole('button', { name: 'Toggle sidebar', exact: true })
+        .elementHandle();
+      const cell = member.locator(
+        'td[data-role="everyone"][data-permission="message.post"] button'
+      );
+      await expect(cell).toBeEnabled();
+      const before = { connections, reads, label: await cell.getAttribute('aria-label') };
+      await cell.click();
+      await expect.poll(() => reads).toBeGreaterThan(before.reads);
+      await expect(cell).not.toHaveAttribute('aria-label', before.label!);
+      await expect(filter).toHaveValue('message.post');
+      expect(await originalFilter!.evaluate((node) => node.isConnected)).toBe(true);
+      expect(connections).toBe(before.connections);
+
+      await denyServerPermission(page, 'everyone', 'role.manage');
+      await expect(member.getByText('Access Denied', { exact: true })).toBeVisible();
+      expect(await shell!.evaluate((node) => node.isConnected)).toBe(true);
+      expect(connections).toBe(before.connections);
+      expect(errors).toEqual([]);
+    } finally {
+      await context.close();
+    }
+  });
+
+  test('permission refresh keeps the matrix interactive and preserves scroll', async ({
+    serverRolesPage
+  }) => {
+    const { page } = serverRolesPage;
+    await usePrimaryServerViaAPI(page);
+    await page.setViewportSize({ width: 1200, height: 800 });
+    await page.goto(routes.serverAdminPermissions);
+    const scroller = page.locator('.data-table-viewport [role="region"]');
+    await scroller.hover();
+    await page.mouse.wheel(0, 2000);
+    await expect.poll(() => scroller.evaluate((element) => element.scrollTop)).toBeGreaterThan(500);
+    const cell = page.locator('td[data-role="everyone"][data-permission="user.invite"] button');
+    await cell.scrollIntoViewIfNeeded();
+    await cell.hover();
+    // Account for the browser scrolling a newly focused cell into view before
+    // measuring the offset that the subsequent data refresh must retain.
+    await cell.focus();
+    await page.evaluate(
+      () =>
+        new Promise<void>((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+        )
+    );
+    const before = await scroller.evaluate((element) => ({
+      top: element.scrollTop,
+      height: element.scrollHeight
+    }));
+    const cellBounds = await cell.boundingBox();
+    expect(cellBounds).not.toBeNull();
+    let releaseRefresh!: () => void;
+    const refreshGate = new Promise<void>((resolve) => {
+      releaseRefresh = resolve;
+    });
+    let heldViewerReads = 0;
+    await page.route('**/chatto.api.v1.ViewerService/GetViewer', async (route) => {
+      heldViewerReads++;
+      await refreshGate;
+      await route.continue();
+    });
+    await page.route(
+      '**/chatto.admin.v1.AdminPermissionService/GetRolePermissionTierMatrix',
+      async (route) => {
+        await refreshGate;
+        await route.continue();
+      }
+    );
+    try {
+      // Click at the measured position so Playwright does not scroll the cell
+      // again after the baseline measurement.
+      await page.mouse.click(
+        cellBounds!.x + cellBounds!.width / 2,
+        cellBounds!.y + cellBounds!.height / 2
+      );
+      await expect.poll(() => heldViewerReads).toBeGreaterThan(0);
+      await expect(page.locator('[inert][aria-busy="true"]')).toHaveCount(0);
+      await expect(cell).toBeVisible();
+      // Wait for real layout: a same-tick assertion misses native scroll clamping.
+      await page.evaluate(
+        () =>
+          new Promise<void>((resolve) =>
+            requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+          )
+      );
+      expect(await scroller.evaluate((element) => element.scrollTop)).toBeCloseTo(before.top, 0);
+      expect(await scroller.evaluate((element) => element.scrollHeight)).toBeGreaterThanOrEqual(
+        before.height
+      );
+      await expect(cell.locator('..')).toHaveClass(/bg-action\/15/);
+      const filter = page.getByTestId('permission-filter');
+      await filter.evaluate((element) => element.focus({ preventScroll: true }));
+      await expect(filter).toBeFocused();
+      // Whitespace leaves all rows visible, so the same test can still check
+      // scroll retention while verifying keyboard input during the refresh.
+      await page.keyboard.type(' ');
+      await expect(filter).toHaveValue(' ');
+    } finally {
+      releaseRefresh();
+    }
+    await expect(cell).toBeVisible();
+    await expect(page.getByTestId('permission-filter')).toBeFocused();
+    await expect(cell.locator('..')).toHaveClass(/bg-action\/15/);
+    await expect
+      .poll(() => scroller.evaluate((element) => element.scrollTop))
+      .toBeCloseTo(before.top, 0);
+  });
+
+  for (const perRole of [false, true]) {
+    test(`permission edits retain the ${perRole ? 'role' : 'server'} matrix in the editor and receiver`, async ({
+      serverRolesPage
+    }) => {
+      const { page } = serverRolesPage;
+      await usePrimaryServerViaAPI(page);
+      const receiver = await page.context().newPage();
+      const clients = [page, receiver];
+      const snapshots = [0, 0];
+      const connections = [0, 0];
+      const refreshes = [0, 0];
+      const errors: string[] = [];
+      const url = perRole
+        ? routes.serverAdminPermission('everyone')
+        : routes.serverAdminPermissions;
+      for (const [index, client] of clients.entries()) {
+        client.on('response', (response) => {
+          if (response.url().includes('/GetRolePermission') && response.ok()) refreshes[index]++;
+        });
+        client.on('pageerror', (error) => errors.push(error.message));
+        client.on('websocket', (socket) => {
+          connections[index]++;
+          socket.on('framereceived', ({ payload }) => {
+            if (
+              typeof payload !== 'string' &&
+              RealtimeServerFrame.fromBinary(payload).frame.case === 'snapshot'
+            ) {
+              snapshots[index]++;
+            }
+          });
+        });
+        await client.goto(url);
+        await client.getByTestId('permission-filter').fill('message.post');
+      }
+      const originalFilters = await Promise.all(
+        clients.map((client) => client.getByTestId('permission-filter').elementHandle())
+      );
+      const before = [...snapshots];
+      const connectionsBefore = [...connections];
+      const readsBefore = [...refreshes];
+      const selector = perRole
+        ? 'td[data-scope="server"][data-permission="message.post"] button'
+        : 'td[data-role="everyone"][data-permission="message.post"] button';
+      await page.locator(selector).click();
+      for (const [index, client] of clients.entries()) {
+        await client.bringToFront();
+        await expect.poll(() => refreshes[index]).toBeGreaterThan(readsBefore[index]);
+        await expect(client.locator(selector)).toBeVisible();
+        await expect(client.getByTestId('permission-filter')).toHaveValue('message.post');
+        expect(await originalFilters[index]!.evaluate((node) => node.isConnected)).toBe(true);
+        expect(
+          await originalFilters[index]!.evaluate(
+            (node) => node === document.querySelector('[data-testid="permission-filter"]')
+          )
+        ).toBe(true);
+        expect(snapshots[index]).toBe(before[index]);
+        expect(connections[index]).toBe(connectionsBefore[index]);
+      }
+      expect(errors).toEqual([]);
+      await receiver.close();
+    });
+  }
+
+  test('permission matrix loads scope pages at the horizontal edge', async ({
+    serverRolesPage
+  }) => {
+    const { page } = serverRolesPage;
+    const server = await usePrimaryServerViaAPI(page);
+    const otherGroup = await connectPost<{ group: { id: string } }>(
+      page,
+      'chatto.admin.v1.AdminRoomLayoutService/CreateRoomGroup',
+      { name: 'Other scope group' }
+    );
+    const groupId = [await getDefaultRoomGroupId(page), otherGroup.group.id].sort()[0];
+    for (let i = 0; i < 24; i++)
+      await createRoomViaConnect(page, `paged-permissions-${i}`, groupId);
+    const offsets: number[] = [];
+    const errors: string[] = [];
+    page.on('pageerror', (error) => errors.push(error.stack ?? error.message));
+    page.on('request', (request) => {
+      if (
+        request.url().endsWith('/chatto.admin.v1.AdminPermissionService/GetRolePermissionMatrix')
+      ) {
+        const body = request.postDataBuffer();
+        if (body) offsets.push(GetRolePermissionMatrixRequest.fromBinary(body).page?.offset ?? 0);
+      }
+    });
+    await page.setViewportSize({ width: 1000, height: 800 });
+    await page.goto(routes.serverAdminPermission('moderator'));
+    await expect(page.getByRole('heading', { name: 'Edit Role' })).toBeVisible();
+    const viewport = page
+      .locator('.data-table-viewport')
+      .filter({ has: page.locator('th[data-scope]') });
+    await expect(viewport.locator('th[data-scope]')).toHaveCount(20);
+    const initialColumns = await viewport
+      .locator('th[data-scope]')
+      .evaluateAll((heads) => heads.map((head) => head.getAttribute('data-scope')));
+    await viewport.hover();
+    await page.mouse.wheel(3000, 0);
+    await expect.poll(() => offsets.includes(20)).toBe(true);
+    await expect.poll(() => viewport.locator('th[data-scope]').count()).toBeGreaterThan(20);
+    const allColumns = await viewport
+      .locator('th[data-scope]')
+      .evaluateAll((heads) => heads.map((head) => head.getAttribute('data-scope')));
+    expect(allColumns.slice(0, initialColumns.length)).toEqual(initialColumns);
+    expect(errors).toEqual([]);
+  });
+
+  test('another user role assignment and a role rename update the UI without a snapshot', async ({
+    serverRolesPage
+  }) => {
+    const { page } = serverRolesPage;
+    const server = await usePrimaryServerViaAPI(page);
+    const roleName = generateRoleName('live');
+    const other = await createSecondTestUser(page);
+    await connectPost(page, 'chatto.admin.v1.AdminRoleService/CreateRole', {
+      name: roleName,
+      displayName: 'Before rename'
+    });
+    let snapshots = 0;
+    let assignments = 0;
+    let updates = 0;
+    const errors: string[] = [];
+    page.on('pageerror', (error) => errors.push(error.message));
+    page.on('websocket', (socket) =>
+      socket.on('framereceived', ({ payload }) => {
+        if (typeof payload === 'string') return;
+        const frame = RealtimeServerFrame.fromBinary(payload).frame;
+        if (frame.case === 'snapshot') snapshots++;
+        if (frame.case === 'event' && frame.value.event.case === 'roleAssigned') assignments++;
+        if (frame.case === 'event' && frame.value.event.case === 'roleUpdated') updates++;
+      })
+    );
+    await serverRolesPage.gotoEditRole(server.id, roleName);
+    const before = snapshots;
+    await connectPost(page, 'chatto.admin.v1.AdminUserService/AssignRole', {
+      userId: other.id!,
+      roleName
+    });
+    await expect.poll(() => assignments).toBe(1);
+    await expect(page.getByRole('cell', { name: other.displayName, exact: true })).toBeVisible();
+    await connectPost(page, 'chatto.admin.v1.AdminRoleService/UpdateRole', {
+      name: roleName,
+      displayName: 'After rename',
+      updateMask: 'displayName'
+    });
+    await expect.poll(() => updates).toBe(1);
+    // The page label updates; the edit form keeps its draft across background reads.
+    await expect(page.getByText('After rename', { exact: true })).toBeVisible();
+    expect(snapshots).toBe(before);
+    expect(errors).toEqual([]);
+  });
+
+  test('role member roster loads the next page when scrolled', async ({ serverRolesPage }) => {
+    const { page } = serverRolesPage;
+    const server = await usePrimaryServerViaAPI(page);
+    const roleName = generateRoleName('roster');
+    await connectPost(page, 'chatto.admin.v1.AdminRoleService/CreateRole', {
+      name: roleName,
+      displayName: 'Paged roster'
+    });
+    for (let i = 0; i < 21; i++) {
+      const user = await createSecondTestUser(page);
+      await connectPost(page, 'chatto.admin.v1.AdminUserService/AssignRole', {
+        userId: user.id!,
+        roleName
+      });
+    }
+    const memberRequests: number[] = [];
+    const errors: string[] = [];
+    page.on('pageerror', (error) => errors.push(error.message));
+    page.on('request', (request) => {
+      if (request.url().endsWith('/chatto.admin.v1.AdminRoleService/ListMembers')) {
+        const body = request.postDataBuffer();
+        if (body)
+          memberRequests.push(
+            AdminRoleServiceListMembersRequest.fromBinary(body).page?.offset ?? 0
+          );
+      }
+    });
+    await serverRolesPage.gotoEditRole(server.id, roleName);
+    const rosterHeading = page.getByRole('heading', { name: 'Users with this Role' });
+    await rosterHeading.scrollIntoViewIfNeeded();
+    // Real wheel interaction reaches the trailing table sentinel.
+    await rosterHeading.hover();
+    await page.mouse.wheel(0, 3000);
+    await page
+      .getByText('Showing 20 of 21 member(s)', { exact: true })
+      .or(page.getByText('Showing 21 of 21 member(s)', { exact: true }))
+      .waitFor();
+    const table = page.locator('table').last();
+    await table.hover();
+    await page.mouse.wheel(0, 3000);
+    await expect(page.getByText('Showing 21 of 21 member(s)', { exact: true })).toBeVisible();
+    await expect(table.locator('tbody tr')).toHaveCount(21);
+    expect(memberRequests).toContain(0);
+    expect(memberRequests).toContain(20);
+    expect(errors).toEqual([]);
+  });
+
   test.describe('Roles List Page', () => {
     test('server admin can view roles list', async ({ serverRolesPage }) => {
       const { page } = serverRolesPage;
@@ -282,7 +621,13 @@ test.describe('Server Roles Management', () => {
         displayName: 'Updated Role Name',
         description: 'Updated description'
       });
-      await serverRolesPage.saveChangesButton.click();
+      const [saved] = await Promise.all([
+        page.waitForResponse((response) =>
+          response.url().endsWith('/chatto.admin.v1.AdminRoleService/UpdateRole')
+        ),
+        serverRolesPage.saveChangesButton.click()
+      ]);
+      expect(saved.ok()).toBe(true);
 
       // Verify changes persist after reload
       await page.reload();
@@ -367,6 +712,69 @@ test.describe('Server Roles Management', () => {
   });
 
   test.describe('Delete role', () => {
+    test('role deletion still navigates when its permission refresh arrives before the response', async ({
+      serverRolesPage
+    }) => {
+      const { page } = serverRolesPage;
+      const server = await usePrimaryServerViaAPI(page);
+      const roleName = generateRoleName('resetdelete');
+      await connectPost(page, 'chatto.admin.v1.AdminRoleService/CreateRole', {
+        name: roleName,
+        displayName: 'Reset deletion'
+      });
+      const viewer = await connectPost<{ user: { profile: { id: string } } }>(
+        page,
+        'chatto.api.v1.ViewerService/GetViewer',
+        {}
+      );
+      await connectPost(page, 'chatto.admin.v1.AdminUserService/AssignRole', {
+        userId: viewer.user.profile.id,
+        roleName
+      });
+      let snapshots = 0;
+      let viewerReads = 0;
+      const errors: string[] = [];
+      page.on('response', (response) => {
+        if (response.url().includes('ViewerService/GetViewer') && response.ok()) viewerReads++;
+      });
+      page.on('pageerror', (error) => errors.push(error.message));
+      page.on('websocket', (socket) =>
+        socket.on('framereceived', ({ payload }) => {
+          if (
+            typeof payload !== 'string' &&
+            RealtimeServerFrame.fromBinary(payload).frame.case === 'snapshot'
+          )
+            snapshots++;
+        })
+      );
+      await serverRolesPage.gotoEditRole(server.id, roleName);
+      const before = snapshots;
+      const readsBefore = viewerReads;
+      const shell = await page
+        .getByRole('button', { name: 'Toggle sidebar', exact: true })
+        .elementHandle();
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      await page.route('**/chatto.admin.v1.AdminRoleService/DeleteRole', async (route) => {
+        const response = await route.fetch();
+        await held;
+        await route.fulfill({ response });
+      });
+      const deletion = serverRolesPage.deleteCurrentRole();
+      try {
+        await expect.poll(() => viewerReads).toBeGreaterThan(readsBefore);
+        expect(snapshots).toBe(before);
+        expect(await shell!.evaluate((node) => node.isConnected)).toBe(true);
+      } finally {
+        release();
+      }
+      await deletion;
+      await serverRolesPage.expectRolesListVisible();
+      expect(errors).toEqual([]);
+    });
+
     test('server admin can delete a custom role', async ({ serverRolesPage }) => {
       const { page } = serverRolesPage;
 
@@ -516,6 +924,7 @@ test.describe('Roles Management', () => {
       const regularUser = await createSecondTestUser(page);
       await logoutUser(page);
       await loginUser(page, regularUser.login, regularUser.password);
+      await activatePrivilegedMode(page);
       // Navigate to roles list - should have create/manage access via everyone role grant.
       // The matrix itself is intentionally hidden from non-admins because role
       // permission inspection is still restricted.
@@ -596,6 +1005,7 @@ test.describe('Server Permission Enforcement', () => {
       const member = await createSecondTestUser(page);
       await logoutUser(page);
       await loginUser(page, member.login, member.password);
+      await activatePrivilegedMode(page);
       // Navigate to roles list
       await serverRolesPage.gotoRolesList(server.id);
 
@@ -822,7 +1232,10 @@ test.describe('Server Permission Enforcement', () => {
   });
 
   test.describe('room.manage permission', () => {
-    test('Settings only exposes Bots when user lacks room.manage permission', async ({ page }) => {
+    test('Settings only exposes Bots when user lacks room.manage permission', async ({
+      page,
+      serverAdminPage
+    }) => {
       // Admin creates server and room
       await createAndLoginTestUser(page);
       const server = await usePrimaryServerViaAPI(page);
@@ -841,14 +1254,17 @@ test.describe('Server Permission Enforcement', () => {
 
       // Fresh servers grant bot.create to everyone, so the administration
       // entry remains available for Bots while room management stays hidden.
-      await page.getByRole('link', { name: 'Settings', exact: true }).click();
+      await serverAdminPage.settingsLink.click();
       await page.waitForURL(routes.settingsAppearance);
       await expect(page.getByRole('heading', { name: 'Appearance' })).toBeVisible();
       await expect(page.getByRole('link', { name: 'Bots', exact: true })).toBeVisible();
       await expect(page.getByRole('link', { name: 'Rooms', exact: true })).not.toBeVisible();
     });
 
-    test('Settings exposes Rooms when user has room.manage permission', async ({ page }) => {
+    test('Settings exposes Rooms when user has room.manage permission', async ({
+      page,
+      serverAdminPage
+    }) => {
       // Admin creates server and room
       await createAndLoginTestUser(page);
       const server = await usePrimaryServerViaAPI(page);
@@ -862,13 +1278,14 @@ test.describe('Server Permission Enforcement', () => {
       const member = await createSecondTestUser(page);
       await logoutUser(page);
       await loginUser(page, member.login, member.password);
+      await activatePrivilegedMode(page);
       await joinRoomViaAPI(page, server.id, roomId);
 
       // Navigate to the room
       await page.goto(routes.room(roomId));
       await expect(page.getByTitle('Leave room')).toBeVisible();
 
-      await page.getByRole('link', { name: 'Settings', exact: true }).click();
+      await serverAdminPage.settingsLink.click();
       await expect(page.getByRole('link', { name: 'Rooms', exact: true })).toBeVisible();
     });
   });

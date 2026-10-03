@@ -4,6 +4,7 @@ package chatto.core.evt.v1;
 
 import "google/protobuf/timestamp.proto";
 import "chatto/core/evt/v1/auth_events.proto";
+import "chatto/core/evt/v1/setup_events.proto";
 import "chatto/core/evt/v1/authorization_events.proto";
 import "chatto/core/evt/v1/asset_events.proto";
 import "chatto/core/evt/v1/message_events.proto";
@@ -17,6 +18,7 @@ import "chatto/core/evt/v1/thread_events.proto";
 import "chatto/core/evt/v1/user_events.proto";
 import "chatto/core/evt/v1/invitation_events.proto";
 import "chatto/core/evt/v1/oauth_client_events.proto";
+import "chatto/core/evt/v1/bot_webhook_events.proto";
 
 option go_package = "hmans.de/chatto/internal/pb/chatto/core/evt/v1;evtv1";
 
@@ -35,7 +37,7 @@ option go_package = "hmans.de/chatto/internal/pb/chatto/core/evt/v1;evtv1";
        live tags during the EVT cutover. Treat them like persisted tags.
 
      - **>= 1000, except 1050-1051**: retired legacy live-only variant
-       numbers. New transient pubsub signals belong in LiveEvent, not Event.
+       numbers. New non-durable pubsub activity belongs in PubSubEvent, not Event.
 
    Category ownership for the top-level oneof tags is documented in the
    sibling *_events.proto files. The top-level tag is the durable/event
@@ -61,6 +63,8 @@ message Event {
 
   // The concrete event payload.
   oneof event {
+    ServerSetupOfferedEvent server_setup_offered = 950;
+    ServerInitializedEvent server_initialized = 951;
     // =================================================================
     // PERSISTED VARIANTS (< 1000) — stored in JetStream.
     // Changing field numbers or message structure below affects stored
@@ -121,8 +125,8 @@ message Event {
 
     // ----- Config / preferences (500-599, durable) -----
     // These variants live on the EVT stream (subjects under evt.config.>)
-    // per ADRs 033/034/035. Member-visible server profile/config live
-    // invalidation uses LiveEvent.ServerUpdatedEvent instead.
+    // per ADRs 033/034/035. The realtime mapper converts selected committed
+    // facts into a public ServerProfileChangedEvent.
     ServerNameChangedEvent server_name_changed = 501;
     ServerDescriptionChangedEvent server_description_changed = 502;
     ServerWelcomeMessageChangedEvent server_welcome_message_changed = 503;
@@ -204,6 +208,7 @@ message Event {
     BotIncomingWebhookCreatedEvent bot_incoming_webhook_created = 725;
     BotApiKeyAddedEvent bot_api_key_added = 726;
     BotApiKeyRevokedEvent bot_api_key_revoked = 727;
+    UserPrimaryEmailChangedEvent user_primary_email_changed = 728;
 
     // ----- RBAC (800-839, durable, evt.rbac.>) -----
     RbacRoleCreatedEvent rbac_role_created = 800;
@@ -250,11 +255,17 @@ message Event {
     OAuthClientPolicyChangedEvent oauth_client_policy_changed = 916;
     OAuthScopedConsentGrantedEvent oauth_scoped_consent_granted = 917;
     OAuthScopedConsentDeniedEvent oauth_scoped_consent_denied = 918;
+    PrivilegedModeActivatedEvent privileged_mode_activated = 919;
+    PrivilegedModeDeactivatedEvent privileged_mode_deactivated = 920;
 
     // ----- Invite links (930-939, durable, evt.invitation.{id}) -----
     InvitationCreatedEvent invitation_created = 930;
     InvitationRedeemedEvent invitation_redeemed = 931;
     InvitationRevokedEvent invitation_revoked = 932;
+
+    BotOutboundWebhookConfiguredEvent bot_outbound_webhook_configured = 940;
+    BotOutboundWebhookUpdatedEvent bot_outbound_webhook_updated = 943;
+    BotOutboundWebhookRevokedEvent bot_outbound_webhook_revoked = 944;
 
     // ----- Reactions (1050-1059) — durable legacy-tag exception -----
     // Reaction events are stored on EVT today. They kept the legacy

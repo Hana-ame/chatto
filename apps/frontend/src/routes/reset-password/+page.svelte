@@ -1,10 +1,10 @@
 <script lang="ts">
+  import { errorMessage } from '$lib/utils/errorMessage';
   import { goto } from '$app/navigation';
   import { resolve } from '$app/paths';
   import AuthLayout from '$lib/components/AuthLayout.svelte';
   import { m } from '$lib/i18n/messages';
-  import Hint from '$lib/ui/Hint.svelte';
-  import PageTitle from '$lib/ui/PageTitle.svelte';
+  import { Hint, PageTitle } from '$lib/ui';
   import { TextInput, FormError, Button, z, validate } from '$lib/ui/form';
 
   let { data } = $props();
@@ -58,7 +58,7 @@
       // eslint-disable-next-line svelte/no-navigation-without-resolve -- url is resolved above
       goto(url);
     } catch (err) {
-      error = err instanceof Error ? err.message : m('common.error.network');
+      error = errorMessage(err, m('common.error.network'));
     } finally {
       isLoading = false;
     }
@@ -67,9 +67,7 @@
 
 <PageTitle title={m('auth.reset_password.page_title')} />
 
-<AuthLayout>
-  <h1 class="mb-6 text-center text-2xl font-bold">{m('auth.reset_password.title')}</h1>
-
+<AuthLayout title={m('auth.reset_password.title')}>
   {#if !token}
     <Hint tone="danger">
       <p class="mb-2 font-medium">{m('auth.reset_password.invalid_title')}</p>

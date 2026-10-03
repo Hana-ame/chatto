@@ -1,13 +1,18 @@
 <script lang="ts">
   import { useServerScope } from '$lib/state/server/scope.svelte';
-  import type { AccountAPI } from '$lib/api-client/account';
-  import Panel from '$lib/ui/Panel.svelte';
+  import type { UserAPI } from '@chatto/client/api/users';
+  import UserBioEditor from '$lib/components/users/UserBioEditor.svelte';
+  import { profileSaveErrorMessage } from '$lib/components/users/profileSaveError';
+  import { userPreferences } from '$lib/state/userPreferences.svelte';
+  import { Panel, ConfirmDialog, Hint } from '$lib/ui';
   import { m } from '$lib/i18n/messages';
-  import { ConfirmDialog, Hint } from '$lib/ui';
-  import { Button, Form, TextArea, TextInput } from '$lib/ui/form';
+  import { Button, Form, TextInput } from '$lib/ui/form';
   import {
     formatCooldownRemaining,
     getLoginChangeCooldownRemaining,
+    MAX_BIO_LENGTH,
+    startsLoginCooldown,
+    validateAndNormalizeBio,
     validateAndNormalizeDisplayName,
     validateAndNormalizeLogin
   } from '$lib/validation';
@@ -17,14 +22,19 @@
   const serverScope = useServerScope();
   const currentUser = serverScope.store.currentUser;
 
-  let { getAccountAPI }: { getAccountAPI: () => AccountAPI } = $props();
+  let { getUserAPI }: { getUserAPI: () => UserAPI } = $props();
 
-  // Keep in sync with the server-side bio length cap.
-  const MAX_BIO_LENGTH = 1000;
-
-  let displayName = $state(currentUser.user?.displayName ?? '');
-  let login = $state(currentUser.user?.login ?? '');
-  let bio = $state(currentUser.user?.bio ?? '');
+  // Dirty checks compare against the seeded values, so a concurrent change to
+  // an untouched field is not sent back with its stale value.
+  const seed = {
+    displayName: currentUser.user?.displayName ?? '',
+    login: currentUser.user?.login ?? '',
+    bio: currentUser.user?.bio ?? ''
+  };
+  let baseline = $state(seed);
+  let displayName = $state(seed.displayName);
+  let login = $state(seed.login);
+  let bio = $state(seed.bio);
   let isSaving = $state(false);
   let error = $state('');
   let successMessage = $state('');
@@ -38,14 +48,12 @@
     currentUser.user?.lastLoginChange ? new Date(currentUser.user.lastLoginChange) : null
   );
   const lastLoginChange = $derived(localLastLoginChange ?? viewerLastLoginChange);
-  const displayNameModified = $derived(displayName !== currentUser.user?.displayName);
-  const loginModified = $derived(login !== currentUser.user?.login);
-  const bioModified = $derived((bio || '') !== (currentUser.user?.bio ?? ''));
+  const displayNameModified = $derived(displayName !== baseline.displayName);
+  const loginModified = $derived(login !== baseline.login);
+  const bioModified = $derived(bio !== baseline.bio);
   const isModified = $derived(displayNameModified || loginModified || bioModified);
   const cooldownRemaining = $derived(getLoginChangeCooldownRemaining(lastLoginChange));
-  const canBypassLoginCooldown = $derived(
-    serverScope.store.permissions.canAdminManageAccounts
-  );
+  const canBypassLoginCooldown = $derived(serverScope.store.permissions.canAdminManageAccounts);
   const canChangeLogin = $derived(canBypassLoginCooldown || cooldownRemaining === 0);
 
   function clearMessages() {
@@ -84,12 +92,12 @@
 
     let normalizedBio: string | undefined;
     if (bioModified) {
-      const trimmed = bio.trim();
-      if ([...trimmed].length > MAX_BIO_LENGTH) {
-        error = m('settings.profile.bio.too_long', { max: MAX_BIO_LENGTH });
+      const validation = validateAndNormalizeBio(bio);
+      if (!validation.valid) {
+        error = validation.error ?? m('settings.profile.save_failed');
         return;
       }
-      normalizedBio = trimmed;
+      normalizedBio = validation.normalized;
     }
 
     if (!normalizedDisplayName && !normalizedLogin && normalizedBio === undefined) return;
@@ -117,41 +125,45 @@
     normalizedLogin: string | undefined,
     normalizedBio?: string
   ) {
+    const userId = serverScope.store.accountId;
+    if (!userId) return;
+    // Case-only renames and account-manager renames do not start the cooldown.
+    const startedCooldown =
+      !!normalizedLogin &&
+      !canBypassLoginCooldown &&
+      startsLoginCooldown(baseline.login, normalizedLogin);
     isSaving = true;
     error = '';
     successMessage = '';
 
     try {
-      const updated = await getAccountAPI().updateProfile({
+      const updated = await getUserAPI().updateUserProfile(userId, {
         displayName: normalizedDisplayName,
         login: normalizedLogin,
         bio: normalizedBio
       });
 
-      if (currentUser.user) {
-        const lastLoginChange = normalizedLogin && !canBypassLoginCooldown
-          ? new Date().toISOString()
-          : currentUser.user.lastLoginChange;
-        currentUser.user = {
-          ...currentUser.user,
-          displayName: updated.displayName,
-          login: updated.login,
-          bio: updated.bio ?? '',
-          lastLoginChange
-        };
-      }
+      currentUser.update(userId, (user) => ({
+        displayName: updated.displayName,
+        login: updated.login,
+        bio: updated.bio ?? '',
+        lastLoginChange: startedCooldown ? new Date().toISOString() : user.lastLoginChange
+      }));
 
-      displayName = updated.displayName;
-      login = updated.login;
-      bio = updated.bio ?? '';
+      baseline = {
+        displayName: updated.displayName,
+        login: updated.login,
+        bio: updated.bio ?? ''
+      };
+      displayName = baseline.displayName;
+      login = baseline.login;
+      bio = baseline.bio;
 
-      if (normalizedLogin && !canBypassLoginCooldown) {
-        localLastLoginChange = new Date();
-      }
+      if (startedCooldown) localLastLoginChange = new Date();
 
       successMessage = m('settings.profile.saved');
     } catch (saveError) {
-      error = saveError instanceof Error ? saveError.message : m('settings.profile.save_failed');
+      error = profileSaveErrorMessage(saveError, m('settings.profile.save_failed'));
     } finally {
       isSaving = false;
     }
@@ -177,16 +189,11 @@
       oninput={clearMessages}
     />
 
-    <TextArea
-      id="settings-bio"
-      label={m('settings.profile.bio.label')}
-      description={m('settings.profile.bio.description', { max: MAX_BIO_LENGTH })}
+    <UserBioEditor
       bind:value={bio}
-      placeholder={m('settings.profile.bio.placeholder')}
-      rows={4}
+      editorKind={userPreferences.composerEditor}
       maxlength={MAX_BIO_LENGTH}
       disabled={isSaving}
-      testid="settings-bio"
       oninput={clearMessages}
     />
 
@@ -204,7 +211,7 @@
 
     {#snippet footer()}
       <Button type="submit" disabled={!isModified || isSaving} loading={isSaving}>
-        <span class="iconify icon-[uil--check]"></span>
+        <span aria-hidden="true" class="iconify icon-[uil--check]"></span>
         {m('settings.profile.save_button')}
       </Button>
     {/snippet}

@@ -13,7 +13,11 @@ import {
 } from './fixtures/serverUser';
 import * as routes from './routes';
 import { POLLING_INTERVALS, TIMEOUTS } from './constants';
-import { getRoomIdByNameViaConnect, updateNotificationPolicy } from './fixtures/connectHelpers';
+import {
+  getRoomIdByNameViaConnect,
+  postMessagesViaConnect,
+  updateNotificationPolicy
+} from './fixtures/connectHelpers';
 
 test.describe('Mention Notifications', () => {
   // Note: Toast notifications for mentions were removed - the bell icon with notification badge
@@ -40,7 +44,7 @@ test.describe('Mention Notifications', () => {
     await expect(mentionBadge).not.toBeVisible();
 
     // User B enters general room and mentions User A
-    await postMentionFromServerUser(browser!, serverURL, userA.login, 'you have a mention!');
+    await postMentionFromServerUser(browser!, serverURL, userA, 'you have a mention!');
 
     // User A: Verify mention indicator appears on general room
     await expect(mentionBadge).toBeVisible({ timeout: TIMEOUTS.REALTIME_EVENT });
@@ -98,7 +102,7 @@ test.describe('Mention Notifications', () => {
     await postMentionFromServerUser(
       browser!,
       serverURL,
-      userA.login,
+      userA,
       'notification on server with logo!'
     );
 
@@ -128,7 +132,7 @@ test.describe('Mention Notifications', () => {
     const mentionBadge = generalLink.getByTestId('room-notification-badge');
 
     // User B: Mention User A in general
-    await postMentionFromServerUser(browser!, serverURL, userA.login, 'clearing mention test');
+    await postMentionFromServerUser(browser!, serverURL, userA, 'clearing mention test');
 
     // Wait for mention indicator to appear.
     await expect(mentionBadge).toBeVisible({ timeout: TIMEOUTS.REALTIME_EVENT });
@@ -272,7 +276,7 @@ test.describe('Notification Bell & Page', () => {
     await notificationsPage.expectBellIndicatorNotVisible();
 
     // User B: Mention User A to create a notification
-    await postMentionFromServerUser(browser!, serverURL, userA.login, 'bell icon test');
+    await postMentionFromServerUser(browser!, serverURL, userA, 'bell icon test');
 
     // User A: Bell should now have indicator
     await notificationsPage.expectBellIndicatorVisible();
@@ -343,7 +347,7 @@ test.describe('Notification Page Display', () => {
     await chatPage.enterRoom('announcements');
 
     // User B: Mention User A
-    await postMentionFromServerUser(browser!, serverURL, userA.login, 'notification display test');
+    await postMentionFromServerUser(browser!, serverURL, userA, 'notification display test');
 
     // User A: Navigate to notifications page
     await notificationsPage.goto();
@@ -427,7 +431,10 @@ test.describe('Notification Page Display', () => {
       await chatPage.enterRoom(secondRoomName);
 
       // Create mention notification in the second room (User A is not in any room)
-      await roomPage.sendMessage(`@${userA.login} first notification`);
+      await roomPage.sendMessage(
+        `@${userA.login} first notification`,
+        `@${userA.displayName} first notification`
+      );
       await chatPage.enterRoom('general');
       const message2 = roomPage.getMessage(rootMessage);
       await message2.openThread();
@@ -454,68 +461,103 @@ test.describe('Notification Page Display', () => {
 
     await withServerUser(browser!, serverURL, async ({ chatPage: senderChat, roomPage }) => {
       await senderChat.enterRoom('general');
-      await roomPage.sendMessage(`@${userA.login} first same-room mention`);
-      await roomPage.sendMessage(`@${userA.login} second same-room mention`);
+      await roomPage.sendMessage(
+        `@${userA.login} first same-room mention`,
+        `@${userA.displayName} first same-room mention`
+      );
+      await roomPage.sendMessage(
+        `@${userA.login} second same-room mention`,
+        `@${userA.displayName} second same-room mention`
+      );
     });
 
     await notificationsPage.goto();
     await notificationsPage.expectNotificationCount(2, TIMEOUTS.COMPLEX_OPERATION);
   });
 
-  test('consolidates reactions to one message while preserving actors and emoji', async ({
-    page,
-    chatPage,
-    roomPage,
-    notificationsPage,
-    browser,
-    serverURL
-  }) => {
-    await createAndLoginTestUser(page);
-    await chatPage.goto();
-    await chatPage.enterRoom('general');
-    const messageText = `Grouped reaction notification ${Date.now()}`;
-    await roomPage.sendMessage(messageText);
-    await page.goto(routes.settings);
-
-    const firstActor = await withServerUser(
-      browser!,
-      serverURL,
-      async ({ user, chatPage: actorChat, roomPage: actorRoom }) => {
-        await actorChat.enterRoom('general');
-        const message = actorRoom.getMessage(messageText);
-        await message.react('👍');
-        await message.expectReaction('👍', 1);
-        return user;
+  for (const targetKind of ['recent', 'older', 'thread'] as const) {
+    test(`consolidates reactions and highlights the ${targetKind} message`, async ({
+      page,
+      chatPage,
+      roomPage,
+      notificationsPage,
+      browser,
+      serverURL
+    }) => {
+      await createAndLoginTestUser(page);
+      await chatPage.goto();
+      await chatPage.enterRoom('general');
+      const messageText = `Grouped reaction notification ${Date.now()}`;
+      const rootText = `Reaction thread root ${Date.now()}`;
+      if (targetKind === 'thread') {
+        await roomPage.sendMessage(rootText);
+        await roomPage.getMessage(rootText).openThread();
+        await roomPage.postThreadReply(messageText);
+      } else {
+        await roomPage.sendMessage(messageText);
       }
-    );
-    const secondActor = await withServerUser(
-      browser!,
-      serverURL,
-      async ({ user, chatPage: actorChat, roomPage: actorRoom }) => {
-        await actorChat.enterRoom('general');
-        const message = actorRoom.getMessage(messageText);
-        await message.react('❤️');
-        await message.expectReaction('❤️', 1);
-        return user;
-      }
-    );
+      await page.goto(routes.settings);
 
-    await notificationsPage.goto();
-    await notificationsPage.expectNotificationCount(1, TIMEOUTS.COMPLEX_OPERATION);
-    const notification = notificationsPage.getNotificationBySummary('reacted with');
-    await expect(notification).toBeVisible({ timeout: TIMEOUTS.REALTIME_EVENT });
-    await expect(notification).toHaveAttribute('data-notification-attention', 'ambient');
-    await expect(notification).not.toHaveClass(/bg-attention\/5/);
-    await expect(notification).toContainText('👍');
-    await expect(notification).toContainText('❤️');
-    await expect(notification).toContainText('to your message in #general.');
-    await expect(notification).not.toContainText(messageText);
-    await expect(notification.getByTestId('notification-actor-stack')).toBeVisible();
-    await expect(notification.getByRole('img', { name: firstActor.login })).toBeVisible();
-    await expect(notification.getByRole('img', { name: secondActor.login })).toBeVisible();
-    await expect(serverNotificationBadge(page)).toHaveClass(/bg-text/);
-    await expect(notificationsPage.bellIndicator).toHaveClass(/bg-text/);
-  });
+      const firstActor = await withServerUser(
+        browser!,
+        serverURL,
+        async ({ user, chatPage: actorChat, roomPage: actorRoom }) => {
+          await actorChat.enterRoom('general');
+          if (targetKind === 'thread') await actorRoom.getMessage(rootText).openThread();
+          const message = actorRoom.getMessage(messageText);
+          await message.react('👍');
+          await message.expectReaction('👍', 1);
+          return user;
+        }
+      );
+      const secondActor = await withServerUser(
+        browser!,
+        serverURL,
+        async ({ user, chatPage: actorChat, roomPage: actorRoom }) => {
+          await actorChat.enterRoom('general');
+          if (targetKind === 'thread') await actorRoom.getMessage(rootText).openThread();
+          const message = actorRoom.getMessage(messageText);
+          await message.react('❤️');
+          await message.expectReaction('❤️', 1);
+          return user;
+        }
+      );
+
+      await notificationsPage.goto();
+      await notificationsPage.expectNotificationCount(1, TIMEOUTS.COMPLEX_OPERATION);
+      const notification = notificationsPage.getNotificationBySummary('reacted with');
+      await expect(notification).toBeVisible({ timeout: TIMEOUTS.REALTIME_EVENT });
+      await expect(notification).toHaveAttribute('data-notification-attention', 'ambient');
+      await expect(notification).not.toHaveClass(/bg-attention\/5/);
+      await expect(notification).toContainText('👍');
+      await expect(notification).toContainText('❤️');
+      await expect(notification).toContainText('to your message in #general.');
+      await expect(notification).not.toContainText(messageText);
+      await expect(notification.getByTestId('notification-actor-stack')).toBeVisible();
+      await expect(notification.getByRole('img', { name: firstActor.login })).toBeVisible();
+      await expect(notification.getByRole('img', { name: secondActor.login })).toBeVisible();
+      await expect(serverNotificationBadge(page)).toHaveClass(/bg-text/);
+      await expect(notificationsPage.bellIndicator).toHaveClass(/bg-text/);
+      if (targetKind === 'older') {
+        const roomId = await getRoomIdByNameViaConnect(page, 'general');
+        await postMessagesViaConnect(
+          page,
+          roomId,
+          Array.from({ length: 80 }, (_, i) => `Later message ${i}`)
+        );
+      }
+      await page.reload();
+      await expect(notification).toBeVisible();
+      // A grouped reaction must land on its message, including on a second visit.
+      for (let visit = 0; visit < 2; visit++) {
+        await notificationsPage.clickNotification(notification);
+        const target = roomPage.getMessage(messageText).locator;
+        await expect(target).toBeInViewport();
+        await expect(target).toHaveClass(/highlight-flash/);
+        if (visit === 0) await notificationsPage.goto();
+      }
+    });
+  }
 });
 
 test.describe('Notification dismissal', () => {
@@ -532,7 +574,7 @@ test.describe('Notification dismissal', () => {
     await chatPage.enterRoom('announcements');
 
     // User B: Mention User A
-    await postMentionFromServerUser(browser!, serverURL, userA.login, 'dismiss test');
+    await postMentionFromServerUser(browser!, serverURL, userA, 'dismiss test');
 
     // User A: Navigate to notifications and dismiss the group.
     await notificationsPage.goto();
@@ -575,7 +617,10 @@ test.describe('Notification dismissal', () => {
       await chatPage.enterRoom(secondRoomName);
 
       // Create mention in the second room (User A is not in any room)
-      await roomPage.sendMessage(`@${userA.login} dismiss read test 1`);
+      await roomPage.sendMessage(
+        `@${userA.login} dismiss read test 1`,
+        `@${userA.displayName} dismiss read test 1`
+      );
       await chatPage.enterRoom('general');
       const message2 = roomPage.getMessage(rootMessage);
       await message2.openThread();
@@ -587,8 +632,13 @@ test.describe('Notification dismissal', () => {
     await notificationsPage.goto();
     await notificationsPage.expectNotificationCount(2, TIMEOUTS.COMPLEX_OPERATION);
     const mention = notificationsPage.getNotificationBySummary('mentioned you.');
+    const markedRead = page.waitForResponse(
+      (response) =>
+        response.url().includes('NotificationService/MarkNotificationRead') && response.ok()
+    );
     await notificationsPage.clickNotification(mention);
     await page.waitForURL(routes.patterns.anyRoomWithQuery);
+    await markedRead;
     await notificationsPage.gotoDirectly();
     await notificationsPage.expectReadNotEmpty();
     await notificationsPage.expectUnreadNotEmpty();
@@ -613,7 +663,7 @@ test.describe('Notification dismissal', () => {
     await chatPage.enterRoom('announcements');
 
     // User B: Mention User A
-    await postMentionFromServerUser(browser!, serverURL, userA.login, 'bell clear test');
+    await postMentionFromServerUser(browser!, serverURL, userA, 'bell clear test');
 
     // User A: Verify bell has indicator
     await notificationsPage.expectBellIndicatorVisible();
@@ -642,7 +692,7 @@ test.describe('Navigation from Notifications', () => {
     await chatPage.enterRoom('announcements');
 
     // User B: Mention User A
-    await postMentionFromServerUser(browser!, serverURL, userA.login, 'nav test');
+    await postMentionFromServerUser(browser!, serverURL, userA, 'nav test');
 
     // User A: Click notification
     await notificationsPage.goto();
@@ -706,7 +756,7 @@ test.describe('Navigation from Notifications', () => {
     await chatPage.enterRoom('announcements');
 
     // User B: Mention User A in general room (User B can't post in announcements due to RBAC)
-    await postMentionFromServerUser(browser!, serverURL, userA.login, 'read on click test');
+    await postMentionFromServerUser(browser!, serverURL, userA, 'read on click test');
 
     // User A: Click notification
     await notificationsPage.goto();
@@ -715,13 +765,16 @@ test.describe('Navigation from Notifications', () => {
     await expect(notification.locator(':scope > button').first()).not.toHaveClass(/opacity-60/);
     await notificationsPage.clickNotification(notification);
     await page.waitForURL(routes.patterns.anyRoomWithQuery);
+    await expect(
+      page.locator('[role="article"]', { hasText: `@${userA.displayName} read on click test` })
+    ).toBeVisible({ timeout: TIMEOUTS.UI_STANDARD });
+    await notificationsPage.expectBellIndicatorNotVisible();
 
     // Opening handles the unread attention state without dismissing the item.
     await notificationsPage.gotoDirectly();
     const readNotification = notificationsPage.getNotificationBySummary('mentioned you.');
     await expect(readNotification).toBeVisible({ timeout: TIMEOUTS.REALTIME_EVENT });
-    await expect(readNotification.getByLabel('Unread')).not.toBeVisible();
-    await expect(readNotification.locator(':scope > button').first()).toHaveClass(/text-muted/);
+    await expect(readNotification).toHaveAttribute('data-notification-state', 'read');
   });
 });
 
@@ -748,7 +801,7 @@ test.describe('Cross-Tab Sync', () => {
       await notificationsPage1b.expectBellIndicatorNotVisible();
 
       // User B: Create account and mention User A in general (User B can't post in announcements due to RBAC)
-      await postMentionFromServerUser(browser!, serverURL, userA.login, 'cross tab test');
+      await postMentionFromServerUser(browser!, serverURL, userA, 'cross tab test');
 
       // Both of User A's tabs should show bell indicator
       await notificationsPage.expectBellIndicatorVisible();
@@ -777,7 +830,7 @@ test.describe('Cross-Tab Sync', () => {
       const notificationsPage1b = new NotificationsPage(page1b);
 
       // User B: Mention User A in general (User B can't post in announcements due to RBAC)
-      await postMentionFromServerUser(browser!, serverURL, userA.login, 'cross tab dismiss test');
+      await postMentionFromServerUser(browser!, serverURL, userA, 'cross tab dismiss test');
 
       // Both tabs should show bell indicator
       await notificationsPage.expectBellIndicatorVisible();
@@ -818,12 +871,7 @@ test.describe('Cross-Tab Sync', () => {
       const notificationsPage1b = new NotificationsPage(page1b);
 
       // User B: Mention User A in general (User B can't post in announcements due to RBAC)
-      await postMentionFromServerUser(
-        browser!,
-        serverURL,
-        userA.login,
-        'room entry read sync test'
-      );
+      await postMentionFromServerUser(browser!, serverURL, userA, 'room entry read sync test');
 
       // User A (tab 2): Go to notifications page and verify notification exists
       await notificationsPage1b.gotoDirectly();
@@ -910,12 +958,7 @@ test.describe('Cross-Tab Sync', () => {
       const generalMentionBadge1b = generalLink1b.getByTestId('room-notification-badge');
 
       // User B: mention User A in #general.
-      await postMentionFromServerUser(
-        browser!,
-        serverURL,
-        userA.login,
-        'cross-device mention sync test'
-      );
+      await postMentionFromServerUser(browser!, serverURL, userA, 'cross-device mention sync test');
 
       // Both tabs show the room-level mention badge and the bell.
       await expect(generalMentionBadge).toBeVisible({ timeout: TIMEOUTS.REALTIME_EVENT });
@@ -971,7 +1014,7 @@ test.describe('Real-time Notification Updates', () => {
     await notificationsPage.expectEmptyState();
 
     // User B: Mention User A while A is on notifications page
-    await postMentionFromServerUser(browser!, serverURL, userA.login, 'real-time test');
+    await postMentionFromServerUser(browser!, serverURL, userA, 'real-time test');
 
     // User A: Notification should appear without refresh
     const notification = notificationsPage.getNotificationBySummary('mentioned you.');
@@ -1004,7 +1047,10 @@ test.describe('Real-time Notification Updates', () => {
     await withServerUser(browser!, serverURL, async ({ chatPage, roomPage }) => {
       // First notification (mention) - User B posts in general since they can't post in announcements
       await chatPage.enterRoom('general');
-      await roomPage.sendMessage(`@${userA.login} count test 1`);
+      await roomPage.sendMessage(
+        `@${userA.login} count test 1`,
+        `@${userA.displayName} count test 1`
+      );
 
       // User A: Should see 1 notification
       await notificationsPage.expectNotificationCount(1);
@@ -1037,7 +1083,7 @@ test.describe('Page Title Notification Count', () => {
     await expect(page).toHaveTitle(/^(?!\(\d+\)).*$/);
 
     // User B: Mention User A in general (User B can't post in announcements due to RBAC)
-    await postMentionFromServerUser(browser!, serverURL, userA.login, 'page title test');
+    await postMentionFromServerUser(browser!, serverURL, userA, 'page title test');
 
     // User A: Page title should now show (1) prefix
     await expect(page).toHaveTitle(/^\(1\) /, { timeout: TIMEOUTS.REALTIME_EVENT });
@@ -1075,7 +1121,10 @@ test.describe('Page Title Notification Count', () => {
       await chatPage.enterRoom(secondRoomName);
 
       // First notification (mention in the second room)
-      await roomPage.sendMessage(`@${userA.login} title count 1`);
+      await roomPage.sendMessage(
+        `@${userA.login} title count 1`,
+        `@${userA.displayName} title count 1`
+      );
 
       // User A: Title should show (1)
       await expect(page).toHaveTitle(/^\(1\) /, { timeout: TIMEOUTS.REALTIME_EVENT });
@@ -1103,7 +1152,7 @@ test.describe('Page Title Notification Count', () => {
     await chatPage.enterRoom('announcements');
 
     // User B: Mention User A in general (User B can't post in announcements due to RBAC)
-    await postMentionFromServerUser(browser!, serverURL, userA.login, 'title dismiss test');
+    await postMentionFromServerUser(browser!, serverURL, userA, 'title dismiss test');
 
     // User A: Verify title has count
     await expect(page).toHaveTitle(/^\(1\) /, { timeout: TIMEOUTS.REALTIME_EVENT });
@@ -1146,7 +1195,10 @@ test.describe('Page Title Notification Count', () => {
       await chatPage.enterRoom(secondRoomName);
 
       // First notification (mention in the second room)
-      await roomPage.sendMessage(`@${userA.login} title decrement 1`);
+      await roomPage.sendMessage(
+        `@${userA.login} title decrement 1`,
+        `@${userA.displayName} title decrement 1`
+      );
       await chatPage.enterRoom('general');
       const message2 = roomPage.getMessage(rootMessage);
       await message2.openThread();
@@ -1190,12 +1242,7 @@ test.describe('Clickable Notification Badges', () => {
     await chatPage.enterRoom('announcements');
 
     // User B: Mention User A in general
-    await postMentionFromServerUser(
-      browser!,
-      serverURL,
-      userA.login,
-      `clickable dot test ${Date.now()}`
-    );
+    await postMentionFromServerUser(browser!, serverURL, userA, `clickable dot test ${Date.now()}`);
 
     // User A: Navigate to the server (not in general room)
     await page.goto(routes.chat);

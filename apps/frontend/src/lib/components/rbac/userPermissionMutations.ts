@@ -1,13 +1,17 @@
+import { errorMessage } from '$lib/utils/errorMessage';
 import type {
   PermissionAPI,
   PermissionDecisionUpdate,
   PermissionState
-} from '$lib/api-client/permissions';
+} from '@chatto/client/api/permissions';
 
 export type UserPermissionState = PermissionState;
 
 export type UserMutationScope =
-  { tier: 'server' } | { tier: 'group'; groupId: string } | { tier: 'room'; roomId: string };
+  | { tier: 'server' }
+  | { tier: 'dm' }
+  | { tier: 'group'; groupId: string }
+  | { tier: 'room'; roomId: string };
 
 export async function setUserPermission(
   api: PermissionAPI,
@@ -25,6 +29,6 @@ export async function setUserPermission(
     });
     return { update };
   } catch (error) {
-    return { error: error instanceof Error ? error.message : String(error) };
+    return { error: errorMessage(error) };
   }
 }

@@ -6,15 +6,14 @@
  * still treated as a notification trigger rather than authoritative app state.
  */
 
-import { createPushNotificationAPI } from '$lib/api-client/pushNotifications';
-import type { PushNotificationAPI } from '$lib/api-client/pushNotifications';
-import { isBackendCapableOrigin } from '$lib/runtimeOrigin';
+import { createPushNotificationAPI } from '$lib/api/pushNotifications';
+import type { PushNotificationAPI } from '$lib/api/pushNotifications';
+import { isBackendCapableOrigin } from '@chatto/client/util/runtimeOrigin';
 import {
   NOTIFICATION_CLICK_ACK_MESSAGE_TYPE,
   NOTIFICATION_CLICK_MESSAGE_TYPE
 } from '$lib/pwa/notificationClick.worker';
-import { serverConnectionManager } from '$lib/state/server/serverConnection.svelte';
-import { serverRegistry } from '$lib/state/server/registry.svelte';
+import { serverConnectionManager, serverRegistry } from '$lib/client';
 import {
   completePushRegistrationRefresh,
   enqueuePushRegistration,
@@ -252,7 +251,7 @@ export function getPushRegistrationTargets(): PushRegistrationTarget[] {
   return serverRegistry.servers.flatMap((server) => {
     const store = serverRegistry.tryGetStore(server.id);
     const info = store?.serverInfo;
-    const userId = store?.currentUser.user?.id;
+    const userId = store?.accountId;
     if (
       !store?.isAuthenticated ||
       !userId ||
@@ -334,9 +333,7 @@ async function enablePushOnAllServersOnce(): Promise<EnablePushOnAllServersResul
 }
 
 /** Refresh every configured server after permission or worker lifecycle changes. */
-export async function refreshPushSubscriptions(
-  targets?: PushRegistrationTarget[]
-): Promise<void> {
+export async function refreshPushSubscriptions(targets?: PushRegistrationTarget[]): Promise<void> {
   if (enableAllInFlight) {
     await enableAllInFlight;
     // Eligibility can change while explicit activation is in progress. Read

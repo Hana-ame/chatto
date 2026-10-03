@@ -16,7 +16,6 @@
       "remote_title": "{server} זקוק לכניסה",
       "remote_message": "שרת זה דחה את הכניסה המאוחסנת. חבר אותו מחדש כדי לחדש עדכונים ופעולות בזמן אמת.",
       "remote_action": "התחבר מחדש",
-      "remote_failed": "נכשלה להתחיל להתחבר מחדש",
       "sidebar_reauth": "{server} זקוק לכניסה"
     },
     "access_denied": {
@@ -49,7 +48,8 @@
       "complete": "Chatto נבנה מחדש. ניקוד סופי: {count} נקודות"
     },
     "pane_header": {
-      "back": "חזרה"
+      "back": "חזרה",
+      "actions": "פעולות החלונית"
     },
     "sidebar_nav": {
       "back_to_chat": "חזרה לצ'אט"
@@ -68,7 +68,12 @@
     "image_modal": {
       "previous": "תמונה קודמת",
       "next": "התמונה הבאה",
-      "fallback_alt": "תמונה"
+      "fallback_alt": "תמונה",
+      "zoom_in": "הגדלה",
+      "zoom_out": "הקטנה",
+      "fit": "התאמה",
+      "details": "פרטים",
+      "file_type": "סוג קובץ"
     },
     "toast": {
       "dismiss": "בטל הודעה"
@@ -79,11 +84,9 @@
       "clear": "ברור"
     },
     "expiry": {
-      "label": "יפוג",
       "24h": "24 שעות",
       "7d": "7 ימים",
       "30d": "30 ימים",
-      "indefinite": "אין תפוגה",
       "custom": "מותאם אישית",
       "custom_label": "תפוגה מותאמת אישית",
       "error_required": "בחר תאריך תפוגה.",

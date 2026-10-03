@@ -125,6 +125,24 @@ describe('DataTable.hoverable', () => {
     expect(container.textContent).not.toContain('No records');
   });
 
+  it('shows a sized fog block while the first page loads', () => {
+    const { container } = render(DataTable, {
+      props: {
+        items: [],
+        columns: 1,
+        loading: true,
+        emptyMessage: 'No records',
+        header: testSnippet('<th>Name</th>'),
+        row: testSnippet('<td>row</td>')
+      }
+    });
+
+    const fog = container.querySelector('[data-loading-fog]');
+    expect(fog).not.toBeNull();
+    expect(fog?.getAttribute('aria-busy')).toBe('true');
+    expect(container.textContent).not.toContain('No records');
+  });
+
   it('uses the shared table viewport beneath the surface header', async () => {
     const { container } = renderTable();
     const table = container.querySelector('table') as HTMLTableElement;
@@ -157,39 +175,26 @@ describe('DataTable.hoverable', () => {
       }
     });
     const table = container.querySelector('table') as HTMLTableElement;
-    const viewport = table.parentElement?.parentElement as HTMLElement;
+    const viewport = table.closest('.data-table-viewport') as HTMLElement;
     const header = container.querySelector('thead') as HTMLElement;
 
     expect(viewport.className).toContain('data-table-viewport');
     expect(viewport.className).toContain('max-h-[70dvh]');
-    expect((table.parentElement as HTMLElement).className).toContain('overflow-y-auto');
-    expect((table.parentElement as HTMLElement).className).toContain('overflow-x-auto');
+    expect((table.parentElement?.parentElement as HTMLElement).className).toContain(
+      'overflow-y-auto'
+    );
+    expect((table.parentElement?.parentElement as HTMLElement).className).toContain(
+      'overflow-x-auto'
+    );
     expect(header.className).toContain('sticky');
   });
 
   it('fills a flex parent instead of using the sticky-header viewport cap when requested', () => {
     const { container } = renderTable({ stickyHeader: true, fillHeight: true });
-    const viewport = (container.querySelector('table') as HTMLTableElement).parentElement
-      ?.parentElement as HTMLElement;
+    const viewport = container.querySelector<HTMLElement>('.data-table-viewport')!;
 
     expect(viewport.className).toContain('flex-1');
     expect(viewport.className).not.toContain('max-h-[70dvh]');
-  });
-
-  it('still renders cursor-pointer on hoverable=false rows when onRowClick is set', async () => {
-    const onRowClick = vi.fn();
-    const { container } = render(DataTable, {
-      props: {
-        items: [{ id: '1' }],
-        columns: 1,
-        header: testSnippet('<th>X</th>'),
-        row: testSnippet('<td>x</td>'),
-        hoverable: false,
-        onRowClick
-      }
-    });
-    const tr = container.querySelector('tbody tr') as HTMLElement;
-    expect(tr.className).toContain('cursor-pointer');
   });
 
   it('does not render an auto-load sentinel by default', async () => {
@@ -228,5 +233,29 @@ describe('DataTable.hoverable', () => {
 
     expect(observers).toHaveLength(0);
     expect(onLoadMore).not.toHaveBeenCalled();
+  });
+});
+
+describe('DataTable keyboard scrolling', () => {
+  it('adds a keyboard stop only while the table overflows horizontally', async () => {
+    const host = document.createElement('div');
+    host.style.width = '200px';
+    document.body.append(host);
+    const wide = render(DataTable, {
+      target: host,
+      props: {
+        items: [{ id: '1' }],
+        columns: 1,
+        header: testSnippet('<th><div style="width: 800px">Wide</div></th>'),
+        row: testSnippet('<td>cell</td>')
+      }
+    });
+    const viewport = () => wide.container.querySelector('.data-table-viewport') as HTMLElement;
+    await vi.waitFor(() => expect(viewport().getAttribute('tabindex')).toBe('0'));
+    expect(viewport().getAttribute('role')).toBe('region');
+
+    host.style.width = '1200px';
+    await vi.waitFor(() => expect(viewport().hasAttribute('tabindex')).toBe(false));
+    host.remove();
   });
 });

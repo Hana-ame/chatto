@@ -9,10 +9,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nats-io/nats.go/jetstream"
+	"github.com/nats-io/nats.go"
 	"google.golang.org/protobuf/proto"
 
+	"hmans.de/chatto/internal/core/subjects"
 	evtv1 "hmans.de/chatto/internal/pb/chatto/core/evt/v1"
+	pubsubv1 "hmans.de/chatto/internal/pb/chatto/core/pubsub/v1"
 )
 
 func TestNotificationOccurrenceLifecycleUsesStreamFacts(t *testing.T) {
@@ -104,59 +106,80 @@ func TestNotificationOccurrenceLifecycleUsesStreamFacts(t *testing.T) {
 	}
 }
 
-// 【本地改动 28ba8cddd，2026-08-31 合并 upstream #2258 后更新】发现背景：
-// cloudcone 生产日志从 2026-08-27 起每分钟重复 "Notification signal physical
-// deletion will retry … code=400 err_code=10043 sequence N not found"。信号
-// 消息已按 TTL 过期被 NATS 移除后，cleanupDismissedSignals 的 SecureDeleteMsg
-// 返回该错误，本应被 notificationSignalAlreadyAbsent 判定为"已不存在"而跳过，
-// 但 nats.go 的 deleteMsg 只把预制 ErrMsgDeleteUnsuccessful 用 %w 放上 error
-// 链，APIError（含 err_code）用 %s 拼成文本，errors.As 拿不到 APIError()，
-// 导致 10043 分支永不命中，删除请求每分钟重试直到 tombstone 过期。
-// 修复演进：28ba8cddd 最初在 error 链之外用正则从 "nats: API error:
-// code=… err_code=N" 稳定文本提取 err_code 判定；2026-08-31 合并 upstream
-// #2258 时用户决策改用上游方案——删除失败后 GetMsg 同一 seq 复查（见
-// notification_occurrence_model.go 的 secureDeleteNotificationSignal），
-// SecureDeleteMsg 的错误不再直接判定，正则兜底随合并删除。GetMsg 复查的
-// absent 是干净的 ErrMsgNotFound/APIError 链，errors.Is/errors.As 两路即足够。
-// 本测试现只覆盖该复查路径的判定：干净错误链命中、无关错误码与瞬时错误
-// 保持可重试（原来模拟 SecureDeleteMsg 文本拼接的 wrapped 用例已删除）。
-func TestNotificationSignalAlreadyAbsentRecognizesCleanErrorChain(t *testing.T) {
-	// 第一路：errors.Is 直接命中 ErrMsgNotFound（GetMsg 复查的典型 absent 形态）。
-	if !notificationSignalAlreadyAbsent(jetstream.ErrMsgNotFound) {
-		t.Fatalf("bare ErrMsgNotFound must count as already absent")
-	}
-	// 第二路：errors.As 命中 JetStream APIError，10043/10057 均为 absent。
-	if !notificationSignalAlreadyAbsent(fmt.Errorf("outer: %w", &jetstream.APIError{Code: 400, ErrorCode: 10043, Description: "sequence 11 not found"})) {
-		t.Fatalf("wrapped err_code=10043 APIError must count as already absent")
-	}
-	if !notificationSignalAlreadyAbsent(fmt.Errorf("outer: %w", &jetstream.APIError{Code: 400, ErrorCode: 10057, Description: "message 11 not found"})) {
-		t.Fatalf("wrapped err_code=10057 APIError must count as already absent")
-	}
-	// 无关的 broker 错误码必须保持"可重试"，不能误判为已消失。
-	if notificationSignalAlreadyAbsent(fmt.Errorf("outer: %w", &jetstream.APIError{Code: 400, ErrorCode: 10071, Description: "sequence 11 is gone from the wrong stream"})) {
-		t.Fatalf("unrelated broker error must stay retryable")
-	}
-	// 没有 API error 的瞬时错误（网络/超时）必须保持"可重试"。
-	if notificationSignalAlreadyAbsent(fmt.Errorf("nats: message deletion unsuccessful: nats: connection refused")) {
-		t.Fatalf("transient failure must stay retryable")
-	}
-}
-
-// 【本地改动 2026-08-31 合并 upstream #2258】本 fork 此前在此存放
-// TestNotificationSignalSequenceGoneFromStreamConfirmsLiveRange 及其配套
-// （StreamInfo 存活区间二次确认 + fail-closed），2026-08-31 合并 upstream 时
-// 用户决策改用上游 #2258 方案（删除失败后 GetMsg 同一 seq 确认 absent，
-// 见 notification_occurrence_model.go 的 secureDeleteNotificationSignal），
-// 该测试与其方法已随合并删除；上游 #2258 自带「重启/副本后 must converge」
-// 断言（见 TestNotificationOccurrenceLifecycleUsesStreamFacts 内的重启段），
-// 覆盖了该语义的回归保护。
-
 func TestNotificationIdentitySeparatesSignalKinds(t *testing.T) {
 	recipientID, sourceID := "U1", "E1"
 	mention := notificationOccurrenceID(recipientID, sourceID, "direct_mention_received")
 	reply := notificationOccurrenceID(recipientID, sourceID, "reply_received")
 	if mention == reply {
 		t.Fatalf("different signal kinds shared ID %q", mention)
+	}
+}
+
+func TestNotificationCreationHintsReportEveryNewID(t *testing.T) {
+	chattoCore, nc := newTestCore(t)
+	startCoreServices(t, chattoCore)
+	ctx := testContext(t)
+	const recipientID = "U-creation-hints"
+	sub, err := nc.SubscribeSync(subjects.LiveSyncUserEvent(recipientID, "notification_v2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sub.Unsubscribe()
+	if err := nc.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	inputs := make([]CreateNotificationOccurrenceInput, 2)
+	want := make(map[string]bool)
+	for i := range inputs {
+		sourceID := fmt.Sprintf("E-creation-hint-%d", i)
+		inputs[i] = CreateNotificationOccurrenceInput{
+			RecipientID: recipientID, SourceEventID: sourceID, SourceCreated: time.Now().UTC(),
+			ActorID: "U-actor", Signal: testNotificationSignal(notificationTestSignalAll, "R-hints", sourceID),
+			Mode:           evtv1.NotificationDeliveryMode_NOTIFICATION_DELIVERY_MODE_IN_APP_NOTIFICATION,
+			AttentionLevel: notificationv1.NotificationAttentionLevel_NOTIFICATION_ATTENTION_LEVEL_IMPORTANT,
+			InitiallyRead:  i == 1, SkipReadLookup: true,
+		}
+		want[notificationOccurrenceID(recipientID, sourceID, "all_mention_received")] = true
+	}
+	model := chattoCore.NotificationOccurrences()
+	if err := model.CreateMany(ctx, inputs); err != nil {
+		t.Fatal(err)
+	}
+	readHint := func() *pubsubv1.PubSubEvent {
+		t.Helper()
+		msg, err := sub.NextMsg(2 * time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var event pubsubv1.PubSubEvent
+		if err := proto.Unmarshal(msg.Data, &event); err != nil {
+			t.Fatal(err)
+		}
+		return &event
+	}
+	for range inputs {
+		id := readHint().GetNotificationOccurrencesChanged().GetCreatedNotificationId()
+		if !want[id] {
+			t.Fatalf("unexpected or duplicate created ID %q", id)
+		}
+		delete(want, id)
+		if _, err := model.Get(ctx, recipientID, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := model.CreateMany(ctx, inputs); err != nil {
+		t.Fatal(err)
+	}
+	// Retry publishes no creation. A later read-state hint is an ordered barrier.
+	id := notificationOccurrenceID(recipientID, inputs[0].SourceEventID, "all_mention_received")
+	if _, err := model.MarkRead(ctx, recipientID, id); err != nil {
+		t.Fatal(err)
+	}
+	if event := readHint().GetNotificationOccurrencesChanged(); event == nil || event.CreatedNotificationId != nil {
+		t.Fatalf("read update must not claim a creation: %v", event)
+	}
+	if _, err := sub.NextMsg(50 * time.Millisecond); !errors.Is(err, nats.ErrTimeout) {
+		t.Fatalf("unexpected extra hint after retry and read: %v", err)
 	}
 }
 
@@ -453,11 +476,3 @@ func TestUnsupportedNotificationSignalDetection(t *testing.T) {
 		t.Fatal("empty signal was treated as an unknown future signal")
 	}
 }
-
-// 【本地改动 2026-08-31 合并 upstream #2258】本文件尾部原有 fork 的
-// fakeNotificationStream 桩与 T1/T2/T3（StreamInfo 存活区间二次确认的
-// fail-closed 语义测试），2026-08-31 合并 upstream 时用户决策改用上游 #2258
-// 方案（删除失败后 GetMsg 同一 seq 确认 absent），signalSequenceGoneFromStream /
-// notificationSignalGoneFromStreamRange 方法已随合并从
-// notification_occurrence_model.go 删除，此处桩与测试一并移除；
-// 上游 #2258 自带「重启/多副本后已删信号必须收敛」断言覆盖该语义的回归保护。

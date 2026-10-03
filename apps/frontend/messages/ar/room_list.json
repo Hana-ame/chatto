@@ -1,9 +1,15 @@
 {
   "room_list": {
+    "show_rooms_in_group": "عرض المزيد من الغرف في {group} ({count})",
+    "hide_rooms_in_group": "إخفاء الغرف التي لم تنضم إليها في {group}",
+    "more_rooms": "{count} إضافية",
+    "show_less": "عرض أقل",
     "active_call": "مكالمة نشطة",
     "call_participants": "{count} المشاركون في المكالمة",
     "go_to_notifications": "انتقل إلى {count} إشعارات",
     "notifications": "{count} إشعارات",
+    "go_to_other_notifications": "انتقل إلى {count} إشعارات أخرى",
+    "other_notifications": "{count} إشعارات أخرى",
     "unread_messages": "الرسائل غير المقروءة",
     "go_to_dm_notifications": "انتقل إلى إشعارات الرسائل المباشرة {count}",
     "new_direct_messages": "{count} رسائل مباشرة جديدة",
@@ -18,6 +24,7 @@
     "copy_room_id": "نسخ معرّف الغرفة",
     "copy_server_hostname": "نسخ اسم مضيف الخادم",
     "room_settings": "إعدادات الغرفة",
+    "add_to_group": "إضافة إلى {group}",
     "group_settings": "إعدادات {group}",
     "server_actions": "إجراءات {server}",
     "room_actions": "إجراءات #{room}"

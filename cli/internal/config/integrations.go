@@ -33,6 +33,26 @@ func (c *SMTPConfig) TLSPolicyOrDefault() SMTPTLSPolicy {
 	return policy
 }
 
+// InsecureTransportSettings returns the names of enabled SMTP settings that
+// reduce transport security. Opportunistic TLS permits plaintext fallback, and
+// skipped certificate verification permits interception. Both can expose
+// password-reset links and verification codes on the network. The result
+// contains only configuration key names, so callers may log it. It is empty
+// when SMTP is disabled.
+func (c *SMTPConfig) InsecureTransportSettings() []string {
+	if !c.Enabled {
+		return nil
+	}
+	var settings []string
+	if c.TLSPolicyOrDefault() == SMTPTLSOpportunistic {
+		settings = append(settings, "smtp.tls=opportunistic")
+	}
+	if c.TLSSkipVerify {
+		settings = append(settings, "smtp.tls_skip_verify=true")
+	}
+	return settings
+}
+
 // SMTPConfig contains settings for sending transactional emails.
 type SMTPConfig struct {
 	Enabled       bool          `toml:"enabled" env:"CHATTO_SMTP_ENABLED" comment:"Enable SMTP for sending transactional emails (verification, password reset, etc.)."`
@@ -103,59 +123,15 @@ type VideoConfig struct {
 	MaxUploadSize datasize.ByteSize `toml:"max_upload_size,commented" env:"CHATTO_VIDEO_MAX_UPLOAD_SIZE" comment:"Maximum size for video uploads. Supports human-readable formats like '100 MB'. Default: 100 MB."`
 }
 
-// AssetProcessingConfig 控制 durable asset-processing worker。Enabled
-// 决定 chatto run 是否内嵌 worker;独立命令 chatto asset-processing 显式
-// 运行但共用其余设置。
-//
-// 【本地改动 218426d6 + 2026-09-02 + 2026-09-12】2026-09-02 前字段为
-// AVIFEnabled(room 附件图片上传时重编码为 AVIF);2026-09-02 存储格式改为
-// WebP,字段重命名为 WebPEnabled;2026-09-12 存储格式改回 AVIF 并取消衍生
-// 图,字段恢复 AVIFEnabled,WebPEnabled 留作别名。用 *bool 是为了区分
-// "没配置"(默认 true,保持原行为)和"显式配置 false"(关掉)。项目里
-// APICompression 用的是同款模式。
-// 之所以要显式开关:此前只要服务器装了带对应编码器的 ffmpeg,重编码就自动
-// 生效,想关都关不掉。
+// AssetProcessingConfig controls the durable asset-processing worker. Enabled
+// determines whether chatto run embeds the worker; the standalone chatto
+// asset-processing command runs explicitly but uses the remaining settings.
 type AssetProcessingConfig struct {
-	Enabled     bool  `toml:"enabled" env:"CHATTO_ASSET_PROCESSING_ENABLED" comment:"Start the built-in asset-processing worker inside chatto run."`
-	AVIFEnabled *bool `toml:"avif_enabled,commented" env:"CHATTO_ASSET_PROCESSING_AVIF_ENABLED" comment:"Re-encode room attachment images to original-size AVIF on upload, both still and animated. Requires an ffmpeg binary with an AV1 encoder (libsvtav1 or libaom-av1, auto-detected from PATH when ffmpeg_path is empty). When disabled, original image bytes are stored unchanged. Affects room attachments only; avatars, server branding, and link previews stay WebP. Default: true."`
-	// WebPEnabled 是 2026-09-02 ~ 2026-09-12 期间的字段名,当时 room 附件
-	// 存 WebP。【本地改动 2026-09-12】存储格式改回 AVIF 后它降级为别名:
-	// 只在 avif_enabled 没配置时生效,好让既有部署的 webp_enabled=false
-	// 继续关掉重编码,而不是被静默打开。
-	WebPEnabled       *bool  `toml:"webp_enabled,commented" env:"CHATTO_ASSET_PROCESSING_WEBP_ENABLED" comment:"Deprecated alias for avif_enabled. Prefer avif_enabled / CHATTO_ASSET_PROCESSING_AVIF_ENABLED."`
+	Enabled           bool   `toml:"enabled" env:"CHATTO_ASSET_PROCESSING_ENABLED" comment:"Start the built-in asset-processing worker inside chatto run."`
 	FFmpegPath        string `toml:"ffmpeg_path,commented" env:"CHATTO_ASSET_PROCESSING_FFMPEG_PATH" comment:"Path to ffmpeg binary. Auto-detected from PATH if empty."`
 	FFprobePath       string `toml:"ffprobe_path,commented" env:"CHATTO_ASSET_PROCESSING_FFPROBE_PATH" comment:"Path to ffprobe binary. Auto-detected from PATH if empty."`
 	MaxConcurrentJobs int    `toml:"max_concurrent_jobs,commented" env:"CHATTO_ASSET_PROCESSING_MAX_CONCURRENT_JOBS" comment:"Maximum number of asset-processing jobs to run simultaneously in this process. Default: 2."`
 	TempDir           string `toml:"temp_dir,commented" env:"CHATTO_ASSET_PROCESSING_TEMP_DIR" comment:"Temporary directory for asset processing. Default: system temp directory."`
-}
-
-// AVIFEnabledOrDefault 报告 room 附件图片上传时是否重编码为 AVIF。
-//
-// 取值优先级:avif_enabled > 已废弃的 webp_enabled 别名 > 默认 true。
-// 【本地改动 2026-09-12】2026-09-02 ~ 2026-09-12 存储格式是 WebP,那段时间
-// 部署里写的 webp_enabled=false 必须继续关掉重编码,所以别名不能丢。
-// 【踩坑】故意不参考 worker 的 Enabled:重编码在上传路径上用普通 ffmpeg
-// 完成,与 durable asset-processing worker 无关。
-func (c *AssetProcessingConfig) AVIFEnabledOrDefault() bool {
-	if c.AVIFEnabled != nil {
-		return *c.AVIFEnabled
-	}
-	if c.WebPEnabled != nil {
-		return *c.WebPEnabled
-	}
-	return true
-}
-
-// WebPEnabledOrDefault 报告 room 附件 WebP 重编码是否开启,默认 true
-// (best-effort WebP 是 2026-09-02 之后的行为;2026-09-02 前是 AVIF;
-// 没装 ffmpeg 的服务器本来就静默存原图)。
-// 【本地改动 2026-09-12】存储格式回到 AVIF 后不再有调用方读它,保留是为了
-// 兼容既有部署的 webp_enabled 配置解析;新代码请用 AVIFEnabledOrDefault。
-func (c *AssetProcessingConfig) WebPEnabledOrDefault() bool {
-	if c.WebPEnabled == nil {
-		return true
-	}
-	return *c.WebPEnabled
 }
 
 // DefaultVideoMaxUploadSize is the default maximum size for video uploads (100 MB).

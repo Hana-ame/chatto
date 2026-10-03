@@ -15,35 +15,37 @@ keep the compact menu without a navigation action.
 - `presentation` - Optional floating/sheet presentation selected by the trigger
 - `canSendMessage` - Whether to show the "Send Message" button
 - `onSendMessage` - Callback when "Send Message" is clicked
-- `canBanFromRoom` - Whether to show the room-ban action
-- `banningFromRoom` - Whether the room-ban action is currently running
-- `onBanFromRoom` - Callback when "Ban from room" is clicked
+- `canBanFromRoom` - Whether to show the room removal action
+- `banningFromRoom` - Whether the room removal action is currently running
+- `onBanFromRoom` - Callback when "Remove from room" is clicked
 - `onOpenProfile` - Optional callback that opens the full room-sidebar profile
 - `viewerSettings` - Optional viewer preferences for the user's local-time display
 - `onClose` - Callback to close the popover/sheet
 -->
 <script lang="ts">
+  import AccountName from '$lib/components/users/AccountName.svelte';
+  import { serverUi } from '$lib/state/server/serverUi';
   import { PresenceStatus } from '@chatto/api-types/api/v1/presence_pb';
   import { resolve } from '$app/paths';
 
-  import { RoomKind } from '$lib/api-client/roomDirectory';
   import UserAvatar from '$lib/components/UserAvatar.svelte';
+  import ParticipantAudioControls from '$lib/components/voice/ParticipantAudioControls.svelte';
+  import type { ParticipantVolumeControl } from '$lib/state/server/callPreferences.svelte';
   import UserCustomStatusBadge from '$lib/components/UserCustomStatusBadge.svelte';
   import UserBio from '$lib/components/users/UserBio.svelte';
   import Interval from '$lib/lifecycle/Interval.svelte';
   import { serverIdToSegment } from '$lib/navigation';
   import { useServerScope } from '$lib/state/server/scope.svelte';
-  import ContextMenu from '$lib/ui/ContextMenu.svelte';
-  import MenuItem from '$lib/ui/MenuItem.svelte';
-  import MenuSection from '$lib/ui/MenuSection.svelte';
+  import { ContextMenu, ScrollFader, MenuItem, MenuSection } from '$lib/ui';
   import {
     getLiveBio,
     getLiveCustomStatus,
     getLiveDisplayName,
     getLiveLogin,
-    getLiveTimezone,
-    type CustomUserStatus
+    getLiveBotOwnerUserId,
+    getLiveTimezone
   } from '$lib/state/userProfiles.svelte';
+  import type { CustomUserStatus } from '@chatto/client/api/userSummary';
   import { m } from '$lib/i18n/messages';
   import { toast } from '$lib/ui/toast';
   import {
@@ -61,6 +63,7 @@ keep the compact menu without a navigation action.
     canBanFromRoom = false,
     banningFromRoom = false,
     viewerSettings,
+    audioSource = 'voiceVolume',
     onSendMessage,
     onBanFromRoom,
     onOpenProfile,
@@ -70,6 +73,10 @@ keep the compact menu without a navigation action.
       id: string;
       login: string;
       displayName: string;
+      isBot?: boolean;
+      /** Public human owner of an active bot. */
+      bot?: { ownerUserId: string };
+      deleted?: boolean;
       avatarUrl?: string | null;
       bio?: string | null;
       timezone?: string | null;
@@ -83,6 +90,8 @@ keep the compact menu without a navigation action.
     canBanFromRoom?: boolean;
     banningFromRoom?: boolean;
     viewerSettings?: ViewerTimeSettings | null;
+    /** Defaults to microphone controls; screen-share cards select streamVolume. */
+    audioSource?: ParticipantVolumeControl;
     onSendMessage?: () => void;
     onBanFromRoom?: () => void;
     onOpenProfile?: (userId: string) => void;
@@ -90,6 +99,15 @@ keep the compact menu without a navigation action.
   } = $props();
 
   const serverScope = useServerScope();
+  const voiceCall = $derived(serverUi(serverScope.store).voiceCall);
+  // Only the active call's remote participants have listener-local volume controls.
+  const audioParticipant = $derived(
+    voiceCall?.connected
+      ? voiceCall.participants?.find(
+          (participant) => participant.identity === user.id && !participant.isLocal
+        )
+      : undefined
+  );
   const displayName = $derived(getLiveDisplayName(user.id, user.displayName || user.login));
   const customStatus = $derived(getLiveCustomStatus(user.id, user.customStatus));
   const bio = $derived(getLiveBio(user.id, user.bio ?? null));
@@ -108,6 +126,23 @@ keep the compact menu without a navigation action.
       return null;
     }
   });
+  const botOwnerUserId = $derived(
+    user.isBot ? getLiveBotOwnerUserId(user.id, user.bot?.ownerUserId ?? null) : null
+  );
+  // The bot's owner, bot managers, and account managers can open its management
+  // page; the page itself enforces the same rule through BotService.GetBot.
+  const manageBotHref = $derived.by(() => {
+    if (!user.isBot || user.deleted) return null;
+    const permissions = serverScope.store.permissions;
+    const isOwner = !!botOwnerUserId && botOwnerUserId === serverScope.store.accountId;
+    const canManage =
+      permissions.loaded && (permissions.canManageBots || permissions.canAdminManageAccounts);
+    if (!isOwner && !canManage) return null;
+    return resolve('/chat/[serverId]/manage/server/bots/[botId]', {
+      serverId: serverIdToSegment(serverScope.serverId),
+      botId: user.id
+    });
+  });
   const adminUserHref = $derived(
     serverScope.store.permissions.loaded && serverScope.store.permissions.canAdminViewUsers
       ? resolve('/chat/[serverId]/manage/server/members/[userId]', {
@@ -116,25 +151,6 @@ keep the compact menu without a navigation action.
         })
       : null
   );
-  const canOpenProfile = $derived.by(() => {
-    if (!onOpenProfile) return false;
-    if (serverScope.store.permissions.canStartDMs) return true;
-
-    const currentUserId = serverScope.store.currentUser.user?.id;
-    if (!currentUserId) return false;
-    return [...serverScope.store.projection.rooms.values()].some((entry) => {
-      const memberIds = entry.memberUserIds;
-      const isSelfDM =
-        memberIds.length === 1 && memberIds[0] === currentUserId && user.id === currentUserId;
-      const isOneToOneDM =
-        memberIds.length === 2 && memberIds.includes(currentUserId) && memberIds.includes(user.id);
-      return (
-        entry.room?.room?.kind === RoomKind.DM &&
-        entry.room.viewerState?.isMember &&
-        (isSelfDM || isOneToOneDM)
-      );
-    });
-  });
   function handleSendMessage() {
     onSendMessage?.();
     onClose?.();
@@ -167,13 +183,13 @@ keep the compact menu without a navigation action.
   {presentation}
   role="dialog"
   ariaLabel={m('chat.user_menu.profile')}
-  class="w-64"
+  class={audioParticipant ? 'w-72' : 'w-64'}
   onclose={() => onClose?.()}
 >
   <div class="flex items-center gap-3 menu-section p-3">
     <UserAvatar {user} size="md" />
     <div class="min-w-0 flex-1">
-      <div class="truncate font-semibold">{displayName}</div>
+      <AccountName name={displayName} identity={user} class="font-semibold" />
       <div class="truncate text-xs text-muted">@{getLiveLogin(user.id, user.login)}</div>
       <UserCustomStatusBadge status={customStatus} showText class="mt-1 max-w-full" />
     </div>
@@ -182,11 +198,21 @@ keep the compact menu without a navigation action.
   {#if bio || localTime}
     <div class="space-y-1 menu-section px-3 py-2">
       {#if bio}
-        <UserBio {bio} class="max-h-40 overflow-y-auto text-sm" />
+        <ScrollFader
+          top
+          bottom
+          fill={false}
+          fadeHeight="h-5"
+          scrollClass="max-h-40 overscroll-contain"
+          aria-label={m('settings.profile.bio.label')}
+          data-testid="user-menu-bio-scroll"
+        >
+          <UserBio {bio} class="text-sm" />
+        </ScrollFader>
       {/if}
       {#if timezone && localTime}
         <p class="flex items-center gap-1.5 text-sm text-muted">
-          <span class="iconify icon-[uil--clock-three] shrink-0"></span>
+          <span aria-hidden="true" class="iconify icon-[uil--clock-three] shrink-0"></span>
           <span>{localTime}</span>
           <span class="truncate" dir="ltr">({timezone})</span>
         </p>
@@ -195,7 +221,7 @@ keep the compact menu without a navigation action.
     <Interval milliseconds={60_000} ontick={() => (now = Date.now())} />
   {/if}
 
-  {#if canSendMessage || onOpenProfile || adminUserHref || canBanFromRoom}
+  {#if canSendMessage || onOpenProfile || manageBotHref || adminUserHref || canBanFromRoom}
     <MenuSection>
       {#if canSendMessage}
         <MenuItem icon="icon-[uil--comment-alt-message]" onclick={handleSendMessage}>
@@ -203,13 +229,18 @@ keep the compact menu without a navigation action.
         </MenuItem>
       {/if}
       {#if onOpenProfile}
-        <MenuItem
-          icon="icon-[uil--user]"
-          onclick={handleOpenProfile}
-          disabled={!canOpenProfile}
-          title={canOpenProfile ? undefined : m('chat.user_menu.profile_requires_direct_message')}
-        >
+        <MenuItem icon="icon-[uil--user]" onclick={handleOpenProfile}>
           {m('chat.user_menu.view_profile')}
+        </MenuItem>
+      {/if}
+      {#if manageBotHref}
+        <MenuItem
+          href={manageBotHref}
+          icon="icon-[uil--robot]"
+          onclick={() => onClose?.()}
+          dataTestid="manage-bot"
+        >
+          {m('chat.user_menu.manage_bot')}
         </MenuItem>
       {/if}
       {#if adminUserHref}
@@ -224,15 +255,24 @@ keep the compact menu without a navigation action.
       {/if}
       {#if canBanFromRoom}
         <MenuItem
-          icon="icon-[uil--ban]"
+          icon="icon-[uil--user-minus]"
           tone="danger"
           onclick={handleBanFromRoom}
           disabled={banningFromRoom}
         >
-          {banningFromRoom ? m('admin.moderation.banning') : m('admin.moderation.ban_action')}
+          {banningFromRoom ? m('admin.moderation.removing') : m('admin.moderation.remove_action')}
         </MenuItem>
       {/if}
     </MenuSection>
+  {/if}
+
+  {#if audioParticipant}
+    <ParticipantAudioControls
+      source={audioSource}
+      settings={voiceCall.getParticipantAudio(audioParticipant.identity)}
+      boostAvailable={voiceCall.audioBoostAvailable}
+      onVolumeChange={(source, value) => voiceCall.setParticipantVolume(user.id, source, value)}
+    />
   {/if}
 
   <MenuSection>

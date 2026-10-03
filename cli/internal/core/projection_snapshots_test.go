@@ -68,17 +68,17 @@ func TestProjectionSnapshotContractsIncludeCurrentSchema(t *testing.T) {
 	}{
 		{assetSnapshotContractID, "v3", &projectionv1.AssetProjectionSnapshot{}},
 		{callStateSnapshotContractID, "v1", &projectionv1.CallStateProjectionSnapshot{}},
-		{configSnapshotContractID, "v2", &projectionv1.ConfigProjectionSnapshot{}},
+		{configSnapshotContractID, "v3", &projectionv1.ConfigProjectionSnapshot{}},
 		{contentKeySnapshotContractID, "v1", &projectionv1.ContentKeyProjectionSnapshot{}},
 		{mentionablesSnapshotContractID, "v2", &projectionv1.MentionablesProjectionSnapshot{}},
 		{notificationDecisionSnapshotContractID, "v2", &projectionv1.NotificationDecisionProjectionSnapshot{}},
 		{notificationSnapshotContractID, "v2", &projectionv1.NotificationProjectionSnapshot{}},
-		{rbacSnapshotContractID, "v1", &projectionv1.RBACProjectionSnapshot{}},
+		{rbacSnapshotContractID, "v2", &projectionv1.RBACProjectionSnapshot{}},
 		{reactionSnapshotContractID, "v1", &projectionv1.ReactionProjectionSnapshot{}},
-		{roomDirectorySnapshotContractID, "v1", &projectionv1.RoomDirectoryProjectionSnapshot{}},
+		{roomDirectorySnapshotContractID, "v2", &projectionv1.RoomDirectoryProjectionSnapshot{}},
 		{roomGroupLayoutSnapshotContractID, "v1", &projectionv1.RoomGroupLayoutProjectionSnapshot{}},
-		{roomTimelineSnapshotContractID, "v7", &projectionv1.RoomTimelineProjectionSnapshot{}},
-		{threadSnapshotContractID, "v2", &projectionv1.ThreadProjectionSnapshot{}},
+		{roomTimelineSnapshotContractID, "v9", &projectionv1.RoomTimelineProjectionSnapshot{}},
+		{threadSnapshotContractID, "v3", &projectionv1.ThreadProjectionSnapshot{}},
 		{userSnapshotContractID, "v4", &projectionv1.UserProfileProjectionSnapshot{}},
 	}
 	for _, tt := range tests {
@@ -98,6 +98,8 @@ func TestPrivacyBoundaryProjectionContractsRejectPreRequestSnapshots(t *testing.
 		{roomTimelineSnapshotContractID, snapshotContractID("v5", &projectionv1.RoomTimelineProjectionSnapshot{})},
 		{roomTimelineSnapshotContractID, snapshotContractID("v6", &projectionv1.RoomTimelineProjectionSnapshot{})},
 		{threadSnapshotContractID, snapshotContractID("v1", &projectionv1.ThreadProjectionSnapshot{})},
+		{threadSnapshotContractID, snapshotContractID("v2", &projectionv1.ThreadProjectionSnapshot{})},
+		{rbacSnapshotContractID, snapshotContractID("v1", &projectionv1.RBACProjectionSnapshot{})},
 	}
 	for _, tt := range tests {
 		require.NotEqual(t, tt.old, tt.current)
@@ -289,6 +291,20 @@ func TestProjectionSnapshotsRoundTripTransactionally(t *testing.T) {
 			}
 			p.CompleteStartupReplay()
 		}},
+		{"threads", func() snapshotProjection { return NewThreadProjection() }, func(raw snapshotProjection) {
+			p := raw.(*ThreadProjection)
+			for i, event := range []*evtv1.Event{
+				{Id: "ROOM", Event: &evtv1.Event_RoomCreated{RoomCreated: &evtv1.RoomCreatedEvent{RoomId: "R1", Kind: evtv1.RoomKind_ROOM_KIND_CHANNEL}}},
+				postedEvent(postedOpts{envelopeID: "ROOT", roomID: "R1", actorID: "U1", at: 1}),
+				postedEvent(postedOpts{envelopeID: "REPLY", roomID: "R1", actorID: "U2", inThread: "ROOT", at: 2}),
+				threadFollowSnapshotTestEvent("FOLLOW", "R1", "ROOT", "U2", true),
+			} {
+				if err := p.Apply(event, uint64(38+i)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			p.CompleteStartupReplay()
+		}},
 		{"call_state", func() snapshotProjection { return NewCallStateProjection() }, func(raw snapshotProjection) {
 			p := raw.(*CallStateProjection)
 			p.roomSeq["R1"] = 41
@@ -310,10 +326,11 @@ func TestProjectionSnapshotsRoundTripTransactionally(t *testing.T) {
 		}},
 		{"reactions", func() snapshotProjection { return NewReactionProjection() }, func(raw snapshotProjection) {
 			p := raw.(*ReactionProjection)
-			p.byMessage["M1"] = map[string]map[string]reactionProjectionEntry{"+1": {"U1": {AddedAtNanos: now.UnixNano(), SourceEventID: "E-reaction"}}}
+			message := p.messages.intern("M1")
+			p.byMessage[message] = []reactionProjectionEntry{{addedAtNanos: now.UnixNano(), emoji: p.ids.intern("+1"), user: p.ids.intern("U1"), source: "E-reaction"}}
 			p.roomSeq["R1"] = 41
-			p.messageRoom["M1"] = "R1"
-			p.echoOriginal["M2"] = "M1"
+			p.messageRooms.set(message, p.ids.intern("R1"))
+			p.echoOriginal[p.messages.intern("M2")] = message
 			p.assetRoom["A1"] = "R1"
 			p.replayGuard.highestSeq = 41
 			p.replayGuard.completeReplay()
@@ -329,6 +346,7 @@ func TestProjectionSnapshotsRoundTripTransactionally(t *testing.T) {
 			p.roles["member"] = &evtv1.Role{Name: "member", DisplayName: "Member"}
 			p.assignments["U1"] = map[string]struct{}{"member": {}}
 			p.decisions[rbacDecisionKey{scope: ScopeServer, subjectKind: evtv1.RbacPermissionSubjectKind_RBAC_PERMISSION_SUBJECT_KIND_ROLE, subject: "member", permission: PermMessagePost}] = DecisionAllow
+			p.decisions[rbacDecisionKey{scope: ScopeDM, subjectKind: evtv1.RbacPermissionSubjectKind_RBAC_PERMISSION_SUBJECT_KIND_ROLE, subject: "member", permission: PermMessageRead}] = DecisionDeny
 			p.replayGuard.highestSeq = 41
 			p.replayGuard.completeReplay()
 		}},
@@ -345,10 +363,10 @@ func TestProjectionSnapshotsRoundTripTransactionally(t *testing.T) {
 	}
 
 	expectedContractPrefix := map[string]string{
-		"room_directory": "v1-", "server_config": "v2-", "room_group_layout": "v1-",
+		"room_directory": "v2-", "server_config": "v3-", "room_group_layout": "v1-",
 		"notification_decisions": "v2-", "notifications": "v2-",
-		"room_timeline": "v7-", "call_state": "v1-", "assets": "v3-", "reactions": "v1-",
-		"content_keys": "v1-", "rbac": "v1-", "mentionables": "v2-", "users": "v4-",
+		"room_timeline": "v9-", "threads": "v3-", "call_state": "v1-", "assets": "v3-", "reactions": "v1-",
+		"content_keys": "v1-", "rbac": "v2-", "mentionables": "v2-", "users": "v4-",
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

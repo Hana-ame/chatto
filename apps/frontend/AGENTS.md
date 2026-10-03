@@ -6,28 +6,59 @@ and Storybook.
 
 ## Svelte Tooling
 
-- For Svelte questions or edits, use the available Svelte documentation and MCP
-  workflow.
-- When you write or edit `.svelte`, `.svelte.ts`, or `.svelte.js`, run the
-  Svelte autofixer before you return the code.
-- Do not generate a Svelte playground link for code written into this repo.
+Use [svelte-code-writer](../../.agents/skills/svelte-code-writer/SKILL.md) for
+Svelte documentation and code checks. It links to the shared Svelte patterns.
+The rules below add frontend-specific requirements.
+
+Do not generate playground links for code written into this repository.
 
 ## Architecture
 
 - Prefer store classes and small components. Stores own the data lifecycle.
   Components render state and call named store methods.
-- Server-scoped state belongs in `ServerStateStore` or related per-server
-  stores under `src/lib/state/server/`.
+- Server data lives in `@chatto/client` (`packages/chatto-client/`):
+  connections, sessions, the realtime projection, and the server and room
+  data. Follow [its instructions](../../packages/chatto-client/AGENTS.md) when
+  you change it. Import its modules as `@chatto/client/<path>`. Put generic
+  client behavior there, also when only this frontend uses it now. Do not
+  implement client behavior again in `$lib`. The root
+  [AGENTS.md](../../AGENTS.md#chatto-client-and-bundled-frontend) has the
+  rule (ADR-111).
+  `$lib/client` creates the frontend's one client and exports it with its
+  parts: `serverRegistry`, `serverConnectionManager`, and `eventBusManager`.
+  Import them from there. The frontend's server catalogue policy, such as
+  origin discovery, the Server Directory join, and the choice of a server to
+  show, lives in `$lib/serverCatalogue` on top of the registry (ADR-112).
+  Each client read in a `$derived`, `$effect`, or template creates a small
+  Svelte render effect; read a store value once before a loop.
+- The frontend keeps UI state, Svelte context, routing, translated text,
+  toasts, sounds, and the LiveKit voice-call implementation. Per-server UI
+  state, such as navigation, notification attention, search sessions, and the
+  voice call, lives in `serverUi(store)` (`$lib/state/server/serverUi`).
+  Derive it from the store where you can. A copy of server data is the
+  frontend's to clear: subscribe it to the store's boundary events
+  (`onReset`, `onRoomAccessLost`, `onUserDeleted`, and the others in
+  `@chatto/client/server/storeEvents`). Client stores keep error objects;
+  format them with `errorMessage()` where you show them.
 - Component-local `$state` is fine for UI-only state such as open/closed, hover,
   focus, draft text, and drag position.
-- Component render DTOs live in focused modules under `$lib/render`; keep them
-  narrow and normalize generated protobuf data at API boundaries.
+- Component render DTOs live in focused modules under `$lib/render`, or under
+  `@chatto/client/timeline` when client stores produce them; keep them narrow
+  and normalize generated protobuf data at API boundaries.
 - The URL is the source of truth for the active server. Pass explicit `serverId`
   values through helpers rather than relying on a global current server.
 - Descendants of a `[serverId]` route should obtain that server's store and
   connection from `ServerScope`. Reserve `serverRegistry` for providers and
   genuinely cross-server surfaces, and pass explicit server or viewer identity
   into reusable render components.
+- A `ServerScope` does not change while its subtree is mounted. A change of
+  server, account, or session remounts the subtree with a new scope. Read
+  `serverId`, `connection`, and `connection.queryScope` as constants: do not
+  wrap them in `$derived`, and do not fence async work against a server or
+  session change. Use `createSessionGuard` for privacy resets inside a session,
+  and tag async state with the route IDs below the server. Specs must not
+  switch the server or session of a mounted scope; render a new component
+  instead.
 - Use Svelte `createContext` for context APIs, and prefer context over mutable
   singletons for URL-derived state.
 - Reusable leaf render components, especially timeline rows, must not acquire
@@ -50,9 +81,6 @@ and Storybook.
 
 ## Svelte 5 Rules
 
-- Use runes and Svelte 5 idioms; no legacy reactive statements.
-- Avoid `$effect` unless synchronizing with DOM, subscriptions, timers, network
-  calls, or other external systems. Use `$derived` for computed state.
 - Choose the smallest lifecycle owner for reusable browser and DOM behavior:
   use a Svelte attachment when behavior belongs to one element; use a mountable,
   possibly headless component when behavior should follow conditional rendering
@@ -77,13 +105,13 @@ and Storybook.
   `<!-- @component ... -->` comment. JSDoc inside `<script>` documents the
   adjacent JavaScript declaration, not the component itself.
 - Use `Snippet<[Args]>` for reusable layout/render snippets.
-- Prefer attachments (`{@attach}`) over legacy actions for new reusable DOM
-  behavior.
-- Prefer Svelte template event attributes such as `onclick` and `onpointerdown`
-  for component-owned DOM event handling. Use `<svelte:window>` and
-  `<svelte:document>` for component-owned handlers on those global targets.
-  Reserve imperative event listeners for reusable actions, attachments,
-  subscriptions, and third-party libraries.
+- Reserve imperative event listeners for reusable attachments, subscriptions,
+  and external libraries. Use the shared Svelte event patterns in components.
+- Svelte delegates events such as `click` to the application root. When an
+  attachment's DOM listener must see the result of Svelte handlers on its
+  descendants, for example `defaultPrevented` or `stopPropagation`, register it
+  with `on` from `svelte/events`. A plain `addEventListener` runs before those
+  handlers.
 
 ## Routing And Navigation
 
@@ -96,12 +124,14 @@ and Storybook.
 
 ## ConnectRPC And Generated Types
 
-- Use the per-server compatibility state under `src/lib/state/server/` for
-  feature gating and version-skew warnings. Record each gated feature's minimum
-  server version in the shared compatibility table. Do not conflate versioned
-  protocol support with enabled server features or viewer permissions.
+- Use the per-server compatibility state in `@chatto/client/server/compatibility` for
+  version-skew warnings and the supported-version check. The client has one
+  `MINIMUM_SUPPORTED_SERVER_VERSION` and does not gate individual features by
+  server version. When the client needs a newer server feature, raise the
+  minimum instead of adding a per-feature gate (FDR-031). Do not conflate
+  version support with enabled server features or viewer permissions.
 - Use the app's connection surface from
-  `$lib/state/server/serverConnection.svelte.ts` for Connect base URLs,
+  `@chatto/client/server/serverConnection` for Connect base URLs,
   `/api/realtime` URLs, bearer tokens, auth-required handling, and
   reconnect/status UI state.
 - Keep the known-server catalogue and per-server sessions device-local and as
@@ -117,11 +147,20 @@ and Storybook.
   metadata write replace them from a whole-registry in-memory snapshot; merge
   authoritative security fields at compatibility-adapter boundaries.
 - Treat an intentionally dormant inactive-server transport as healthy retained
-  state, not as a failed connection. Only actual transport/auth/protocol
-  failures should dim its server-gutter entry.
-- `$lib/render/timelineEvents` contains the hand-owned timeline presentation
-  model; transient realtime signals belong in `$lib/realtimeEvents`. Do not
-  combine the two delivery paths or add calls for the retired legacy API.
+  state, not as a failed connection. A server-gutter icon has two states,
+  normal and warning. Only a failed attempt (transport, auth, protocol, or
+  compatibility) shows the warning, and only a successful attempt removes it.
+  Connection attempts in progress do not change the state (FDR-031).
+- `@chatto/client/timeline/timelineEvents` contains the hand-owned timeline presentation
+  model. Realtime handlers consume the generated public `RealtimeEvent`
+  catalogue directly. Do not add a second frontend event taxonomy or calls for
+  the retired legacy API.
+- Show a failed operation to users with `errorMessage()` or `toastError()` from
+  `$lib/utils/errorMessage`, and pass a localized fallback for the operation.
+  The helper localizes access, network, and conflict errors, shows server text
+  only for validation and limit errors, and hides discarded stale responses.
+  ESLint rejects inline `error instanceof Error ? error.message : ...`
+  conversions.
 - Query permissions/capability hints from the backend instead of duplicating
   authorization rules in UI code.
 - Public ConnectRPC/protobuf clients live in the workspace package
@@ -154,10 +193,27 @@ and Storybook.
   smoothing such as Tailwind `antialiased`, `-webkit-font-smoothing`, or
   `-moz-osx-font-smoothing`.
 - Clickable controls need `cursor-pointer`.
+- Use only colour tokens that `src/app.css` defines. Tailwind silently drops
+  unknown utilities such as `bg-elevated` or `text-foreground`. Logical corner
+  utilities are `rounded-ss`, `rounded-se`, `rounded-es`, and `rounded-ee`.
+- Hide decorative Iconify spans with `aria-hidden="true"`. An icon that alone
+  carries meaning needs `role="img"` and an `aria-label`; a `title` alone is not
+  an accessible name.
+- Give toggle buttons a stable accessible name and express their state with
+  `aria-pressed`, rather than switching the label between two actions.
+- Every `svelte-ignore a11y_*` comment needs a separate comment directly above
+  it that states why the element stays accessible.
+- Render loading, empty, and error states inside the panel or list area that
+  they replace, with `LoadingFog`, `EmptyState`, and `Hint`. Do not leave a
+  blank area while the first page loads.
 - Do not use `{@html}` directly in feature components. Render trusted markdown
   HTML through `$lib/ui/MarkdownHtml.svelte`, which is the reviewed exception.
 - Use `<SkeletonImg>` instead of `<img class="skeleton">`.
 - Use `link` for inline links, not a hand-built `text-action` treatment.
+- Make a table row navigable with a real `data-table-row-link` in the row, as
+  `DataTable` documents. Do not put click handlers on rows or cells, and do not
+  stretch a link over a row with an absolutely positioned pseudo-element: Safari
+  does not use a positioned table row as its containing block.
 - Flex children with truncation or fixed-width media usually need `min-w-0`.
 - Prefer native browser scrolling for scrollable regions and galleries; do not
   intercept wheel, touch, or pointer scrolling unless the interaction is
@@ -181,6 +237,10 @@ and Storybook.
   popovers avoid clipping/stacking issues.
 - Use established `.menu`, `menu-section`, `btn`, dialog, toast, and chat overlay
   patterns before inventing new floating styles.
+- Render a popover or picker that belongs to an open modal inside that modal.
+  Content outside an open modal dialog is inert, so a popover rendered there
+  does not accept pointer or keyboard input. In a `FormDialog`, use the
+  `overlays` snippet.
 - When an element supports both right-click actions and touch long-press
   actions, suppress touch-synthesized `contextmenu` events while the long-press
   gesture is active so only one action surface opens.
@@ -194,6 +254,19 @@ and Storybook.
   Locale identifiers use BCP 47 tags such as `en-GB`. Follow ADR-065.
 - German translations, including regional overlays, must address users with
   the informal `du`/`dein` forms rather than the formal `Sie`/`Ihr` forms.
+- Use the form of address that each complete locale already uses:
+  - Informal: Spanish (`tú`), Italian (`tu`), Polish (`ty`), Dutch (`je`),
+    Swedish and Norwegian (`du`), Brazilian Portuguese (`você`), and Chinese
+    (`你`).
+  - Formal: French (`vous`), Czech (`vy`), Russian (`вы`), Ukrainian (`ви`),
+    Estonian (`teie`), Latvian (`jūs`), Turkish (`-in` imperatives), and
+    European Portuguese (third person without `você`).
+  - Japanese uses polite `です`/`ます` forms. Arabic and Hebrew use the
+    masculine singular imperative. Esperanto uses `vi`.
+- `catalogs.spec.ts` fails when a complete locale copies British English text
+  with two or more words. Translate the message. If the identical text is
+  correct in that locale, add the key and locale to
+  `src/lib/i18n/identicalTranslations.ts`.
 - Import product messages from `$lib/i18n/messages`; keep the framework-neutral
   JSON runtime in `packages/lingua` free of Chatto-specific catalogs and policy.
 - Catalogs are ordinary nested JSON and require no compilation. The British
@@ -213,7 +286,9 @@ and Storybook.
   `ms`/`me`, and `text-start`/`text-end`) when an edge follows reading
   direction. Keep physical left/right positioning only for coordinates,
   centring, media controls, and other deliberately physical behavior.
-- Mirror directional icons and horizontal gestures in RTL. Isolate
+- Mirror directional icons and horizontal gestures in RTL. Arrows, chevrons,
+  door arrows such as sign-in and sign-out, and undo and redo are directional:
+  add `rtl:-scale-x-100`, or set `mirrorIconInRtl` on `MenuItem`. Isolate
   user-authored names and message content with `bdi`, `dir="auto"`, or an
   equivalent bidi boundary; keep code, identifiers, and URLs deliberately LTR
   where their syntax requires it.
@@ -231,8 +306,9 @@ and Storybook.
   share the standard pane-page composition. Put their content in `PaneContent`
   and frame each page-level form or control group with a titled, padded `Panel`;
   use `FormSection` only to subdivide one panel, never instead of its frame.
-- SvelteKit reuses resource pages when only a route parameter changes. Fence
-  async loads and saves by both resource ID and load generation so late
+- SvelteKit reuses resource pages when only a route parameter below the server
+  changes. Tag async loads and saves with the resource ID, and add a load
+  generation only when two loads for the same resource can race, so late
   responses cannot update the next resource's form state.
 - Send sparse patches from settings forms: omit unchanged fields so stale form
   values cannot overwrite concurrent updates or emit misleading durable facts.
@@ -256,14 +332,20 @@ and Storybook.
 
 - When adapting canonical users or members for avatar-bearing UI, preserve
   identity fields such as `isBot`; prefer the shared `UserAvatar` and
-  `UserAvatarUserView` shapes over surface-local copies.
+  `UserAvatarUserView` shapes over surface-local copies. Read a server's user
+  profiles through `UserStore.view(id)`, which converts each stored profile once
+  and shares the result; do not map or copy stored profiles per render.
 
 - Use automatic "load more" pagination when a scroll/container edge is reached.
-- Use TanStack Query for snapshot-style ConnectRPC reads. Scope private query
-  keys by server and connection session, keep the cache memory-only, and purge
-  it at authentication and privacy boundaries. Keep realtime projections,
-  timelines, notifications, presence, calls, and message search in their
-  owning per-server stores; see ADR-062.
+- Use TanStack Query for snapshot-style ConnectRPC reads. Import
+  `createQuery`, `createInfiniteQuery`, and `createMutation` from
+  `$lib/query/client`, which binds them to the shared client in
+  `$lib/query/queryClient`. Scope private query
+  keys by server and connection session, and keep the cache memory-only.
+  `connectQueryCaches` in `$lib/query/cacheRegistry` purges it at the
+  store's authentication and privacy boundaries. Keep realtime projections,
+  timelines, notifications, and presence in the client's per-server stores,
+  and calls and message search in `serverUi`; see ADR-062.
 - Use event-driven updates from the per-server event bus and explicit projected
   refetches rather than assuming a normalized client cache.
 - When a snapshot query also reconciles a realtime-owned store, do not replay a
@@ -274,12 +356,17 @@ and Storybook.
   updates during first hydration instead of restarting it, fence and retry
   stale append reads, and version per-resource async refreshes so older
   responses cannot restore deleted or superseded data.
-- Keep a realtime resume cursor RAM-only and owned by the exact per-server
-  projection it advances. Socket teardown must not discard either one, and a
-  recreated projection must resume without a cursor so it receives a reset.
-- Treat undecodable realtime frames and unknown projection operations as fatal
-  for that socket. Validate each projection event before mutation and never
-  advance a cursor across input the reducer did not fully understand.
+- Keep the realtime resume cursor owned by the exact per-server projection it
+  advances. Socket teardown must not discard the retained projection or its
+  cursor.
+- Do not store chat data on the device. Projections, timelines, member lists,
+  notification state, and the resume cursor exist only in memory, so a page
+  load starts without a cursor and receives a fresh snapshot. Device storage
+  holds only the server catalogue, authentication records, and UI preferences.
+  See [ADR-107](../../docs/adr/ADR-107-keep-chat-data-out-of-device-storage.md).
+- Treat undecodable realtime frames and unknown top-level frames as fatal for
+  that socket. Protocol 4 makes additive semantic event variants
+  skippable because the common cursor stays outside the event `oneof`.
 - Treat authorization loss, message deletion, key shredding, and account
   deletion as asynchronous privacy boundaries. Clearing current render state
   is insufficient: invalidate or fence older reads and optimistic rollbacks,
@@ -295,6 +382,13 @@ and Storybook.
 ## Testing
 
 - Review visible frontend changes in a browser using Chrome DevTools MCP.
+- `mise dev` creates development bootstrap users. Sign in as `alice` (server
+  owner) or `bob` with the password `foobar123`. The `dev-stack-backend` task
+  in the root `mise.toml` defines these users.
+- Format every frontend file that you change with Prettier. Claude Code and
+  Codex hooks format each file after an edit. If you change files in a different
+  way, run `mise x -- pnpm exec prettier --write <paths>` from the repository
+  root before you finish.
 - Do not run frontend checks, tests, builds, or other commands that invoke
   SvelteKit sync concurrently in the same checkout. They share generated
   `.svelte-kit` state and can produce transient missing-type failures.
@@ -311,7 +405,23 @@ and Storybook.
 - Keep debounce assertions independent of browser-suite scheduling: use fake
   timers or dispatch the complete input value synchronously instead of timing
   multi-keystroke `userEvent.type` calls against the production delay.
+- Before you change the classes or markup of a shared component or utility,
+  search all specs, including route and e2e specs, for the old class names,
+  test IDs, and labels. Specs of other components often assert on them.
+- Hover styles only apply where `(hover: hover)` matches, and the headless
+  browser in CI reports no hover support. Test hover styles with
+  `it.skipIf(!matchMedia('(hover: hover)').matches)`, and test keyboard focus
+  styles without that condition.
+- Pin the clock with `vi.useFakeTimers({ toFake: ['Date'] })` and
+  `vi.setSystemTime` in tests that group or label dates, such as Today,
+  Yesterday, or a month. Relative instants such as "now minus 24 hours" land on
+  the wrong calendar day around daylight-saving changes. Restore real timers in
+  `afterEach`.
 - E2E is for real backend/NATS/WebSocket/multi-user/cross-route behavior.
+- A cold `page.goto` or `page.reload` starts without a resume cursor and loads
+  fresh data from the server. To test resume or catch-up behavior, keep the
+  page loaded and force a reconnect, for example by closing the socket from a
+  `page.routeWebSocket` handler (see `e2e/early-commands.test.ts`).
 - Page objects that open a canonical entry route must model its actual landing
   page. If a method promises a child page, first open the entry route, then
   select and wait for that child page. When an entry route changes, inspect all
@@ -320,6 +430,36 @@ and Storybook.
   authenticated remote server with an anonymous origin server.
 - Use helpers from `$lib/test-utils` rather than re-rolling connection/context
   mocks.
+- Test code that calls the ConnectRPC API against an in-memory fake server
+  rather than mocking `@connectrpc/connect`, `@connectrpc/connect-web`, or an
+  API module. `fakeServer(routes)` gives an API config for an API factory, and
+  `createTestServerScope({ routes })` serves a component. Register handlers from
+  `mockService(Service)`: they keep the method types, so wrong fixture shapes
+  fail type checking, while the real client, interceptors, and mapping run.
+  Assert on `receivedRequest(handler)` and `receivedContext(handler)` (headers,
+  timeout). Test cancellation with `AbortSignal.abort()` and expect
+  `Code.Canceled`. Throw a `ConnectError` from a handler to test an error.
+- To replace parts of the frontend client in a spec, mock `$lib/client` and
+  spread `clientMockDefaults` from `$lib/test-utils/clientMock` first, so the
+  mocked module keeps every export. Do not import the original module in the
+  mock factory: in browser specs, that import can hang.
+- Mock the `/chat/[serverId]` scope with `createTestServerScope` from
+  `$lib/test-utils/serverScope.svelte`. Replace the scope module with the
+  `serverScopeModule` of that file, call `createTestServerScope` in
+  `beforeEach`, and change the fixture's state in tests. Do not write a new
+  `useServerScope` mock by hand. The fixture's store also serves as its
+  `serverUi` state; add fake UI members, such as `voiceCall`, with the `ui`
+  option. A spec with a hand-written store mock replaces
+  `$lib/state/server/serverUi` with `serverUiIsStore` from
+  `$lib/test-utils/serverUiMock`.
+- `vitest-setup-client.ts` imports `@chatto/client/svelte` and
+  `$lib/query/client` before each browser spec. Because of this, `vi.mock` of
+  `$lib/query/client`, `$lib/query/queryClient`, or
+  `@tanstack/svelte-query` in a browser spec has no effect. Keep the setup
+  imports small: a module that the setup file imports cannot be mocked by a
+  spec. Test against the
+  real `queryClient`: control the reads through the mocked API, and let the
+  setup file clear the cache after each test.
 - Use `expect.element(...)` for DOM assertions and flush after Svelte state
   mutations when needed.
 - For focused component tests, filter to the relevant test instead of initially
@@ -384,8 +524,10 @@ mise test-e2e
   German, plus US English overrides where wording differs.
 - The app preview uses Chatto tokens; do not retint Storybook manager/docs chrome.
 - Route accessibility coverage lives in `e2e/accessibility.test.ts`. Keep its
-  representative public, authenticated, mobile, admin, and dialog scans free of
-  blanket axe exclusions.
+  representative public, authenticated, mobile, admin, overlay, right-to-left,
+  and call scans free of blanket axe exclusions. Add a scan when you add a page
+  or overlay. Overlay scans include only the overlay, because an open overlay
+  can cover page controls that another scan covers.
 
 ## PWA And Assets
 

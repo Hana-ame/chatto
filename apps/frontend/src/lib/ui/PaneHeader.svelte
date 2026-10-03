@@ -23,32 +23,62 @@ Use `backHref` for navigation-style "back to parent route" affordances
 / overlay" affordances (renders a button). Exactly one of the two should
 be set; if both are passed the button wins (it's the more deliberate
 choice).
+
+Pass a `TabNav` in the `tabs` snippet when the pane shows one section of a
+resource with several routed sections. The tabs sit before the actions, like
+the room sidebar toggles, and the header becomes the `pane-header` size
+container that switches the tabs between labelled and icon-only forms.
+
+Inside a `pane-page`, the header row stops at the width of the `PaneContent`
+column, so end-side tabs and actions stay next to the content on wide screens.
+The bottom border still spans the pane. Elsewhere the row fills the pane.
+
+Set `collapseActions` to put actions behind a three-dot button below 32 rem
+of pane width. `collapsedActions` can keep important actions visible in that
+state. Expansion stays inside the header and lets the title truncate.
+
+Set `hideOnKeyboard` to remove the header from the mobile layout while the
+shared viewport detector reports an open software keyboard.
 -->
 <script lang="ts">
   /* eslint-disable svelte/no-navigation-without-resolve -- backHref is a prop; callers pass already-resolved paths or non-route hrefs */
   import type { Snippet } from 'svelte';
   import { m } from '$lib/i18n/messages';
-  import PaneHeaderSkeleton from './PaneHeaderSkeleton.svelte';
 
   let {
     title,
+    titleContent,
     subtitle,
-    loading = false,
-    skeletonButtons = 3,
+    subtitleContent,
     afterTitle,
+    tabs,
     actions,
+    collapseActions = false,
+    hideOnKeyboard = false,
+    collapsedActions,
+    actionsLabel = m('ui.pane_header.actions'),
     backHref,
     onBack,
-    backLabel = m('ui.pane_header.back'),
-    // Deprecated: showMobileNav is no longer used since hamburger menu is always visible
-    showMobileNav: _showMobileNav = false
+    backLabel = m('ui.pane_header.back')
   }: {
     title: string;
+    /** Rich visual title; keep title as its plain-text equivalent. */
+    titleContent?: Snippet;
     subtitle?: string;
-    loading?: boolean;
-    skeletonButtons?: number;
+    /** Rich visual subtitle; keep subtitle as its plain-text equivalent. */
+    subtitleContent?: Snippet;
     afterTitle?: Snippet;
+    /** Section navigation, normally a `TabNav`, shown before the actions. */
+    tabs?: Snippet;
     actions?: Snippet;
+    /** Collapse actions below 32 rem of pane width. Expand them beside the title. */
+    collapseActions?: boolean;
+    /** Hide in narrow touch-capable windows while the software keyboard is detected. */
+    hideOnKeyboard?: boolean;
+    /** Important actions to show instead of the full list while collapsed. */
+    collapsedActions?: Snippet;
+    /** Accessible label for the action disclosure button. */
+    actionsLabel?: string;
     /**
      * Render a direction-aware back link before the title. Use for detail
      * pages so callers don't have to stuff a full secondary <Button>
@@ -63,66 +93,133 @@ choice).
     onBack?: (event: MouseEvent) => void;
     /** Title attribute / aria-label for the back affordance. */
     backLabel?: string;
-    showMobileNav?: boolean;
   } = $props();
 
   const hasBack = $derived(onBack !== undefined || backHref !== undefined);
+  const actionsId = $props.id();
+  let actionsExpanded = $state(false);
+  let actionsButton = $state<HTMLButtonElement>();
+
+  function handleEscape(event: KeyboardEvent) {
+    if (
+      event.key !== 'Escape' ||
+      event.defaultPrevented ||
+      !actionsExpanded ||
+      !actionsButton?.getClientRects().length ||
+      actionsButton.closest('[inert]')
+    ) {
+      return;
+    }
+
+    event.preventDefault();
+    actionsExpanded = false;
+    actionsButton.focus();
+  }
 </script>
+
+<svelte:window onkeydown={handleEscape} />
 
 <div
   class={[
-    'flex h-14 shrink-0 items-center justify-between border-b border-border pe-2',
-    hasBack ? 'ps-2' : 'ps-4'
+    'shrink-0 border-b border-border',
+    (collapseActions || tabs) && '@container/pane-header',
+    hideOnKeyboard && 'keyboard-hide-mobile'
   ]}
 >
-  <div class={['flex min-w-0 flex-1 items-center', hasBack ? 'gap-2' : 'gap-3']}>
-    {#if onBack}
-      <button
-        type="button"
-        class="group/pane-header-icon-button pane-header-icon-button"
-        onclick={onBack}
-        title={backLabel}
-        aria-label={backLabel}
-      >
-        <span
-          class="icon-[uil--arrow-left] pane-header-icon-glyph text-xl rtl:-scale-x-100"
-          aria-hidden="true"
-        ></span>
-      </button>
-    {:else if backHref}
-      <a
-        href={backHref}
-        class="group/pane-header-icon-button pane-header-icon-button"
-        title={backLabel}
-        aria-label={backLabel}
-      >
-        <span
-          class="icon-[uil--arrow-left] pane-header-icon-glyph text-xl rtl:-scale-x-100"
-          aria-hidden="true"
-        ></span>
-      </a>
-    {/if}
-    <div class="flex min-w-0 flex-1 flex-col gap-1 md:flex-row md:items-baseline md:gap-3">
-      {#if loading}
-        <PaneHeaderSkeleton buttons={skeletonButtons} />
-      {:else}
-        <div class="flex min-w-0 items-baseline gap-3">
-          <h1 class="truncate font-black"><bdi>{title}</bdi></h1>
+  <div
+    data-page-reveal
+    class={[
+      'flex h-14 max-w-(--pane-header-max-width) shrink-0 items-center justify-between pe-2',
+      hasBack ? 'ps-2' : 'ps-4'
+    ]}
+  >
+    <div class={['flex min-w-0 flex-1 items-center', hasBack ? 'gap-2' : 'gap-3']}>
+      {#if onBack}
+        <button
+          type="button"
+          class="pane-header-icon-button"
+          onclick={onBack}
+          title={backLabel}
+          aria-label={backLabel}
+        >
+          <span
+            class="icon-[uil--arrow-left] pane-header-icon-glyph text-xl rtl:-scale-x-100"
+            aria-hidden="true"
+          ></span>
+        </button>
+      {:else if backHref}
+        <a href={backHref} class="pane-header-icon-button" title={backLabel} aria-label={backLabel}>
+          <span
+            class="icon-[uil--arrow-left] pane-header-icon-glyph text-xl rtl:-scale-x-100"
+            aria-hidden="true"
+          ></span>
+        </a>
+      {/if}
+      <div class="flex min-w-0 flex-1 flex-col gap-1 md:flex-row md:items-baseline md:gap-3">
+        <!-- The subtitle shrinks first. The title truncates only when it alone fills the row. -->
+        <div class="flex max-w-full min-w-0 shrink-0 items-baseline gap-3">
+          {#if title || titleContent}
+            <h1 class="min-w-0 font-black">
+              {#if titleContent}{@render titleContent()}{:else}<bdi class="block truncate"
+                  >{title}</bdi
+                >{/if}
+            </h1>
+          {/if}
           {#if afterTitle}
             <div class="shrink-0">
               {@render afterTitle()}
             </div>
           {/if}
         </div>
-      {/if}
-      {#if subtitle}
-        <span class="hidden truncate text-sm text-muted md:inline">{subtitle}</span>
-      {/if}
+        {#if subtitle}
+          <span class="hidden min-w-0 text-sm text-muted md:inline"
+            >{#if subtitleContent}{@render subtitleContent()}{:else}<span class="block truncate"
+                >{subtitle}</span
+              >{/if}</span
+          >
+        {/if}
+      </div>
     </div>
+    {#if tabs}
+      <div class="flex shrink-0 items-center">
+        {@render tabs()}
+      </div>
+    {/if}
+    {#if actions}
+      <div class="flex shrink-0 items-center">
+        <div
+          id={actionsId}
+          class={[
+            'items-center',
+            collapseActions
+              ? [
+                  '@min-[32rem]/pane-header:flex @min-[32rem]/pane-header:gap-2',
+                  actionsExpanded ? 'flex' : 'hidden'
+                ]
+              : 'flex gap-2'
+          ]}
+        >
+          {@render actions()}
+        </div>
+        {#if collapseActions}
+          {#if !actionsExpanded && collapsedActions}
+            <div class="flex items-center @min-[32rem]/pane-header:hidden">
+              {@render collapsedActions()}
+            </div>
+          {/if}
+          <button
+            bind:this={actionsButton}
+            type="button"
+            class="pane-header-icon-button @min-[32rem]/pane-header:hidden"
+            aria-label={actionsLabel}
+            aria-expanded={actionsExpanded}
+            aria-controls={actionsId}
+            onclick={() => (actionsExpanded = !actionsExpanded)}
+          >
+            <span class="icon-[uil--ellipsis-v] pane-header-icon-glyph" aria-hidden="true"></span>
+          </button>
+        {/if}
+      </div>
+    {/if}
   </div>
-  {#if actions}
-    <div class="flex items-center gap-2">
-      {@render actions()}
-    </div>
-  {/if}
 </div>

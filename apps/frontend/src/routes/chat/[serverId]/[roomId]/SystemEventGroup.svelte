@@ -1,6 +1,7 @@
 <script lang="ts">
-  import type { TimelineEventView } from '$lib/render/timelineEvents';
-  import type { UserAvatarUserView } from '$lib/render/users';
+  import AccountName from '$lib/components/users/AccountName.svelte';
+  import type { TimelineEventView } from '@chatto/client/timeline/timelineEvents';
+  import type { UserAvatarUserView } from '@chatto/client/timeline/users';
   import type { SystemGroupKind } from './virtualItems';
   import UserAvatar from '$lib/components/UserAvatar.svelte';
   import { getLiveDisplayName } from '$lib/state/userProfiles.svelte';
@@ -74,7 +75,7 @@
 </script>
 
 {#snippet actorName(actor: Actor)}
-  <bdi>{actor.name}</bdi>
+  <AccountName name={actor.name} identity={actor.user} />
 {/snippet}
 
 {#snippet actorNames(items: Actor[])}
@@ -91,7 +92,11 @@
 {/snippet}
 
 {#if actors.length > 0}
-  <div class="mt-4 flex items-center gap-4 px-2 md:px-4" data-event-id={events[0].id}>
+  <div
+    class="mt-4 flex items-center gap-4 px-2 desktop-presentation:px-4"
+    data-event-id={events[0].id}
+    data-testid="system-event-group"
+  >
     <!-- Avatar column (w-11 matches MessageEvent avatar width) -->
     <div class="flex w-11 shrink-0 items-center justify-center">
       <div class="flex -space-x-1.5">

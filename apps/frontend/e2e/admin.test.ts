@@ -4,6 +4,7 @@ import { AdminPage, ChatPage } from './pages';
 import * as routes from './routes';
 import { TIMEOUTS } from './constants';
 import {
+  activatePrivilegedMode,
   createAndLoginTestUser,
   generateRoleName,
   loginAsAdmin,
@@ -86,12 +87,12 @@ async function createRoleViaConnect(
 }
 
 async function deleteRoleViaConnect(page: Page, name: string): Promise<void> {
-  const data = await connectPost<{ deleted?: boolean }>(
+  const data = await connectPost<Record<string, never>>(
     page,
     'chatto.admin.v1.AdminRoleService/DeleteRole',
     { name }
   );
-  expect(data.deleted).toBe(true);
+  expect(data).toEqual({});
 }
 
 async function getRoleViaConnect(
@@ -132,15 +133,16 @@ async function setRolePermissionViaConnect(
 
 async function updateOwnProfileViaConnect(
   page: Page,
+  userId: string,
   input: { login?: string; displayName?: string }
 ): Promise<{ login?: string; displayName?: string }> {
   const data = await connectPost<{ user?: { login?: string; displayName?: string } }>(
     page,
-    'chatto.api.v1.MyAccountService/UpdateProfile',
-    input
+    'chatto.api.v1.UserService/UpdateUserProfile',
+    { userId, ...input }
   );
   if (!data.user) {
-    throw new Error(`UpdateProfile did not return a user: ${JSON.stringify(data)}`);
+    throw new Error(`UpdateUserProfile did not return a user: ${JSON.stringify(data)}`);
   }
   return data.user;
 }
@@ -243,7 +245,6 @@ test.describe('Admin Users Page', () => {
     // Should see the total count
     await adminPage.expectUserCountVisible();
   });
-
 });
 
 test.describe('Admin System Page', () => {
@@ -264,12 +265,18 @@ test.describe('Admin System Page', () => {
 });
 
 test.describe('Admin Navigation', () => {
-  test('sidebar Settings entry opens Appearance', async ({ page, adminPage }) => {
+  test('app-frame Settings gear opens Appearance without a sidebar Settings link', async ({
+    page,
+    adminPage
+  }) => {
     await createAndLoginAdminUser(page);
 
     await page.goto(routes.chat);
 
     await adminPage.expectSettingsLinkVisible();
+    await expect(
+      page.getByTestId('server-sidebar').getByRole('link', { name: 'Settings', exact: true })
+    ).toHaveCount(0);
     await expect(adminPage.settingsLink).toHaveAttribute('href', routes.settingsRoot);
     await adminPage.navigateToSettings();
     await expect(page.getByRole('heading', { name: 'Appearance' })).toBeVisible();
@@ -344,15 +351,20 @@ test.describe('Admin Granular Permissions', () => {
     await createAndLoginAdminUser(page);
     await grantPermission(page, 'everyone', 'admin.view-users');
 
-    await withRegularAdminPage(browser, serverURL, async ({ adminPage: regularAdminPage }) => {
-      await regularAdminPage.gotoUsers();
+    await withRegularAdminPage(
+      browser,
+      serverURL,
+      async ({ page: regularPage, adminPage: regularAdminPage }) => {
+        await activatePrivilegedMode(regularPage);
+        await regularAdminPage.gotoUsers();
 
-      // Should see the permitted section (not access denied) and the dedicated
-      // admin sidebar should only expose their allowed links.
-      await regularAdminPage.expectUsersPageVisible();
-      await regularAdminPage.expectSidebarLinkVisible('Users');
-      await regularAdminPage.expectSidebarLinkActive('Users');
-    });
+        // Should see the permitted section (not access denied) and the dedicated
+        // admin sidebar should only expose their allowed links.
+        await regularAdminPage.expectUsersPageVisible();
+        await regularAdminPage.expectSidebarLinkVisible('Users');
+        await regularAdminPage.expectSidebarLinkActive('Users');
+      }
+    );
 
     // Clean up: revoke the permission
     await revokePermission(page, 'everyone', 'admin.view-users');
@@ -368,6 +380,7 @@ test.describe('Admin Granular Permissions', () => {
     await grantPermission(page, 'everyone', 'room.manage');
 
     await withRegularAdminPage(browser, serverURL, async ({ page: regularPage, adminPage }) => {
+      await activatePrivilegedMode(regularPage);
       await regularPage.goto(routes.serverAdminRooms);
 
       // Should see their concrete admin section in nav
@@ -390,15 +403,20 @@ test.describe('Admin Granular Permissions', () => {
     await createAndLoginAdminUser(page);
     await grantPermission(page, 'everyone', 'admin.view-users');
 
-    await withRegularAdminPage(browser, serverURL, async ({ adminPage: regularAdminPage }) => {
-      await regularAdminPage.gotoUsers();
+    await withRegularAdminPage(
+      browser,
+      serverURL,
+      async ({ page: regularPage, adminPage: regularAdminPage }) => {
+        await activatePrivilegedMode(regularPage);
+        await regularAdminPage.gotoUsers();
 
-      // Should see the users page with data
-      await regularAdminPage.expectUsersPageVisible();
-      await regularAdminPage.expectUsersTableHeadersVisible();
-      // Should see at least one user in the list (the user count)
-      await regularAdminPage.expectUserCountVisible();
-    });
+        // Should see the users page with data
+        await regularAdminPage.expectUsersPageVisible();
+        await regularAdminPage.expectUsersTableHeadersVisible();
+        // Should see at least one user in the list (the user count)
+        await regularAdminPage.expectUserCountVisible();
+      }
+    );
 
     // Clean up
     await revokePermission(page, 'everyone', 'admin.view-users');
@@ -464,6 +482,7 @@ test.describe('Admin Granular Permissions', () => {
     await grantPermission(page, 'everyone', 'room.manage');
 
     await withRegularAdminPage(browser, serverURL, async ({ page: regularPage, adminPage }) => {
+      await activatePrivilegedMode(regularPage);
       await regularPage.goto(routes.serverAdminRooms);
 
       // Initially should only see the room management section
@@ -526,6 +545,7 @@ test.describe('User Permission Management', () => {
         await createRoleViaAPI(page, roleName, 'Grant Admin');
         await grantPermission(page, roleName, 'admin.view-users');
         await assignRoleViaAPI(page, regularUser.id!, roleName);
+        await activatePrivilegedMode(regularPage);
 
         // Regular user should now have admin access
         await regularPage.reload();
@@ -632,6 +652,19 @@ test.describe('Instance Settings', () => {
     await expect(page.getByTestId('motd-content')).toBeVisible();
     // The markdown should render **Chatto** as bold
     await expect(page.getByTestId('motd-content').locator('strong')).toHaveText('Chatto');
+
+    // The full message opens without changing routes and closes through history.
+    const trigger = page.getByRole('button', { name: 'Message of the Day' });
+    const dialog = page.getByRole('dialog', { name: 'Message of the Day' });
+    await trigger.click();
+    await expect(dialog.locator('strong')).toHaveText('Chatto');
+    await dialog.locator('footer').getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(dialog).not.toBeVisible();
+    await expect(trigger).toBeFocused();
+    await trigger.click();
+    await expect(dialog).toBeVisible();
+    await page.goBack();
+    await expect(dialog).not.toBeVisible();
   });
 
   test('instance config changes update other connected clients in real-time', async ({
@@ -808,7 +841,7 @@ test.describe('Identity Editing', () => {
         // The regular user changes their own login first to set a cooldown
         // timestamp. We need this to verify Reset cooldown actually clears it.
         const userChosenLogin = `userpicked${Date.now()}`;
-        const userRename = await updateOwnProfileViaConnect(regularPage, {
+        const userRename = await updateOwnProfileViaConnect(regularPage, regularUser.id!, {
           login: userChosenLogin
         });
         expect(userRename.login).toBe(userChosenLogin);
@@ -816,6 +849,7 @@ test.describe('Identity Editing', () => {
         // Admin navigates to the user management page
         await adminPage.gotoUserManagement(regularUser.id!);
         await adminPage.expectUserManagementVisible();
+        await adminPage.openMemberSection('Account');
 
         // Identity panel should be visible
         await expect(page.getByRole('heading', { name: 'Identity' })).toBeVisible();
@@ -841,8 +875,9 @@ test.describe('Identity Editing', () => {
         // Toast confirmation
         await expect(page.getByText('User updated')).toBeVisible({ timeout: TIMEOUTS.UI_STANDARD });
 
-        // The User Details panel reflects the new identity (without a page reload —
-        // the mutation refetches the query).
+        // The User Details panel on the Profile tab reflects the new identity
+        // (without a page reload — the mutation updates the shared query).
+        await adminPage.openMemberSection('Profile');
         const userDetailsPanel = page
           .locator('section, div')
           .filter({ hasText: 'User Details' })
@@ -852,6 +887,7 @@ test.describe('Identity Editing', () => {
 
         // The cooldown is unchanged because admin edits don't advance the user's
         // clock. The "Reset cooldown" button should still be enabled.
+        await adminPage.openMemberSection('Account');
         const resetCooldownButton = page.getByRole('button', { name: 'Reset cooldown' });
         await expect(resetCooldownButton).toBeEnabled();
         await resetCooldownButton.click();
@@ -868,7 +904,7 @@ test.describe('Identity Editing', () => {
         // Sanity check: the user can now successfully rename themselves immediately,
         // proving the cooldown was actually cleared on the backend.
         const userSecondRename = `userrenamed${Date.now()}`;
-        const secondRename = await updateOwnProfileViaConnect(regularPage, {
+        const secondRename = await updateOwnProfileViaConnect(regularPage, regularUser.id!, {
           login: userSecondRename
         });
         expect(secondRename.login).toBe(userSecondRename);

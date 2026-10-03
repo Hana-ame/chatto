@@ -2,11 +2,14 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	"hmans.de/chatto/internal/evtstream"
 	evtv1 "hmans.de/chatto/internal/pb/chatto/core/evt/v1"
+	"hmans.de/chatto/pkg/events"
 )
 
 // RoomCommands returns the operation-level model for public room lifecycle,
@@ -57,12 +60,15 @@ type RoomStartDMInput struct {
 	ParticipantIDs []string
 }
 
-type RoomBanInput struct {
-	ActorID   string
-	RoomID    string
-	UserID    string
-	Reason    string
-	ExpiresAt *time.Time
+// RoomRemoveUserInput describes a reasoned moderation removal. Suspension is
+// true for both a timed suspension and an indefinite one.
+type RoomRemoveUserInput struct {
+	ActorID    string
+	RoomID     string
+	UserID     string
+	Reason     string
+	Suspension bool
+	ExpiresAt  *time.Time
 }
 
 type RoomUnbanInput struct {
@@ -98,7 +104,16 @@ func (s *RoomCommandModel) CreateRoom(ctx context.Context, input RoomCreateInput
 		WithUniversalRoom(input.Universal), WithRoomThreadingMode(input.ThreadingMode))
 }
 
+// UpdateRoom commits all supplied fields atomically. Omitted fields retain
+// their latest values, including after a concurrent update forces a retry.
 func (s *RoomCommandModel) UpdateRoom(ctx context.Context, input RoomUpdateInput) (*evtv1.Room, error) {
+	return s.updateRoom(ctx, input, nil)
+}
+
+// updateRoom rebuilds the complete sparse patch after each OCC conflict. A
+// name patch guards the room catalog for uniqueness; other patches guard only
+// the target room. attemptPrepared is a test seam immediately before commit.
+func (s *RoomCommandModel) updateRoom(ctx context.Context, input RoomUpdateInput, attemptPrepared func(context.Context) error) (*evtv1.Room, error) {
 	kind, err := s.authorizeRoomManage(ctx, input.ActorID, input.RoomID)
 	if err != nil {
 		return nil, err
@@ -106,68 +121,90 @@ func (s *RoomCommandModel) UpdateRoom(ctx context.Context, input RoomUpdateInput
 	if input.Name == nil && input.Description == nil && input.Universal == nil && input.SlowModeSeconds == nil && input.ThreadingMode == nil {
 		return nil, fmt.Errorf("%w: provide at least one room field to update", ErrInvalidArgument)
 	}
-	room, err := s.core.GetRoom(ctx, kind, input.RoomID)
-	if err != nil {
-		return nil, err
+	if input.SlowModeSeconds != nil && *input.SlowModeSeconds > MaxRoomSlowModeSeconds {
+		return nil, invalidArgument("slow mode cannot exceed 21600 seconds")
 	}
-	if input.Universal != nil && kind == KindDM {
-		return nil, fmt.Errorf("%w: DM rooms cannot be universal", ErrInvalidArgument)
+	if input.ThreadingMode != nil && !IsValidRoomThreadingMode(*input.ThreadingMode) {
+		return nil, invalidArgument("invalid room threading mode")
 	}
-	if input.SlowModeSeconds != nil {
-		if kind == KindDM {
-			return nil, invalidArgument("DM rooms cannot use slow mode")
-		}
-		if *input.SlowModeSeconds > MaxRoomSlowModeSeconds {
-			return nil, invalidArgument("slow mode cannot exceed 21600 seconds")
-		}
-	}
-	if input.ThreadingMode != nil {
-		if kind == KindDM {
-			return nil, invalidArgument("DM rooms cannot configure threading")
-		}
-		if !IsValidRoomThreadingMode(*input.ThreadingMode) {
-			return nil, invalidArgument("invalid room threading mode")
-		}
-	}
-	name := room.GetName()
+	agg := evtstream.RoomAggregate(input.RoomID)
+	filter := agg.AllEventsFilter()
 	if input.Name != nil {
-		name = *input.Name
+		filter = evtstream.RoomSubjectFilter()
 	}
-	description := room.GetDescription()
-	if input.Description != nil {
-		description = *input.Description
-	}
-	if err := validateRoomNameAndDescription(name, description); err != nil {
-		return nil, err
-	}
-	if input.Name != nil || input.Description != nil {
-		room, err = s.core.UpdateRoom(ctx, input.ActorID, kind, input.RoomID, name, description)
+	for attempt := 0; attempt < maxRoomNameClaimRetries; attempt++ {
+		position, err := s.core.EventPublisher.LastSubjectPosition(ctx, filter)
 		if err != nil {
 			return nil, err
 		}
-	}
-	if input.Universal != nil {
-		room, err = s.core.SetRoomUniversal(ctx, input.ActorID, kind, input.RoomID, *input.Universal)
+		if err := s.core.roomModel.waitForDirectory(ctx, position); err != nil {
+			return nil, err
+		}
+		if err := s.core.authorizeAtStableInputs(ctx, func() error {
+			_, err := s.authorizeRoomManage(ctx, input.ActorID, input.RoomID)
+			return err
+		}); err != nil {
+			return nil, err
+		}
+		room, err := s.core.GetRoom(ctx, kind, input.RoomID)
 		if err != nil {
 			return nil, err
 		}
-	}
-	if input.SlowModeSeconds != nil {
-		room, err = s.core.SetRoomSlowMode(ctx, input.ActorID, kind, input.RoomID, *input.SlowModeSeconds)
+		name, description := room.GetName(), room.GetDescription()
+		if input.Name != nil {
+			name = normalizeRoomName(*input.Name)
+		}
+		if input.Description != nil {
+			description = *input.Description
+		}
+		if err := validateRoomNameAndDescription(name, description); err != nil {
+			return nil, err
+		}
+		if input.Name != nil && s.core.roomModel.nameClaimSnapshot(name, input.RoomID).ConflictingRoomID != "" {
+			return nil, ErrRoomNameExists
+		}
+		var entries []evtstream.BatchEntry
+		add := func(event *evtv1.Event) {
+			event = newEvent(input.ActorID, event)
+			entries = append(entries, evtstream.BatchEntry{Subject: agg.SubjectFor(event), Event: event})
+		}
+		if name != room.GetName() || description != room.GetDescription() {
+			add(&evtv1.Event{Event: &evtv1.Event_RoomUpdated{RoomUpdated: &evtv1.RoomUpdatedEvent{RoomId: input.RoomID, Name: name, Description: description}}})
+		}
+		if input.Universal != nil && *input.Universal != room.GetUniversal() {
+			add(&evtv1.Event{Event: &evtv1.Event_RoomUniversalChanged{RoomUniversalChanged: &evtv1.RoomUniversalChangedEvent{RoomId: input.RoomID, Universal: *input.Universal}}})
+		}
+		if input.SlowModeSeconds != nil && *input.SlowModeSeconds != room.GetSlowModeSeconds() {
+			add(&evtv1.Event{Event: &evtv1.Event_RoomSlowModeChanged{RoomSlowModeChanged: &evtv1.RoomSlowModeChangedEvent{RoomId: input.RoomID, SlowModeSeconds: *input.SlowModeSeconds}}})
+		}
+		if input.ThreadingMode != nil && *input.ThreadingMode != EffectiveRoomThreadingMode(room) {
+			add(&evtv1.Event{Event: &evtv1.Event_RoomThreadingModeChanged{RoomThreadingModeChanged: &evtv1.RoomThreadingModeChangedEvent{RoomId: input.RoomID, ThreadingMode: *input.ThreadingMode}}})
+		}
+		if len(entries) == 0 {
+			return room, nil
+		}
+		entries[0].HasOCC = true
+		entries[0].FilterSubject = filter
+		entries[0].ExpectedSeq = position.Seq
+		if attemptPrepared != nil {
+			if err := attemptPrepared(ctx); err != nil {
+				return nil, err
+			}
+		}
+		seqs, err := s.core.EventPublisher.AppendBatch(ctx, entries)
+		if errors.Is(err, events.ErrConflict) {
+			continue
+		}
 		if err != nil {
 			return nil, err
 		}
-	}
-	if input.ThreadingMode != nil {
-		room, err = s.core.setRoomThreadingMode(ctx, input.ActorID, kind, input.RoomID, *input.ThreadingMode, func(attemptCtx context.Context) error {
-			_, authorizeErr := s.authorizeRoomManage(attemptCtx, input.ActorID, input.RoomID)
-			return authorizeErr
-		})
-		if err != nil {
+		last := len(entries) - 1
+		if err := s.core.roomModel.waitForDirectoryAndTimeline(ctx, events.SubjectPosition(entries[last].Subject, seqs[last])); err != nil {
 			return nil, err
 		}
+		return s.core.GetRoom(ctx, kind, input.RoomID)
 	}
-	return room, nil
+	return nil, fmt.Errorf("room update retries exhausted: %w", events.ErrConflict)
 }
 
 func (s *RoomCommandModel) ArchiveRoom(ctx context.Context, input RoomIDInput) (*evtv1.Room, error) {
@@ -221,20 +258,92 @@ func (s *RoomCommandModel) LeaveRoom(ctx context.Context, input RoomIDInput) err
 	return s.core.LeaveRoom(ctx, input.ActorID, kind, input.ActorID, input.RoomID)
 }
 
+// AddMember permits account and room managers to add members without room.join.
+// Bot managers without either override need the bot's effective room.join,
+// including its owner's ceiling. Bans and room lifecycle restrictions still apply.
 func (s *RoomCommandModel) AddMember(ctx context.Context, input RoomUserInput) (*evtv1.RoomMembership, error) {
-	kind, err := s.authorizeRoomManage(ctx, input.ActorID, input.RoomID)
+	if err := requireAuthenticatedActor(input.ActorID); err != nil {
+		return nil, err
+	}
+	kind, err := s.resolveRoomKind(ctx, input.RoomID)
 	if err != nil {
 		return nil, err
 	}
-	return s.core.AddMember(ctx, input.ActorID, kind, input.RoomID, input.UserID)
+	return s.core.addMember(ctx, input.ActorID, kind, input.RoomID, input.UserID, func() error {
+		return s.authorizeMembershipChange(ctx, input, true)
+	})
 }
 
+// RemoveMember permits account, room, and target-bot managers to remove members,
+// even after join authority is lost. Membership changes preserve grants.
 func (s *RoomCommandModel) RemoveMember(ctx context.Context, input RoomUserInput) (bool, error) {
-	kind, err := s.authorizeRoomManage(ctx, input.ActorID, input.RoomID)
+	if err := requireAuthenticatedActor(input.ActorID); err != nil {
+		return false, err
+	}
+	kind, err := s.resolveRoomKind(ctx, input.RoomID)
 	if err != nil {
 		return false, err
 	}
-	return s.core.RemoveMember(ctx, input.ActorID, kind, input.RoomID, input.UserID)
+	return s.core.removeMember(ctx, input.ActorID, kind, input.RoomID, input.UserID, func() error {
+		return s.authorizeMembershipChange(ctx, input, false)
+	})
+}
+
+// authorizeMembershipChange runs inside the room OCC retry with stable
+// ownership and permission inputs. Bot management does not imply room.manage.
+func (s *RoomCommandModel) authorizeMembershipChange(ctx context.Context, input RoomUserInput, joining bool) error {
+	if kind, err := s.resolveRoomKind(ctx, input.RoomID); err != nil {
+		return err
+	} else if kind == KindDM {
+		return invalidArgument("DM room participants cannot be managed through RoomService")
+	}
+	user, err := s.core.GetUser(ctx, input.UserID)
+	if err != nil {
+		// Preserve the room-manager gate before disclosing a missing target.
+		if _, gateErr := s.authorizeRoomManage(ctx, input.ActorID, input.RoomID); gateErr != nil {
+			return gateErr
+		}
+		return err
+	}
+	accountManager, err := s.core.CanManageUserAccounts(ctx, input.ActorID)
+	if err != nil {
+		return err
+	}
+	roomManager, err := s.core.PermResolver().HasRoomPermission(ctx, input.ActorID, KindChannel, input.RoomID, PermRoomManage)
+	if err != nil {
+		return err
+	}
+	if !accountManager && !roomManager {
+		if !user.GetIsBot() {
+			return ErrPermissionDenied
+		}
+		if _, err := s.core.requireBotManager(ctx, input.ActorID, input.UserID); err != nil {
+			return err
+		}
+	}
+	room, err := s.core.FindRoomByID(ctx, input.RoomID)
+	if err != nil {
+		return err
+	}
+	if KindOfRoom(room) != KindChannel || room.GetUniversal() {
+		return invalidArgument("direct-message and universal room membership cannot be managed explicitly")
+	}
+	if room.GetArchived() && joining {
+		return ErrRoomArchived
+	}
+	if joining && s.core.roomModel.isRoomBanActive(input.RoomID, input.UserID, time.Now()) {
+		return ErrPermissionDenied
+	}
+	if joining && !accountManager && !roomManager {
+		allowed, err := s.core.CanJoinRoomAt(ctx, input.UserID, KindChannel, input.RoomID)
+		if err != nil {
+			return err
+		}
+		if !allowed {
+			return ErrPermissionDenied
+		}
+	}
+	return nil
 }
 
 func (s *RoomCommandModel) StartDM(ctx context.Context, input RoomStartDMInput) (*evtv1.Room, bool, error) {
@@ -270,33 +379,43 @@ func (s *RoomCommandModel) StartDM(ctx context.Context, input RoomStartDMInput) 
 	return s.core.FindOrCreateDM(ctx, input.ActorID, input.ParticipantIDs)
 }
 
-func (s *RoomCommandModel) BanMember(ctx context.Context, input RoomBanInput) (*RoomBan, error) {
-	kind, err := s.authorizeRoomBan(ctx, input.ActorID, input.RoomID)
-	if err != nil {
-		return nil, err
-	}
-	if err := validateRoomBanInput(input.Reason, input.ExpiresAt); err != nil {
-		return nil, err
-	}
-	return s.core.BanMember(ctx, input.ActorID, kind, input.RoomID, input.UserID, input.Reason, input.ExpiresAt)
-}
-
-func (s *RoomCommandModel) UnbanMember(ctx context.Context, input RoomUnbanInput) error {
-	kind, err := s.authorizeRoomBan(ctx, input.ActorID, input.RoomID)
+// RemoveUser removes a current member and optionally prevents rejoining.
+// It uses the room.remove-member permission at the target room.
+func (s *RoomCommandModel) RemoveUser(ctx context.Context, input RoomRemoveUserInput) error {
+	kind, err := s.authorizeRoomRemoval(ctx, input.ActorID, input.RoomID)
 	if err != nil {
 		return err
 	}
-	if err := validateRoomBanReason(input.Reason); err != nil {
+	if err := validateRoomRemovalInput(input.Reason, input.Suspension, input.ExpiresAt); err != nil {
+		return err
+	}
+	authorize := func() error {
+		_, err := s.authorizeRoomRemoval(ctx, input.ActorID, input.RoomID)
+		return err
+	}
+	if input.Suspension {
+		_, err := s.core.banMember(ctx, input.ActorID, kind, input.RoomID, input.UserID, input.Reason, input.ExpiresAt, authorize)
+		return err
+	}
+	return s.core.removeUserWithoutSuspension(ctx, input.ActorID, kind, input.RoomID, input.UserID, input.Reason, authorize)
+}
+
+func (s *RoomCommandModel) LiftSuspension(ctx context.Context, input RoomUnbanInput) error {
+	kind, err := s.authorizeRoomRemoval(ctx, input.ActorID, input.RoomID)
+	if err != nil {
+		return err
+	}
+	if err := validateRoomRemovalReason(input.Reason); err != nil {
 		return err
 	}
 	return s.core.UnbanMember(ctx, input.ActorID, kind, input.RoomID, input.UserID, input.Reason)
 }
 
-func (s *RoomCommandModel) ListActiveRoomBans(ctx context.Context, input RoomBanListInput) ([]RoomBan, error) {
+func (s *RoomCommandModel) ListActiveRoomSuspensions(ctx context.Context, input RoomBanListInput) ([]RoomBan, error) {
 	if err := requireAuthenticatedActor(input.ActorID); err != nil {
 		return nil, err
 	}
-	canModerate, err := s.core.HasServerPermission(ctx, input.ActorID, PermRoomMemberBan)
+	canModerate, err := s.core.HasServerPermission(ctx, input.ActorID, PermRoomMemberRemove)
 	if err != nil {
 		return nil, err
 	}
@@ -327,7 +446,7 @@ func (s *RoomCommandModel) authorizeRoomManage(ctx context.Context, actorID, roo
 	return kind, nil
 }
 
-func (s *RoomCommandModel) authorizeRoomBan(ctx context.Context, actorID, roomID string) (RoomKind, error) {
+func (s *RoomCommandModel) authorizeRoomRemoval(ctx context.Context, actorID, roomID string) (RoomKind, error) {
 	if err := requireAuthenticatedActor(actorID); err != nil {
 		return KindChannel, err
 	}
@@ -336,9 +455,9 @@ func (s *RoomCommandModel) authorizeRoomBan(ctx context.Context, actorID, roomID
 		return KindChannel, err
 	}
 	if kind == KindDM {
-		return KindChannel, ErrCannotBanDMRoomMember
+		return KindChannel, ErrCannotRemoveDMRoomMember
 	}
-	can, err := s.core.PermResolver().HasRoomPermission(ctx, actorID, kind, roomID, PermRoomMemberBan)
+	can, err := s.core.PermResolver().HasRoomPermission(ctx, actorID, kind, roomID, PermRoomMemberRemove)
 	if err != nil {
 		return KindChannel, err
 	}
@@ -355,12 +474,15 @@ func (s *RoomCommandModel) resolveRoomKind(ctx context.Context, roomID string) (
 	return s.core.FindRoomKind(ctx, roomID)
 }
 
-func validateRoomBanInput(reason string, expiresAt *time.Time) error {
-	if err := validateRoomBanReason(reason); err != nil {
+func validateRoomRemovalInput(reason string, suspension bool, expiresAt *time.Time) error {
+	if err := validateRoomRemovalReason(reason); err != nil {
 		return err
 	}
+	if !suspension && expiresAt != nil {
+		return invalidArgument("suspension expiry requires a suspension")
+	}
 	if expiresAt != nil && !expiresAt.After(time.Now()) {
-		return invalidArgument("ban expiry must be in the future")
+		return invalidArgument("suspension expiry must be in the future")
 	}
 	return nil
 }
@@ -375,13 +497,13 @@ func validateRoomNameAndDescription(name, description string) error {
 	return nil
 }
 
-func validateRoomBanReason(reason string) error {
+func validateRoomRemovalReason(reason string) error {
 	trimmed := strings.TrimSpace(reason)
 	if trimmed == "" {
-		return invalidArgument("ban reason is required")
+		return invalidArgument("removal reason is required")
 	}
 	if len([]rune(trimmed)) > MaxRoomBanReasonLength {
-		return invalidArgument(fmt.Sprintf("ban reason exceeds %d characters", MaxRoomBanReasonLength))
+		return invalidArgument(fmt.Sprintf("removal reason exceeds %d characters", MaxRoomBanReasonLength))
 	}
 	return nil
 }

@@ -1,14 +1,21 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { getPublicServerInfo, loadCurrentUser, preloadPublicLocaleMessages } = vi.hoisted(() => ({
+const {
+  getPublicServerInfo,
+  loadCurrentUser,
+  preloadPublicLocaleMessages,
+  deleteLegacySavedViews
+} = vi.hoisted(() => ({
   getPublicServerInfo: vi.fn(),
   loadCurrentUser: vi.fn(),
-  preloadPublicLocaleMessages: vi.fn()
+  preloadPublicLocaleMessages: vi.fn(),
+  deleteLegacySavedViews: vi.fn()
 }));
 
-vi.mock('$lib/api-client/server', () => ({ getPublicServerInfo }));
+vi.mock('@chatto/client/api/server', () => ({ getPublicServerInfo }));
 vi.mock('$lib/auth/loadAuth', () => ({ loadCurrentUser }));
 vi.mock('$lib/i18n/messages', () => ({ preloadPublicLocaleMessages }));
+vi.mock('$lib/storage/legacySavedViews', () => ({ deleteLegacySavedViews }));
 
 import { load } from './+layout';
 
@@ -19,6 +26,17 @@ describe('root layout origin loading', () => {
     getPublicServerInfo.mockResolvedValue({ name: 'Web server' });
     loadCurrentUser.mockResolvedValue({ id: 'viewer' });
   });
+
+  it.each(['/', '/login', '/register', '/register/complete'])(
+    'routes %s to first-run setup',
+    async (path) => {
+      getPublicServerInfo.mockResolvedValue({ name: 'New server', setupRequired: true });
+      loadCurrentUser.mockResolvedValue(null);
+      await expect(
+        load({ url: new URL(path, 'https://chat.example') } as never)
+      ).rejects.toMatchObject({ status: 302, location: '/setup' });
+    }
+  );
 
   it('loads discovery and viewer state from an HTTP origin', async () => {
     const data = await load({ url: new URL('https://chat.example/welcome') } as never);
@@ -38,5 +56,14 @@ describe('root layout origin loading', () => {
     expect(getPublicServerInfo).not.toHaveBeenCalled();
     expect(loadCurrentUser).not.toHaveBeenCalled();
     expect(data).toMatchObject({ serverInfo: null, serverInfoLoaded: true, user: null });
+  });
+
+  it('deletes the legacy saved-view database once per page load', async () => {
+    vi.resetModules();
+    const { load: freshLoad } = await import('./+layout');
+    await freshLoad({ url: new URL('https://chat.example/welcome') } as never);
+    await freshLoad({ url: new URL('https://chat.example/chat') } as never);
+
+    expect(deleteLegacySavedViews).toHaveBeenCalledOnce();
   });
 });

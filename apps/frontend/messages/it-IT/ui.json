@@ -16,7 +16,6 @@
       "remote_title": "{server} richiede l'accesso",
       "remote_message": "Questo server ha rifiutato l'accesso memorizzato. Ricollegalo per riprendere gli aggiornamenti e le azioni in tempo reale.",
       "remote_action": "Riconnettiti",
-      "remote_failed": "Impossibile avviare la riconnessione",
       "sidebar_reauth": "{server} richiede l'accesso"
     },
     "access_denied": {
@@ -48,7 +47,8 @@
       "complete": "Chatto è stato ricostruito. Punteggio finale: {count} punti"
     },
     "pane_header": {
-      "back": "Indietro"
+      "back": "Indietro",
+      "actions": "Azioni del pannello"
     },
     "sidebar_nav": {
       "back_to_chat": "Torna alla chat"
@@ -67,7 +67,12 @@
     "image_modal": {
       "previous": "Immagine precedente",
       "next": "Immagine successiva",
-      "fallback_alt": "Immagine"
+      "fallback_alt": "Immagine",
+      "zoom_in": "Ingrandisci",
+      "zoom_out": "Riduci",
+      "fit": "Adatta",
+      "details": "Dettagli",
+      "file_type": "Tipo di file"
     },
     "toast": {
       "dismiss": "Ignora notifica"
@@ -78,11 +83,9 @@
       "clear": "Chiaro"
     },
     "expiry": {
-      "label": "Scade",
       "24h": "24 ore",
       "7d": "7 giorni",
       "30d": "30 giorni",
-      "indefinite": "Nessuna scadenza",
       "custom": "Personalizzato",
       "custom_label": "Scadenza personalizzata",
       "error_required": "Scegli una data di scadenza.",

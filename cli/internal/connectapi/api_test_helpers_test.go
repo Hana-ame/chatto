@@ -11,6 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
+
 	"connectrpc.com/authn"
 	"connectrpc.com/connect"
 	"github.com/nats-io/nats.go"
@@ -26,7 +29,7 @@ import (
 
 func requireConnectCode(t testing.TB, err error, want connect.Code) {
 	t.Helper()
-	if got := connect.CodeOf(err); got != want {
+	if got := errorCode(err); got != want {
 		t.Fatalf("connect code = %v, want %v (err = %v)", got, want, err)
 	}
 }
@@ -41,6 +44,16 @@ func withBearerCredential(ctx context.Context, user *evtv1.User, token string) c
 		Kind:   authctx.RuntimeCredentialKindBearerToken,
 		UserID: user.Id,
 		Handle: token,
+	})
+}
+
+func withArmedBearerCredential(ctx context.Context, user *evtv1.User, token string) context.Context {
+	ctx = withCaller(ctx, user)
+	return authctx.WithCredential(ctx, authctx.RuntimeCredential{
+		Kind:                    authctx.RuntimeCredentialKindBearerToken,
+		UserID:                  user.Id,
+		Handle:                  token,
+		PrivilegedModeExpiresAt: time.Now().Add(time.Minute),
 	})
 }
 
@@ -132,12 +145,20 @@ type connectAPITestEnv struct {
 
 func newConnectAPITestEnv(t *testing.T) *connectAPITestEnv {
 	t.Helper()
+	return newConnectAPITestEnvWithTimeout(t, 30*time.Second)
+}
 
-	_, nc := testutil.StartSharedNATS(t)
+// Larger fixtures can select a bounded lifecycle that also fits race-enabled runs.
+func newConnectAPITestEnvWithTimeout(t *testing.T, timeout time.Duration) *connectAPITestEnv {
+	t.Helper()
+
+	// Each environment owns its broker and event log. A shared broker reset
+	// can affect another core that still has subscriptions or pending work.
+	_, nc := testutil.StartNATS(t)
 	// Keep one bounded context for the complete integration-test lifecycle.
 	// Allow a delayed durable-worker acknowledgement without expiring the
 	// shared context before the test can run its later assertions.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	t.Cleanup(cancel)
 
 	c, err := core.NewChattoCore(ctx, nc, config.CoreConfig{
@@ -257,6 +278,38 @@ func (e *connectAPITestEnv) createJoinedRoom(name string) *evtv1.Room {
 		panic(err)
 	}
 	return room
+}
+
+// grantRoomManage grants userID room.manage on roomID.
+// RoomCommands().UpdateRoom authorizes every caller, including
+// core.SystemActorID, so tests grant this permission before they change room
+// settings.
+func (e *connectAPITestEnv) grantRoomManage(t testing.TB, roomID, userID string) {
+	t.Helper()
+	if err := e.core.GrantUserRoomPermission(e.ctx, core.SystemActorID, roomID, userID, core.PermRoomManage); err != nil {
+		t.Fatalf("GrantUserRoomPermission room.manage: %v", err)
+	}
+}
+
+// newRoomManager creates an account with room.manage on roomID and returns its
+// ID.
+func (e *connectAPITestEnv) newRoomManager(t testing.TB, login, roomID string) string {
+	t.Helper()
+	manager, err := e.core.CreateUser(e.ctx, core.SystemActorID, login, "Room Manager", "password")
+	if err != nil {
+		t.Fatalf("CreateUser room manager: %v", err)
+	}
+	e.grantRoomManage(t, roomID, manager.Id)
+	return manager.Id
+}
+
+// updateRoom applies input through RoomCommands().UpdateRoom and fails the
+// test on error. input.ActorID must hold room.manage on input.RoomID.
+func (e *connectAPITestEnv) updateRoom(t testing.TB, input core.RoomUpdateInput) {
+	t.Helper()
+	if _, err := e.core.RoomCommands().UpdateRoom(e.ctx, input); err != nil {
+		t.Fatalf("RoomCommands.UpdateRoom: %v", err)
+	}
 }
 
 func (e *connectAPITestEnv) uploadAttachmentAsset(t testing.TB, roomID, filename, contentType string, content []byte) string {
@@ -392,4 +445,16 @@ func roomGroupItemsContainSidebarLink(items []*apiv1.RoomGroupItem, linkID strin
 		}
 	}
 	return false
+}
+
+// requireEmptyResponse checks the public JSON acknowledgement contract.
+func requireEmptyResponse(t testing.TB, response proto.Message) {
+	t.Helper()
+	data, err := protojson.Marshal(response)
+	if err != nil {
+		t.Fatalf("marshal response: %v", err)
+	}
+	if string(data) != "{}" {
+		t.Fatalf("response JSON = %s, want {}", data)
+	}
 }

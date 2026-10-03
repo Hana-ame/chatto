@@ -1,8 +1,8 @@
 <script lang="ts">
   import { parseMessageLink } from '$lib/messageLinks';
   import LinkPreviewCard from '$lib/components/LinkPreviewCard.svelte';
-  import LinkPreviewSkeleton from '$lib/components/LinkPreviewSkeleton.svelte';
-  import MessagePreviewCard from '$lib/components/MessagePreviewCard.svelte';
+  import { LoadingFog } from '$lib/ui';
+  import LazyMessagePreviewCard from '$lib/components/LazyMessagePreviewCard.svelte';
   import type { LinkPreviewState } from './linkPreviews.svelte';
 
   let { state }: { state: LinkPreviewState } = $props();
@@ -12,9 +12,9 @@
   {@const url = state.activeURL}
   {@const messageLink = parseMessageLink(url)}
   {#if messageLink}
-    <MessagePreviewCard link={messageLink} onDismiss={() => state.dismissPreview(url)} />
+    <LazyMessagePreviewCard link={messageLink} onDismiss={() => state.dismissPreview(url)} />
   {:else if state.fetchingURLs.has(url)}
-    <LinkPreviewSkeleton />
+    <LoadingFog class="h-24 w-full" />
   {:else if state.previews.get(url)}
     <LinkPreviewCard
       preview={state.previews.get(url)!}

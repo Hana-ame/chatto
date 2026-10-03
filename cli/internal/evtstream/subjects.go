@@ -23,6 +23,7 @@ const (
 
 // Aggregate type segments. Stable identifiers; once written, never renamed.
 const (
+	AggregateSetup         = "setup"
 	AggregateRoom          = "room"
 	AggregateConfig        = "config"
 	AggregateGroup         = "group"
@@ -53,6 +54,10 @@ const LayoutSingletonID = "default"
 // role order, assignments, and server-scoped permission decisions. Room and
 // group scoped decisions use their room/group ID directly as the aggregate ID.
 const RBACServerID = "server"
+
+// RBACDMID is the stable singleton aggregate ID for direct-message-scoped
+// permission decisions.
+const RBACDMID = "dm"
 
 // AuthServerID is the singleton aggregate ID for anonymous/server-wide auth
 // audit facts, such as registration code issuance before a user exists.
@@ -164,6 +169,7 @@ const (
 	EventUserAvatarSet                = "avatar_set"
 	EventUserAvatarCleared            = "avatar_cleared"
 	EventUserVerifiedEmailAdded       = "verified_email_added"
+	EventUserPrimaryEmailChanged      = "primary_email_changed"
 	EventUserPasswordHashChanged      = "password_hash_changed"
 	EventUserOIDCSubjectLinked        = "oidc_subject_linked"
 	EventUserExternalIdentityLinked   = "external_identity_linked"
@@ -219,6 +225,8 @@ const (
 	EventAuthCodeExchangeFailed             = "auth_code_exchange_failed"
 	EventBearerTokenIssued                  = "bearer_token_issued"
 	EventBearerTokenRevoked                 = "bearer_token_revoked"
+	EventPrivilegedModeActivated            = "privileged_mode_activated"
+	EventPrivilegedModeDeactivated          = "privileged_mode_deactivated"
 	EventOAuthConsentGranted                = "oauth_consent_granted"
 	EventOAuthConsentDenied                 = "oauth_consent_denied"
 	EventOAuthClientAuthorizationRecorded   = "authorization_recorded"
@@ -243,6 +251,16 @@ func EventTypeOf(e *evtv1.Event) string {
 		return ""
 	}
 	switch e.GetEvent().(type) {
+	case *evtv1.Event_ServerSetupOffered:
+		return EventServerSetupOffered
+	case *evtv1.Event_ServerInitialized:
+		return EventServerInitialized
+	case *evtv1.Event_BotOutboundWebhookConfigured:
+		return "bot_outbound_webhook_configured"
+	case *evtv1.Event_BotOutboundWebhookRevoked:
+		return "bot_outbound_webhook_revoked"
+	case *evtv1.Event_BotOutboundWebhookUpdated:
+		return "bot_outbound_webhook_updated"
 	case *evtv1.Event_RoomCreated:
 		return EventRoomCreated
 	case *evtv1.Event_RoomUpdated:
@@ -418,6 +436,8 @@ func EventTypeOf(e *evtv1.Event) string {
 		return EventUserAvatarCleared
 	case *evtv1.Event_UserVerifiedEmailAdded:
 		return EventUserVerifiedEmailAdded
+	case *evtv1.Event_UserPrimaryEmailChanged:
+		return EventUserPrimaryEmailChanged
 	case *evtv1.Event_UserPasswordHashChanged:
 		return EventUserPasswordHashChanged
 	case *evtv1.Event_UserOidcSubjectLinked:
@@ -496,6 +516,10 @@ func EventTypeOf(e *evtv1.Event) string {
 		return EventBearerTokenIssued
 	case *evtv1.Event_BearerTokenRevoked:
 		return EventBearerTokenRevoked
+	case *evtv1.Event_PrivilegedModeActivated:
+		return EventPrivilegedModeActivated
+	case *evtv1.Event_PrivilegedModeDeactivated:
+		return EventPrivilegedModeDeactivated
 	case *evtv1.Event_OauthConsentGranted:
 		return EventOAuthConsentGranted
 	case *evtv1.Event_OauthConsentDenied:
@@ -613,6 +637,12 @@ func RBACAggregate() Aggregate {
 // RBACServerAggregate is the typed constructor for server-level RBAC events.
 func RBACServerAggregate() Aggregate {
 	return Aggregate{Type: AggregateRBAC, ID: RBACServerID}
+}
+
+// RBACDMAggregate is the typed constructor for direct-message-scoped RBAC
+// permission decisions.
+func RBACDMAggregate() Aggregate {
+	return Aggregate{Type: AggregateRBAC, ID: RBACDMID}
 }
 
 // RBACScopedAggregate is the typed constructor for scoped RBAC decisions. The
@@ -810,3 +840,12 @@ func stripLivePrefix(subject string) string {
 	}
 	return subject
 }
+
+// Setup event tokens and singleton are durable storage contracts.
+const (
+	EventServerSetupOffered = "server_setup_offered"
+	EventServerInitialized  = "server_initialized"
+)
+
+// SetupAggregate owns first-run eligibility and permanent completion.
+func SetupAggregate() Aggregate { return Aggregate{Type: AggregateSetup, ID: "server"} }

@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"unsafe"
 
 	"google.golang.org/protobuf/proto"
 
@@ -12,6 +13,10 @@ const (
 	projectionMapEntryOverhead   int64 = 64
 	projectionSliceEntryOverhead int64 = 24
 	projectionIntIndexBytes      int64 = 8
+	// projectionCompactMapEntryOverhead approximates the per-entry cost of a
+	// map with small pointer-free keys, excluding the key itself: control
+	// bytes, load-factor slack, and value padding.
+	projectionCompactMapEntryOverhead int64 = 16
 )
 
 // ProjectionAdminState is the operator-facing runtime state for one
@@ -340,54 +345,64 @@ func (p *RoomGroupLayoutProjection) adminProjectionEstimate() (int64, int64, []P
 func (p *RoomTimelineProjection) adminProjectionEstimate() (int64, int64, []ProjectionAdminMetric) {
 	p.RLock()
 	defer p.RUnlock()
-	var entries, rawBytes int64
-	timelineEventIDs := make(map[string]struct{}, len(p.byEventID))
-	for _, roomEntries := range p.byRoom {
-		var roomBytes int64
-		for _, idx := range roomEntries {
-			entry := p.entryAtLocked(idx)
-			entries++
-			eventBytes := timelineEntryEstimatedBytes(entry)
-			roomBytes += eventBytes
-			if entry != nil && entry.Event != nil && entry.Event.GetId() != "" {
-				timelineEventIDs[entry.Event.GetId()] = struct{}{}
-			}
-		}
-		rawBytes += roomBytes
+	var entries int64
+	var roomIndexBytes int64
+	for roomID, roomEntries := range p.byRoom {
+		roomIndexBytes += projectionMapEntryOverhead + int64(len(roomID)) + int64(cap(roomEntries))*4
+		entries += int64(len(roomEntries))
 	}
+	rawBytes := int64(cap(p.entries)) * int64(unsafe.Sizeof(timelineRow{}))
+	sharedIDBytes := p.rooms.estimatedBytes() + p.users.estimatedBytes()
 
 	var messagePostIndexBytes, messagePosts int64
 	for roomID, roomEntries := range p.messagePostsByRoom {
 		messagePostIndexBytes += projectionMapEntryOverhead + int64(len(roomID))
 		messagePosts += int64(len(roomEntries))
-		messagePostIndexBytes += int64(len(roomEntries)) * projectionIntIndexBytes
+		messagePostIndexBytes += int64(cap(roomEntries)) * 4
 	}
 
-	var eventIndexBytes, eventIndexRetainedEntryBytes, eventIndexRetainedEntries int64
-	for eventID, idx := range p.byEventID {
-		eventIndexBytes += projectionMapEntryOverhead + int64(len(eventID))
-		if _, counted := timelineEventIDs[eventID]; counted {
-			continue
+	eventIndexBytes := int64(cap(p.rowByEvent)) * 4
+	var indexedEvents int64
+	for _, row := range p.rowByEvent {
+		if row != 0 {
+			indexedEvents++
 		}
-		eventIndexRetainedEntries++
-		entry := p.entryAtLocked(idx)
-		eventIndexRetainedEntryBytes += timelineEntryEstimatedBytes(entry)
+	}
+	var eventIDBytes int64
+	if !p.sharedEventIDs {
+		eventIDBytes = p.eventIDs.estimatedBytes()
 	}
 	retainedEventIDs := p.replayGuard.retainedEventIDs()
 	appliedEventIDsBytes := estimateStringSetBytes(retainedEventIDs)
-	var bodyStateBytes, latestBodyBytes, latestBodies, supersededSeqBytes, supersededSeqs int64
-	for eventID, state := range p.bodyStates {
-		// The body pointer, current sequence, and slice header live inline in
-		// the map value. Only edited messages allocate the slice backing array.
-		bodyStateBytes += projectionMapEntryOverhead + int64(len(eventID)) + 8 + 8 + 24
-		if state.body != nil {
-			latestBodies++
-			latestBodyBytes += int64(proto.Size(state.body))
-			bodyStateBytes += int64(proto.Size(state.body))
+	var bodyStateBytes, activeBodyReferenceBytes, activeBodyReferences, supersededSeqBytes, supersededSeqs int64
+	bodyStateBytes = int64(cap(p.bodyStates))*int64(unsafe.Sizeof(timelineBodyState{})) + p.bodyEventIDs.retainedBytes()
+	countBody := func(state timelineBodyState) {
+		if state.currentSequence == 0 {
+			return
 		}
-		supersededSeqs += int64(len(state.supersededSequences))
-		supersededSeqBytes += int64(cap(state.supersededSequences)) * 8
-		bodyStateBytes += int64(cap(state.supersededSequences)) * 8
+		if state.active() {
+			activeBodyReferences++
+			activeBodyReferenceBytes += int64(unsafe.Sizeof(state)) + int64(state.currentEventID.length())
+		}
+	}
+	for _, state := range p.bodyStates {
+		countBody(state)
+	}
+	for eventID, state := range p.orphanBodyStates {
+		bodyStateBytes += projectionMapEntryOverhead + int64(len(eventID)) + int64(unsafe.Sizeof(timelineBodyState{}))
+		countBody(state)
+	}
+	for _, history := range p.bodyHistory {
+		bytes := projectionMapEntryOverhead + 4 + int64(unsafe.Sizeof(history)) + int64(cap(history))*8
+		bodyStateBytes += bytes
+		supersededSeqs += int64(len(history))
+		supersededSeqBytes += bytes
+	}
+	for eventID, history := range p.orphanBodyHistory {
+		bytes := projectionMapEntryOverhead + int64(len(eventID)) + int64(unsafe.Sizeof(history)) + int64(cap(history))*8
+		bodyStateBytes += bytes
+		supersededSeqs += int64(len(history))
+		supersededSeqBytes += bytes
 	}
 	var retractedBytes int64
 	for eventID := range p.retractedFlags {
@@ -424,21 +439,25 @@ func (p *RoomTimelineProjection) adminProjectionEstimate() (int64, int64, []Proj
 		latestPinBytes += projectionMapEntryOverhead + int64(len(roomID)+len(latest.PinEventID)) + 8
 	}
 
-	totalBytes := rawBytes + messagePostIndexBytes + eventIndexBytes + eventIndexRetainedEntryBytes +
+	totalBytes := rawBytes + sharedIDBytes + roomIndexBytes + messagePostIndexBytes + eventIndexBytes + eventIDBytes +
 		appliedEventIDsBytes + bodyStateBytes + retractedBytes +
 		tombstonedAtBytes + shreddedAtBytes + hiddenEchoBytes + echoBytes + shreddedUserBytes +
 		pinnedMessageBytes + latestPinBytes
 	return entries, totalBytes, []ProjectionAdminMetric{
 		{Name: "rooms", Value: int64(len(p.byRoom)), Bytes: 0},
 		{Name: "timeline_entries", Value: entries, Bytes: rawBytes},
+		{Name: "shared_room_user_ids", Value: int64(p.rooms.len() + p.users.len()), Bytes: sharedIDBytes},
+		{Name: "room_timeline_index", Value: entries, Bytes: roomIndexBytes},
 		{Name: "message_posts", Value: messagePosts, Bytes: 0},
 		{Name: "message_posts_by_room_index", Value: messagePosts, Bytes: messagePostIndexBytes},
-		{Name: "event_id_index", Value: int64(len(p.byEventID)), Bytes: eventIndexBytes},
-		{Name: "event_id_retained_entries", Value: eventIndexRetainedEntries, Bytes: eventIndexRetainedEntryBytes},
+		{Name: "event_id_index", Value: indexedEvents, Bytes: eventIndexBytes},
+		// Thread replies are indexed by event ID but are not room-visible rows.
+		{Name: "event_id_retained_entries", Value: max(indexedEvents-entries, 0), Bytes: 0},
+		{Name: "private_event_ids", Value: privateEventIDCount(p.sharedEventIDs, p.eventIDs), Bytes: eventIDBytes},
 		{Name: "applied_event_ids", Value: int64(len(retainedEventIDs)), Bytes: appliedEventIDsBytes},
 		{Name: "event_id_compatibility_mode", Value: p.replayGuard.compatibilityValue(), Bytes: 0},
-		{Name: "body_state_index", Value: int64(len(p.bodyStates)), Bytes: bodyStateBytes},
-		{Name: "latest_bodies", Value: latestBodies, Bytes: latestBodyBytes},
+		{Name: "body_state_index", Value: int64(len(p.bodyStates) + len(p.orphanBodyStates)), Bytes: bodyStateBytes},
+		{Name: "active_body_references", Value: activeBodyReferences, Bytes: activeBodyReferenceBytes},
 		{Name: "superseded_body_event_seqs", Value: supersededSeqs, Bytes: supersededSeqBytes},
 		{Name: "retracted_flags", Value: int64(len(p.retractedFlags)), Bytes: retractedBytes},
 		{Name: "tombstoned_at_index", Value: int64(len(p.tombstonedAt)), Bytes: tombstonedAtBytes},
@@ -456,108 +475,67 @@ func (p *ThreadProjection) adminProjectionEstimate() (int64, int64, []Projection
 	defer p.RUnlock()
 	var entries, rawBytes, replies int64
 	for _, threadEntries := range p.byThread {
+		rawBytes += projectionCompactMapEntryOverhead + 4 + projectionSliceEntryOverhead + int64(cap(threadEntries))*int64(unsafe.Sizeof(threadEntry{}))
 		for _, entry := range threadEntries {
 			entries++
-			rawBytes += projectionSliceEntryOverhead + int64(len(entry.EventID)) + 8
-			if entry.EventID != "" {
+			if entry.event != 0 {
 				replies++
 			}
 		}
 	}
-	var indexBytes int64
-	for eventID, threadID := range p.messageToThread {
-		indexBytes += projectionMapEntryOverhead + int64(len(eventID)+len(threadID))
-	}
-	var replySummaryBytes int64
-	for eventID, summary := range p.replySummaries {
-		replySummaryBytes += projectionMapEntryOverhead + int64(len(eventID))
-		if summary != nil {
-			replySummaryBytes += int64(len(summary.actorID)) + 24
-		}
-	}
-	var threadSummaryBytes, summaryReplies, summaryParticipants int64
-	for threadID, summary := range p.summaryByThread {
-		threadSummaryBytes += projectionMapEntryOverhead + int64(len(threadID))
+	replyBytes := int64(len(p.replyRoots)) * (projectionCompactMapEntryOverhead + 8)
+	var threadSummaryBytes, summaryParticipants int64
+	for _, summary := range p.summaryByThread {
+		threadSummaryBytes += projectionCompactMapEntryOverhead + 12 + int64(unsafe.Sizeof(threadSummary{}))
 		if summary == nil {
 			continue
 		}
-		for _, replyID := range summary.replyIDs {
-			summaryReplies++
-			threadSummaryBytes += projectionSliceEntryOverhead + int64(len(replyID))
-		}
-		if summary.lastReplyAt != nil {
-			threadSummaryBytes += 24
-		}
-		for _, participantID := range summary.participantIDs {
-			summaryParticipants++
-			threadSummaryBytes += projectionSliceEntryOverhead + int64(len(participantID))
-		}
-		for participantID := range summary.participantCounts {
-			threadSummaryBytes += projectionMapEntryOverhead + int64(len(participantID)) + 8
-		}
+		summaryParticipants += int64(len(summary.participants))
+		threadSummaryBytes += int64(cap(summary.participants))*int64(unsafe.Sizeof(threadParticipant{})) + int64(len(summary.participantIndex))*(projectionCompactMapEntryOverhead+12)
 	}
 	retainedEventIDs := p.replayGuard.retainedEventIDs()
 	appliedEventIDsBytes := estimateStringSetBytes(retainedEventIDs)
 	shreddedUserBytes := estimateStringSetBytes(p.shreddedUsers)
-	var followStateBytes int64
-	for key, state := range p.followState {
-		followStateBytes += projectionMapEntryOverhead + int64(len(key)+len(state))
-	}
+	followStateBytes := int64(len(p.followState)) * (projectionCompactMapEntryOverhead + int64(unsafe.Sizeof(threadFollowKey{})) + 1)
 	var followerBytes, followerRefs int64
-	for key, followers := range p.followers {
-		followerBytes += projectionMapEntryOverhead + int64(len(key))
-		for userID := range followers {
-			followerRefs++
-			followerBytes += projectionMapEntryOverhead + int64(len(userID))
-		}
+	for _, followers := range p.followers {
+		followerRefs += int64(len(followers))
+		followerBytes += projectionCompactMapEntryOverhead + int64(unsafe.Sizeof(threadFollowTarget{})) + projectionSliceEntryOverhead + int64(cap(followers))*4
 	}
 	var followedByUserBytes, followedRefs int64
-	for userID, followed := range p.followedByUser {
-		followedByUserBytes += projectionMapEntryOverhead + int64(len(userID))
-		for key, ref := range followed {
-			followedRefs++
-			followedByUserBytes += projectionMapEntryOverhead + int64(len(key)+len(ref.roomID)+len(ref.threadRootEventID))
-		}
+	for _, followed := range p.followedByUser {
+		followedRefs += int64(len(followed))
+		followedByUserBytes += projectionCompactMapEntryOverhead + 4 + projectionSliceEntryOverhead + int64(cap(followed))*int64(unsafe.Sizeof(threadFollowTarget{}))
 	}
 	channelRoomBytes := estimateStringSetBytes(p.channelRooms)
-	var messageThreadBytes int64
-	for eventID, ref := range p.messageThreads {
-		messageThreadBytes += projectionMapEntryOverhead + int64(len(eventID)+len(ref.roomID)+len(ref.threadRootEventID))
+	idTableBytes := p.principalIDs.estimatedBytes()
+	if !p.sharedEventIDs {
+		idTableBytes += p.eventIDs.estimatedBytes()
 	}
-	var interactionBytes, interactionRefs, interactionCauses int64
-	for userID, byThread := range p.interactions {
-		interactionBytes += projectionMapEntryOverhead + int64(len(userID))
-		for key, interaction := range byThread {
-			interactionRefs++
-			interactionBytes += projectionMapEntryOverhead + int64(len(key))
-			if interaction == nil {
-				continue
-			}
-			interactionBytes += int64(len(interaction.roomID) + len(interaction.threadRootEventID))
-			for causeKey, cause := range interaction.causes {
-				interactionCauses++
-				interactionBytes += projectionMapEntryOverhead + int64(len(causeKey)+len(cause.Kind)+len(cause.SourceEventID)) + 24
-			}
+	var messageRefs int64
+	for _, ref := range p.messageRefs {
+		if ref.room != 0 {
+			messageRefs++
 		}
 	}
+	messageRefBytes := int64(len(p.messageRefs)) * int64(unsafe.Sizeof(threadMessageRef{}))
+	interactionBytes := int64(len(p.interactions)) * (int64(unsafe.Sizeof(threadInteractionKey{})) + 4 + projectionCompactMapEntryOverhead)
 	followBytes := followStateBytes + followerBytes + followedByUserBytes
-	totalEntries := entries + int64(len(p.followState)) + int64(len(p.messageThreads)) + interactionCauses
-	totalBytes := rawBytes + indexBytes + replySummaryBytes + threadSummaryBytes + appliedEventIDsBytes + shreddedUserBytes + followBytes + channelRoomBytes + messageThreadBytes + interactionBytes
+	totalEntries := entries + int64(len(p.followState)) + messageRefs + int64(len(p.interactions))
+	totalBytes := rawBytes + replyBytes + threadSummaryBytes + appliedEventIDsBytes + shreddedUserBytes + followBytes + channelRoomBytes + idTableBytes + messageRefBytes + interactionBytes
 	return totalEntries, totalBytes, []ProjectionAdminMetric{
 		{Name: "threads", Value: int64(len(p.byThread)), Bytes: 0},
 		{Name: "thread_entries", Value: entries, Bytes: rawBytes},
 		{Name: "replies", Value: replies, Bytes: 0},
-		{Name: "message_to_thread_index", Value: int64(len(p.messageToThread)), Bytes: indexBytes},
-		{Name: "reply_summaries", Value: int64(len(p.replySummaries)), Bytes: replySummaryBytes},
-		{Name: "thread_summary_replies", Value: summaryReplies, Bytes: 0},
+		{Name: "reply_summaries", Value: int64(len(p.replyRoots)), Bytes: replyBytes},
 		{Name: "thread_summary_participants", Value: summaryParticipants, Bytes: threadSummaryBytes},
 		{Name: "follow_states", Value: int64(len(p.followState)), Bytes: followStateBytes},
 		{Name: "follower_refs", Value: followerRefs, Bytes: followerBytes},
 		{Name: "followed_thread_refs", Value: followedRefs, Bytes: followedByUserBytes},
 		{Name: "channel_rooms", Value: int64(len(p.channelRooms)), Bytes: channelRoomBytes},
-		{Name: "message_thread_refs", Value: int64(len(p.messageThreads)), Bytes: messageThreadBytes},
-		{Name: "interaction_refs", Value: interactionRefs, Bytes: interactionBytes},
-		{Name: "interaction_causes", Value: interactionCauses, Bytes: 0},
+		{Name: "interned_ids", Value: int64(p.principalIDs.len()) + privateEventIDCount(p.sharedEventIDs, p.eventIDs), Bytes: idTableBytes},
+		{Name: "message_thread_refs", Value: messageRefs, Bytes: messageRefBytes},
+		{Name: "interaction_refs", Value: int64(len(p.interactions)), Bytes: interactionBytes},
 		{Name: "applied_event_ids", Value: int64(len(retainedEventIDs)), Bytes: appliedEventIDsBytes},
 		{Name: "event_id_compatibility_mode", Value: p.replayGuard.compatibilityValue(), Bytes: 0},
 		{Name: "shredded_users", Value: int64(len(p.shreddedUsers)), Bytes: shreddedUserBytes},
@@ -568,39 +546,42 @@ func (p *ReactionProjection) adminProjectionEstimate() (int64, int64, []Projecti
 	p.RLock()
 	defer p.RUnlock()
 	var active, emojiGroups, bytes int64
-	for messageID, byEmoji := range p.byMessage {
-		messageBytes := projectionMapEntryOverhead + int64(len(messageID))
-		for emoji, byUser := range byEmoji {
-			emojiGroups++
-			messageBytes += projectionMapEntryOverhead + int64(len(emoji))
-			for userID := range byUser {
-				active++
-				messageBytes += projectionMapEntryOverhead + int64(len(userID)) + 8
+	for _, reactions := range p.byMessage {
+		bytes += projectionCompactMapEntryOverhead + 4 + projectionSliceEntryOverhead
+		active += int64(len(reactions))
+		bytes += int64(cap(reactions)) * int64(unsafe.Sizeof(reactionProjectionEntry{}))
+		// Reactions are sorted by emoji, so each emoji change starts a group.
+		for i, reaction := range reactions {
+			bytes += int64(len(reaction.source))
+			if i == 0 || reactions[i-1].emoji != reaction.emoji {
+				emojiGroups++
 			}
 		}
-		bytes += messageBytes
 	}
 	var roomSeqBytes int64
 	for roomID := range p.roomSeq {
 		roomSeqBytes += projectionMapEntryOverhead + int64(len(roomID)) + 8
 	}
-	var messageRoomBytes int64
-	for messageID, roomID := range p.messageRoom {
-		messageRoomBytes += projectionMapEntryOverhead + int64(len(messageID)+len(roomID))
+	idTableBytes := p.ids.estimatedBytes()
+	if !p.sharedEventIDs {
+		idTableBytes += p.messages.estimatedBytes()
 	}
+	messageRoomBytes := int64(len(p.messageRooms))*4 + int64(len(p.echoOriginal))*(projectionCompactMapEntryOverhead+8)
 	var assetRoomBytes int64
 	for assetID, roomID := range p.assetRoom {
 		assetRoomBytes += projectionMapEntryOverhead + int64(len(assetID)+len(roomID))
 	}
 	retainedEventIDs := p.replayGuard.retainedEventIDs()
 	seenBytes := estimateStringSetBytes(retainedEventIDs)
-	bytes += roomSeqBytes + messageRoomBytes + assetRoomBytes + seenBytes
+	reactionBytes := bytes
+	bytes += roomSeqBytes + idTableBytes + messageRoomBytes + assetRoomBytes + seenBytes
 	return active, bytes, []ProjectionAdminMetric{
 		{Name: "messages", Value: int64(len(p.byMessage)), Bytes: 0},
 		{Name: "emoji_groups", Value: emojiGroups, Bytes: 0},
-		{Name: "active_reactions", Value: active, Bytes: bytes - roomSeqBytes - messageRoomBytes - assetRoomBytes - seenBytes},
+		{Name: "active_reactions", Value: active, Bytes: reactionBytes},
 		{Name: "room_seq_index", Value: int64(len(p.roomSeq)), Bytes: roomSeqBytes},
-		{Name: "message_room_index", Value: int64(len(p.messageRoom)), Bytes: messageRoomBytes},
+		{Name: "interned_ids", Value: int64(p.ids.len()) + privateEventIDCount(p.sharedEventIDs, p.messages), Bytes: idTableBytes},
+		{Name: "message_room_index", Value: int64(len(p.messageRooms)), Bytes: messageRoomBytes},
 		{Name: "asset_room_index", Value: int64(len(p.assetRoom)), Bytes: assetRoomBytes},
 		{Name: "seen_event_ids", Value: int64(len(retainedEventIDs)), Bytes: seenBytes},
 		{Name: "event_id_compatibility_mode", Value: p.replayGuard.compatibilityValue(), Bytes: 0},
@@ -715,48 +696,38 @@ func (p *UserAuthProjection) adminProjectionEstimate() (int64, int64, []Projecti
 func (p *ContentKeyProjection) adminProjectionEstimate() (int64, int64, []ProjectionAdminMetric) {
 	p.RLock()
 	defer p.RUnlock()
-	var users, purposes, epochs, active, bytes int64
-	for userID, byPurpose := range p.byUserPurposeEpoch {
-		users++
-		bytes += projectionMapEntryOverhead + int64(len(userID))
-		for _, byEpoch := range byPurpose {
-			purposes++
-			bytes += projectionMapEntryOverhead
-			for _, event := range byEpoch {
-				epochs++
-				bytes += projectionMapEntryOverhead
-				if event != nil {
-					bytes += int64(proto.Size(event))
-				}
-			}
-		}
+	users := make(map[uint32]struct{})
+	bytes := p.users.estimatedBytes()
+	for id, record := range p.keys {
+		users[id.user] = struct{}{}
+		bytes += projectionCompactMapEntryOverhead + int64(unsafe.Sizeof(id)+unsafe.Sizeof(record))
+		bytes += int64(len(record.contentKeyRef) + len(record.wrappingKeyRef) + cap(record.wrappingMetadata))
 	}
-	var activeBytes int64
-	for userID, byPurpose := range p.activeEpoch {
-		activeBytes += projectionMapEntryOverhead + int64(len(userID))
-		for range byPurpose {
-			active++
-			activeBytes += projectionMapEntryOverhead + 8
-		}
+	for algorithm := range p.algorithms {
+		bytes += projectionMapEntryOverhead + int64(len(algorithm))
 	}
+	activeBytes := int64(len(p.activeEpoch)) * (projectionCompactMapEntryOverhead + int64(unsafe.Sizeof(contentKeyPurposeID{})) + 4)
 	retainedEventIDs := p.replayGuard.retainedEventIDs()
 	seenBytes := estimateStringSetBytes(retainedEventIDs)
-	bytes += activeBytes + seenBytes
-	return epochs, bytes, []ProjectionAdminMetric{
-		{Name: "users", Value: users, Bytes: 0},
-		{Name: "purposes", Value: purposes, Bytes: 0},
-		{Name: "dek_epochs", Value: epochs, Bytes: bytes - activeBytes - seenBytes},
-		{Name: "active_epochs", Value: active, Bytes: activeBytes},
+	epochs := int64(len(p.keys))
+	total := bytes + activeBytes + seenBytes
+	return epochs, total, []ProjectionAdminMetric{
+		{Name: "users", Value: int64(len(users)), Bytes: 0},
+		{Name: "purposes", Value: int64(len(p.activeEpoch)), Bytes: 0},
+		{Name: "dek_epochs", Value: epochs, Bytes: bytes},
+		{Name: "active_epochs", Value: int64(len(p.activeEpoch)), Bytes: activeBytes},
 		{Name: "seen_event_ids", Value: int64(len(retainedEventIDs)), Bytes: seenBytes},
 		{Name: "event_id_compatibility_mode", Value: p.replayGuard.compatibilityValue(), Bytes: 0},
 	}
 }
 
-func timelineEntryEstimatedBytes(entry *TimelineEntry) int64 {
-	if entry == nil || entry.Event == nil {
-		return projectionSliceEntryOverhead
+// privateEventIDCount returns the number of IDs in a component-owned event ID
+// table. A shared table is counted once by the ServerContentView estimate.
+func privateEventIDCount(shared bool, table *eventIDTable) int64 {
+	if shared {
+		return 0
 	}
-	return projectionSliceEntryOverhead + int64(proto.Size(entry.Event)) + 8
+	return int64(table.len())
 }
 
 func estimateStringSetBytes(values map[string]struct{}) int64 {

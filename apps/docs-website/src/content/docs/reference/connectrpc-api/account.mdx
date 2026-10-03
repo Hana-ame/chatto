@@ -18,58 +18,23 @@ Shared message and enum definitions are documented in [Shared Types And Enums](/
 
 ## MyAccountService
 
-Self-service account, profile, display preference, presence,
-custom-status, external identity, and account lifecycle commands for the
-authenticated user.
+Self-service account, display preference, presence, custom-status,
+external identity, and account lifecycle commands for the authenticated
+user. Public profile and avatar changes use UserService.
 
-<a id="chatto-api-v1-MyAccountService-UpdateProfile"></a>
+<a id="chatto-api-v1-MyAccountService-ChangePassword"></a>
 
-### UpdateProfile
-
-Updates the authenticated user's login, display name, and/or bio.
-
-```http
-POST /api/connect/chatto.api.v1.MyAccountService/UpdateProfile
-```
-
-<a id="chatto-api-v1-UpdateProfileRequest"></a>
-
-#### Input: UpdateProfileRequest
-
-Request to update the authenticated user's profile. Human and bot accounts
-use this same self-service operation. At least one field must be present.
-
-| Field | Type | Description |
-| --- | --- | --- |
-| `display_name` | `optional string` | New display name, when changing it. Empty clears the explicit display name. The server also rejects control and confusing invisible characters. |
-| `login` | `optional string` | New login identifier, when changing it. The server accepts ASCII letters, digits, period, underscore, and hyphen, starting with a letter or digit. |
-| `bio` | `optional string` | New Markdown biography, when changing it. Empty clears the bio. |
-
-
-<a id="chatto-api-v1-UpdateProfileResponse"></a>
-
-#### Result: UpdateProfileResponse
-
-Result of a profile update.
-
-| Field | Type | Description |
-| --- | --- | --- |
-| `user` | [`User`](/reference/connectrpc-api/types/#chatto-api-v1-User) | Updated user profile. |
-
-
-<a id="chatto-api-v1-MyAccountService-UpdatePassword"></a>
-
-### UpdatePassword
+### ChangePassword
 
 Updates or adds the authenticated user's password.
 
 ```http
-POST /api/connect/chatto.api.v1.MyAccountService/UpdatePassword
+POST /api/connect/chatto.api.v1.MyAccountService/ChangePassword
 ```
 
-<a id="chatto-api-v1-UpdatePasswordRequest"></a>
+<a id="chatto-api-v1-ChangePasswordRequest"></a>
 
-#### Input: UpdatePasswordRequest
+#### Input: ChangePasswordRequest
 
 Request to update or add the authenticated user's password.
 
@@ -79,15 +44,190 @@ Request to update or add the authenticated user's password.
 | `current_password` | `string` | Current password. Required when the account already has a password; omitted when adding the first password to a passwordless account. |
 
 
-<a id="chatto-api-v1-UpdatePasswordResponse"></a>
+<a id="chatto-api-v1-ChangePasswordResponse"></a>
 
-#### Result: UpdatePasswordResponse
+#### Result: ChangePasswordResponse
 
 Result of updating or adding the authenticated account password.
 
 | Field | Type | Description |
 | --- | --- | --- |
 | `user` | [`User`](/reference/connectrpc-api/types/#chatto-api-v1-User) | Current authenticated user profile after the password update. |
+
+
+<a id="chatto-api-v1-MyAccountService-ListVerifiedEmails"></a>
+
+### ListVerifiedEmails
+
+Lists the authenticated user's verified email addresses and primary choice.
+Returns FAILED_PRECONDITION when the authenticated account does not match
+expected_user_id.
+
+```http
+POST /api/connect/chatto.api.v1.MyAccountService/ListVerifiedEmails
+```
+
+<a id="chatto-api-v1-ListVerifiedEmailsRequest"></a>
+
+#### Input: ListVerifiedEmailsRequest
+
+Request the authenticated user's verified email addresses. expected_user_id
+binds the request to the account state that the client currently displays.
+The server returns FAILED_PRECONDITION if the authenticated account changed.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `expected_user_id` | `string` | User ID that the client expects to be authenticated. |
+
+
+<a id="chatto-api-v1-ListVerifiedEmailsResponse"></a>
+
+#### Result: ListVerifiedEmailsResponse
+
+Verified email addresses for the authenticated user.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `verified_emails` | repeated [`VerifiedEmail`](/reference/connectrpc-api/types/#chatto-api-v1-VerifiedEmail) | No field description provided. |
+
+
+<a id="chatto-api-v1-MyAccountService-RequestEmailVerification"></a>
+
+### RequestEmailVerification
+
+Sends a six-digit code to an email address that the authenticated user
+wants to add. The code expires after the server-configured email OTP
+lifetime. The client can request a new code after expiry. The server must
+have transactional email enabled. Returns ALREADY_EXISTS when the address
+is already verified for the user, RESOURCE_EXHAUSTED after too many code
+requests or attempts, and UNAVAILABLE when email delivery is disabled or
+fails. Returns FAILED_PRECONDITION when the authenticated account does not
+match expected_user_id.
+
+```http
+POST /api/connect/chatto.api.v1.MyAccountService/RequestEmailVerification
+```
+
+<a id="chatto-api-v1-RequestEmailVerificationRequest"></a>
+
+#### Input: RequestEmailVerificationRequest
+
+Request a short-lived verification code for an email address.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `email` | `string` | New address to verify and add to the authenticated user's account. |
+| `expected_user_id` | `string` | User ID that the client expects to be authenticated. |
+
+
+<a id="chatto-api-v1-RequestEmailVerificationResponse"></a>
+
+#### Result: RequestEmailVerificationResponse
+
+Result of requesting an email verification code.
+
+
+<a id="chatto-api-v1-MyAccountService-ConfirmEmailVerification"></a>
+
+### ConfirmEmailVerification
+
+Confirms a verification code and adds the address to the account. Returns
+INVALID_ARGUMENT when the code is invalid or expired, and ALREADY_EXISTS
+when another user already controls the address. Returns FAILED_PRECONDITION
+when the authenticated account does not match expected_user_id.
+
+```http
+POST /api/connect/chatto.api.v1.MyAccountService/ConfirmEmailVerification
+```
+
+<a id="chatto-api-v1-ConfirmEmailVerificationRequest"></a>
+
+#### Input: ConfirmEmailVerificationRequest
+
+Confirm control of an email address with a verification code.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `email` | `string` | Address that received the verification code. |
+| `code` | `string` | Six-digit code that the server sent to the address. |
+| `expected_user_id` | `string` | User ID that the client expects to be authenticated. |
+
+
+<a id="chatto-api-v1-ConfirmEmailVerificationResponse"></a>
+
+#### Result: ConfirmEmailVerificationResponse
+
+Verified email addresses after a successful confirmation.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `verified_emails` | repeated [`VerifiedEmail`](/reference/connectrpc-api/types/#chatto-api-v1-VerifiedEmail) | No field description provided. |
+
+
+<a id="chatto-api-v1-MyAccountService-SetPrimaryEmail"></a>
+
+### SetPrimaryEmail
+
+Selects one verified address for future account-directed email. Returns
+NOT_FOUND when the address is not verified for the authenticated user, and
+FAILED_PRECONDITION when the authenticated account does not match
+expected_user_id.
+
+```http
+POST /api/connect/chatto.api.v1.MyAccountService/SetPrimaryEmail
+```
+
+<a id="chatto-api-v1-SetPrimaryEmailRequest"></a>
+
+#### Input: SetPrimaryEmailRequest
+
+Select a verified email for account-directed email.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `email` | `string` | Verified address to select as primary. |
+| `expected_user_id` | `string` | User ID that the client expects to be authenticated. |
+
+
+<a id="chatto-api-v1-SetPrimaryEmailResponse"></a>
+
+#### Result: SetPrimaryEmailResponse
+
+Verified email addresses after the primary address changes.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `verified_emails` | repeated [`VerifiedEmail`](/reference/connectrpc-api/types/#chatto-api-v1-VerifiedEmail) | No field description provided. |
+
+
+<a id="chatto-api-v1-MyAccountService-GetSettings"></a>
+
+### GetSettings
+
+Reads the authenticated user's display preferences without changing them.
+Returns default settings when none have been saved.
+
+```http
+POST /api/connect/chatto.api.v1.MyAccountService/GetSettings
+```
+
+<a id="chatto-api-v1-GetSettingsRequest"></a>
+
+#### Input: GetSettingsRequest
+
+Request the authenticated user's display preferences. Human and bot accounts
+use the same operation; no target account ID is accepted.
+
+
+<a id="chatto-api-v1-GetSettingsResponse"></a>
+
+#### Result: GetSettingsResponse
+
+Current display preferences, with defaults for settings not yet saved.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `settings` | [`UserSettings`](/reference/connectrpc-api/types/#chatto-api-v1-UserSettings) | The same settings resource returned by UpdateSettings and GetViewer. |
 
 
 <a id="chatto-api-v1-MyAccountService-UpdateSettings"></a>
@@ -104,14 +244,15 @@ POST /api/connect/chatto.api.v1.MyAccountService/UpdateSettings
 
 #### Input: UpdateSettingsRequest
 
-Request to update the authenticated user's display preferences. Omitted
-fields are left unchanged. An empty timezone clears the explicit timezone.
+Request to patch the authenticated user's display preferences. update_mask
+selects fields to apply or reset. Resetting timezone clears the override.
 
 | Field | Type | Description |
 | --- | --- | --- |
 | `timezone` | `optional string` | IANA timezone override. Empty clears the override. |
-| `time_format` | optional [`TimeFormat`](/reference/connectrpc-api/types/#chatto-api-v1-TimeFormat) | Preferred time format. |
+| `time_format` | optional [`TimeFormat`](/reference/connectrpc-api/types/#chatto-api-v1-TimeFormat) | Preferred time format. UNSPECIFIED restores the automatic format. |
 | `share_timezone` | `optional bool` | Whether the stored time zone may appear on the user's public profile. |
+| `update_mask` | `google.protobuf.FieldMask` | Editable fields to apply or reset: timezone, time_format, share_timezone. Omit to infer populated fields; * selects all editable fields. An explicit empty mask is invalid. Unselected values are ignored. Selected absent values reset the field to its default, subject to field validation. |
 
 
 <a id="chatto-api-v1-UpdateSettingsResponse"></a>
@@ -219,38 +360,35 @@ Request to disconnect a linked provider identity from the authenticated user.
 
 Result of disconnecting a provider identity.
 
-| Field | Type | Description |
-| --- | --- | --- |
-| `disconnected` | `bool` | True when the identity was disconnected. |
 
+<a id="chatto-api-v1-MyAccountService-SetPresence"></a>
 
-<a id="chatto-api-v1-MyAccountService-UpdatePresence"></a>
+### SetPresence
 
-### UpdatePresence
-
-Updates the current user's live presence status. This state is transient:
-clients should refresh it periodically while visible, and should stop
-calling this RPC when the user chooses to appear offline.
+Legacy live presence report, expiring after 60 seconds without refresh.
+A saved private choice overrides this report, including user_selected.
+New clients use SetPresencePreference for choices and RefreshPresence
+every 30 seconds for liveness.
 
 ```http
-POST /api/connect/chatto.api.v1.MyAccountService/UpdatePresence
+POST /api/connect/chatto.api.v1.MyAccountService/SetPresence
 ```
 
-<a id="chatto-api-v1-UpdatePresenceRequest"></a>
+<a id="chatto-api-v1-SetPresenceRequest"></a>
 
-#### Input: UpdatePresenceRequest
+#### Input: SetPresenceRequest
 
-Request to update the current user's live presence status.
+Legacy live report. A saved private choice takes precedence over this report.
 
 | Field | Type | Description |
 | --- | --- | --- |
 | `status` | [`PresenceStatus`](/reference/connectrpc-api/types/#chatto-api-v1-PresenceStatus) | Live status to store for the authenticated user. Offline is rejected. |
-| `user_selected` | `bool` | True when this update comes from a deliberate user selection rather than automatic idle/refresh updates. Automatic updates do not overwrite an active manually selected Away or Do Not Disturb status from another client. |
+| `user_selected` | `bool` | Legacy manual-selection flag. It cannot replace a saved private choice. New clients use SetPresencePreference for explicit selections. |
 
 
-<a id="chatto-api-v1-UpdatePresenceResponse"></a>
+<a id="chatto-api-v1-SetPresenceResponse"></a>
 
-#### Result: UpdatePresenceResponse
+#### Result: SetPresenceResponse
 
 Result of updating live presence.
 
@@ -259,22 +397,116 @@ Result of updating live presence.
 | `status` | [`PresenceStatus`](/reference/connectrpc-api/types/#chatto-api-v1-PresenceStatus) | Reportable status accepted and stored by the server. |
 
 
-<a id="chatto-api-v1-MyAccountService-UpdateCustomStatus"></a>
+<a id="chatto-api-v1-MyAccountService-GetPresencePreference"></a>
 
-### UpdateCustomStatus
+### GetPresencePreference
 
-Updates or replaces the current user's custom status. Emoji and text are
-required, and expires_at must be omitted or in the future.
+Reads the authenticated account's private saved availability choice.
 
 ```http
-POST /api/connect/chatto.api.v1.MyAccountService/UpdateCustomStatus
+POST /api/connect/chatto.api.v1.MyAccountService/GetPresencePreference
 ```
 
-<a id="chatto-api-v1-UpdateCustomStatusRequest"></a>
+<a id="chatto-api-v1-GetPresencePreferenceRequest"></a>
 
-#### Input: UpdateCustomStatusRequest
+#### Input: GetPresencePreferenceRequest
 
-Request to update or replace the current user's custom status.
+Read the authenticated account's own choice; accepts no other user ID.
+
+
+<a id="chatto-api-v1-GetPresencePreferenceResponse"></a>
+
+#### Result: GetPresencePreferenceResponse
+
+Current private choice, or absence before first initialization.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `preference` | [`PresencePreference`](/reference/connectrpc-api/types/#chatto-api-v1-PresencePreference) | Absent until the account first saves a choice. |
+
+
+<a id="chatto-api-v1-MyAccountService-SetPresencePreference"></a>
+
+### SetPresencePreference
+
+Saves a choice for all devices on this server. A stale revision returns ABORTED.
+OFFLINE suppresses public presence and typing; the choice survives disconnects.
+
+```http
+POST /api/connect/chatto.api.v1.MyAccountService/SetPresencePreference
+```
+
+<a id="chatto-api-v1-SetPresencePreferenceRequest"></a>
+
+#### Input: SetPresencePreferenceRequest
+
+An explicit selection. Heartbeats must not call this operation.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `status` | [`PresenceStatus`](/reference/connectrpc-api/types/#chatto-api-v1-PresenceStatus) | Explicit new choice for every device on this server. |
+| `expected_revision` | `string` | Revision from the last read; empty only when initializing an absent choice. |
+
+
+<a id="chatto-api-v1-SetPresencePreferenceResponse"></a>
+
+#### Result: SetPresencePreferenceResponse
+
+Acknowledged current choice after the selection commits.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `preference` | [`PresencePreference`](/reference/connectrpc-api/types/#chatto-api-v1-PresencePreference) | No field description provided. |
+
+
+<a id="chatto-api-v1-MyAccountService-RefreshPresence"></a>
+
+### RefreshPresence
+
+Refreshes connection liveness without changing the saved choice. Clients call
+every 30 seconds; liveness expires after 60 seconds without a refresh.
+Accounts with a saved OFFLINE choice may refresh without public presence signals.
+
+```http
+POST /api/connect/chatto.api.v1.MyAccountService/RefreshPresence
+```
+
+<a id="chatto-api-v1-RefreshPresenceRequest"></a>
+
+#### Input: RefreshPresenceRequest
+
+Refresh the authenticated account's liveness without supplying a choice.
+
+
+<a id="chatto-api-v1-RefreshPresenceResponse"></a>
+
+#### Result: RefreshPresenceResponse
+
+Current private choice after refreshing liveness.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `preference` | [`PresencePreference`](/reference/connectrpc-api/types/#chatto-api-v1-PresencePreference) | Private saved choice; clients use this to recover missed device updates. |
+
+
+<a id="chatto-api-v1-MyAccountService-SetCustomStatus"></a>
+
+### SetCustomStatus
+
+Sets the current user's complete custom status. Emoji and text are required.
+Omit expires_at for no expiry, or supply a future time.
+
+```http
+POST /api/connect/chatto.api.v1.MyAccountService/SetCustomStatus
+```
+
+<a id="chatto-api-v1-SetCustomStatusRequest"></a>
+
+#### Input: SetCustomStatusRequest
+
+Request to replace the current user's complete custom status. Emoji and text
+are required. Omitted expires_at removes any previous expiry. Use
+DeleteCustomStatus to clear the status.
 
 | Field | Type | Description |
 | --- | --- | --- |
@@ -283,11 +515,11 @@ Request to update or replace the current user's custom status.
 | `expires_at` | `google.protobuf.Timestamp` | Optional future time after which clients should stop showing the status. |
 
 
-<a id="chatto-api-v1-UpdateCustomStatusResponse"></a>
+<a id="chatto-api-v1-SetCustomStatusResponse"></a>
 
-#### Result: UpdateCustomStatusResponse
+#### Result: SetCustomStatusResponse
 
-Result of updating the current user's custom status.
+Result of setting the current user's complete custom status.
 
 | Field | Type | Description |
 | --- | --- | --- |
@@ -380,7 +612,3 @@ Request to permanently delete the authenticated account.
 #### Result: DeleteMyAccountResponse
 
 Result of deleting the authenticated account.
-
-| Field | Type | Description |
-| --- | --- | --- |
-| `deleted` | `bool` | True when the account was deleted. |

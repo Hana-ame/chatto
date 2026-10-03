@@ -35,7 +35,7 @@ func (s *userService) ListUsers(ctx context.Context, req *connect.Request[apiv1.
 	limit, offset := userDirectoryPagination(req.Msg.GetPage())
 	members, totalCount, err := s.api.core.GetServerMembers(ctx, req.Msg.GetSearch(), limit, offset)
 	if err != nil {
-		return nil, connectError(err)
+		return nil, err
 	}
 
 	out := make([]*apiv1.DirectoryMember, 0, len(members))
@@ -47,7 +47,7 @@ func (s *userService) ListUsers(ctx context.Context, req *connect.Request[apiv1.
 				skipped++
 				continue
 			}
-			return nil, connectError(err)
+			return nil, err
 		}
 		apiMember, err := directoryMember(ctx, s.api, user, member.Roles)
 		if err != nil {
@@ -82,7 +82,7 @@ func (s *userService) GetUser(ctx context.Context, req *connect.Request[apiv1.Ge
 		return nil, invalidArgument("user_id or login is required")
 	}
 	if err != nil {
-		return nil, connectError(err)
+		return nil, err
 	}
 	member, err := serverMemberForUser(ctx, s.api, user)
 	if err != nil {
@@ -97,23 +97,42 @@ func (s *userService) BatchGetUsers(ctx context.Context, req *connect.Request[ap
 	}
 
 	seen := make(map[string]struct{}, len(req.Msg.GetUserIds()))
-	members := make([]*apiv1.DirectoryMember, 0, len(req.Msg.GetUserIds()))
+	ids := make([]string, 0, len(req.Msg.GetUserIds()))
 	for _, userID := range req.Msg.GetUserIds() {
 		if _, ok := seen[userID]; ok {
 			continue
 		}
 		seen[userID] = struct{}{}
-
-		member, err := serverMember(ctx, s.api, userID)
-		if err != nil {
-			if connect.CodeOf(err) == connect.CodeNotFound {
-				continue
-			}
-			return nil, err
-		}
-		members = append(members, member)
+		ids = append(ids, userID)
+	}
+	members, err := (&directoryUserAssembler{api: s.api}).assemble(ctx, ids)
+	if err != nil {
+		return nil, err
 	}
 	return connect.NewResponse(&apiv1.BatchGetUsersResponse{Users: members}), nil
+}
+
+func (s *userService) UpdateUserProfile(ctx context.Context, req *connect.Request[apiv1.UpdateUserProfileRequest]) (*connect.Response[apiv1.UpdateUserProfileResponse], error) {
+	caller, err := requireCaller(ctx)
+	if err != nil {
+		return nil, err
+	}
+	req.Msg, err = normalizeUpdateMask(req.Msg)
+	if err != nil {
+		return nil, err
+	}
+	if req.Msg.GetUserId() == "" {
+		return nil, invalidArgument("user_id is required")
+	}
+	updated, err := s.api.core.UpdateManagedUserProfile(ctx, caller.UserID, req.Msg.GetUserId(), req.Msg.Login, req.Msg.DisplayName, req.Msg.Bio)
+	if err != nil {
+		return nil, err
+	}
+	user, err := requiredUserSummary(ctx, s.api, updated)
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(&apiv1.UpdateUserProfileResponse{User: user}), nil
 }
 
 func (s *userService) UploadAvatar(ctx context.Context, req *connect.Request[apiv1.UploadAvatarRequest]) (*connect.Response[apiv1.UploadAvatarResponse], error) {
@@ -130,7 +149,7 @@ func (s *userService) UploadAvatar(ctx context.Context, req *connect.Request[api
 	}
 	user, err := s.api.core.UpdateUserAvatar(ctx, caller.UserID, req.Msg.GetUserId(), bytes.NewReader(image.GetImage()))
 	if err != nil {
-		return nil, connectError(err)
+		return nil, err
 	}
 	responseUser, err := requiredUserSummary(ctx, s.api, user)
 	if err != nil {
@@ -149,7 +168,7 @@ func (s *userService) DeleteAvatar(ctx context.Context, req *connect.Request[api
 	}
 	user, err := s.api.core.ClearUserAvatar(ctx, caller.UserID, req.Msg.GetUserId())
 	if err != nil {
-		return nil, connectError(err)
+		return nil, err
 	}
 	responseUser, err := requiredUserSummary(ctx, s.api, user)
 	if err != nil {
@@ -158,93 +177,87 @@ func (s *userService) DeleteAvatar(ctx context.Context, req *connect.Request[api
 	return connect.NewResponse(&apiv1.DeleteAvatarResponse{User: responseUser}), nil
 }
 
-func (s *roomService) ListMembers(ctx context.Context, req *connect.Request[apiv1.ListRoomMembersRequest]) (*connect.Response[apiv1.ListRoomMembersResponse], error) {
+func (s *roomService) ListMembers(ctx context.Context, req *connect.Request[apiv1.ListMembersRequest]) (*connect.Response[apiv1.ListMembersResponse], error) {
 	caller, err := requireCaller(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	users, err := s.api.core.ListRoomMemberReferencesForList(ctx, caller.UserID, req.Msg.GetRoomId())
+	ids, err := s.api.core.ListActiveRoomMemberIDs(ctx, caller.UserID, req.Msg.GetRoomId())
 	if err != nil {
-		return nil, connectError(err)
+		return nil, err
 	}
 
 	query := strings.ToLower(strings.TrimSpace(req.Msg.GetSearch()))
 	if query != "" {
-		filtered := users[:0]
-		for _, user := range users {
-			if strings.Contains(strings.ToLower(user.GetLogin()), query) ||
-				strings.Contains(strings.ToLower(user.GetDisplayName()), query) {
-				filtered = append(filtered, user)
-			}
-		}
-		users = filtered
-	}
-
-	sort.Slice(users, func(i, j int) bool {
-		left := strings.ToLower(users[i].GetDisplayName())
-		right := strings.ToLower(users[j].GetDisplayName())
-		if left == right {
-			return strings.ToLower(users[i].GetLogin()) < strings.ToLower(users[j].GetLogin())
-		}
-		return left < right
-	})
-
-	limit, offset := roomMemberDirectoryPagination(req.Msg.GetPage())
-	page, totalCount, hasMore := paginateDirectoryUsers(users, limit, offset)
-	userIDs := make([]string, len(page))
-	for i, user := range page {
-		userIDs[i] = user.GetId()
-	}
-	presences, err := s.api.core.GetUserPresences(ctx, userIDs)
-	if err != nil {
-		return nil, connectError(err)
-	}
-	out := make([]*apiv1.DirectoryMember, 0, len(page))
-	for _, user := range page {
-		apiMember, err := directoryMemberWithPresence(ctx, s.api, user, nil, presences[user.GetId()])
+		users, err := s.api.core.ListRoomMemberReferencesForList(ctx, caller.UserID, req.Msg.GetRoomId())
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, apiMember)
+		ids = ids[:0]
+		for _, user := range users {
+			if strings.Contains(strings.ToLower(user.GetLogin()), query) ||
+				strings.Contains(strings.ToLower(user.GetDisplayName()), query) {
+				ids = append(ids, user.GetId())
+			}
+		}
 	}
-
-	return connect.NewResponse(&apiv1.ListRoomMembersResponse{
-		Members: out,
+	if len(req.Msg.GetPresenceStatuses()) > 0 {
+		presences, err := s.api.core.GetUserPresences(ctx, ids)
+		if err != nil {
+			return nil, err
+		}
+		wanted := make(map[apiv1.PresenceStatus]bool, len(req.Msg.GetPresenceStatuses()))
+		for _, status := range req.Msg.GetPresenceStatuses() {
+			wanted[status] = true
+		}
+		filtered := ids[:0]
+		for _, id := range ids {
+			if wanted[corePresenceStatusToAPI(presences[id])] {
+				filtered = append(filtered, id)
+			}
+		}
+		ids = filtered
+	}
+	sort.Strings(ids)
+	limit, offset := roomMemberDirectoryPagination(req.Msg.GetPage())
+	page, totalCount, hasMore := paginateDirectoryIDs(ids, limit, offset)
+	return connect.NewResponse(&apiv1.ListMembersResponse{
+		UserIds: page,
 		Page:    apiPageInfo(totalCount, hasMore),
 	}), nil
 }
 
-func (s *roomService) GetMember(ctx context.Context, req *connect.Request[apiv1.GetRoomMemberRequest]) (*connect.Response[apiv1.GetRoomMemberResponse], error) {
+func (s *roomService) GetMember(ctx context.Context, req *connect.Request[apiv1.GetMemberRequest]) (*connect.Response[apiv1.GetMemberResponse], error) {
 	caller, err := requireCaller(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	users, err := s.api.core.ListRoomMemberReferencesForLookup(ctx, caller.UserID, req.Msg.GetRoomId())
+	users, err := s.api.core.GetRoomMemberReferencesForLookup(ctx, caller.UserID, req.Msg.GetRoomId(), []string{req.Msg.GetUserId()})
 	if err != nil {
-		return nil, connectError(err)
+		return nil, err
 	}
 	user := findCoreUserByID(users, req.Msg.GetUserId())
 	if user == nil {
-		return nil, connectError(core.ErrNotFound)
+		return nil, core.ErrNotFound
 	}
 	member, err := directoryMember(ctx, s.api, user, nil)
 	if err != nil {
 		return nil, err
 	}
-	return connect.NewResponse(&apiv1.GetRoomMemberResponse{Member: member}), nil
+	return connect.NewResponse(&apiv1.GetMemberResponse{Member: member}), nil
 }
 
-func (s *roomService) BatchGetMembers(ctx context.Context, req *connect.Request[apiv1.BatchGetRoomMembersRequest]) (*connect.Response[apiv1.BatchGetRoomMembersResponse], error) {
+func (s *roomService) BatchGetMembers(ctx context.Context, req *connect.Request[apiv1.BatchGetMembersRequest]) (*connect.Response[apiv1.BatchGetMembersResponse], error) {
 	caller, err := requireCaller(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	users, err := s.api.core.ListRoomMemberReferencesForLookup(ctx, caller.UserID, req.Msg.GetRoomId())
+	users, err := s.api.core.GetRoomMemberReferencesForLookup(ctx, caller.UserID, req.Msg.GetRoomId(), req.Msg.GetUserIds())
 	if err != nil {
-		return nil, connectError(err)
+		return nil, err
 	}
 	usersByID := make(map[string]*evtv1.User, len(users))
 	for _, user := range users {
@@ -269,21 +282,13 @@ func (s *roomService) BatchGetMembers(ctx context.Context, req *connect.Request[
 		}
 		members = append(members, member)
 	}
-	return connect.NewResponse(&apiv1.BatchGetRoomMembersResponse{Members: members}), nil
-}
-
-func serverMember(ctx context.Context, api *API, userID string) (*apiv1.DirectoryMember, error) {
-	user, err := api.core.GetUser(ctx, userID)
-	if err != nil {
-		return nil, connectError(err)
-	}
-	return serverMemberForUser(ctx, api, user)
+	return connect.NewResponse(&apiv1.BatchGetMembersResponse{Members: members}), nil
 }
 
 func serverMemberForUser(ctx context.Context, api *API, user *evtv1.User) (*apiv1.DirectoryMember, error) {
 	assigned, err := api.core.GetUserRoles(ctx, user.GetId())
 	if err != nil {
-		return nil, connectError(err)
+		return nil, err
 	}
 	var roles []string
 	if !user.GetIsBot() {
@@ -295,7 +300,7 @@ func serverMemberForUser(ctx context.Context, api *API, user *evtv1.User) (*apiv
 func directoryMember(ctx context.Context, api *API, user *evtv1.User, roles []string) (*apiv1.DirectoryMember, error) {
 	presence, err := api.core.GetUserPresence(ctx, user.GetId())
 	if err != nil {
-		return nil, connectError(err)
+		return nil, err
 	}
 	return directoryMemberWithPresence(ctx, api, user, roles, presence)
 }
@@ -329,14 +334,9 @@ func findCoreUserByID(users []*evtv1.User, userID string) *evtv1.User {
 	return nil
 }
 
-func paginateDirectoryUsers(users []*evtv1.User, limit, offset int) ([]*evtv1.User, int, bool) {
-	total := len(users)
-	if offset >= total {
-		return []*evtv1.User{}, total, false
-	}
-	end := offset + limit
-	if end > total {
-		end = total
-	}
-	return users[offset:end], total, end < total
+func paginateDirectoryIDs(ids []string, limit, offset int) ([]string, int, bool) {
+	total := len(ids)
+	start := min(offset, total)
+	end := start + min(limit, total-start)
+	return ids[start:end], total, end < total
 }

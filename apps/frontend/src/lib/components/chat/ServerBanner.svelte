@@ -1,16 +1,16 @@
 <script lang="ts">
-  import SkeletonImg from '$lib/ui/SkeletonImg.svelte';
   import { m } from '$lib/i18n/messages';
 
   let { url }: { url: string } = $props();
 </script>
 
-<div class="w-full p-2">
-  <div class="relative aspect-[1200/630] max-h-32 w-full overflow-hidden rounded-lg bg-surface">
-    <SkeletonImg
-      src={url}
-      alt={m('media.server_banner_alt')}
-      class="absolute inset-0 h-full w-full rounded-lg object-cover shadow-lg"
-    />
-  </div>
+<!-- @component Full-width server artwork separated from the sidebar navigation. -->
+<div class="w-full border-b border-border bg-surface">
+  <img
+    src={url}
+    alt={m('media.server_banner_alt')}
+    class="block h-auto w-full"
+    onload={(event) => ((event.currentTarget as HTMLImageElement).style.display = '')}
+    onerror={(event) => ((event.currentTarget as HTMLImageElement).style.display = 'none')}
+  />
 </div>

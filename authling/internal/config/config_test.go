@@ -124,6 +124,18 @@ func TestValidateAllowsPlainHTTPPublicURLOnlyOnLoopback(t *testing.T) {
 			t.Fatalf("Validate(%q): %v", bindAddress, err)
 		}
 	}
+	for _, publicURL := range []string{"http://authling.feature.localhost:8080", "http://Feature-1.LOCALHOST:8080"} {
+		cfg := Config{HTTP: HTTPConfig{BindAddress: "127.0.0.1:8080", PublicURL: publicURL}, NATS: validNATS}
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("Validate(%q): %v", publicURL, err)
+		}
+	}
+	for _, publicURL := range []string{"http://localhost.example:8080", "http://evil-localhost:8080", "http://-bad.localhost:8080", "http://a..localhost:8080", "http://under_score.localhost:8080"} {
+		cfg := Config{HTTP: HTTPConfig{BindAddress: "127.0.0.1:8080", PublicURL: publicURL}, NATS: validNATS}
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "plain HTTP") {
+			t.Fatalf("Validate(%q) error = %v, want public-origin error", publicURL, err)
+		}
+	}
 	cfg := Config{HTTP: HTTPConfig{BindAddress: "127.0.0.1:8080", PublicURL: "https://authling.example"}, NATS: validNATS}
 	if err := cfg.Validate(); err != nil || !cfg.HTTP.SecureCookies() {
 		t.Fatalf("HTTPS proxy config validation = %v, SecureCookies = %v", err, cfg.HTTP.SecureCookies())
@@ -215,6 +227,26 @@ func TestValidateOIDCConventionalClients(t *testing.T) {
 	}
 }
 
+func TestValidateOIDCConventionalClientsAllowNamedLoopbackRedirectsInLoopbackDevelopment(t *testing.T) {
+	validNATS := NATSConfig{Embedded: EmbeddedNATSConfig{Enabled: true, DataDir: t.TempDir()}}
+	client := OIDCClientConfig{ID: "client", Name: "Client", Secret: strings.Repeat("s", 32), RedirectURIs: []string{"http://chatto.feature.localhost:4000/callback"}}
+	cfg := Config{HTTP: HTTPConfig{BindAddress: "127.0.0.1:8080", PublicURL: "http://authling.feature.localhost:8080"}, NATS: validNATS, OIDC: OIDCConfig{Clients: []OIDCClientConfig{client}}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("named loopback development client: %v", err)
+	}
+
+	cfg.HTTP.PublicURL = "https://auth.example"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "redirect_uris") {
+		t.Fatalf("HTTPS issuer accepted a plain-HTTP named loopback redirect: %v", err)
+	}
+
+	cfg.HTTP.PublicURL = "http://authling.feature.localhost:8080"
+	cfg.OIDC.Clients[0].RedirectURIs = []string{"http://chatto.localhost.example:4000/callback"}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "redirect_uris") {
+		t.Fatalf("loopback issuer accepted a plain-HTTP non-loopback redirect: %v", err)
+	}
+}
+
 func TestValidateCIMDTrustedPrivateHosts(t *testing.T) {
 	validNATS := NATSConfig{Embedded: EmbeddedNATSConfig{Enabled: true, DataDir: t.TempDir()}}
 	cfg := Config{NATS: validNATS, OIDC: OIDCConfig{
@@ -243,5 +275,93 @@ func TestValidateCIMDTrustedPrivateHosts(t *testing.T) {
 	cfg.OIDC.CIMDTrustedLoopbackHosts = []string{"CHATTO-DEV.LOCALHOST."}
 	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "cimd_trusted_loopback_hosts") {
 		t.Fatalf("cross-list duplicate validation error = %v", err)
+	}
+}
+
+func TestClientPKCEConfiguration(t *testing.T) {
+	for _, tc := range []struct {
+		name, secret, setting   string
+		wantError, wantRequired bool
+	}{
+		{"default public", "", "", false, true},
+		{"default confidential", strings.Repeat("s", 32), "", false, true},
+		{"explicit required", strings.Repeat("s", 32), "require_pkce = true", false, true},
+		{"confidential exception", strings.Repeat("s", 32), "require_pkce = false", false, false},
+		{"public exception rejected", "", "require_pkce = false", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			file := filepath.Join(t.TempDir(), "authling.toml")
+			data := "[nats.embedded]\nenabled = true\n[[oidc.clients]]\nid = 'test'\nname = 'Test'\nredirect_uris = ['https://client.example/callback']\nsecret = '" + tc.secret + "'\n" + tc.setting + "\n"
+			if err := os.WriteFile(file, []byte(data), 0600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Read(file)
+			if tc.wantError {
+				if err == nil || !strings.Contains(err.Error(), "require_pkce") {
+					t.Fatal("public PKCE exception was not rejected")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			required := cfg.OIDC.Clients[0].RequirePKCE
+			if (required == nil || *required) != tc.wantRequired {
+				t.Fatal("incorrect PKCE default")
+			}
+		})
+	}
+}
+
+func TestUnregisteredClientAdmissionConfiguration(t *testing.T) {
+	for _, tc := range []struct {
+		name, setting, override string
+		enabled                 bool
+	}{
+		{"default", "", "", false},
+		{"toml opt in", "allow_unregistered_clients = true", "", true},
+		{"environment opt in", "", "true", true},
+		{"environment opt out", "allow_unregistered_clients = true", "false", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("AUTHLING_OIDC_ALLOW_UNREGISTERED_CLIENTS", tc.override)
+			file := filepath.Join(t.TempDir(), "authling.toml")
+			if err := os.WriteFile(file, []byte("[nats.embedded]\nenabled = true\n[oidc]\n"+tc.setting+"\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Read(file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.OIDC.AllowUnregisteredClients != tc.enabled {
+				t.Fatal("incorrect CIMD opt-in state")
+			}
+		})
+	}
+}
+
+func TestSMTPConfigInsecureTransportSettings(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  SMTPConfig
+		want []string
+	}{
+		{name: "disabled SMTP reports nothing", cfg: SMTPConfig{TLS: SMTPTLSOpportunistic, TLSSkipVerify: true}},
+		{name: "default policy is secure", cfg: SMTPConfig{Enabled: true, Port: 587}},
+		{name: "implicit TLS is secure", cfg: SMTPConfig{Enabled: true, Port: 465}},
+		{name: "opportunistic TLS", cfg: SMTPConfig{Enabled: true, Port: 587, TLS: SMTPTLSOpportunistic}, want: []string{"smtp.tls=opportunistic"}},
+		{name: "skip verify", cfg: SMTPConfig{Enabled: true, Port: 587, TLSSkipVerify: true}, want: []string{"smtp.tls_skip_verify=true"}},
+		{
+			name: "both settings report key names only",
+			cfg:  SMTPConfig{Enabled: true, Host: "smtp.example.com", Port: 587, TLS: SMTPTLSOpportunistic, TLSSkipVerify: true, Username: "user@example.com", From: "noreply@example.com"},
+			want: []string{"smtp.tls=opportunistic", "smtp.tls_skip_verify=true"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := strings.Join(tt.cfg.InsecureTransportSettings(), ","); got != strings.Join(tt.want, ",") {
+				t.Fatalf("InsecureTransportSettings() = %q, want %q", got, strings.Join(tt.want, ","))
+			}
+		})
 	}
 }

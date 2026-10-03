@@ -5,7 +5,10 @@
 
   const componentDescription = `
     Use Dialog for focused overlays that need custom body content. Use FormDialog for submit/cancel
-    forms and ConfirmDialog for destructive or high-risk confirmations.
+    forms and ConfirmDialog for destructive or high-risk confirmations. The padded outer frame
+    has subtle lighting; the solid content surface has a soft inset shadow to give it depth.
+    Narrow touch-capable windows use task sheets. Mouse windows and wide touch screens use
+    centred dialogs. Resize the viewport and emulate touch to compare both presentations.
   `.trim();
 
   const { Story } = defineMeta({
@@ -25,11 +28,25 @@
   let dialogWithoutTitleVisible = $state(false);
   let smallDialogVisible = $state(false);
   let largeDialogVisible = $state(false);
+  let extraLargeDialogVisible = $state(false);
   let dialogWithFooterVisible = $state(false);
   let referenceDialogVisible = $state(false);
   let longDialogVisible = $state(false);
-  let narrowDialogVisible = $state(false);
+  let adaptiveDialogVisible = $state(false);
 </script>
+
+<Story name="Extra large document viewer" asChild>
+  <Button onclick={() => (extraLargeDialogVisible = true)}>Open document viewer</Button>
+  <Dialog bind:visible={extraLargeDialogVisible} title="project-report.html" size="xl">
+    <div class="flex h-[60dvh] items-center justify-center text-muted">Document preview area</div>
+    {#snippet footerDetails()}
+      <p class="text-muted">HTML document · 24 KiB</p>
+    {/snippet}
+    {#snippet footer()}
+      <Button variant="secondary" onclick={() => (extraLargeDialogVisible = false)}>Close</Button>
+    {/snippet}
+  </Dialog>
+</Story>
 
 <Story
   name="Default (with title)"
@@ -46,9 +63,7 @@
 
   <Dialog bind:visible={dialogVisible} title="Dialog Title">
     <p>This is the dialog content. It can contain any elements you want.</p>
-    <p class="mt-2">
-      Click outside the dialog to dismiss it. The dialog uses a blurred background overlay.
-    </p>
+    <p class="mt-2">Click outside the dialog to dismiss it. The dialog dims the background.</p>
   </Dialog>
 </Story>
 
@@ -67,17 +82,21 @@
   <Button onclick={() => (referenceDialogVisible = true)}>Open sign-out dialog</Button>
 
   <Dialog bind:visible={referenceDialogVisible} title="Sign Out" size="md">
-    <p class="text-muted">
+    <p class="text-pretty">
       Sign out of only the selected server, or disconnect every server from this client.
     </p>
 
-    {#snippet footer()}
+    {#snippet dismissAction()}
       <Button variant="secondary" onclick={() => (referenceDialogVisible = false)}>Cancel</Button>
+    {/snippet}
+    {#snippet primaryAction()}
       <Button defaultAction onclick={() => (referenceDialogVisible = false)}>
         <span class="iconify icon-[uil--sign-out-alt]"></span>
         Current Server
       </Button>
-      <Button variant="danger" onclick={() => (referenceDialogVisible = false)}>
+    {/snippet}
+    {#snippet secondaryActions()}
+      <Button variant="danger-secondary" onclick={() => (referenceDialogVisible = false)}>
         <span class="iconify icon-[uil--signout]"></span>
         All Servers
       </Button>
@@ -99,7 +118,7 @@
   <Button onclick={() => (longDialogVisible = true)}>Open long dialog</Button>
 
   <Dialog bind:visible={longDialogVisible} title="Review Changes" size="md">
-    <div class="flex flex-col gap-4 text-muted">
+    <div class="flex flex-col gap-4 text-pretty">
       {#each Array(14) as _, index (index)}
         <p>
           Change {index + 1}: Review this item before you apply the configuration to the server.
@@ -107,8 +126,10 @@
       {/each}
     </div>
 
-    {#snippet footer()}
+    {#snippet dismissAction()}
       <Button variant="secondary" onclick={() => (longDialogVisible = false)}>Cancel</Button>
+    {/snippet}
+    {#snippet primaryAction()}
       <Button defaultAction onclick={() => (longDialogVisible = false)}>
         <span class="iconify icon-[uil--check]"></span>
         Apply Changes
@@ -118,30 +139,37 @@
 </Story>
 
 <Story
-  name="Narrow action truncation"
+  name="Adaptive action width"
   asChild
   parameters={{
     docs: {
       description: {
         story:
-          'Resize the canvas to a narrow viewport. Actions stay in one row and long labels truncate before the row can wrap.'
+          'German action labels expand the desktop dialog. Below 768 px, touch-capable windows use a sheet with full-width actions and complete, wrapping labels. Mouse windows retain the centred dialog.'
       }
     }
   }}
 >
-  <Button onclick={() => (narrowDialogVisible = true)}>Open narrow dialog</Button>
+  <Button onclick={() => (adaptiveDialogVisible = true)}>Open adaptive dialog</Button>
 
-  <Dialog bind:visible={narrowDialogVisible} title="Choose Destination" size="md">
-    <p class="text-muted">Choose where Chatto should post this message.</p>
+  <Dialog bind:visible={adaptiveDialogVisible} title="Im vorherigen Thread fortfahren?" size="md">
+    <p class="text-pretty">
+      Deine vorherige Nachricht hat bereits einen Thread. Wohin soll diese Nachricht gesendet
+      werden?
+    </p>
 
-    {#snippet footer()}
-      <Button variant="secondary" onclick={() => (narrowDialogVisible = false)}>Cancel</Button>
-      <Button variant="secondary" onclick={() => (narrowDialogVisible = false)}>
-        Post as a Completely New Message
+    {#snippet dismissAction()}
+      <Button variant="secondary" onclick={() => (adaptiveDialogVisible = false)}>Abbrechen</Button>
+    {/snippet}
+    {#snippet secondaryActions()}
+      <Button variant="secondary" onclick={() => (adaptiveDialogVisible = false)}>
+        Als neue Nachricht senden
       </Button>
-      <Button defaultAction onclick={() => (narrowDialogVisible = false)}>
+    {/snippet}
+    {#snippet primaryAction()}
+      <Button defaultAction onclick={() => (adaptiveDialogVisible = false)}>
         <span class="iconify icon-[uil--comment-alt-lines]"></span>
-        Continue in the Existing Thread
+        Im Thread fortfahren
       </Button>
     {/snippet}
   </Dialog>
@@ -217,17 +245,19 @@
   <Button onclick={() => (dialogWithFooterVisible = true)}>Open Dialog With Footer</Button>
 
   <Dialog bind:visible={dialogWithFooterVisible} title="Continue your previous thread?" size="md">
-    <p class="text-muted">
+    <p class="text-pretty">
       Your previous message already has a thread. Where should this message go?
     </p>
 
-    {#snippet footer()}
-      <Button variant="secondary" onclick={() => (dialogWithFooterVisible = false)}>
-        Cancel
-      </Button>
+    {#snippet dismissAction()}
+      <Button variant="secondary" onclick={() => (dialogWithFooterVisible = false)}>Cancel</Button>
+    {/snippet}
+    {#snippet secondaryActions()}
       <Button variant="secondary" onclick={() => (dialogWithFooterVisible = false)}>
         Post as new message
       </Button>
+    {/snippet}
+    {#snippet primaryAction()}
       <Button defaultAction onclick={() => (dialogWithFooterVisible = false)}>
         <span class="iconify icon-[uil--comment-alt-lines]"></span>
         Continue in thread

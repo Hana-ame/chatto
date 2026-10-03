@@ -34,14 +34,24 @@ describe('MessageUserInteractionState', () => {
     expect(state.hasCurrentMember(member.id)).toBe(false);
   });
 
-  it('only opens mention users that are current room members', () => {
+  it('keeps the bot owner of an actor who is no longer in the room', () => {
+    const state = new MessageUserInteractionState(() => []);
+
+    state.showUser(
+      { ...member, deleted: false, isBot: true, bot: { ownerUserId: 'owner-1' } },
+      null
+    );
+
+    expect(state.user?.bot).toEqual({ ownerUserId: 'owner-1' });
+  });
+
+  it('tracks the selected user and current membership independently', () => {
     const state = new MessageUserInteractionState(() => [member]);
     const rect = new DOMRect(1, 2, 3, 4);
 
-    state.showMember('missing', rect);
-    expect(state.user).toBeNull();
-
-    state.showMember(member.id, rect);
+    expect(state.hasCurrentMember('missing')).toBe(false);
+    expect(state.hasCurrentMember(member.id)).toBe(true);
+    state.showUser(member, rect);
     expect(state.user).toEqual(member);
     expect(state.anchorRect).toBe(rect);
 

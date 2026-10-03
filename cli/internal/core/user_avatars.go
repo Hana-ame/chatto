@@ -6,9 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	// 【本地改动 2026-08-31 合并 upstream #2256】import 冲突：fork 的 fn.ext
-	// 尾段 URL 逻辑用 net/url，上游 #2256 新增的头像管理用 time，两者都要。
-	"net/url"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -24,7 +21,7 @@ import (
 // UpdateUserAvatar uploads and sets an avatar for targetUserID after applying
 // the target-aware user and bot management authorization policy.
 func (c *ChattoCore) UpdateUserAvatar(ctx context.Context, actorID, targetUserID string, reader io.Reader) (*evtv1.User, error) {
-	if _, err := c.requireCanManageUserAvatar(ctx, actorID, targetUserID); err != nil {
+	if _, err := c.requireCanManageUserIdentity(ctx, actorID, targetUserID); err != nil {
 		return nil, err
 	}
 
@@ -53,14 +50,13 @@ func (c *ChattoCore) UpdateUserAvatar(ctx context.Context, actorID, targetUserID
 	}
 
 	c.logger.Info("Updated user avatar", "actor_id", actorID, "user_id", targetUserID)
-	c.publishUserProfileUpdate(ctx, targetUserID)
 	return c.GetUser(ctx, targetUserID)
 }
 
 // ClearUserAvatar removes the target user's avatar after applying the same
 // authorization policy as UpdateUserAvatar. The operation is idempotent.
 func (c *ChattoCore) ClearUserAvatar(ctx context.Context, actorID, targetUserID string) (*evtv1.User, error) {
-	if _, err := c.requireCanManageUserAvatar(ctx, actorID, targetUserID); err != nil {
+	if _, err := c.requireCanManageUserIdentity(ctx, actorID, targetUserID); err != nil {
 		return nil, err
 	}
 	event := newEvent(actorID, &evtv1.Event{Event: &evtv1.Event_UserAvatarCleared{
@@ -78,11 +74,10 @@ func (c *ChattoCore) ClearUserAvatar(ctx context.Context, actorID, targetUserID 
 	}
 	c.deleteAsset(ctx, assetStorageFromAsset(previous), "avatar", targetUserID)
 	c.logger.Info("Deleted user avatar", "actor_id", actorID, "user_id", targetUserID)
-	c.publishUserProfileUpdate(ctx, targetUserID)
 	return c.GetUser(ctx, targetUserID)
 }
 
-func (c *ChattoCore) requireCanManageUserAvatar(ctx context.Context, actorID, targetUserID string) (*evtv1.User, error) {
+func (c *ChattoCore) requireCanManageUserIdentity(ctx context.Context, actorID, targetUserID string) (*evtv1.User, error) {
 	if actorID == "" {
 		return nil, ErrNotAuthenticated
 	}
@@ -148,7 +143,7 @@ func (c *ChattoCore) appendManagedAvatarEvent(ctx context.Context, actorID, targ
 			return nil, false, fmt.Errorf("wait for user auth projection: %w", err)
 		}
 		if err := c.authorizeAtStableInputs(ctx, func() error {
-			_, authorizeErr := c.requireCanManageUserAvatar(ctx, actorID, targetUserID)
+			_, authorizeErr := c.requireCanManageUserIdentity(ctx, actorID, targetUserID)
 			return authorizeErr
 		}); err != nil {
 			return nil, false, err
@@ -286,9 +281,6 @@ func (c *ChattoCore) SetUserAvatar(ctx context.Context, userID string, asset *ev
 
 	c.logger.Info("Updated user avatar", "user_id", userID)
 
-	// Publish profile update event
-	c.publishUserProfileUpdate(ctx, userID)
-
 	return nil
 }
 
@@ -331,9 +323,6 @@ func (c *ChattoCore) DeleteUserAvatar(ctx context.Context, userID string) error 
 
 	c.logger.Info("Deleted user avatar", "user_id", userID)
 
-	// Publish profile update event
-	c.publishUserProfileUpdate(ctx, userID)
-
 	return nil
 }
 
@@ -352,7 +341,7 @@ func (c *ChattoCore) RecordUserAssetDeleted(ctx context.Context, actorID, userID
 	return nil
 }
 
-// GetUserAvatarURL returns the URL for a user's avatar.
+// GetUserAvatarURL returns the server-relative URL for a user's avatar.
 // If width and height are provided (non-nil), returns a URL to a resized version.
 // Returns empty string if no avatar is set.
 func (c *ChattoCore) GetUserAvatarURL(ctx context.Context, userID string, width, height *int, fit string) (string, error) {
@@ -372,18 +361,11 @@ func (c *ChattoCore) GetUserAvatarURL(ctx context.Context, userID string, width,
 	}
 
 	// Always use the standard server asset URL format - storage backend is an internal detail
-	// 【本地改动 2026-08-23】URL 追加 {fn.ext} 尾段（头像上传统一转 WebP →
-	// .webp），走公开 immutable 缓存语义；推导不出扩展名时保持旧形态。
-	tail := ServerAssetURLFilename(avatar, "avatar")
 	if width != nil && height != nil {
 		if fit == "" {
 			fit = "cover"
 		}
-		return c.GetTransformedServerAssetURLWithFilename(assetKey, tail, *width, *height, fit), nil
+		return c.GetTransformedServerAssetURL(assetKey, *width, *height, fit), nil
 	}
-	path := fmt.Sprintf("/assets/server/%s", assetKey)
-	if tail != "" {
-		path += "/" + url.PathEscape(tail)
-	}
-	return c.assetURL(path), nil
+	return fmt.Sprintf("/assets/server/%s", assetKey), nil
 }

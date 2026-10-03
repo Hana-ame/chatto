@@ -1,29 +1,26 @@
 <script lang="ts">
+  import { errorMessage } from '$lib/utils/errorMessage';
   import { Code, ConnectError } from '@connectrpc/connect';
-  import { createMutation, createQuery } from '@tanstack/svelte-query';
-  import { onDestroy } from 'svelte';
+  import Interval from '$lib/lifecycle/Interval.svelte';
   import {
-    beginExplicitSignOutRedirect,
-    cancelExplicitSignOutRedirect,
-    hardRedirectAfterSignOut
-  } from '$lib/auth/signOut';
-  import { clearCachedUser } from '$lib/auth/loadAuth';
-  import { notifyLogout } from '$lib/auth/sessionChannel';
-  import type { CurrentUserState } from '$lib/auth/currentUser.svelte';
+    openAuthorizationWindow,
+    authorizationWindowFeatures,
+    type AuthorizationWindow
+  } from '$lib/oauth/authorizationWindow';
+  import IdentityLinkContinuation from './IdentityLinkContinuation.svelte';
+  import type { CurrentUserState } from '@chatto/client/auth/currentUser';
   import {
     createExternalIdentityAPI,
     type ExternalIdentityProviderInfo,
     type LinkedExternalIdentityInfo
-  } from '$lib/api-client/externalIdentities';
-  import Panel from '$lib/ui/Panel.svelte';
+  } from '$lib/api/externalIdentities';
+  import { Panel, LoadingFog, ConfirmDialog, Dialog, FormDialog, Hint } from '$lib/ui';
   import { m } from '$lib/i18n/messages';
-  import { registerServerQueryCacheRemovalListener } from '$lib/query/cacheRegistry';
-  import { queryClient } from '$lib/query/client';
+  import { createQuery } from '$lib/query/client';
   import { settingsQueryKeys } from '$lib/query/settings';
-  import { serverRegistry } from '$lib/state/server/registry.svelte';
+  import { serverRegistry } from '$lib/client';
   import { useServerScope } from '$lib/state/server/scope.svelte';
-  import type { ServerConnection } from '$lib/state/server/serverConnection.svelte';
-  import { ConfirmDialog, Dialog, FormDialog, Hint } from '$lib/ui';
+  import { createSessionGuard, type SessionSnapshot } from '$lib/state/server/sessionGuard.svelte';
   import { Button, TextInput } from '$lib/ui/form';
 
   let {
@@ -35,52 +32,163 @@
   } = $props();
 
   const serverScope = useServerScope();
-  let componentActive = true;
-  let privacyGeneration = 0;
-  const removeCacheRemovalListener = registerServerQueryCacheRemovalListener((removedServerId) => {
-    if (removedServerId === serverScope.serverId) privacyGeneration += 1;
-  });
+  // Private identity data and provider links belong to the accepted account only.
+  const accountId = $derived(serverScope.store.accountId);
+  const session = createSessionGuard(serverScope, 'server-session');
 
-  onDestroy(() => {
-    componentActive = false;
-    privacyGeneration += 1;
-    removeCacheRemovalListener();
-  });
-
-  type IdentityMutationScope = {
-    serverId: string;
-    connection: ServerConnection;
-    privacyGeneration: number;
-  };
-  type LinkVariables = IdentityMutationScope & {
+  type LinkVariables = SessionSnapshot & {
     provider: ExternalIdentityProviderInfo;
     currentPassword?: string;
+    redirectPath: string;
   };
-  type DisconnectVariables = IdentityMutationScope & {
+  type DisconnectVariables = SessionSnapshot & {
     subjectHash: string;
     providerLabel: string;
     currentPassword?: string;
   };
 
-  const identitiesQuery = createQuery(
-    () => {
-      const activeServerId = serverScope.serverId;
-      const activeConnection = serverScope.connection;
-      return {
-        queryKey: settingsQueryKeys.externalIdentities(activeServerId, activeConnection),
-        queryFn: ({ signal }) =>
-          activeConnection.getAPI(createExternalIdentityAPI).list({ signal }),
-        // A provider callback returns to this route and must not reuse the pre-link snapshot.
-        refetchOnMount: 'always' as const
-      };
-    },
-    () => queryClient
-  );
+  const identitiesQuery = createQuery(() => {
+    const activeServerId = serverScope.serverId;
+    const activeConnection = serverScope.connection;
+    const activeUserId = accountId ?? '';
+    return {
+      queryKey: settingsQueryKeys.externalIdentities(
+        activeServerId,
+        activeConnection,
+        activeUserId
+      ),
+      queryFn: ({ signal }) => activeConnection.getAPI(createExternalIdentityAPI).list({ signal }),
+      enabled: activeUserId !== '',
+      // A provider callback returns to this route and must not reuse the pre-link snapshot.
+      refetchOnMount: 'always' as const
+    };
+  });
 
-  const providers = $derived(identitiesQuery.data?.providers ?? []);
-  const linkedIdentities = $derived(identitiesQuery.data?.linkedIdentities ?? []);
+  const providers = $derived(accountId ? (identitiesQuery.data?.providers ?? []) : []);
+  const linkedIdentities = $derived(
+    accountId ? (identitiesQuery.data?.linkedIdentities ?? []) : []
+  );
   const loading = $derived(identitiesQuery.isPending && !identitiesQuery.data);
   let actionError = $state('');
+  // Keep refreshes bound to the account and session that opened this window.
+  let providerLinkWindow = $state.raw<{
+    window: AuthorizationWindow;
+    scope: SessionSnapshot;
+    userId: string;
+    providerId: string;
+  } | null>(null);
+  let checkingWindow = false;
+  let checkingLink = false;
+
+  function providerLinkIsCurrent() {
+    return (
+      providerLinkWindow !== null &&
+      session.isCurrent(providerLinkWindow.scope) &&
+      providerLinkWindow.userId === accountId
+    );
+  }
+
+  function refreshAfterProviderLink() {
+    if (providerLinkIsCurrent()) void identitiesQuery.refetch();
+  }
+
+  // The provider window has no opener and can be on another origin. Confirm
+  // completion through the account API, without waiting for a focus event.
+  async function checkProviderLinkResult() {
+    const pending = providerLinkWindow;
+    if (!pending || checkingLink || !providerLinkIsCurrent()) return;
+    checkingLink = true;
+    try {
+      const result = await identitiesQuery.refetch({ cancelRefetch: false });
+      if (providerLinkWindow !== pending || !providerLinkIsCurrent()) return;
+      if (
+        result.isSuccess &&
+        result.data.providers.some(
+          (provider) => provider.id === pending.providerId && provider.linked
+        )
+      ) {
+        providerLinkWindow = null;
+        // The remote window closes itself. A detached cross-origin window
+        // cannot be closed by its former opener in Chromium.
+      }
+    } finally {
+      checkingLink = false;
+    }
+  }
+
+  async function checkProviderLinkWindow() {
+    const pending = providerLinkWindow;
+    if (!pending || checkingWindow) return;
+    if (!providerLinkIsCurrent()) {
+      providerLinkWindow = null;
+      return;
+    }
+    checkingWindow = true;
+    try {
+      if ((await pending.window.isClosed()) && providerLinkWindow === pending) {
+        refreshAfterProviderLink();
+        providerLinkWindow = null;
+      }
+    } finally {
+      checkingWindow = false;
+    }
+  }
+
+  function openProviderLink(provider: ExternalIdentityProviderInfo) {
+    actionError = '';
+    const userId = accountId;
+    if (!userId) return;
+    const url = new URL('/chat/-/settings/account', serverScope.connection.connectBaseUrl);
+    url.searchParams.set('link_provider', provider.id);
+    url.searchParams.set('link_user', userId);
+    const authorizationWindow = openAuthorizationWindow(
+      '_blank',
+      authorizationWindowFeatures(window)
+    );
+    if (!authorizationWindow) {
+      actionError = m('settings.account.sso.popup_blocked');
+      return;
+    }
+    authorizationWindow.detachOpener();
+    const pending = {
+      window: authorizationWindow,
+      scope: session.snapshot(),
+      userId,
+      providerId: provider.id
+    };
+    providerLinkWindow = pending;
+    void authorizationWindow.navigate(url.href).catch(() => {
+      if (providerLinkWindow !== pending) return;
+      if (providerLinkIsCurrent()) actionError = m('settings.account.sso.link_failed');
+      providerLinkWindow = null;
+      void authorizationWindow.close();
+    });
+  }
+
+  function continueProviderLink(providerId: string, userId: string) {
+    if (!userId || userId !== accountId) {
+      actionError = m('settings.account.sso.account_mismatch');
+      return;
+    }
+    const provider = providers.find((provider) => provider.id === providerId);
+    if (!provider) {
+      actionError = m('settings.account.sso.provider_unavailable');
+      return;
+    }
+    if (provider.linked) window.close();
+    else void startProviderLink(provider);
+  }
+
+  function completeProviderLink(providerId: string, userId: string) {
+    if (!userId || userId !== accountId) {
+      actionError = m('settings.account.sso.account_mismatch');
+      return;
+    }
+    if (providers.some((provider) => provider.id === providerId && provider.linked)) {
+      window.close();
+    }
+  }
+
   let linkFreshAuthProvider = $state<ExternalIdentityProviderInfo | null>(null);
   let linkCurrentPassword = $state('');
   let linkFreshAuthError = $state('');
@@ -94,74 +202,15 @@
   let blockedDisconnectProviderLabel = $state('');
   let showDisconnectBlockedModal = $state(false);
 
-  function mutationScope(): IdentityMutationScope {
-    return {
-      serverId: serverScope.serverId,
-      connection: serverScope.connection,
-      privacyGeneration
-    };
-  }
-
-  function isCurrentConnection(
-    variables: IdentityMutationScope | undefined
-  ): variables is IdentityMutationScope {
-    return (
-      variables !== undefined &&
-      componentActive &&
-      serverScope.isCurrent() &&
-      variables.serverId === serverScope.serverId &&
-      variables.connection.queryScope === serverScope.connection.queryScope
-    );
-  }
-
-  function isCurrentSession(
-    variables: IdentityMutationScope | undefined
-  ): variables is IdentityMutationScope {
-    return isCurrentConnection(variables) && variables.privacyGeneration === privacyGeneration;
-  }
-
-  const linkMutation = createMutation(
-    () => ({
-      mutationFn: ({ connection: activeConnection, provider, currentPassword }: LinkVariables) =>
-        activeConnection.getAPI(createExternalIdentityAPI).startLink({
-          providerId: provider.id,
-          redirectPath: accountSettingsPath,
-          currentPassword
-        })
-    }),
-    () => queryClient
-  );
-
-  const disconnectMutation = createMutation(
-    () => ({
-      mutationFn: ({
-        connection: activeConnection,
-        subjectHash,
-        currentPassword
-      }: DisconnectVariables) =>
-        activeConnection.getAPI(createExternalIdentityAPI).disconnect(subjectHash, currentPassword)
-    }),
-    () => queryClient
-  );
-
-  const linkingProviderId = $derived(
-    linkMutation.isPending && isCurrentSession(linkMutation.variables)
-      ? linkMutation.variables.provider.id
-      : ''
-  );
-  const disconnectingSubjectHash = $derived(
-    disconnectMutation.isPending && isCurrentSession(disconnectMutation.variables)
-      ? disconnectMutation.variables.subjectHash
-      : ''
-  );
+  // Track requests in flight here, not with mutation state: an observer reports
+  // the settled state a tick after the request promise, so a dialog opened in
+  // the rejection handler would first render disabled.
+  let linkingProviderId = $state('');
+  let disconnectingSubjectHash = $state('');
   const error = $derived.by(() => {
     if (actionError) return actionError;
     const queryError = identitiesQuery.error;
-    return queryError
-      ? queryError instanceof Error
-        ? queryError.message
-        : m('settings.account.sso.load_failed')
-      : '';
+    return queryError ? errorMessage(queryError, m('settings.account.sso.load_failed')) : '';
   });
 
   const hasPassword = $derived(currentUser.user?.hasPassword ?? false);
@@ -193,26 +242,50 @@
     provider: ExternalIdentityProviderInfo,
     currentPassword?: string
   ) {
-    const variables: LinkVariables = { ...mutationScope(), provider, currentPassword };
+    const returnURL = new URL(accountSettingsPath, window.location.origin);
+    returnURL.searchParams.set('link_provider', provider.id);
+    returnURL.searchParams.set('link_user', accountId ?? '');
+    returnURL.searchParams.set('link_complete', '1');
+    const variables: LinkVariables = {
+      ...session.snapshot(),
+      provider,
+      currentPassword,
+      redirectPath: returnURL.pathname + returnURL.search + returnURL.hash
+    };
     actionError = '';
+    linkingProviderId = provider.id;
     try {
-      const startUrl = await linkMutation.mutateAsync(variables);
-      if (!isCurrentSession(variables)) return;
+      const startUrl = await variables.connection.getAPI(createExternalIdentityAPI).startLink({
+        providerId: provider.id,
+        redirectPath: variables.redirectPath,
+        currentPassword
+      });
+      if (!session.isCurrent(variables)) return;
       window.location.href = startUrl;
     } catch (err) {
-      if (!isCurrentSession(variables)) return;
-      if (err instanceof ConnectError && err.code === Code.FailedPrecondition && hasPassword) {
+      if (!session.isCurrent(variables)) return;
+      if (
+        err instanceof ConnectError &&
+        err.code === Code.FailedPrecondition &&
+        hasPassword &&
+        currentPassword === undefined
+      ) {
         linkFreshAuthProvider = provider;
         linkCurrentPassword = '';
         linkFreshAuthError = '';
-      } else if (err instanceof ConnectError && err.code === Code.FailedPrecondition) {
+      } else if (
+        err instanceof ConnectError &&
+        err.code === Code.FailedPrecondition &&
+        currentPassword === undefined
+      ) {
         actionError = m('settings.account.sso.fresh_auth_required');
       } else if (currentPassword !== undefined) {
-        linkFreshAuthError =
-          err instanceof Error ? err.message : m('settings.account.sso.link_failed');
+        linkFreshAuthError = errorMessage(err, m('settings.account.sso.link_failed'));
       } else {
-        actionError = err instanceof Error ? err.message : m('settings.account.sso.link_failed');
+        actionError = errorMessage(err, m('settings.account.sso.link_failed'));
       }
+    } finally {
+      linkingProviderId = '';
     }
   }
 
@@ -275,57 +348,40 @@
     await disconnectIdentity(disconnectTarget, currentPassword);
   }
 
-  function finishDisconnectedSession(signedOutServerId: string) {
-    if (serverRegistry.isOriginServer(signedOutServerId)) {
-      clearCachedUser();
-    }
-    serverRegistry.clearServerAuthentication(signedOutServerId);
-    hardRedirectAfterSignOut('/');
-    if (serverRegistry.isOriginServer(signedOutServerId)) {
-      notifyLogout();
-    }
-  }
-
   async function disconnectIdentity(
     target: { subjectHash: string; providerLabel: string },
     currentPassword?: string
   ) {
     const { subjectHash, providerLabel } = target;
     const variables: DisconnectVariables = {
-      ...mutationScope(),
+      ...session.snapshot(),
       subjectHash,
       providerLabel,
       currentPassword
     };
     actionError = '';
+    disconnectingSubjectHash = subjectHash;
     try {
-      beginExplicitSignOutRedirect();
-      await disconnectMutation.mutateAsync(variables);
-      const signedOutServerId = variables.connection.serverId ?? variables.serverId;
-      if (!isCurrentSession(variables)) {
-        cancelExplicitSignOutRedirect();
+      await variables.connection
+        .getAPI(createExternalIdentityAPI)
+        .disconnect(subjectHash, currentPassword);
+      if (!session.isCurrent(variables)) {
         return;
       }
       disconnectTarget = null;
       disconnectFreshAuthTarget = null;
       disconnectCurrentPassword = '';
       disconnectFreshAuthError = '';
-      finishDisconnectedSession(signedOutServerId);
+      await identitiesQuery.refetch();
     } catch (err) {
+      if (!session.isCurrent(variables)) {
+        return;
+      }
       if (
         err instanceof ConnectError &&
-        err.code === Code.Unauthenticated &&
-        isCurrentConnection(variables)
+        err.code === Code.FailedPrecondition &&
+        currentPassword === undefined
       ) {
-        finishDisconnectedSession(variables.connection.serverId ?? variables.serverId);
-        return;
-      }
-      if (!isCurrentSession(variables)) {
-        cancelExplicitSignOutRedirect();
-        return;
-      }
-      if (err instanceof ConnectError && err.code === Code.FailedPrecondition) {
-        cancelExplicitSignOutRedirect();
         disconnectTarget = null;
         if (hasPassword) {
           disconnectFreshAuthTarget = { subjectHash, providerLabel };
@@ -335,15 +391,13 @@
           actionError = m('settings.account.sso.disconnect_fresh_auth_required');
         }
       } else if (currentPassword !== undefined) {
-        cancelExplicitSignOutRedirect();
-        disconnectFreshAuthError =
-          err instanceof Error ? err.message : m('settings.account.sso.disconnect_failed');
+        disconnectFreshAuthError = errorMessage(err, m('settings.account.sso.disconnect_failed'));
       } else {
-        cancelExplicitSignOutRedirect();
-        actionError =
-          err instanceof Error ? err.message : m('settings.account.sso.disconnect_failed');
+        actionError = errorMessage(err, m('settings.account.sso.disconnect_failed'));
         disconnectTarget = null;
       }
+    } finally {
+      disconnectingSubjectHash = '';
     }
   }
 
@@ -364,10 +418,21 @@
   }
 </script>
 
+<svelte:window onfocus={refreshAfterProviderLink} />
+
+{#if providerLinkWindow}
+  <Interval milliseconds={500} ontick={checkProviderLinkWindow} />
+  <Interval milliseconds={2000} ontick={checkProviderLinkResult} />
+{/if}
+
+{#if serverRegistry.isOriginServer(serverScope.serverId) && accountId && identitiesQuery.isSuccess && !identitiesQuery.isFetching}
+  <IdentityLinkContinuation oncontinue={continueProviderLink} oncomplete={completeProviderLink} />
+{/if}
+
 <Panel title={m('settings.account.sso.title')} icon="iconify icon-[uil--link]">
   <div class="flex max-w-md flex-col gap-4">
     {#if loading}
-      <p class="text-sm text-muted">{m('settings.account.sso.loading')}</p>
+      <LoadingFog class="h-32 w-full" label={m('settings.account.sso.loading')} />
     {:else}
       {#if error}
         <Hint tone="danger">{error}</Hint>
@@ -379,7 +444,10 @@
           {#each providers as provider (provider.id)}
             <div class="flex items-center justify-between gap-3 rounded border border-border p-3">
               <div class="flex min-w-0 items-center gap-3">
-                <span class={['iconify text-lg text-muted', providerIcon(provider.type)]}></span>
+                <span
+                  aria-hidden="true"
+                  class={['iconify text-lg text-muted', providerIcon(provider.type)]}
+                ></span>
                 <div class="min-w-0">
                   <div class="truncate text-sm font-medium">{provider.label}</div>
                   <div class="text-xs text-muted">
@@ -400,7 +468,7 @@
                     disabled={linkingProviderId !== '' || disconnectingSubjectHash !== ''}
                     onclick={() => openDisconnectProvider(provider)}
                   >
-                    <span class="iconify icon-[uil--link-broken]"></span>
+                    <span aria-hidden="true" class="iconify icon-[uil--link-broken]"></span>
                     {disconnectButtonLabel(provider.linkedIdentitySubjectHash)}
                   </Button>
                 {:else}
@@ -411,10 +479,12 @@
                   variant="secondary"
                   size="sm"
                   loading={linkingProviderId === provider.id}
-                  disabled={linkingProviderId !== '' || disconnectingSubjectHash !== ''}
-                  onclick={() => startProviderLink(provider)}
+                  disabled={linkingProviderId !== '' ||
+                    disconnectingSubjectHash !== '' ||
+                    providerLinkWindow !== null}
+                  onclick={() => openProviderLink(provider)}
                 >
-                  <span class="iconify icon-[uil--link]"></span>
+                  <span aria-hidden="true" class="iconify icon-[uil--link]"></span>
                   {m('settings.account.sso.link_button')}
                 </Button>
               {/if}
@@ -424,7 +494,9 @@
           {#each unconfiguredLinkedIdentities as identity (identity.subjectHash)}
             <div class="flex items-center justify-between gap-3 rounded border border-border p-3">
               <div class="flex min-w-0 items-center gap-3">
-                <span class={['iconify text-lg text-muted', providerIcon(identity.providerType)]}
+                <span
+                  aria-hidden="true"
+                  class={['iconify text-lg text-muted', providerIcon(identity.providerType)]}
                 ></span>
                 <div class="min-w-0">
                   <div class="truncate text-sm font-medium">{identity.providerLabel}</div>
@@ -440,7 +512,7 @@
                 disabled={linkingProviderId !== '' || disconnectingSubjectHash !== ''}
                 onclick={() => openDisconnectIdentity(identity)}
               >
-                <span class="iconify icon-[uil--link-broken]"></span>
+                <span aria-hidden="true" class="iconify icon-[uil--link-broken]"></span>
                 {disconnectButtonLabel(identity.subjectHash)}
               </Button>
             </div>
@@ -512,7 +584,7 @@
     })}
   </Hint>
 
-  {#snippet footer()}
+  {#snippet dismissAction()}
     <Button defaultAction variant="secondary" onclick={closeDisconnectBlockedModal}>
       {m('ui.close')}
     </Button>

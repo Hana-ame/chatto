@@ -47,9 +47,12 @@ type MessageSearchServiceClient interface {
 	// currently answer. This method remains available when Search is disabled.
 	GetStatus(context.Context, *connect.Request[v1.GetStatusRequest]) (*connect.Response[v1.GetStatusResponse], error)
 	// Searches current message bodies in rooms where the caller is a member.
-	// Channel-room results also require message.read or a matching thread
-	// relationship with message.read-interactions. DM membership authorizes DM
-	// results. Results are authorized and hydrated from current Chatto state
+	// Scope and grouping are independent, including for direct messages. THREAD
+	// grouping returns one row per matching root and its replies. Scope, grouping,
+	// and ordering are part of the cursor scope. Unsupported combinations return
+	// INVALID_ARGUMENT. Existing requests return individual messages by default.
+	// Results also require message.read or a matching thread relationship with
+	// message.read-interactions. Results are authorized and hydrated from current Chatto state
 	// after provider matching. Returns FAILED_PRECONDITION when Search is
 	// disabled and UNAVAILABLE when its provider is not ready.
 	SearchMessages(context.Context, *connect.Request[v1.SearchMessagesRequest]) (*connect.Response[v1.SearchMessagesResponse], error)
@@ -104,9 +107,12 @@ type MessageSearchServiceHandler interface {
 	// currently answer. This method remains available when Search is disabled.
 	GetStatus(context.Context, *connect.Request[v1.GetStatusRequest]) (*connect.Response[v1.GetStatusResponse], error)
 	// Searches current message bodies in rooms where the caller is a member.
-	// Channel-room results also require message.read or a matching thread
-	// relationship with message.read-interactions. DM membership authorizes DM
-	// results. Results are authorized and hydrated from current Chatto state
+	// Scope and grouping are independent, including for direct messages. THREAD
+	// grouping returns one row per matching root and its replies. Scope, grouping,
+	// and ordering are part of the cursor scope. Unsupported combinations return
+	// INVALID_ARGUMENT. Existing requests return individual messages by default.
+	// Results also require message.read or a matching thread relationship with
+	// message.read-interactions. Results are authorized and hydrated from current Chatto state
 	// after provider matching. Returns FAILED_PRECONDITION when Search is
 	// disabled and UNAVAILABLE when its provider is not ready.
 	SearchMessages(context.Context, *connect.Request[v1.SearchMessagesRequest]) (*connect.Response[v1.SearchMessagesResponse], error)

@@ -1,56 +1,79 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
-import { SvelteMap } from 'svelte/reactivity';
+import { tick } from 'svelte';
 import { q } from '$lib/test-utils';
-import { TimelineEventKind } from '$lib/render/timelineEvents';
+import { TimelineEventKind } from '@chatto/client/timeline/timelineEvents';
 import { threadPaneWidth } from '$lib/state/threadPaneWidth.svelte';
 import { THREAD_PANE_MAX_WIDTH } from '$lib/storage/threadPaneWidth';
+import { getToasts, toast } from '$lib/ui/toast';
 import ThreadPane from './ThreadPane.svelte';
+import { createTestServerScope, type TestServerScope } from '$lib/test-utils/serverScope.svelte';
 import { ThreadPaneTestStore } from './ThreadPaneTestStore.svelte';
+import { RealtimeProjectionUpdate } from '@chatto/client/realtime/eventBus';
+import { MessagePostedEvent } from '@chatto/api-types/realtime/v1/events_pb';
+import { RealtimeEvent as PublicRealtimeEvent } from '@chatto/api-types/realtime/v1/realtime_pb';
 
 const { mocks } = vi.hoisted(() => {
   return {
     mocks: {
       markThreadAsRead: vi.fn(),
+      registerReadView: vi.fn(() => vi.fn()),
+      reconcileThreadRead: vi.fn(),
       followThread: vi.fn(),
       unfollowThread: vi.fn(),
       setThread: vi.fn(),
-      retainMessagesForThread: vi.fn(),
-      releaseMessagesForThread: vi.fn(),
-      nextServerRetainMessagesForThread: vi.fn(),
-      nextServerReleaseMessagesForThread: vi.fn(),
+      retainThread: vi.fn(),
+      releaseThread: vi.fn(),
       disposeMessagesStore: vi.fn(),
       ingestEvent: vi.fn(),
       refreshCurrentWindow: vi.fn(),
+      restoreLatestWindow: vi.fn(),
       setThreadRootFollowState: vi.fn(),
       loadMore: vi.fn(),
-      applyLocalMessageDeletion: vi.fn(),
-      refreshAnchorForMessageMutation: vi.fn(),
       removeTypingUser: vi.fn(),
       sendTypingIndicator: vi.fn(),
       resetTypingDebounce: vi.fn(),
       jumpToMessage: vi.fn(),
+      storeJumpToMessage: vi.fn(),
+      resetJumpState: vi.fn(),
+      startReply: vi.fn(),
+      cancelReply: vi.fn(),
+      requestInsertQuote: vi.fn(),
+      cancelEdit: vi.fn(),
+      editingEventId: null as string | null,
+      markOccurrenceRead: vi.fn(),
+      jumpState: null as {
+        scrollToEventId: string | null;
+        jumpToMessage: (eventId: string) => Promise<boolean>;
+      } | null,
       onClose: vi.fn(),
       clearUnreadMarker: vi.fn(),
+      markArrivalWhileAway: vi.fn(),
+      projectionEventHandler: null as ((event: RealtimeProjectionUpdate) => void) | null,
       unreadMarkerEventId: null as string | null,
+      canMarkThreadAsRead: null as (() => boolean) | null,
       appState: {
         isPresent: true
       },
-      threadStore: null as ThreadPaneTestStore | null,
-      nextServerThreadStore: null as ThreadPaneTestStore | null
+      threadStore: null as ThreadPaneTestStore | null
     }
   };
 });
 
-const scopeState = new SvelteMap([['serverId', 'server-1']]);
+let server: TestServerScope;
 
-vi.mock('$lib/api-client/readState', () => ({
+vi.mock('$lib/client', async () => ({
+  ...(await import('$lib/test-utils/clientMock')).clientMockDefaults,
+  serverRegistry: { getStore: () => server.scope.store }
+}));
+
+vi.mock('@chatto/client/api/readState', () => ({
   createReadStateAPI: () => ({
     markThreadAsRead: mocks.markThreadAsRead
   })
 }));
 
-vi.mock('$lib/api-client/threads', () => ({
+vi.mock('@chatto/client/api/threads', () => ({
   createThreadAPI: () => ({
     followThread: mocks.followThread,
     unfollowThread: mocks.unfollowThread
@@ -58,7 +81,11 @@ vi.mock('$lib/api-client/threads', () => ({
 }));
 
 vi.mock('$lib/hooks', () => ({
-  useProjectionEvent: vi.fn(),
+  useProjectionEvent: (handler: (event: RealtimeProjectionUpdate) => void) => {
+    mocks.projectionEventHandler = handler;
+  },
+  // ConversationPane uses this only for the room timeline.
+  useRoomUnread: vi.fn(),
   useUnreadMarker: (
     getTargetId: () => string,
     options: {
@@ -67,13 +94,16 @@ vi.mock('$lib/hooks', () => ({
         upToEventId: string | undefined,
         signal: AbortSignal
       ) => unknown;
+      canMarkAsRead?: () => boolean;
     }
   ) => {
+    mocks.canMarkThreadAsRead = options.canMarkAsRead ?? null;
     void options.markAsRead(getTargetId(), undefined, new AbortController().signal);
     return {
       unreadMarkerEventId: mocks.unreadMarkerEventId,
       markAsRead: options.markAsRead,
-      clearUnreadMarker: mocks.clearUnreadMarker
+      clearUnreadMarker: mocks.clearUnreadMarker,
+      markArrivalWhileAway: mocks.markArrivalWhileAway
     };
   },
   createTypingIndicator: () => ({
@@ -84,81 +114,67 @@ vi.mock('$lib/hooks', () => ({
   })
 }));
 
-vi.mock('$lib/state/server/scope.svelte', async () => {
-  const { serverRegistry } = await import('$lib/state/server/registry.svelte');
-  return {
-    useServerScope: () => ({
-      get serverId() {
-        return scopeState.get('serverId')!;
-      },
-      connection: {
-        serverId: 'server-1',
-        connectBaseUrl: 'http://localhost/api/connect',
-        bearerToken: null,
-        getAPI: (factory: (config: never) => unknown) => factory({} as never)
-      },
-      get store() {
-        return serverRegistry.getStore(scopeState.get('serverId')!);
-      }
-    })
-  };
-});
-
-vi.mock('$lib/state/server/registry.svelte', () => ({
-  serverRegistry: {
-    getStore: (serverId: string) => ({
-      currentUser: { user: { id: 'test-user', login: 'testuser' }, loading: false },
-      retainMessagesForThread:
-        serverId === 'server-2'
-          ? mocks.nextServerRetainMessagesForThread
-          : mocks.retainMessagesForThread,
-      releaseMessagesForThread:
-        serverId === 'server-2'
-          ? mocks.nextServerReleaseMessagesForThread
-          : mocks.releaseMessagesForThread,
-      messagesForThread: () =>
-        Object.assign(serverId === 'server-2' ? mocks.nextServerThreadStore! : mocks.threadStore!, {
-          isLoadingMore: false,
-          hasReachedStart: true,
-          setThread: mocks.setThread,
-          dispose: mocks.disposeMessagesStore,
-          ingestEvent: mocks.ingestEvent,
-          refreshCurrentWindow: mocks.refreshCurrentWindow,
-          setThreadRootFollowState: mocks.setThreadRootFollowState,
-          loadMore: mocks.loadMore,
-          applyLocalMessageDeletion: mocks.applyLocalMessageDeletion,
-          refreshAnchorForMessageMutation: mocks.refreshAnchorForMessageMutation
-        })
-    })
-  }
-}));
+vi.mock(
+  '$lib/state/server/scope.svelte',
+  async () => (await import('$lib/test-utils/serverScope.svelte')).serverScopeModule
+);
 
 vi.mock('$lib/state/activeServer.svelte', () => ({
   getActiveServer: () => 'server-1'
 }));
 
 vi.mock('$lib/state/globals.svelte', () => ({
+  sidebarNav: vi.fn(),
+  quickSwitcher: vi.fn(),
   appState: mocks.appState
 }));
 
 vi.mock('$lib/state/room', () => ({
   getRoomMembers: () => [],
   createComposerContext: () => ({
+    editState: {
+      get eventId() {
+        return mocks.editingEventId;
+      },
+      cancelEdit: mocks.cancelEdit
+    },
     replyState: {
       messageEventId: null,
       actorDisplayName: '',
       excerpt: '',
-      startReply: vi.fn(),
-      cancelReply: vi.fn()
+      startReply: mocks.startReply,
+      cancelReply: mocks.cancelReply
     },
     quoteInsertionState: {
-      requestInsertQuote: vi.fn()
+      requestInsertQuote: mocks.requestInsertQuote
     },
-    jumpState: {
-      scrollToEventId: null,
-      setJumpHandler: vi.fn(),
-      jumpToMessage: mocks.jumpToMessage
-    }
+    jumpState: (() => {
+      // Route jumps through the pane's registered handler, as the real state does.
+      let handler: ((eventId: string) => Promise<boolean>) | null = null;
+      const jumpState = {
+        scrollToEventId: null as string | null,
+        setJumpHandler: (fn: (eventId: string) => Promise<boolean>) => {
+          handler = fn;
+        },
+        jumpToMessage: (eventId: string) => {
+          mocks.jumpToMessage(eventId);
+          return handler ? handler(eventId) : Promise.resolve(false);
+        },
+        // Scroll to a message that the store shows, as the real state does.
+        show: async (
+          store: { jumpToMessage: (eventId: string) => Promise<{ status: string } | undefined> },
+          eventId: string
+        ) => {
+          const result = await store.jumpToMessage(eventId);
+          const shown = result?.status === 'shown' || result?.status === 'loaded';
+          jumpState.scrollToEventId = shown ? eventId : null;
+          return shown;
+        },
+        reset: mocks.resetJumpState
+      };
+      mocks.jumpState = jumpState;
+      return jumpState;
+    })()
   }),
   MessagesStore: class {
     threadEvents = [];
@@ -171,13 +187,7 @@ vi.mock('$lib/state/room', () => ({
     refreshCurrentWindow = mocks.refreshCurrentWindow;
     setThreadRootFollowState = mocks.setThreadRootFollowState;
     loadMore = mocks.loadMore;
-    applyLocalMessageDeletion = mocks.applyLocalMessageDeletion;
-    refreshAnchorForMessageMutation = mocks.refreshAnchorForMessageMutation;
   }
-}));
-
-vi.mock('$lib/state/room/messageMutationEvents', () => ({
-  onRoomMessageMutated: vi.fn(() => vi.fn())
 }));
 
 vi.mock('./EventList.svelte', async () => {
@@ -186,9 +196,30 @@ vi.mock('./EventList.svelte', async () => {
 });
 
 vi.mock('$lib/components/composer/MessageComposer.svelte', async () => {
-  const { default: EmptyMock } = await import('./RoomLocalEchoEmptyMock.svelte');
-  return { default: EmptyMock };
+  const { default: ComposerMock } = await import('./ThreadComposerPermissionMock.svelte');
+  return { default: ComposerMock };
 });
+
+function threadMessage(id: string, deletedAt: string | null = null) {
+  return {
+    id,
+    createdAt: '2026-07-04T12:00:00Z',
+    actorId: 'test-user',
+    actor: null,
+    event: { kind: TimelineEventKind.MessagePosted, deletedAt }
+  } as never;
+}
+
+function highlight(eventId: string, notificationId: string | null = null) {
+  return { roomId: 'room-1', threadRootEventId: 'thread-root', eventId, notificationId };
+}
+
+const threadProps = {
+  roomId: 'room-1',
+  roomName: 'General',
+  threadRootEventId: 'thread-root',
+  onClose: () => {}
+};
 
 describe('ThreadPane', () => {
   beforeEach(() => {
@@ -196,12 +227,46 @@ describe('ThreadPane', () => {
     localStorage.clear();
     threadPaneWidth.reset();
     mocks.threadStore = new ThreadPaneTestStore();
-    mocks.nextServerThreadStore = new ThreadPaneTestStore();
-    scopeState.set('serverId', 'server-1');
+    // Like the real store, scroll only to a message that the thread window contains.
+    mocks.storeJumpToMessage.mockImplementation(async (eventId: string) =>
+      mocks.threadStore!.threadEvents.some((event) => event.id === eventId)
+        ? { status: 'shown' }
+        : { status: 'missing' }
+    );
+    server = createTestServerScope({
+      viewer: { id: 'test-user', login: 'testuser' },
+      store: {
+        readViews: { register: mocks.registerReadView },
+        notifications: { markOccurrenceRead: mocks.markOccurrenceRead },
+        reconcileThreadRead: mocks.reconcileThreadRead,
+        rooms: {
+          retainThread: mocks.retainThread,
+          releaseThread: mocks.releaseThread,
+          thread: () =>
+            Object.assign(mocks.threadStore!, {
+              isLoadingMore: false,
+              hasReachedStart: true,
+              setThread: mocks.setThread,
+              dispose: mocks.disposeMessagesStore,
+              ingestEvent: mocks.ingestEvent,
+              refreshCurrentWindow: mocks.refreshCurrentWindow,
+              jumpToMessage: mocks.storeJumpToMessage,
+              restoreLatestWindow: mocks.restoreLatestWindow,
+              setThreadRootFollowState: mocks.setThreadRootFollowState,
+              loadMore: mocks.loadMore
+            })
+        }
+      }
+    });
     mocks.appState.isPresent = true;
+    mocks.markArrivalWhileAway.mockClear();
+    mocks.projectionEventHandler = null;
     mocks.unreadMarkerEventId = null;
+    mocks.editingEventId = null;
+    toast.clear();
+    mocks.markOccurrenceRead.mockResolvedValue(undefined);
     mocks.markThreadAsRead.mockResolvedValue({
-      previousReadAt: null,
+      previousLastReadAt: null,
       lastReadAt: '2026-07-04T13:00:00Z'
     });
     mocks.followThread.mockResolvedValue({
@@ -212,6 +277,41 @@ describe('ThreadPane', () => {
       following: false,
       state: { roomId: 'room-1', threadRootEventId: 'thread-root', following: false }
     });
+  });
+
+  it('updates the composer when interaction posting is granted and revoked', async () => {
+    const { container } = render(ThreadPane, {
+      props: {
+        roomId: 'room-1',
+        roomName: 'General',
+        threadRootEventId: 'thread-root',
+        onClose: mocks.onClose,
+        canPostInThread: false
+      }
+    });
+    const send = q(container, '[data-testid="thread-composer-send"]') as HTMLButtonElement;
+    await expect.element(send).toBeDisabled();
+    mocks.threadStore!.threadEvents = [
+      {
+        id: 'thread-root',
+        createdAt: '2026-09-20T12:00:00Z',
+        event: {
+          kind: TimelineEventKind.MessagePosted,
+          roomId: 'room-1',
+          body: 'Related thread',
+          attachments: [],
+          reactions: [],
+          replyCount: 0,
+          threadParticipants: [],
+          canReplyInThread: true
+        }
+      }
+    ];
+    await expect.element(send).toBeEnabled();
+    const root = mocks.threadStore!.threadEvents[0].event;
+    if (root.kind !== TimelineEventKind.MessagePosted) throw new Error('Expected message');
+    root.canReplyInThread = false;
+    await expect.element(send).toBeDisabled();
   });
 
   it('uses the persisted width and accessible resize handle in split layouts', async () => {
@@ -258,7 +358,9 @@ describe('ThreadPane', () => {
     expect(container.querySelector('[role="slider"]')).toBeNull();
   });
 
-  it('marks the thread as read through its content cursor', async () => {
+  it('waits for the viewer to be verified before marking the thread as read', async () => {
+    const viewer = server.currentUser.user!;
+    server.currentUser.invalidateVerification();
     render(ThreadPane, {
       props: {
         roomId: 'room-1',
@@ -267,19 +369,113 @@ describe('ThreadPane', () => {
         onClose: mocks.onClose
       }
     });
+    await tick();
+    expect(mocks.canMarkThreadAsRead?.()).toBe(false);
 
-    await vi.waitFor(() =>
-      expect(mocks.markThreadAsRead).toHaveBeenCalledWith(
-        {
+    server.currentUser.accept(viewer);
+
+    expect(mocks.canMarkThreadAsRead?.()).toBe(true);
+  });
+
+  it.each([null, '2026-07-04T13:00:00Z'])(
+    'reconciles a read with previous position %s',
+    async (previousLastReadAt) => {
+      mocks.markThreadAsRead.mockResolvedValue({
+        previousLastReadAt,
+        lastReadAt: '2026-07-04T13:00:00Z'
+      });
+      render(ThreadPane, {
+        props: {
           roomId: 'room-1',
+          roomName: 'General',
           threadRootEventId: 'thread-root',
-          upToEventId: undefined
-        },
-        { signal: expect.any(AbortSignal) }
-      )
-    );
+          onClose: mocks.onClose
+        }
+      });
 
-    expect(mocks.setThread).toHaveBeenCalledWith('room-1', 'thread-root');
+      await vi.waitFor(() =>
+        expect(mocks.markThreadAsRead).toHaveBeenCalledWith(
+          {
+            roomId: 'room-1',
+            threadRootEventId: 'thread-root',
+            upToEventId: undefined
+          },
+          { signal: expect.any(AbortSignal) }
+        )
+      );
+
+      expect(mocks.reconcileThreadRead).toHaveBeenCalledWith('room-1', 'thread-root');
+    }
+  );
+
+  it('places the thread unread separator only for replies in this thread while away', async () => {
+    mocks.appState.isPresent = false;
+    render(ThreadPane, {
+      props: {
+        roomId: 'room-1',
+        roomName: 'General',
+        threadRootEventId: 'thread-root',
+        onClose: mocks.onClose
+      }
+    });
+    await tick();
+
+    const post = (id: string, actorId: string, roomId: string, threadRootEventId: string) =>
+      mocks.projectionEventHandler?.(
+        new RealtimeProjectionUpdate({
+          event: new PublicRealtimeEvent({
+            id,
+            actorId,
+            event: {
+              case: 'messagePosted',
+              value: new MessagePostedEvent({ roomId, threadRootEventId })
+            }
+          })
+        })
+      );
+
+    post('room-message', 'user-1', 'room-1', '');
+    post('other-thread-reply', 'user-1', 'room-1', 'other-root');
+    post('own-reply', 'test-user', 'room-1', 'thread-root');
+    expect(mocks.markArrivalWhileAway).not.toHaveBeenCalled();
+
+    post('reply-while-away', 'user-1', 'room-1', 'thread-root');
+    expect(mocks.markArrivalWhileAway).toHaveBeenCalledExactlyOnceWith('reply-while-away');
+  });
+
+  it('resets jump state when the pane switches to another thread', async () => {
+    const props = {
+      roomId: 'room-1',
+      roomName: 'General',
+      threadRootEventId: 'thread-root',
+      onClose: mocks.onClose
+    };
+    const rendered = render(ThreadPane, { props });
+    await tick();
+    mocks.resetJumpState.mockClear();
+
+    await rendered.rerender({ ...props, threadRootEventId: 'thread-2' });
+
+    expect(mocks.resetJumpState).toHaveBeenCalledOnce();
+  });
+
+  it('registers the pane as a read view and releases the registration on unmount', () => {
+    const release = vi.fn();
+    mocks.registerReadView.mockReturnValue(release);
+    const pane = render(ThreadPane, {
+      props: {
+        roomId: 'room-1',
+        roomName: 'General',
+        threadRootEventId: 'thread-root',
+        onClose: mocks.onClose
+      }
+    });
+    expect(mocks.registerReadView).toHaveBeenCalledWith({
+      roomId: 'room-1',
+      threadRootId: 'thread-root'
+    });
+    pane.unmount();
+    expect(release).toHaveBeenCalledOnce();
   });
 
   it('forwards unread marker state and bottom arrival to EventList', () => {
@@ -301,6 +497,18 @@ describe('ThreadPane', () => {
     expect(mocks.clearUnreadMarker).toHaveBeenCalledOnce();
   });
 
+  it('returns each thread to its latest replies when the pane opens, switches, or closes', async () => {
+    const rendered = render(ThreadPane, { props: threadProps });
+    await vi.waitFor(() => expect(mocks.restoreLatestWindow).toHaveBeenCalledOnce());
+
+    // Leaving the first thread and opening the second each restore a window.
+    await rendered.rerender({ ...threadProps, threadRootEventId: 'thread-2' });
+    expect(mocks.restoreLatestWindow).toHaveBeenCalledTimes(3);
+
+    rendered.unmount();
+    expect(mocks.restoreLatestWindow).toHaveBeenCalledTimes(4);
+  });
+
   it('retains decrypted thread history only for the mounted pane lifetime', async () => {
     const rendered = render(ThreadPane, {
       props: {
@@ -311,23 +519,15 @@ describe('ThreadPane', () => {
       }
     });
 
-    await vi.waitFor(() => expect(mocks.retainMessagesForThread).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(mocks.retainThread).toHaveBeenCalledOnce());
     const mountedStore = mocks.threadStore;
-    expect(mocks.retainMessagesForThread).toHaveBeenCalledWith(
-      'room-1',
-      'thread-root',
-      mountedStore
-    );
+    expect(mocks.retainThread).toHaveBeenCalledWith('room-1', 'thread-root', mountedStore);
 
     rendered.unmount();
-    expect(mocks.releaseMessagesForThread).toHaveBeenCalledWith(
-      'room-1',
-      'thread-root',
-      mountedStore
-    );
+    expect(mocks.releaseThread).toHaveBeenCalledWith('room-1', 'thread-root', mountedStore);
   });
 
-  it('releases decrypted thread history through its owning server store', async () => {
+  it('releases decrypted thread history through the store that retained it', async () => {
     const rendered = render(ThreadPane, {
       props: {
         roomId: 'room-1',
@@ -337,63 +537,31 @@ describe('ThreadPane', () => {
       }
     });
 
-    await vi.waitFor(() => expect(mocks.retainMessagesForThread).toHaveBeenCalledOnce());
-    const firstServerStore = mocks.threadStore;
-
-    scopeState.set('serverId', 'server-2');
-
-    await vi.waitFor(() => expect(mocks.nextServerRetainMessagesForThread).toHaveBeenCalledOnce());
-    expect(mocks.releaseMessagesForThread).toHaveBeenCalledWith(
-      'room-1',
-      'thread-root',
-      firstServerStore
-    );
-    expect(mocks.nextServerReleaseMessagesForThread).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(mocks.retainThread).toHaveBeenCalledOnce());
+    const retainedStore = mocks.threadStore;
+    expect(mocks.releaseThread).not.toHaveBeenCalled();
 
     rendered.unmount();
-    expect(mocks.nextServerReleaseMessagesForThread).toHaveBeenCalledWith(
-      'room-1',
-      'thread-root',
-      mocks.nextServerThreadStore
-    );
+    expect(mocks.releaseThread).toHaveBeenCalledWith('room-1', 'thread-root', retainedStore);
   });
 
-  it('loads a highlighted reply outside the latest thread page before jumping to it', async () => {
-    let resolveRefresh!: (result: {
-      hasOlder: boolean;
-      hasNewer: boolean;
-      refreshed: boolean;
-      changed: boolean;
-    }) => void;
-    mocks.refreshCurrentWindow.mockReturnValue(
-      new Promise((resolve) => {
-        resolveRefresh = resolve;
-      })
-    );
-
-    render(ThreadPane, {
-      props: {
-        roomId: 'room-1',
-        roomName: 'General',
-        threadRootEventId: 'thread-root',
-        highlightEventId: 'older-reply',
-        onClose: mocks.onClose
-      }
+  it('does not jump to a highlight that is cleared before it starts', async () => {
+    const props = {
+      roomId: 'room-1',
+      roomName: 'General',
+      threadRootEventId: 'thread-root',
+      onClose: mocks.onClose
+    };
+    const rendered = render(ThreadPane, {
+      props: { ...props, highlight: highlight('older-reply') }
     });
 
-    await vi.waitFor(() => expect(mocks.refreshCurrentWindow).toHaveBeenCalledWith('older-reply'));
-    expect(mocks.jumpToMessage).not.toHaveBeenCalled();
+    // Clear the highlight before the pane's first tick.
+    await rendered.rerender({ ...props, highlight: null });
+    await tick();
 
-    resolveRefresh({
-      hasOlder: true,
-      hasNewer: true,
-      refreshed: true,
-      changed: true
-    });
-
-    await vi.waitFor(() => {
-      expect(mocks.jumpToMessage).toHaveBeenCalledWith('older-reply');
-    });
+    expect(mocks.storeJumpToMessage).not.toHaveBeenCalled();
+    expect(mocks.jumpState?.scrollToEventId).toBeNull();
   });
 
   it('updates the thread follow button optimistically while the RPC is pending', async () => {
@@ -522,5 +690,110 @@ describe('ThreadPane', () => {
         (q(container, 'button[aria-label="Follow thread"]') as HTMLButtonElement).disabled
       ).toBe(false);
     });
+  });
+
+  it('passes a reply-link jump to the thread store', async () => {
+    render(ThreadPane, { props: threadProps });
+    await tick();
+
+    await expect(mocks.jumpState!.jumpToMessage('older-reply')).resolves.toBe(false);
+
+    expect(mocks.storeJumpToMessage).toHaveBeenCalledWith('older-reply');
+  });
+
+  it('marks a highlighted notification read after the thread jump', async () => {
+    mocks.threadStore!.threadEvents = [threadMessage('reply-1')];
+    render(ThreadPane, {
+      props: { ...threadProps, highlight: highlight('reply-1', 'notification-1') }
+    });
+
+    await vi.waitFor(() => expect(mocks.jumpToMessage).toHaveBeenCalledWith('reply-1'));
+    await vi.waitFor(() => expect(mocks.markOccurrenceRead).toHaveBeenCalledWith('notification-1'));
+  });
+
+  it('fails a thread highlight that the store cannot load', async () => {
+    const onHighlightComplete = vi.fn();
+    const target = highlight('missing-reply', 'notification-1');
+
+    render(ThreadPane, { props: { ...threadProps, highlight: target, onHighlightComplete } });
+
+    await vi.waitFor(() => expect(onHighlightComplete).toHaveBeenCalledWith(target));
+    expect(getToasts().some((toast) => toast.tone === 'error')).toBe(true);
+    expect(mocks.jumpState?.scrollToEventId).toBeNull();
+    expect(mocks.markOccurrenceRead).not.toHaveBeenCalled();
+  });
+
+  it('reports a thread jump that cannot land on its target', async () => {
+    const onHighlightComplete = vi.fn();
+    const target = highlight('reply-1');
+    mocks.threadStore!.threadEvents = [threadMessage('reply-1')];
+    const { container } = render(ThreadPane, {
+      props: { ...threadProps, highlight: target, onHighlightComplete }
+    });
+    await vi.waitFor(() => expect(mocks.jumpState?.scrollToEventId).toBe('reply-1'));
+    expect(getToasts()).toHaveLength(0);
+
+    (q(container, '[data-testid="fail-highlight"]') as HTMLButtonElement).click();
+
+    await vi.waitFor(() => expect(getToasts().some((toast) => toast.tone === 'error')).toBe(true));
+    expect(onHighlightComplete).toHaveBeenCalledWith(target);
+  });
+
+  it('cancels an edit when the thread message is deleted', async () => {
+    mocks.editingEventId = 'reply-1';
+    mocks.threadStore!.threadEvents = [threadMessage('reply-1', '2026-07-04T12:05:00Z')];
+
+    render(ThreadPane, { props: threadProps });
+
+    await vi.waitFor(() => expect(mocks.cancelEdit).toHaveBeenCalledOnce());
+  });
+
+  it('cancels a pending reply when the pane switches to another thread', async () => {
+    const rendered = render(ThreadPane, { props: threadProps });
+    await tick();
+    expect(mocks.cancelReply).not.toHaveBeenCalled();
+
+    await rendered.rerender({ ...threadProps, threadRootEventId: 'thread-2' });
+
+    expect(mocks.cancelReply).toHaveBeenCalledOnce();
+  });
+
+  it('keeps a reply queued for the next thread when the pane switches to it', async () => {
+    const rendered = render(ThreadPane, { props: threadProps });
+    await tick();
+    const input = {
+      roomId: 'room-1',
+      threadRootEventId: 'thread-2',
+      reply: { eventId: 'reply-2', actorDisplayName: 'Bob', excerpt: 'hi' }
+    };
+
+    await rendered.rerender({
+      ...threadProps,
+      threadRootEventId: 'thread-2',
+      composerInput: input
+    });
+
+    await vi.waitFor(() => expect(mocks.startReply).toHaveBeenCalledOnce());
+    expect(mocks.cancelReply.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.startReply.mock.invocationCallOrder[0]
+    );
+  });
+
+  it('starts a queued reply once the thread composer is ready', async () => {
+    const onComposerInputConsumed = vi.fn();
+    const input = {
+      roomId: 'room-1',
+      threadRootEventId: 'thread-root',
+      quote: 'quoted text',
+      reply: { eventId: 'reply-1', actorDisplayName: 'Alice', excerpt: 'hello' }
+    };
+
+    render(ThreadPane, {
+      props: { ...threadProps, composerInput: input, onComposerInputConsumed }
+    });
+
+    await vi.waitFor(() => expect(onComposerInputConsumed).toHaveBeenCalledWith(input));
+    expect(mocks.requestInsertQuote).toHaveBeenCalledWith('quoted text');
+    expect(mocks.startReply).toHaveBeenCalledWith('reply-1', 'Alice', 'hello', undefined);
   });
 });

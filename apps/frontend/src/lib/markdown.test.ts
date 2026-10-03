@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { renderMarkdown } from './markdown';
+import { renderInlineMarkdown, renderMarkdown } from './markdown';
 import {
   canHighlightCodeLanguage,
   ensureCodeLanguageLoaded,
@@ -14,6 +14,24 @@ function tableSource(columns: number, bodyRows: number): string {
     ...Array.from({ length: bodyRows }, () => '|')
   ].join('\n');
 }
+
+describe('renderInlineMarkdown', () => {
+  it('keeps formatting and safe links without block markup or line breaks', () => {
+    const html = renderInlineMarkdown('**News**\n\n*Today*\r\n[Details](https://example.com)');
+    expect(html).toContain('<strong>News</strong>');
+    expect(html).toContain('<em>Today</em>');
+    expect(html).toContain('href="https://example.com"');
+    expect(html).toContain('rel="noopener noreferrer"');
+    expect(html).not.toMatch(/<(?:p|br|h[1-6]|ul|ol)\b|[\r\n]/);
+  });
+
+  it('escapes source HTML and rejects unsafe links', () => {
+    const html = renderInlineMarkdown('<img src=x onerror=alert(1)> [bad](javascript:alert(1))');
+    expect(html).toContain('&lt;img');
+    expect(html).not.toContain('<img');
+    expect(html).not.toContain('href="javascript:');
+  });
+});
 
 describe('renderMarkdown', () => {
   describe('GFM tables', () => {
@@ -310,9 +328,13 @@ describe('renderMarkdown', () => {
   describe('code blocks', () => {
     it('renders fenced code blocks with lowlight classes', async () => {
       const html = await renderMarkdown('```js\nconst x = 1;\n```');
-      expect(html).toContain('<pre class="hljs" data-language="js">');
+      expect(html).toContain('<pre class="hljs markdown-code" data-language="js"');
       expect(html).toContain('language-js');
       expect(html).toContain('hljs-keyword');
+      expect(html).toContain(
+        '<span class="markdown-code-actions"><span class="markdown-code-language">js</span><button'
+      );
+      expect(html).toContain('data-markdown-copy');
     });
 
     it('does not render the fence delimiter newline as a blank code line', async () => {
@@ -358,69 +380,22 @@ describe('renderMarkdown', () => {
       expect(html).toContain('language-notalanguage');
       expect(html).toContain('name = &quot;chatto&quot;');
     });
-  });
 
-  // 【本地改动】回归测试：内联图片经代理重写、非 http(s) 降级为 #、javascript: 不产 <img>。
-  // 发现背景：支持消息正文 ![]() 内联图片，且所有图片统一走 IMAGE_PROXY_BASE 代理（隐藏观看者 IP/Referer）。
-  describe('inline images', () => {
-    it('rewrites an http(s) image through the proxy, preserving path and original query', async () => {
-      const html = await renderMarkdown('![cat](https://images.example.com/photos/cat.png?token=abc)');
-      expect(html).toContain('<img src="https://proxy.moonchan.xyz/photos/cat.png?token=abc');
-      expect(html).toContain('proxy_host=images.example.com');
-      expect(html).toContain('proxy_scheme=https');
-      expect(html).toContain('alt="cat"');
+    it('keeps the original fenced code as the escaped copy payload', async () => {
+      const html = await renderMarkdown('```text\n\t<a title="x">&</a>\n```');
+
+      expect(html).toContain('data-copy-source="\t&lt;a title=&quot;x&quot;&gt;&amp;&lt;/a&gt;\n"');
+      expect(html).toContain('&lt;a title=&quot;x&quot;&gt;&amp;&lt;/a&gt;');
+      expect(html).not.toContain('<a title="x">');
     });
 
-    it('adds proxy_host and proxy_scheme when there is no original query', async () => {
-      const html = await renderMarkdown('![cat](https://images.example.com/cat.png)');
-      expect(html).toContain('<img src="https://proxy.moonchan.xyz/cat.png?proxy_host=images.example.com');
-      expect(html).toContain('proxy_scheme=https');
-    });
+    it('adds a copy button to indented blocks but not inline code', async () => {
+      const html = await renderMarkdown('    first\n    second\n\n`inline`');
 
-    it('keeps the fragment at the end, after the proxy params', async () => {
-      const html = await renderMarkdown('![cat](https://images.example.com/cat.png#section)');
-      expect(html).toContain('#section');
-      expect(html.indexOf('#section')).toBeGreaterThan(html.indexOf('proxy_scheme=https'));
-    });
-
-    it('records the original scheme for http images', async () => {
-      const html = await renderMarkdown('![cat](http://images.example.com/cat.png)');
-      expect(html).toContain('proxy_scheme=http');
-    });
-
-    it('hardens the emitted img tag', async () => {
-      const html = await renderMarkdown('![cat](https://images.example.com/cat.png)');
-      expect(html).toContain('loading="lazy"');
-      expect(html).toContain('referrerpolicy="no-referrer"');
-      expect(html).toContain('rel="noopener noreferrer"');
-    });
-
-    it('neuters non-http(s) image sources to #', async () => {
-      const html = await renderMarkdown('![x](/relative/cat.png)');
-      expect(html).toContain('src="#"');
-      expect(html).not.toContain('/relative/cat.png');
-    });
-
-    it('does not emit an image for javascript: sources', async () => {
-      const html = await renderMarkdown('![x](javascript:alert(1))');
-      expect(html).not.toContain('<img');
-    });
-
-    // 【本地改动 2026-09-02】测试图片尺寸约束样式与原图链接包裹。
-    // 发现背景：此前直接设置 width: 50%，导致超长高度图片在 max-height: 100vh 截断时，盒子宽度仍是固定的 50%，
-    // object-fit: contain 使图片实际显示缩窄居中，外包裹框未能贴合图片并在左右留出大片黑边。
-    // 修复方式：50% 宽度上限放在外包络框 <a>（max-width: 50%）、img 以 width:100% 撑满，
-    // 图片按固有比例等比缩放盒尺寸，包裹框紧贴图片边缘；外层包裹指向原图的 <a> 标签。
-    it('constrains image size with max-width and wraps in clean original url link', async () => {
-      const html = await renderMarkdown('![cat](https://images.example.com/cat.png#preview)');
-      expect(html).toContain(
-        'style="display: block; width: 100%; height: auto; max-height: 100vh; object-fit: contain; cursor: pointer;"'
-      );
-      // 【本地改动 2026-09-02】<a> 加 display: inline-block + max-width: 50%：点击热区=图片宽
-      // （inline 时热区=整行；img 自身 max-width:50% 时热区=两倍图宽，见 markdown.ts 注释）。
-      expect(html).toContain(
-        '<a href="https://images.example.com/cat.png" target="_blank" rel="noopener noreferrer" style="display: inline-block; max-width: 50%;">'
-      );
+      expect(html).toContain('data-copy-source="first\nsecond\n"');
+      expect(html).toContain('<span class="markdown-code-actions"><button');
+      expect(html.match(/data-markdown-copy/g)).toHaveLength(1);
+      expect(html).toContain('<code>inline</code>');
     });
   });
 });

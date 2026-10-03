@@ -1,15 +1,37 @@
-import type { ServerConnection } from '$lib/state/server/serverConnection.svelte';
+import type { ServerConnection } from '@chatto/client/server/serverConnection';
+import { serverSessionQueryRoot } from './keys';
 
 type SettingsQueryConnection = Pick<ServerConnection, 'queryScope'>;
 
 function settingsRoot(serverId: string, connection: SettingsQueryConnection) {
-  return ['server', serverId, 'session', connection.queryScope, 'settings'] as const;
+  return [...serverSessionQueryRoot(serverId, connection), 'settings'] as const;
+}
+
+function accountSettingsRoot(
+  serverId: string,
+  connection: SettingsQueryConnection,
+  userId: string
+) {
+  return [...settingsRoot(serverId, connection), 'account', userId] as const;
 }
 
 export const settingsQueryKeys = {
   root: settingsRoot,
-  externalIdentities(serverId: string, connection: SettingsQueryConnection) {
-    return [...settingsRoot(serverId, connection), 'external-identities'] as const;
+  notificationPoliciesRoot(serverId: string, connection: SettingsQueryConnection) {
+    return [...settingsRoot(serverId, connection), 'notification-policies'] as const;
+  },
+  notificationPolicies(
+    serverId: string,
+    connection: SettingsQueryConnection,
+    scopes: readonly string[]
+  ) {
+    return [...settingsQueryKeys.notificationPoliciesRoot(serverId, connection), scopes] as const;
+  },
+  externalIdentities(serverId: string, connection: SettingsQueryConnection, userId: string) {
+    return [...accountSettingsRoot(serverId, connection, userId), 'external-identities'] as const;
+  },
+  verifiedEmails(serverId: string, connection: SettingsQueryConnection, userId: string) {
+    return [...accountSettingsRoot(serverId, connection, userId), 'verified-emails'] as const;
   },
   botsRoot(serverId: string, connection: SettingsQueryConnection) {
     return [...settingsRoot(serverId, connection), 'bots'] as const;

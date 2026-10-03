@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/charmbracelet/log"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"hmans.de/chatto/internal/core"
 	"hmans.de/chatto/internal/parallel"
@@ -127,39 +128,6 @@ func (a *roomTimelineAssembler) buildThreadPage(ctx context.Context, viewerID, r
 	return page, nil
 }
 
-func (a *roomTimelineAssembler) hydrateEvent(ctx context.Context, viewerID string, kind core.RoomKind, event *evtv1.Event) (*apiv1.RoomTimelineEvent, *apiv1.RoomTimelineIncludes, error) {
-	ctx = core.WithDEKRequestCache(ctx)
-
-	messageIDs := []string(nil)
-	if event.GetMessagePosted() != nil {
-		messageIDs = append(messageIDs, event.Id)
-	}
-
-	reactionsByMessageID, err := a.api.core.GetReactionsBatch(ctx, messageIDs)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	h := &timelineHydrator{
-		api:                  a.api,
-		ctx:                  ctx,
-		viewerID:             viewerID,
-		kind:                 kind,
-		reactionsByMessageID: reactionsByMessageID,
-		userIDs:              make(map[string]struct{}),
-		thumbnail:            a.thumbnail,
-	}
-	apiEvent, err := h.event(ctx, &core.RoomEvent{Event: event})
-	if err != nil {
-		return nil, nil, err
-	}
-	users, err := h.users()
-	if err != nil {
-		return nil, nil, err
-	}
-	return apiEvent, &apiv1.RoomTimelineIncludes{Users: users}, nil
-}
-
 type timelineHydrator struct {
 	api                  *API
 	ctx                  context.Context
@@ -170,6 +138,31 @@ type timelineHydrator struct {
 	userIDs              map[string]struct{}
 	thumbnail            attachmentThumbnailRequest
 	threadMetadata       map[string]*core.ThreadMetadata
+	// bodyLoads shares one canonical body hydration per response. The response
+	// owns this cache; projections never retain its plaintext.
+	bodyMu    sync.Mutex
+	bodyLoads map[string]func() (*core.DecryptedMessageBody, error)
+}
+
+func (h *timelineHydrator) messageBody(ctx context.Context, roomID, eventID string) (*core.DecryptedMessageBody, error) {
+	id, err := h.api.core.ResolveMessageContentID(roomID, eventID)
+	if errors.Is(err, core.ErrMessageNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	h.bodyMu.Lock()
+	if h.bodyLoads == nil {
+		h.bodyLoads = make(map[string]func() (*core.DecryptedMessageBody, error))
+	}
+	load := h.bodyLoads[id]
+	if load == nil {
+		load = sync.OnceValues(func() (*core.DecryptedMessageBody, error) { return h.api.core.GetFullMessageBody(ctx, id) })
+		h.bodyLoads[id] = load
+	}
+	h.bodyMu.Unlock()
+	return load()
 }
 
 func timelineThreadKey(roomID, threadRootEventID string) string {
@@ -180,12 +173,13 @@ func (h *timelineHydrator) event(ctx context.Context, event *core.RoomEvent) (*a
 	if event == nil || event.Event == nil {
 		return nil, nil
 	}
-	h.addUserID(event.ActorId)
+	authorID := core.MessageAuthorID(event.Event)
+	h.addUserID(authorID)
 
 	apiEvent := &apiv1.RoomTimelineEvent{
 		Id:        event.Id,
 		CreatedAt: event.CreatedAt,
-		ActorId:   event.ActorId,
+		ActorId:   authorID,
 	}
 
 	switch payload := event.Event.GetEvent().(type) {
@@ -231,6 +225,13 @@ func (h *timelineHydrator) event(ctx context.Context, event *core.RoomEvent) (*a
 }
 
 func (h *timelineHydrator) messagePosted(ctx context.Context, event *core.RoomEvent, payload *evtv1.MessagePostedEvent) (*apiv1.Message, error) {
+	if !event.EchoMetadataHydrated {
+		var err error
+		payload, err = h.api.core.HydrateMessagePost(ctx, event.Event)
+		if err != nil {
+			return nil, err
+		}
+	}
 	hydrationState, err := h.api.core.RoomTimelineReads().MessageHydrationState(event.Id)
 	if err != nil {
 		return nil, err
@@ -240,7 +241,7 @@ func (h *timelineHydrator) messagePosted(ctx context.Context, event *core.RoomEv
 		Id:                        event.Id,
 		RoomId:                    payload.GetRoomId(),
 		CreatedAt:                 event.CreatedAt,
-		ActorId:                   event.ActorId,
+		ActorId:                   core.MessageAuthorID(event.Event),
 		InReplyTo:                 payload.GetInReplyTo(),
 		ThreadRootEventId:         payload.GetInThread(),
 		EchoOfEventId:             payload.GetEchoOfEventId(),
@@ -252,8 +253,18 @@ func (h *timelineHydrator) messagePosted(ctx context.Context, event *core.RoomEv
 		message.DeletedAt = timestamppb.New(hydrationState.DeletedAt)
 	}
 	message.ChannelEchoEventId = hydrationState.ChannelEchoEventID
+	if rootID, ok := h.api.core.MessageEventThreadRoot(payload.GetRoomId(), event.Event); ok {
+		canReply, err := h.api.core.CanReplyInThread(ctx, h.viewerID, h.kind, payload.GetRoomId(), rootID)
+		if err != nil {
+			return nil, err
+		}
+		message.ViewerState = &apiv1.MessageViewerState{CanReplyInThread: &canReply}
+	}
 
-	body, err := h.api.core.GetFullMessageBody(ctx, event.Id)
+	var body *core.DecryptedMessageBody
+	if !hydrationState.HasDeletedAt {
+		body, err = h.messageBody(ctx, payload.GetRoomId(), event.Id)
+	}
 	if err != nil {
 		if !errors.Is(err, core.ErrMessageBodyCorrupt) {
 			return nil, err
@@ -269,7 +280,7 @@ func (h *timelineHydrator) messagePosted(ctx context.Context, event *core.RoomEv
 	}
 	if body != nil {
 		message.Body = &body.Body
-		message.Attachments = h.attachments(payload.GetRoomId(), event.Id, body.Attachments)
+		message.Attachments = h.attachments(payload.GetRoomId(), body.MessageEventID, body.Attachments, body.AttachmentDescriptions)
 		message.LinkPreview = h.linkPreview(body.LinkPreview)
 		if body.UpdatedAt != nil {
 			message.UpdatedAt = timestamppb.New(*body.UpdatedAt)
@@ -295,7 +306,7 @@ func (h *timelineHydrator) messagePosted(ctx context.Context, event *core.RoomEv
 				thread.LastReplyAt = timestamppb.New(*metadata.LastReplyAt)
 			}
 			thread.ParticipantPreviewUserIds = firstN(metadata.ParticipantIDs, 5)
-			thread.ParticipantCount = int32(len(metadata.ParticipantIDs))
+			thread.ParticipantCount = int32(metadata.ParticipantCount)
 			h.addUserIDs(thread.ParticipantPreviewUserIds)
 			following, err := h.api.core.IsFollowingThread(ctx, h.kind, h.viewerID, payload.GetRoomId(), event.Id)
 			if err != nil {
@@ -317,7 +328,7 @@ func (h *timelineHydrator) messagePosted(ctx context.Context, event *core.RoomEv
 	return message, nil
 }
 
-func (h *timelineHydrator) attachments(roomID, messageEventID string, attachments []*evtv1.Attachment) []*apiv1.MessageAttachment {
+func (h *timelineHydrator) attachments(roomID, messageEventID string, attachments []*evtv1.Attachment, descriptions map[string]string) []*apiv1.MessageAttachment {
 	result := make([]*apiv1.MessageAttachment, 0, len(attachments))
 	thumbnail := h.thumbnail
 	if thumbnail.width <= 0 || thumbnail.height <= 0 || thumbnail.fit == "" {
@@ -327,32 +338,36 @@ func (h *timelineHydrator) attachments(roomID, messageEventID string, attachment
 		if attachment == nil {
 			continue
 		}
+		// A response can share a canonical body across original and echo rows.
+		attachment = proto.Clone(attachment).(*evtv1.Attachment)
 		if attachment.RoomId == "" {
 			attachment.RoomId = roomID
 		}
 		if attachment.MessageBodyId == "" {
 			attachment.MessageBodyId = messageEventID
 		}
-		// 【本地改动 2026-08-18】入口选择公开版 URL 生成：无 ticket、带
-		// {fn.ext} 尾段，可被浏览器/CDN 长期缓存。
-		assetURL := h.api.core.GetPublicStableAttachmentAssetURL(attachment)
-		thumbnailURL := h.api.core.GetPublicStableTransformedAttachmentAssetURL(attachment, thumbnail.width, thumbnail.height, thumbnail.fit)
-		result = append(result, &apiv1.MessageAttachment{
+		assetURL := h.api.core.GetStableAttachmentAssetURL(attachment.Id, h.viewerID)
+		thumbnailURL := h.api.core.GetStableTransformedAttachmentAssetURL(attachment.Id, h.viewerID, thumbnail.width, thumbnail.height, thumbnail.fit)
+		view := &apiv1.MessageAttachment{
 			Id:                attachment.Id,
 			Filename:          attachment.Filename,
 			ContentType:       attachment.ContentType,
 			Width:             attachment.Width,
 			Height:            attachment.Height,
-			AssetUrl:          assetURLView(assetURL),
-			ThumbnailAssetUrl: assetURLView(thumbnailURL),
-			VideoProcessing:   apiVideoProcessing(h.api, h.viewerID, attachment),
-		})
+			AssetUrl:          h.api.assetURLView(h.ctx, assetURL),
+			ThumbnailAssetUrl: h.api.assetURLView(h.ctx, thumbnailURL),
+			VideoProcessing:   apiVideoProcessing(h.ctx, h.api, h.viewerID, attachment),
+		}
+		if description := descriptions[attachment.GetId()]; description != "" {
+			view.Description = &description
+		}
+		result = append(result, view)
 	}
 	return result
 }
 
 func (h *timelineHydrator) linkPreview(preview *evtv1.LinkPreview) *apiv1.LinkPreview {
-	return apiLinkPreview(h.api, preview)
+	return apiLinkPreview(h.ctx, h.api, preview)
 }
 
 func (h *timelineHydrator) reactions(messageEventID string) []*apiv1.MessageReaction {
@@ -379,7 +394,7 @@ func (h *timelineHydrator) users() (map[string]*apiv1.User, error) {
 	}
 	h.userMu.Unlock()
 
-	coreUsers, err := h.api.core.GetUsers(h.ctx, ids)
+	coreUsers, err := h.api.core.GetUserReferences(h.ctx, ids)
 	if err != nil {
 		return nil, err
 	}
@@ -393,7 +408,9 @@ func (h *timelineHydrator) users() (map[string]*apiv1.User, error) {
 	for i, id := range ids {
 		user := coreUsers[i]
 		if user == nil {
-			user = core.DeletedUserReference(id)
+			// An absent profile can be a projection catch-up gap. Only the user
+			// projection can identify an account-deletion tombstone.
+			continue
 		}
 		summary, err := userSummaryWithPresence(h.ctx, h.api, user, &apiv1.ImageTransformOptions{
 			Width:  int32(avatarWidth),
@@ -435,14 +452,11 @@ func callEvent(roomID, callID string) *apiv1.RoomTimelineCallEvent {
 	return &apiv1.RoomTimelineCallEvent{RoomId: roomID, CallId: callID}
 }
 
-func assetURLView(assetURL core.StableAssetURL) *apiv1.MessageAssetUrl {
-	// 【本地改动 2026-08-18】公开 URL 无 ticket、永不过期：ExpiresAt 零值时
-	// 不填充过期时间，前端据此跳过 URL 刷新（避免序列化成 1970 触发无限刷新）。
-	if assetURL.ExpiresAt.IsZero() {
-		return &apiv1.MessageAssetUrl{Url: assetURL.URL}
-	}
+// assetURLView maps a core asset URL to its API view. With webserver.url, the
+// URL is absolute on the public origin of the request in ctx.
+func (a *API) assetURLView(ctx context.Context, assetURL core.StableAssetURL) *apiv1.MessageAssetUrl {
 	return &apiv1.MessageAssetUrl{
-		Url:       assetURL.URL,
+		Url:       a.absolutizeMediaURL(ctx, assetURL.URL),
 		ExpiresAt: timestamppb.New(assetURL.ExpiresAt),
 	}
 }

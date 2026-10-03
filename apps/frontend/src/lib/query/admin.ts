@@ -1,9 +1,10 @@
-import type { ServerConnection } from '$lib/state/server/serverConnection.svelte';
+import type { ServerConnection } from '@chatto/client/server/serverConnection';
+import { serverSessionQueryRoot } from './keys';
 
 type AdminQueryConnection = Pick<ServerConnection, 'queryScope'>;
 
 function adminRoot(serverId: string, connection: AdminQueryConnection) {
-  return ['server', serverId, 'session', connection.queryScope, 'admin'] as const;
+  return [...serverSessionQueryRoot(serverId, connection), 'admin'] as const;
 }
 
 function permissionTiersRoot(serverId: string, connection: AdminQueryConnection) {
@@ -28,11 +29,11 @@ export const adminQueryKeys = {
   members(serverId: string, connection: AdminQueryConnection, search: string) {
     return [...adminQueryKeys.membersRoot(serverId, connection), { search }] as const;
   },
-  bansRoot(serverId: string, connection: AdminQueryConnection) {
-    return [...adminRoot(serverId, connection), 'bans'] as const;
+  suspensionsRoot(serverId: string, connection: AdminQueryConnection) {
+    return [...adminRoot(serverId, connection), 'suspensions'] as const;
   },
-  bans(serverId: string, connection: AdminQueryConnection) {
-    return adminQueryKeys.bansRoot(serverId, connection);
+  suspensions(serverId: string, connection: AdminQueryConnection) {
+    return adminQueryKeys.suspensionsRoot(serverId, connection);
   },
   member(serverId: string, connection: AdminQueryConnection, userId: string) {
     return [...adminRoot(serverId, connection), 'member', userId] as const;
@@ -54,6 +55,9 @@ export const adminQueryKeys = {
   userPermissionsRoot,
   userPermissions(serverId: string, connection: AdminQueryConnection, userId: string) {
     return [...userPermissionsRoot(serverId, connection), userId] as const;
+  },
+  roleMembers(serverId: string, connection: AdminQueryConnection, roleName: string) {
+    return [...adminRoot(serverId, connection), 'role-members', roleName] as const;
   },
   roleCatalog(serverId: string, connection: AdminQueryConnection) {
     return [...adminRoot(serverId, connection), 'roles'] as const;

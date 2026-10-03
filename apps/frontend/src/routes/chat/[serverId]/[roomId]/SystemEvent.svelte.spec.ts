@@ -1,24 +1,19 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
 import { page } from 'vitest/browser';
-import { TimelineEventKind, type TimelineEventView } from '$lib/render/timelineEvents';
+import { TimelineEventKind, type TimelineEventView } from '@chatto/client/timeline/timelineEvents';
 import { loadLocaleMessages } from '$lib/i18n/messages';
 import { setReactiveLocale } from '$lib/i18n/state.svelte';
 import SystemEvent from './SystemEvent.svelte';
-import { RoomThreadingMode } from '$lib/roomThreading';
+import { RoomThreadingMode } from '@chatto/client/util/roomThreading';
 
 vi.mock('$lib/state/userProfiles.svelte', () => ({
-    getLiveBio: () => null,
-    getLiveTimezone: () => null,
+  getLiveBotOwnerUserId: (_userId: string, fallback: string | null) => fallback,
+  getLiveBio: () => null,
+  getLiveTimezone: () => null,
   getLiveDisplayName: (_userId: string, fallback: string) => fallback,
   getLiveAvatarUrl: (_userId: string, fallback: string | null) => fallback,
   getLiveCustomStatus: (_userId: string, fallback: unknown) => fallback
-}));
-
-vi.mock('$lib/state/presenceCache.svelte', () => ({
-  getPresenceCache: () => ({
-    get: (_scope: { serverId: string; userId: string }, fallback: unknown) => fallback
-  })
 }));
 
 function systemEvent(
@@ -111,9 +106,9 @@ describe('SystemEvent', () => {
     });
 
     expect(container.textContent).toContain('Alice started a call in this room');
-    expect(container.querySelector('button')?.parentElement?.textContent?.replace(/\s+/g, ' ').trim()).toBe(
-      'Alice started a call in this room · Join call'
-    );
+    expect(
+      container.querySelector('button')?.parentElement?.textContent?.replace(/\s+/g, ' ').trim()
+    ).toBe('Alice started a call in this room · Join call');
     await page.getByRole('button', { name: 'Join call' }).click();
     expect(onOpenCall).toHaveBeenCalledOnce();
   });

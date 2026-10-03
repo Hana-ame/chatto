@@ -9,7 +9,8 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-var roomDirectorySnapshotContractID = snapshotContractID("v1", &projectionv1.RoomDirectoryProjectionSnapshot{})
+// v2: DM memberships ignore UserLeftRoom, so v1 snapshots must be rebuilt.
+var roomDirectorySnapshotContractID = snapshotContractID("v2", &projectionv1.RoomDirectoryProjectionSnapshot{})
 
 func (*RoomDirectoryProjection) SnapshotContractID() string {
 	return roomDirectorySnapshotContractID

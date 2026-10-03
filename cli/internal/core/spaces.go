@@ -4,13 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"hmans.de/chatto/internal/pb/chatto/core/live/v1"
 	"sort"
 	"strings"
 
 	"github.com/nats-io/nats.go/jetstream"
 
-	"hmans.de/chatto/internal/core/subjects"
 	evtv1 "hmans.de/chatto/internal/pb/chatto/core/evt/v1"
 )
 
@@ -70,30 +68,14 @@ func (c *ChattoCore) SeedDefaultRooms(ctx context.Context) error {
 // Per-Kind User Cleanup
 // ============================================================================
 
-// CleanupUserState removes a user's per-kind artifacts: room memberships and,
-// during account deletion, emits a live
-// ServerMemberDeletedEvent so clients can re-render messages as "Deleted User".
-// Idempotent; safe to call for kinds the user never interacted with.
+// CleanupUserState removes a user's per-kind room memberships.
+// It is idempotent and safe to call for kinds the user never used.
 //
 // Post-#330 there's no separate "space membership" record to delete — every
 // authenticated user is implicitly a server member.
-func (c *ChattoCore) CleanupUserState(ctx context.Context, userID string, kind RoomKind, isAccountDeletion bool) error {
+func (c *ChattoCore) CleanupUserState(ctx context.Context, userID string, kind RoomKind) error {
 	if err := c.deleteUserRoomMembershipsInSpace(ctx, userID, kind); err != nil {
 		c.logger.Warn("Failed to delete room memberships during cleanup", "user_id", userID, "kind", kind, "error", err)
-	}
-
-	if isAccountDeletion {
-		memberDeletedEvent := newLiveEvent(userID, &livev1.LiveEvent{
-			Event: &livev1.LiveEvent_ServerMemberDeleted{
-				ServerMemberDeleted: &livev1.ServerMemberDeletedEvent{
-					UserId: userID,
-				},
-			},
-		})
-		subject := subjects.LiveSyncMember("member_deleted")
-		if err := c.publishLiveEvent(ctx, subject, memberDeletedEvent); err != nil {
-			c.logger.Warn("Failed to publish ServerMemberDeletedEvent", "user_id", userID, "kind", kind, "error", err)
-		}
 	}
 
 	return nil
@@ -189,7 +171,11 @@ func serverMemberUserPage(allUsers []*evtv1.User, search string, limit, offset i
 	sort.Slice(matches, func(i, j int) bool {
 		// Both null: sort alphabetically by login
 		if matches[i].GetCreatedAt() == nil && matches[j].GetCreatedAt() == nil {
-			return strings.ToLower(matches[i].GetLogin()) < strings.ToLower(matches[j].GetLogin())
+			left, right := strings.ToLower(matches[i].GetLogin()), strings.ToLower(matches[j].GetLogin())
+			if left == right {
+				return matches[i].GetId() < matches[j].GetId()
+			}
+			return left < right
 		}
 		// Null timestamps sort to the end
 		if matches[i].GetCreatedAt() == nil {
@@ -199,6 +185,9 @@ func serverMemberUserPage(allUsers []*evtv1.User, search string, limit, offset i
 			return true
 		}
 		// Both have timestamps: sort by time (oldest first)
+		if matches[i].GetCreatedAt().AsTime().Equal(matches[j].GetCreatedAt().AsTime()) {
+			return matches[i].GetId() < matches[j].GetId()
+		}
 		return matches[i].GetCreatedAt().AsTime().Before(matches[j].GetCreatedAt().AsTime())
 	})
 

@@ -16,7 +16,6 @@
       "remote_title": "{server} benötigt eine Anmeldung",
       "remote_message": "Dieser Server hat die gespeicherte Anmeldung abgelehnt. Verbinde ihn erneut, um Live-Aktualisierungen und Aktionen fortzusetzen.",
       "remote_action": "Neu verbinden",
-      "remote_failed": "Neuverbinden konnte nicht gestartet werden",
       "sidebar_reauth": "{server} benötigt eine Anmeldung"
     },
     "access_denied": {
@@ -48,7 +47,8 @@
       "complete": "Chatto wurde wieder aufgebaut. Endpunktzahl: {count} Punkte"
     },
     "pane_header": {
-      "back": "Zurück"
+      "back": "Zurück",
+      "actions": "Bereichsaktionen"
     },
     "sidebar_nav": {
       "back_to_chat": "Zurück zum Chat"
@@ -67,7 +67,12 @@
     "image_modal": {
       "previous": "Vorheriges Bild",
       "next": "Nächstes Bild",
-      "fallback_alt": "Bild"
+      "fallback_alt": "Bild",
+      "zoom_in": "Vergrößern",
+      "zoom_out": "Verkleinern",
+      "fit": "Einpassen",
+      "details": "Details",
+      "file_type": "Dateityp"
     },
     "toast": {
       "dismiss": "Benachrichtigung ausblenden"
@@ -78,11 +83,9 @@
       "clear": "Leeren"
     },
     "expiry": {
-      "label": "Läuft ab",
       "24h": "24 Stunden",
       "7d": "7 Tage",
       "30d": "30 Tage",
-      "indefinite": "Kein Ablauf",
       "custom": "Benutzerdefiniert",
       "custom_label": "Benutzerdefinierter Ablauf",
       "error_required": "Wähle ein Ablaufdatum.",

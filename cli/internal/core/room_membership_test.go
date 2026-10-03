@@ -4,13 +4,53 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"testing"
+
+	evtv1 "hmans.de/chatto/internal/pb/chatto/core/evt/v1"
 )
 
 // ============================================================================
 // Room Membership Tests
 // ============================================================================
+
+func TestListActiveRoomMemberIDsDoesNotReadProfiles(t *testing.T) {
+	for _, universal := range []bool{false, true} {
+		t.Run(fmt.Sprintf("universal=%v", universal), func(t *testing.T) {
+			c, _ := setupTestCore(t)
+			ctx := testContext(t)
+			user, err := c.CreateUser(ctx, SystemActorID, "id-list-user", "ID List User", "password")
+			if err != nil {
+				t.Fatal(err)
+			}
+			room, err := c.CreateRoom(ctx, SystemActorID, KindChannel, "", "id-list", "", WithUniversalRoom(universal))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !universal {
+				if _, err := c.JoinRoom(ctx, user.Id, KindChannel, user.Id, room.Id); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			projection := c.userModel.users.Projection()
+			projection.Lock()
+			projection.users[user.Id].login.encrypted = &evtv1.EncryptedUserString{}
+			projection.Unlock()
+			if _, err := c.GetUser(ctx, user.Id); err == nil {
+				t.Fatal("corrupt profile unexpectedly hydrated")
+			}
+			ids, err := c.ListActiveRoomMemberIDs(ctx, user.Id, room.Id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Contains(ids, user.Id) {
+				t.Fatalf("membership IDs %v omit active user", ids)
+			}
+		})
+	}
+}
 
 func TestRoomMemberships_CreateOrUpdate(t *testing.T) {
 	core, _ := setupTestCore(t)
@@ -393,10 +433,10 @@ func TestUniversalRoomsGrantEffectiveMembershipWithoutChangingExplicitMembership
 		t.Fatalf("JoinRoom user1: %v", err)
 	}
 
-	updated, err := core.SetRoomUniversal(ctx, user1.Id, KindChannel, room.Id, true)
-	if err != nil {
-		t.Fatalf("SetRoomUniversal on: %v", err)
+	if err := core.GrantUserRoomPermission(ctx, SystemActorID, room.Id, user1.Id, PermRoomManage); err != nil {
+		t.Fatalf("GrantUserRoomPermission room.manage: %v", err)
 	}
+	updated := setRoomUniversalForTest(t, ctx, core, user1.Id, room.Id, true)
 	if !updated.GetUniversal() {
 		t.Fatal("expected room to be universal")
 	}
@@ -426,10 +466,7 @@ func TestUniversalRoomsGrantEffectiveMembershipWithoutChangingExplicitMembership
 		t.Fatalf("expected ErrCannotLeaveUniversalRoom, got %v", err)
 	}
 
-	updated, err = core.SetRoomUniversal(ctx, user1.Id, KindChannel, room.Id, false)
-	if err != nil {
-		t.Fatalf("SetRoomUniversal off: %v", err)
-	}
+	updated = setRoomUniversalForTest(t, ctx, core, user1.Id, room.Id, false)
 	if updated.GetUniversal() {
 		t.Fatal("expected room to no longer be universal")
 	}

@@ -1,23 +1,60 @@
-import { describe, it, expect, vi } from 'vitest';
+import '../../app.css';
+import { cdp, page } from 'vitest/browser';
+import { afterEach, beforeEach, describe, it, expect, expectTypeOf, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
-import { flushSync } from 'svelte';
+import { flushSync, type ComponentProps, type Snippet } from 'svelte';
 import Dialog from './Dialog.svelte';
 import { q, testSnippet } from '$lib/test-utils';
 
-function renderDialog(props: {
-  visible: boolean;
-  title?: string;
-  size?: 'sm' | 'md' | 'lg';
-  children: ReturnType<typeof testSnippet>;
-  footer?: ReturnType<typeof testSnippet>;
-}) {
+function renderDialog(props: ComponentProps<typeof Dialog>) {
   return render(Dialog, { props });
 }
 
 const FRAME = 'dialog > div';
 const WELL = `${FRAME} > div`;
 
+afterEach(async () => {
+  await cdp().send('Emulation.setTouchEmulationEnabled', { enabled: false });
+});
+
 describe('Dialog', () => {
+  // Compile-time contract checks run through svelte-check.
+  {
+    type Props = ComponentProps<typeof Dialog>;
+    expectTypeOf<{ children: Snippet; primaryAction: Snippet }>().toExtend<Props>();
+    expectTypeOf<{
+      children: Snippet;
+      footer: Snippet;
+      footerDetails: Snippet;
+    }>().toExtend<Props>();
+    expectTypeOf<{
+      children: Snippet;
+      primaryAction: Snippet;
+      footer: Snippet;
+    }>().not.toExtend<Props>();
+    expectTypeOf<{ children: Snippet; footerDetails: Snippet }>().not.toExtend<Props>();
+  }
+  beforeEach(async () => {
+    await page.viewport(1280, 720);
+  });
+
+  it('does not report a close to its owner when the owner unmounts it', async () => {
+    const onclose = vi.fn();
+    const view = renderDialog({
+      visible: true,
+      title: 'Loading failed',
+      children: testSnippet('<p>Try again.</p>'),
+      onclose
+    });
+    await vi.waitFor(() => expect(view.container.querySelector('dialog')?.open).toBe(true));
+
+    view.unmount();
+    // Closing a detached dialog queues a native close event.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(onclose).not.toHaveBeenCalled();
+  });
+
   describe('dialog element', () => {
     it('renders a dialog element', async () => {
       const { container } = renderDialog({
@@ -63,34 +100,82 @@ describe('Dialog', () => {
   });
 
   describe('size classes', () => {
-    it('applies medium size class by default', async () => {
+    it('uses the medium size as its default baseline', async () => {
       const { container } = renderDialog({
         visible: true,
         children: testSnippet('<span>Content</span>')
       });
 
-      await expect.element(q(container, 'dialog')).toHaveClass('w-150');
+      expect(q(container, FRAME)?.style.getPropertyValue('--dialog-baseline-width')).toBe('600px');
     });
 
-    it('applies small size class when size is sm', async () => {
+    it('uses the small size as its baseline when size is sm', async () => {
       const { container } = renderDialog({
         visible: true,
         size: 'sm',
         children: testSnippet('<span>Content</span>')
       });
 
-      await expect.element(q(container, 'dialog')).toHaveClass('w-100');
+      expect(q(container, FRAME)?.style.getPropertyValue('--dialog-baseline-width')).toBe('400px');
       await expect.element(q(container, 'dialog')).toHaveClass('max-w-[calc(100vw-2rem)]');
     });
 
-    it('applies large size class when size is lg', async () => {
+    it('uses the large size as its baseline when size is lg', async () => {
       const { container } = renderDialog({
         visible: true,
         size: 'lg',
         children: testSnippet('<span>Content</span>')
       });
 
-      await expect.element(q(container, 'dialog')).toHaveClass('w-200');
+      expect(q(container, FRAME)?.style.getPropertyValue('--dialog-baseline-width')).toBe('800px');
+    });
+
+    it('keeps a short-action medium dialog at its baseline width', () => {
+      const { container } = renderDialog({
+        visible: true,
+        children: testSnippet('<span>Content</span>'),
+        footer: testSnippet('<button>Continue</button>')
+      });
+
+      expect(q(container, FRAME)?.offsetWidth).toBe(600);
+    });
+
+    it('expands beyond its baseline to show long footer actions', () => {
+      const { container } = renderDialog({
+        visible: true,
+        children: testSnippet('<span>Content</span>'),
+        footer: testSnippet(
+          '<button><span class="button-content">Im vorherigen außergewöhnlich langen Diskussionsthread mit allen bisherigen Nachrichten fortfahren</span></button>'
+        )
+      });
+
+      const dialog = q(container, 'dialog') as HTMLDialogElement;
+      const footer = dialog.querySelector('footer') as HTMLElement;
+      expect(dialog.offsetWidth).toBeGreaterThan(600);
+      for (const label of footer.querySelectorAll('button > span')) {
+        expect(label.scrollWidth).toBe(label.clientWidth);
+      }
+    });
+
+    it('fills narrow touch screens and wraps complete action labels', async () => {
+      await cdp().send('Emulation.setTouchEmulationEnabled', { enabled: true });
+      await page.viewport(425, 720);
+      const { container } = renderDialog({
+        visible: true,
+        children: testSnippet('<span>Content</span>'),
+        primaryAction: testSnippet(
+          '<button><span class="button-content">Im vorherigen außergewöhnlich langen Diskussionsthread mit allen bisherigen Nachrichten fortfahren</span></button>'
+        )
+      });
+
+      const dialog = q(container, 'dialog') as HTMLDialogElement;
+      const footer = dialog.querySelector('footer') as HTMLElement;
+      const label = footer.querySelector('button > span') as HTMLElement;
+      expect(dialog.offsetWidth).toBe(window.innerWidth);
+      expect(getComputedStyle(footer).flexDirection).toBe('column');
+      expect(getComputedStyle(label).whiteSpace).toBe('normal');
+      expect(label.scrollWidth).toBeLessThanOrEqual(label.clientWidth);
+      expect(footer.querySelector('button')!.offsetHeight).toBeGreaterThanOrEqual(48);
     });
   });
 
@@ -169,6 +254,11 @@ describe('Dialog', () => {
       await expect.element(footer).not.toHaveClass('flex-wrap');
       expect(footer?.querySelectorAll('button')).toHaveLength(1);
       expect(getComputedStyle(footer!).flexWrap).toBe('nowrap');
+      expect(getComputedStyle(footer!).maxWidth).toBe('100%');
+      expect(getComputedStyle(footer!).alignSelf).toBe('flex-end');
+      expect(footer!.getBoundingClientRect().width).toBeLessThan(
+        q(container, WELL)!.getBoundingClientRect().width
+      );
     });
   });
 
@@ -208,7 +298,9 @@ describe('Dialog', () => {
       const defaultAction = vi.fn();
       q(container, '[data-dialog-default]')?.addEventListener('click', defaultAction);
 
-      q(container, 'dialog')?.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Enter' }));
+      q(container, 'dialog')?.dispatchEvent(
+        new KeyboardEvent('keydown', { bubbles: true, key: 'Enter' })
+      );
 
       expect(defaultAction).toHaveBeenCalledOnce();
     });
@@ -244,7 +336,9 @@ describe('Dialog', () => {
       const defaultAction = vi.fn();
       q(container, '[data-dialog-default]')?.addEventListener('click', defaultAction);
 
-      q(container, 'dialog')?.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Enter' }));
+      q(container, 'dialog')?.dispatchEvent(
+        new KeyboardEvent('keydown', { bubbles: true, key: 'Enter' })
+      );
 
       expect(defaultAction).not.toHaveBeenCalled();
     });

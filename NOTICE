@@ -9,6 +9,10 @@ Dependency manifests and lockfiles in this repository remain the authoritative
 set of third-party packages, including transitive dependencies, used to build
 each artifact.
 
+ChattoBot:
+
+- LinkeDOM (https://github.com/WebReflection/linkedom) - ISC License
+
 Server and CLI Go Components:
 
 - age (https://filippo.io/age) - BSD 3-Clause License
@@ -30,6 +34,8 @@ Server and CLI Go Components:
 - go-mail (https://github.com/wneessen/go-mail) - MIT License
 - go-jose (https://github.com/go-jose/go-jose) - Apache License 2.0
 - go-nanoid (https://github.com/matoous/go-nanoid) - MIT License
+- gofakeit (https://github.com/brianvoe/gofakeit) - MIT License
+  (development and test data generation)
 - go-smtp-mock (https://github.com/mocktools/go-smtp-mock) - MIT License
 - go-str2duration (https://github.com/xhit/go-str2duration) - BSD 3-Clause License
 - go-toml (https://github.com/pelletier/go-toml) - MIT License
@@ -39,6 +45,7 @@ Server and CLI Go Components:
 - Goth OAuth/OIDC authentication (https://github.com/markbates/goth) -
   MIT License
 - imageorient (https://github.com/disintegration/imageorient) - MIT License
+- jellydator/ttlcache (https://github.com/jellydator/ttlcache) - MIT License
 - rs/cors (https://github.com/rs/cors) - MIT License
 - SCS session management (https://github.com/alexedwards/scs) - MIT License
 - LiveKit Protocol (https://github.com/livekit/protocol) - Apache License 2.0
@@ -52,13 +59,14 @@ Server and CLI Go Components:
 - protoc-gen-doc (https://github.com/pseudomuto/protoc-gen-doc) - MIT License
 - Testify (https://github.com/stretchr/testify) - MIT License
 - templ (https://templ.guide/) - MIT License
+- xurls (https://github.com/mvdan/xurls) - BSD 3-Clause License
 - ZITADEL OIDC (https://github.com/zitadel/oidc) - Apache License 2.0
 - Twirp (https://github.com/twitchtv/twirp) - Apache License 2.0
 - webpush-go (https://github.com/SherClockHolmes/webpush-go) - MIT License
 - Google Go libraries: x/crypto, x/image, x/oauth2, x/sync, x/term,
   and protobuf (https://go.googlesource.com/) - BSD 3-Clause License
 
-Frontend and Documentation Components:
+Frontend, Examples, and Documentation Components:
 
 - Astro and Starlight (https://astro.build/) - MIT License
 - Buf Protobuf runtime and ES code generation for TypeScript
@@ -71,6 +79,9 @@ Frontend and Documentation Components:
 - Fontsource IBM Plex Sans and IBM Plex Mono
   (https://fontsource.org/fonts/ibm-plex-sans,
   https://fontsource.org/fonts/ibm-plex-mono) - SIL Open Font License 1.1
+- Plus Jakarta Sans, bundled by Runling through Fontsource
+  (https://fontsource.org/fonts/plus-jakarta-sans) - SIL Open Font License 1.1
+- daisyUI, used by the Runling console (https://daisyui.com/) - MIT License
 - gemoji (https://github.com/github/gemoji) - MIT License
 - highlight.js (https://highlightjs.org/) - BSD 3-Clause License
 - hls.js (https://github.com/video-dev/hls.js) - Apache License 2.0
@@ -80,9 +91,13 @@ Frontend and Documentation Components:
 - LiveKit client SDK for JS (https://github.com/livekit/client-sdk-js) -
   Apache License 2.0
 - lowlight (https://github.com/wooorm/lowlight) - MIT License
+- machina (https://github.com/ifandelse/machina.js) - MIT License
 - markdown-it (https://github.com/markdown-it/markdown-it) - MIT License
 - node-semver (https://github.com/npm/node-semver) - ISC License
 - Parcel watcher (https://github.com/parcel-bundler/watcher) - MIT License
+- Undici, used by the Runling bot for address-pinned web requests (https://github.com/nodejs/undici) - MIT License
+- Runling workflow runner (packages/runling, originally https://github.com/chattocorp/runling) - MIT License; Copyright (c) 2026 Hendrik Mans and contributors
+- Pi coding agent, AI SDK, and terminal UI, used by Runling (https://github.com/earendil-works/pi) - MIT License
 - Playwright (https://playwright.dev/) - Apache License 2.0
 - Prettier and plugins (https://prettier.io/) - MIT License
 - Sharp image toolkit (https://sharp.pixelplumbing.com/) - Apache License 2.0
@@ -102,6 +117,15 @@ Frontend and Documentation Components:
 - Virtua (https://github.com/inokawa/virtua) - MIT License
 - Vite and Vitest (https://vite.dev/, https://vitest.dev/) - MIT License
 - zod (https://zod.dev/) - MIT License
+
+Mobile Components:
+- Capacitor (https://capacitorjs.com/) - MIT License; Copyright (c)
+  2017-present Drifty Co. The mobile web bundle includes capacitor-license.txt.
+- Capacitor Keyboard (https://github.com/ionic-team/capacitor-plugins) - MIT
+  License; Copyright 2020-present Ionic. The mobile web bundle includes
+  capacitor-keyboard-license.txt.
+- Capacitor's bundled Cordova compatibility code - Apache License 2.0;
+  Copyright The Apache Software Foundation.
 
 Desktop Components:
 
@@ -147,8 +171,9 @@ Trademark Notice:
 Chatto's source code uses mixed licensing. The default repository license is
 the GNU Affero General Public License version 3 or any later version, with
 Apache License 2.0 exceptions for the independently versioned shared framework
-modules and selected frontend, integration, and documentation surfaces as
-annotated in REUSE.toml. These licenses do not grant permission to use the
+modules and selected frontend, integration, and documentation surfaces, and
+MIT License exceptions for Runling and the client packages under `packages/`,
+as annotated in REUSE.toml. These licenses do not grant permission to use the
 "Chatto" name, Chatto logos, or other Chatto marks except as otherwise
 permitted by law. "Chatto" and the Chatto logos are marks and trade names of
 ChattoCorp GmbH, and are not registered trademarks at this time.

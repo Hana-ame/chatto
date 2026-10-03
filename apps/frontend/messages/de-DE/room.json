@@ -71,7 +71,9 @@
     },
     "timeline": {
       "beginning": "Dies ist der Anfang dieser Unterhaltung.",
-      "read_denied": "Du hast keine Berechtigung, Nachrichten in diesem Raum zu lesen."
+      "read_denied": "Du hast keine Berechtigung, Nachrichten in diesem Raum zu lesen.",
+      "limited_empty": "Noch keine Gespräche, die du lesen kannst.",
+      "loading": "Nachrichten werden geladen..."
     },
     "message": {
       "empty": "Noch keine Nachrichten",
@@ -87,6 +89,7 @@
         "remove_reaction": "{emoji} entfernen",
         "add_reaction": "Reaktion hinzufügen",
         "more_reactions": "Weitere Reaktionen",
+        "reactions": "Reaktionen",
         "reply": "Antworten",
         "reply_room": "Im Raum antworten",
         "reply_thread": "Im Thread antworten",
@@ -96,9 +99,18 @@
         "edit_short": "Bearbeiten",
         "copy_text": "Text kopieren",
         "copy_text_failed": "Text konnte nicht kopiert werden",
-        "copy_link": "Link kopieren"
+        "copy_link": "Link kopieren",
+        "copy_message_link": "Nachrichtenlink kopieren",
+        "copy_image": "Bild kopieren",
+        "link_copied": "Link kopiert",
+        "message_link_copied": "Nachrichtenlink kopiert",
+        "copy_link_failed": "Link konnte nicht kopiert werden",
+        "image_copied": "Bild kopiert",
+        "copy_image_failed": "Bild konnte nicht kopiert werden"
       },
       "meta": {
+        "echo": "Echo",
+        "edited_short": "Bearbeitet",
         "pinned": "Angepinnte Nachricht",
         "thread": "Thread",
         "edited": "Nachricht bearbeitet",
@@ -142,6 +154,14 @@
       },
       "show_less": "weniger anzeigen"
     },
+    "typing": {
+      "one": "{name} schreibt",
+      "two": "{first} und {second} schreiben",
+      "many_count": {
+        "other": "{names} und {count} weitere Personen schreiben",
+        "one": "{names} und {count} weitere Person schreiben"
+      }
+    },
     "attachment": {
       "delete_title": "Anhang löschen",
       "delete_prompt": "Möchtest du diesen Anhang wirklich löschen? Dies kann nicht rückgängig gemacht werden.",
@@ -150,7 +170,27 @@
       "view_label": "{filename} ansehen",
       "download_label": "{filename} herunterladen",
       "image_refresh_failed": "Bildlink konnte nicht aktualisiert werden",
-      "download_refresh_failed": "Downloadlink konnte nicht aktualisiert werden"
+      "download_refresh_failed": "Downloadlink konnte nicht aktualisiert werden",
+      "add_description": "Beschreibung hinzufügen",
+      "edit_description": "Beschreibung bearbeiten",
+      "description_title": "Anhangsbeschreibung",
+      "description_label": "Beschreibung (optional)",
+      "description_help": "Beschreibe den Anhang für Personen, die ihn nicht sehen oder hören können.",
+      "description_too_long": "Beschreibungen dürfen höchstens {max} Zeichen enthalten.",
+      "description_update_failed": "Anhangsbeschreibung konnte nicht aktualisiert werden",
+      "html_viewer": {
+        "download": "Herunterladen",
+        "show_preview": "Vorschau anzeigen",
+        "warning": "Dieses Dokument kann Inhalte von externen Websites laden. Diese Websites können deine IP-Adresse sehen.",
+        "preview_title": "Vorschau von {filename}",
+        "preview_failed": "Die Vorschau konnte nicht geladen werden. Bitte versuche es erneut.",
+        "document_type": "Dokumenttyp",
+        "html_document": "HTML-Dokument",
+        "xhtml_document": "XHTML-Dokument",
+        "file_size": "Dateigröße",
+        "unavailable": "Nicht verfügbar",
+        "no_preview": "Für diese Datei ist keine Vorschau verfügbar. Du kannst sie herunterladen."
+      }
     },
     "link_preview": {
       "delete_title": "Linkvorschau löschen",
@@ -158,6 +198,7 @@
       "delete_failed": "Linkvorschau konnte nicht gelöscht werden"
     },
     "sidebar": {
+      "go_to_message": "Zur Nachricht",
       "extras": "Raumdetails",
       "resize": "Raumdetails-Bereich vergrößern/verkleinern",
       "hide": "Raumdetails ausblenden",
@@ -170,6 +211,7 @@
       "clear_member_search": "Mitgliedersuche leeren",
       "no_members": "Keine Mitglieder gefunden.",
       "online": "Online ({count})",
+      "bots": "Bots ({count})",
       "offline": "Offline ({count})",
       "no_files": "Noch keine Dateien in diesem Raum.",
       "files": "Dateien",
@@ -177,17 +219,17 @@
       "call": "Anruf",
       "jump_to_file": "Zu {filename} springen",
       "loading_files": "Dateien werden geladen...",
+      "loading_members": "Mitglieder werden geladen...",
       "calls_unavailable": "Anrufe sind auf diesem Server nicht verfügbar.",
       "view_profile": "Profil von {name} anzeigen",
       "in_voice_call": "In einem Sprachanruf",
       "in_video_call": "In einem Videoanruf",
-      "ban_failed": "Mitglied konnte nicht aus dem Raum gesperrt werden",
-      "ban_success": "{name} wurde aus dem Raum gesperrt"
+      "remove_failed": "Benutzer konnte nicht aus dem Raum entfernt werden",
+      "remove_success": "{name} wurde aus dem Raum entfernt",
+      "search": "Suchen"
     },
     "pins": {
-      "show": "Angepinnte Nachrichten anzeigen",
       "unseen": "Neue angepinnte Nachrichten",
-      "hide": "Angepinnte Nachrichten ausblenden",
       "pin": "Nachricht anpinnen",
       "unpin": "Pin entfernen",
       "unpin_prompt": "Möchtest du den Pin dieser Nachricht wirklich entfernen?",

@@ -1,7 +1,7 @@
 # FDR-016: Voice Calls
 
 **Status:** Active
-**Last reviewed:** 2026-08-20
+**Last reviewed:** 2026-09-30
 
 ## Overview
 
@@ -9,14 +9,149 @@ Rooms support real-time voice conversations with optional camera video and scree
 
 ## Behavior
 
+- **Connection quality** comes from LiveKit, independently of microphone activity.
+  Participant cards and the current-user card show an amber network icon for a
+  poor connection and a red disconnected icon for a lost connection. Hover or
+  click the icon to read its status. Healthy and unknown connections show no
+  warning. Recovery removes the warning and closes its explanation.
+
+- Open a participant's user context menu with the three-dot button or a
+  right-click on their card outside the video. Right-clicking a camera or
+  screen-share video opens the browser's native video menu, so browser media
+  features remain available. Left-clicking the video opens the user menu.
+  Touch users can long-press the card, including its video. For remote
+  participants in the active call, participant and camera card menus include
+  **Voice volume** alongside profile actions. This control is also available
+  from the members list. Screen-share card menus show **Stream volume** instead.
+  Adjust each independently from 0% to 200%. 100% is the original
+  level. A perceptual curve maps 50% to -10 dB and 200% to +10 dB;
+  percentages approximate relative loudness, not signal amplitude. Both sources
+  use the same curve, including saved slider positions. These settings change
+  only what this listener hears. The browser saves
+  levels per server and user for later calls. Native game-share audio uses the
+  sharing user's stream level.
+- **Mute locally** silences both sources without changing saved levels.
+  Sliders move in 5% steps and mark 100% as the original level.
+  Boost needs Web Audio; if it is unavailable, playback is limited to 100%
+  and the controls explain the limit. Saved boosted levels are retained.
+- Microphone activity appears as a glow on the participant card. Quiet input
+  does not show a warning because normal pauses do not indicate a microphone
+  fault. The call toolbar's gear opens Voice & video preferences for an input
+  level check and a microphone test.
+- Calls use the system output when the browser cannot select a Web Audio
+  output device. If the browser blocks playback, **Enable call audio** resumes it.
+
+- **Voice Boosting** in Voice & video settings is a checkbox that is enabled by default
+  for new and existing users. It adds warmth, clarity, and loudness with EQ and
+  moderate compression. Users can turn it off if it causes audio problems.
+  Previous slider and preset choices do not disable the new default. An explicit
+  opt-out with the checkbox is saved.
+  Saturation is excluded because the combined effects must not distort ordinary
+  speech. Automatic plosive control reduces brief bass thumps, and adaptive bass
+  control reduces sustained boom while preserving vocal warmth. These cuts run
+  before compression so excessive bass is less likely to lower the whole voice.
+  Automatic de-essing reduces sharp S and SH sounds, and a final limiter catches
+  near-clipping sample peaks. Automatic corrections stay conservative.
+  An enabled gate gets a softer closing transition to preserve quiet word
+  endings; Off still disables the gate. These additions need no separate controls
+  and are bypassed when Voice Boosting is off. Changes use short ramps to avoid
+  clicks. The checkbox is disabled when processing is unavailable.
+  The noise gate stays separate because its threshold depends on the microphone
+  and room. Voice Boosting affects microphone audio in calls and the local test,
+  not received audio or screen sharing. Its state is saved per browser and server
+  without changing gate, device, or join-muted choices.
+  Compression receives the boosted EQ signal to reduce loud peaks and uses the
+  browser compressor's built-in makeup gain. A small additional gain after
+  compression increases loudness before the final peak limiter. Browser automatic gain control is disabled
+  to avoid competing volume adjustments. Calls retain browser echo cancellation
+  and noise suppression. The local test disables echo cancellation so it does
+  not cancel its own playback.
+- **Noise gate threshold** is available beside a live microphone meter in call
+  devices and **App Preferences → Voice & video**. It defaults to **Off**
+  and is saved per browser and server. Higher thresholds suppress quieter
+  sounds. The meter shows input before the gate, on the same scale as its
+  threshold marker. Muted calls show no input activity.
+- Sensitivity changes affect outgoing microphone audio and the local test.
+  The gate uses a short attack, a hold period, a lower closing threshold,
+  and a slower release to limit abrupt changes and repeated opening near
+  the threshold. It does not change participant mute state. Basic audio
+  remains available if the browser cannot run the optional gate; the UI
+  shows that microphone processing is unavailable. This does not add a media service
+  or change room permissions.
+
+- **App Preferences → Voice & video** stores microphone, speaker, camera, and
+  join-muted choices in this browser for the selected server. Successful device
+  changes during a call update those choices. Missing devices use a system
+  default without erasing the saved choice. The next call can use a device
+  that returns.
+  Changes from this preferences page also switch the connected call. An explicit
+  microphone uses an exact capture constraint; only a missing device permits
+  fallback.
+- Camera selection does not start video. Joining muted does not request
+  microphone access merely to list devices. Browser support controls whether
+  a speaker can be selected.
+- Device choices use compact dropdowns so long device lists do not expand the
+  settings page. The controls follow the app's depth preference where browser
+  support permits. A local microphone test shows an input meter and records a
+  sample without playing live audio. Stop or the 10-second limit ends capture
+  before replay starts through the selected speaker. The sample stays in browser
+  memory until the next test, microphone change, or navigation. Users can replay
+  it. The test does not connect to LiveKit or verify network connectivity.
+  Testing is unavailable during the selected server's call. Output changes
+  keep capture active. A failed explicit output selection stops the test instead
+  of silently playing through another device. Input changes restart an active
+  test. Camera choices do not interrupt it. Navigation discards the sample,
+  and late capture results are stopped. With Voice Boosting off and the gate
+  Off, the test records the original capture stream. It disables browser noise
+  suppression and does not initialize custom processing. Switching between
+  this bypass and processing starts a new sample and keeps the selected speaker.
+- Opening the settings page requests microphone and camera access separately
+  when their device names are unavailable and no call is active on the selected
+  server. The browser may show permission dialogs. Each successful request
+  refreshes the device choices and stops capture immediately. A missing or
+  blocked camera does not prevent audio device discovery. Discovery does not
+  play, record, or send media to an external service.
+
+- Room membership and `call.join` are required to enter a call. Starting a
+  new call also requires `call.start`. Media permissions do not grant entry.
+- `call.voice`, `call.camera`, and `call.screenshare` independently control
+  microphone, camera, and screen or application sharing. Captured share audio
+  belongs to `call.screenshare`, including native game sharing.
+- Members with `call.join` and no media permissions can listen and watch.
+  Their client does not request microphone or camera access to join.
+- Members can still view an active call and leave it after call permissions
+  are denied. Call controls show which actions are unavailable.
+- The client stops revoked media when it receives updated room permissions.
+  The server also checks connected participants on its 30-second LiveKit
+  reconciliation cycle. It updates media grants or disconnects participants
+  who can no longer join. Failures retry on later cycles. Revocation is not
+  instantaneous, and an old unexpired token can briefly reconnect before a
+  subsequent check removes that participant again.
+- Existing human call access is preserved on upgrade through initial server
+  grants for `everyone`. An existing grant, deny, or clear is never overwritten.
+  Bots need explicit grants and their owner's current authority.
+
 - Members of a room with the right permission see a phone tab alongside the room sidebar's members/files tabs when LiveKit is configured.
 - Opening the call tab shows the current room call. If no call is active, it offers a "Start call" action. If a call is active and the viewer has not joined, it shows projected participants as ungrouped participant cards and a "Join call" action.
 - When the current room has an active call, the phone tab is accent-highlighted and pulses while another sidebar tab is selected.
-- Joining the call switches the call tab into participant mode with pinned screen-share tiles first, larger camera video participant cards next, and compact voice-only participant cards after that, without separate Video or Voice section headings. Participant mode exposes neutral speaking indicators, mute state, camera toggle, screen-share toggle, device selector, and hang-up controls.
+- Joining the call switches the call tab into participant mode with pinned screen-share tiles first, larger camera video participant cards next, and compact voice-only participant cards after that, without separate Video or Voice section headings. Participant mode exposes a voice activity glow, mute state, camera toggle, screen-share toggle, device selector, and hang-up controls.
+- The pane header shows maximize and fullscreen controls only while the viewer is connected to that room's call. An active call alone does not show these controls.
 - On desktop, an active call sidebar can be maximized from the pane header. Maximized mode keeps the app's left navigation sidebars visible, hides the room timeline/content area, and turns the call panel into a stage layout: the first screen share is featured, otherwise the first camera participant is featured, otherwise the first voice participant is featured; remaining screen shares, camera feeds, and voice cards stay visible as secondary tiles.
 - A desktop active call pane can be placed into browser fullscreen from the pane header, whether it is in the normal sidebar width or maximized across the chat route. This is separate from maximizing the pane inside the chat route.
-- Camera and screen-share tiles expose hover controls for feed fullscreen, while all joined participant tiles expose a hover local-mute control. Fullscreen is local to the viewer's browser. Remote participant mute is also local to the viewer and does not change server state or other participants' audio. Local participant tiles show the same mute affordance, wired to the viewer's own microphone mute.
-- While the viewer is in any call, the lower-left current-user card shows the active call room plus quick mute, camera, screen-share, and leave controls so the call remains visible outside the room tab.
+- Camera and screen-share tiles expose a compact fullscreen button in their header. Joined participant cards expose a compact mute button directly in the header; remote cards keep volume controls in their three-dot menu. Voice cards use the same height for local and remote participants. In a wide sidebar with a screen share or multiple video feeds, participant cards use equal-width columns; screen shares span the full row. Narrow sidebars use one column. Fullscreen is local to the viewer's browser. Remote participant mute is also local to the viewer and does not change server state or other participants' audio. The local participant card controls the viewer's own microphone.
+- Call controls form one joined pill with separators at the bottom of the call pane. Its height and rounded corners match the composer and other bottom-row controls. Participant content scrolls above it.
+- Camera and screen-share tiles show a picture-in-picture toggle beside
+  fullscreen when the browser supports requests from the page. The toggle is
+  available in sidebar and stage layouts once video is ready. It opens or closes
+  that tile's video; selecting another tile switches the picture-in-picture video.
+  Closing the browser's picture-in-picture window resets the toggle. Closing
+  the sidebar or switching rooms or servers keeps the selected video in
+  picture-in-picture while the call and stream remain active. Ending the call
+  or removing the selected stream closes its picture-in-picture window.
+  Failed requests show an error
+  without interrupting the call. Browsers without this toggle retain their native
+  video menu, which can offer picture-in-picture independently.
+- While the viewer is in a call, a compact joined pill above the lower-left current-user card provides the active call room link plus mute, camera, screen-share, and leave controls. It matches the user card width and remains visible when the call sidebar is open. Both toolbars place the microphone before the camera.
 - While the viewer is connected to a call, supported browsers request a screen wake lock so the display does not automatically dim or lock. The lock is released when the call ends and requested again when the app returns to the foreground. Browsers that do not support or grant wake locks continue the call without this enhancement; a wake lock does not prevent mobile operating systems from suspending an app that the user backgrounds or manually locks.
 - Other rooms with an active call replace the normal room/DM icon with the same accent phone icon and animated pulse twin used by the call tab so members know there's a conversation happening; clicking that icon opens the room with the call tab selected.
 - Message author names show a compact call presence icon when the author is in the current room's active call: phone for voice-only participants, video camera when the viewer has joined the LiveKit call and can see an active camera track.
@@ -28,6 +163,7 @@ Rooms support real-time voice conversations with optional camera video and scree
 - New clients always enable LiveKit E2EE before connecting. Chatto distributes a KMS-backed per-call shared key with the LiveKit join token; the raw key is never written to EVT and is shredded when the call ends.
 - Screen sharing requests browser-tab audio when the browser supports it. In Chrome, the presenter must select a browser tab and enable **Share tab audio** in the browser picker. Chatto excludes whole-system audio so remote call playback is not captured and fed back into the room.
 - Screen-share state is LiveKit track state only. Users who have not joined the call still see who is in the active call, but they do not see whether a participant is sharing a screen.
+- Dismissing or denying the browser screen-share picker leaves the call connected without an error toast. The control returns to its ready state so the user can try again. Other capture failures still show an error.
 - Screen sharing is one call control on every host. In a web browser it opens the browser's own window/tab/screen picker. On macOS 15 and newer, Chatto Desktop instead opens a Chatto picker with static previews of ordinary visible application windows and complete displays. Selecting a window publishes its video and isolated owning-application audio; selecting a display is video-only so Chatto's remote call playback cannot be captured and echoed upstream. Native sharing offers multiple quality layers so LiveKit can match receiver size and network conditions while pausing unused layers. Browser and native sharing occupy one mutually exclusive share slot, while camera and microphone remain independent.
 - When LiveKit is not configured on the server, all voice UI is hidden — no button, no panel, no indicator.
 
@@ -57,11 +193,29 @@ Rooms support real-time voice conversations with optional camera video and scree
 **Why:** LiveKit delivers audio data over WebRTC, but the browser doesn't autoplay it without an attached element. Without explicit attach, the UI looks like everything works — participant rings even animate — but nobody hears anything. The pattern lives in `apps/frontend/src/lib/state/voiceCall.svelte.ts`; any refactor that touches LiveKit subscription handling needs to keep the `track.attach()` / `track.detach()` calls intact.
 **Tradeoff:** A subtle requirement that's easy to miss when refactoring; the skill warns explicitly.
 
-### 5. Speaking indicators use neutral inline glyphs
+### 5. Voice activity fills the identity row
 
-**Decision:** Participant cards read audio levels through the existing 60ms cache and show a neutral inline volume glyph for active speakers instead of an accent outline around the card.
-**Why:** The fast audio-level cache gives responsive speaking feedback, while keeping the visual treatment quiet and avoiding the blue outline around participant and screen-share tiles.
-**Tradeoff:** The indicator is intentionally more subtle than the previous animated card outline.
+**Decision:** Soft, flowing accent-coloured fog illuminates each speaking
+participant's identity row. Local capture and received microphone audio use the
+same measured amplitude scale. Remote levels come from decoded audio before
+listener volume or local mute, rather than server speaker-status updates.
+Unavailable or unsubscribed remote audio has no glow. Microphone volume controls the fog's brightness,
+spread, and movement speed. Quiet speech produces a gentle drift; louder speech
+moves the fog faster. Three translucent layers of broad wisps move independently
+and overlap. Animated simplex noise gives them uneven density and shape.
+Speed changes smoothly. The glow responds quickly to speech
+and fades away in silence. Video and screen-share content stays clear. Muted
+microphones show no activity. Muting someone locally does not hide their
+speaking activity. Reduced motion keeps the glow stationary and updates its
+intensity without animation.
+Screen-share tiles use their screen audio track's level, including native
+companion publishers. They stay quiet when the share has no audio; microphone
+activity and microphone mute do not affect this separate meter.
+**Why:** The card background makes active speakers easy to find without a
+pulsing outline or an extra status icon. The effect uses existing call audio
+levels and needs no additional audio capture or external connection.
+**Tradeoff:** Glow intensity conveys relative activity rather than a calibrated
+volume measurement. Only users who joined the call receive this feedback.
 
 ### 6. Screen sharing is joined-client LiveKit track state
 
@@ -107,18 +261,22 @@ Rooms support real-time voice conversations with optional camera video and scree
 
 ## Permissions
 
-- `voiceCallToken` query — requires room membership.
-- `CreateCallMediaPublisherToken` — requires room membership and current participation in the active call.
-- `callParticipants` query — requires room membership.
-- `activeCallRoomIds` query — requires server membership.
-- `joinVoiceCall` / `leaveVoiceCall` mutations — require room membership.
+All five permissions support Server, Room group, Room, and Direct messages
+scopes. DM checks use the shared Direct messages scope, not individual DM rules.
 
-Voice calling doesn't have a dedicated permission today; room membership is the gate.
+- `call.start` — start a call; also requires `call.join`.
+- `call.join` — join an active call, including as a listener.
+- `call.voice` — publish microphone audio.
+- `call.camera` — publish camera video.
+- `call.screenshare` — share a screen, window, tab, or native application,
+  including captured audio.
+
+Call hosts, participant removal, and other management actions are deferred.
 
 ## Related
 
-- **ADRs:** ADR-009 (webhook-driven voice call state), ADR-012 (two-tier real-time events), ADR-020 (build-tag gated test endpoints), ADR-051 (server-scoped resumable client projection), ADR-067 (Electron desktop packaging), ADR-069 (explicit durable consumer lifecycle), ADR-072 (optional host capabilities)
-- **FDRs:** FDR-001 (Roles & Permissions), FDR-019 (Room Lifecycle), FDR-034 (Chatto Desktop)
+- **ADRs:** ADR-009 (webhook-driven voice call state), ADR-012 (two-tier real-time events), ADR-020 (build-tag gated test endpoints), ADR-067 (Electron desktop packaging), ADR-069 (explicit durable consumer lifecycle), ADR-072 (optional host capabilities), ADR-091 (semantic realtime events)
+- **FDRs:** FDR-001 (Roles & Permissions), FDR-019 (Room Lifecycle), FDR-034 (Chatto Desktop), FDR-045 (Realtime Event Stream)
 
 ## Open Questions
 

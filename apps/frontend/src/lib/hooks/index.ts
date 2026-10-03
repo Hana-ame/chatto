@@ -1,9 +1,5 @@
 // Server events — unified bus from `myEvents` subscription.
-export {
-  useProjectionEvent,
-  usePresenceChange,
-  useSessionTerminated
-} from './useEvent.svelte';
+export { useProjectionEvent } from './useEvent.svelte';
 
 // Message actions
 export { useMessageActions, useReactionActions } from './useMessageActions.svelte';
@@ -23,4 +19,3 @@ export type { TypingIndicator, TypingUser } from './useTypingIndicator.svelte';
 // UI hooks
 export { useVisualViewport } from './useVisualViewport.svelte';
 export { usePinchZoomPrevention } from './usePinchZoomPrevention.svelte';
-export { usePageTitle } from './usePageTitle.svelte';

@@ -107,7 +107,9 @@ behavior.
 **Why:** Electron implements browser popup windows, so the desktop host no
 longer needs the privileged CEF bridge introduced by the Deno prototype.
 **Tradeoff:** Some providers still require a system-browser flow, and the host
-must tightly constrain popup and navigation behavior.
+must tightly constrain popup and navigation behavior. The host opens a new
+window only on the frontend's `/servers/authorize` launch page and sends all
+other window requests to the system browser.
 
 ### 5. Release the desktop shell independently
 
@@ -211,6 +213,10 @@ is implemented. That work is deferred; current Desktop notifications still
 depend on the renderer being alive.
 
 ## Related
+
+The iOS shell shares the frontend but uses native system authentication. See
+[FDR-048](FDR-048-chatto-mobile.md) and
+[ADR-099](../adr/ADR-099-capacitor-mobile-client.md).
 
 - **ADRs:** ADR-024 (opaque bearer tokens for cross-origin auth), ADR-025 (multi-server client architecture), ADR-064 (separate frontend server catalogue and sessions), ADR-065 (runtime JSON client internationalization), ADR-067 (Electron desktop packaging), ADR-072 (optional host capabilities), ADR-074 (device-local server catalogue)
 - **FDRs:** FDR-008 (File Attachments & Video Processing), FDR-013 (Web Push Notifications), FDR-016 (Voice Calls), FDR-023 (Authentication & Sessions), FDR-027 (PWA & Service Worker), FDR-031 (Client–Server Compatibility Discovery)

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { errorMessage } from '$lib/utils/errorMessage';
   import { goto } from '$app/navigation';
   import { resolve } from '$app/paths';
   import { page } from '$app/state';
@@ -10,13 +11,9 @@
     type AdminEventLogPage,
     type AdminEventLogEntry,
     type AdminEventLogFilter
-  } from '$lib/api-client/adminEventLog';
-  import Panel from '$lib/ui/Panel.svelte';
-  import DataTable from '$lib/ui/DataTable.svelte';
+  } from '$lib/api/adminEventLog';
+  import { Panel, DataTable, Hint, PaneContent, Pill, PaneHeader, PageTitle } from '$lib/ui';
   import UserCombobox from '$lib/components/users/UserCombobox.svelte';
-  import { Hint, PaneContent, Pill } from '$lib/ui';
-  import PaneHeader from '$lib/ui/PaneHeader.svelte';
-  import PageTitle from '$lib/ui/PageTitle.svelte';
   import { Button, Combobox } from '$lib/ui/form';
   import {
     formatDateTime as formatDateTimeUtil,
@@ -25,9 +22,8 @@
   } from '$lib/utils/formatTime';
   import { getLocale } from '$lib/i18n/runtime';
   import { m } from '$lib/i18n/messages';
-  import { createInfiniteQuery, createQuery } from '@tanstack/svelte-query';
   import { adminQueryKeys } from '$lib/query/admin';
-  import { queryClient } from '$lib/query/client';
+  import { createInfiniteQuery, createQuery } from '$lib/query/client';
 
   const serverScope = useServerScope();
   const userSettings = $derived(
@@ -35,7 +31,7 @@
   );
   const activeLocale = $derived(getLocale());
 
-  const activeServerId = $derived(serverScope.serverId);
+  const activeServerId = serverScope.serverId;
 
   let scrollContainer = $state<HTMLDivElement>();
   let loadedUrlKey = '';
@@ -46,38 +42,32 @@
 
   const activeFilter = $derived(filterFromUrl(page.url));
   const activeFilterKey = $derived(filterKey(activeFilter));
-  const eventLogQuery = createInfiniteQuery(
-    () => {
-      const serverId = activeServerId;
-      const activeConnection = serverScope.connection;
-      const filter = activeFilter;
-      return {
-        queryKey: adminQueryKeys.eventLog(serverId, activeConnection, filter),
-        queryFn: ({ pageParam, signal }) =>
-          activeConnection
-            .getAPI(createAdminEventLogAPI)
-            .listEvents({ limit: 50, before: pageParam, filter }, { signal }),
-        initialPageParam: null as string | null,
-        getNextPageParam: (lastPage) =>
-          lastPage.hasOlder
-            ? (lastPage.endCursor ?? lastPage.entries.at(-1)?.sequence ?? undefined)
-            : undefined
-      };
-    },
-    () => queryClient
-  );
-  const eventTypesQuery = createQuery(
-    () => {
-      const serverId = activeServerId;
-      const activeConnection = serverScope.connection;
-      return {
-        queryKey: adminQueryKeys.eventTypes(serverId, activeConnection),
-        queryFn: ({ signal }) =>
-          activeConnection.getAPI(createAdminEventLogAPI).listEventTypes({ signal })
-      };
-    },
-    () => queryClient
-  );
+  const eventLogQuery = createInfiniteQuery(() => {
+    const serverId = activeServerId;
+    const activeConnection = serverScope.connection;
+    const filter = activeFilter;
+    return {
+      queryKey: adminQueryKeys.eventLog(serverId, activeConnection, filter),
+      queryFn: ({ pageParam, signal }) =>
+        activeConnection
+          .getAPI(createAdminEventLogAPI)
+          .listEvents({ limit: 50, before: pageParam, filter }, { signal }),
+      initialPageParam: null as string | null,
+      getNextPageParam: (lastPage) =>
+        lastPage.hasOlder
+          ? (lastPage.endCursor ?? lastPage.entries.at(-1)?.sequence ?? undefined)
+          : undefined
+    };
+  });
+  const eventTypesQuery = createQuery(() => {
+    const serverId = activeServerId;
+    const activeConnection = serverScope.connection;
+    return {
+      queryKey: adminQueryKeys.eventTypes(serverId, activeConnection),
+      queryFn: ({ signal }) =>
+        activeConnection.getAPI(createAdminEventLogAPI).listEventTypes({ signal })
+    };
+  });
   const eventLog = $derived.by(() => {
     const pages = eventLogQuery.data?.pages ?? [];
     const latestPage: AdminEventLogPage | undefined = pages.at(-1);
@@ -98,7 +88,7 @@
       hasOlder: eventLogQuery.hasNextPage,
       loading: eventLogQuery.isPending,
       loadingMore: eventLogQuery.isFetchingNextPage,
-      error: eventLogQuery.error instanceof Error ? eventLogQuery.error.message : null,
+      error: eventLogQuery.error ? errorMessage(eventLogQuery.error) : null,
       activeFilter,
       hasActiveFilter: hasActiveFilter(activeFilter),
       eventTypes: eventTypesQuery.data ?? [],
@@ -183,8 +173,9 @@
     return formatter.format(date);
   }
 
-  function applyFilters() {
-    if (!hasDraftChanges) return;
+  function applyFilters(event: SubmitEvent) {
+    event.preventDefault();
+    if (!hasDraftChanges || eventLog.loading) return;
     navigateWithFilter(draftFilter);
   }
 
@@ -226,27 +217,21 @@
     );
   }
 
-  function openEntry(entry: AdminEventLogEntry) {
-    goto(
-      resolve('/chat/[serverId]/manage/server/event-log/[sequence]', {
-        serverId: serverIdToSegment(activeServerId),
-        sequence: entry.sequence
-      })
-    );
+  function entryHref(entry: AdminEventLogEntry) {
+    return resolve('/chat/[serverId]/manage/server/event-log/[sequence]', {
+      serverId: serverIdToSegment(activeServerId),
+      sequence: entry.sequence
+    });
   }
 </script>
 
 <PageTitle title={m('admin.common.page_title', { title: m('admin.event_log.title') })} />
 
 <div class="pane-page">
-  <PaneHeader
-    title={m('admin.event_log.title')}
-    subtitle={m('admin.event_log.subtitle')}
-    showMobileNav
-  />
+  <PaneHeader title={m('admin.event_log.title')} subtitle={m('admin.event_log.subtitle')} />
 
   <PaneContent bind:scrollContainer>
-    <div class="flex flex-col gap-4">
+    <div class="flex flex-col gap-6">
       {#if eventLog.error}
         <Hint tone="danger">{eventLog.error}</Hint>
       {/if}
@@ -274,7 +259,7 @@
       {/if}
 
       <Panel title={m('admin.event_log.filters')}>
-        <div class="flex flex-col gap-4">
+        <form class="flex flex-col gap-4" onsubmit={applyFilters}>
           <div class="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
             <Combobox
               id="event-log-event-type"
@@ -308,42 +293,39 @@
             >
               {m('admin.event_log.clear')}
             </Button>
-            <Button onclick={applyFilters} disabled={!hasDraftChanges || eventLog.loading}>
+            <Button type="submit" disabled={!hasDraftChanges || eventLog.loading}>
               {m('admin.event_log.apply')}
             </Button>
           </div>
-        </div>
+        </form>
       </Panel>
 
-      <div class="text-sm text-muted">
-        {eventLog.totalCount === '1'
-          ? m('admin.event_log.total_events_one', { count: formattedTotalCount })
-          : m('admin.event_log.total_events_many', { count: formattedTotalCount })}
-        {#if eventLog.hasActiveFilter}
-          · {eventLog.scannedCount === 1
-            ? m('admin.event_log.inspected_rows_one', {
-                count: eventLog.scannedCount.toLocaleString()
-              })
-            : m('admin.event_log.inspected_rows_many', {
-                count: eventLog.scannedCount.toLocaleString()
-              })}
-        {/if}
-      </div>
-
-      <Panel noPadding>
+      <Panel title={m('admin.system.events')} noPadding>
+        {#snippet subtitle()}
+          {eventLog.totalCount === '1'
+            ? m('admin.event_log.total_events_one', { count: formattedTotalCount })
+            : m('admin.event_log.total_events_many', { count: formattedTotalCount })}
+          {#if eventLog.hasActiveFilter}
+            · {eventLog.scannedCount === 1
+              ? m('admin.event_log.inspected_rows_one', {
+                  count: eventLog.scannedCount.toLocaleString()
+                })
+              : m('admin.event_log.inspected_rows_many', {
+                  count: eventLog.scannedCount.toLocaleString()
+                })}
+          {/if}
+        {/snippet}
         <DataTable
           items={eventLog.entries}
           columns={5}
-          emptyMessage={eventLog.loading
-            ? m('admin.common.loading')
-            : m('admin.event_log.no_matches')}
+          loading={eventLog.loading}
+          emptyMessage={m('admin.event_log.no_matches')}
           hasMore={eventLog.hasOlder && !eventLog.scanLimited && !eventLog.error}
           loadingMore={eventLog.loadingMore}
           onLoadMore={() => eventLog.loadMore()}
           loadMoreRoot={scrollContainer}
           loadingMoreMessage={m('admin.event_log.loading_older')}
           getGroupKey={(entry) => dateGroupKey(entry.createdAt)}
-          onRowClick={openEntry}
         >
           {#snippet header()}
             <th class="table-header-cell">{m('admin.event_log.seq')}</th>
@@ -353,7 +335,9 @@
             <th class="table-header-cell">{m('admin.event_log.actor')}</th>
           {/snippet}
           {#snippet row(entry)}
-            <td class="px-4 py-3 font-mono text-sm text-muted">{entry.sequence}</td>
+            <td class="px-4 py-3 font-mono text-sm text-muted">
+              <a class="data-table-row-link" href={entryHref(entry)}>{entry.sequence}</a>
+            </td>
             <td class="px-4 py-3 text-sm">{formatTimestamp(entry.createdAt)}</td>
             <td class="px-4 py-3">
               <Pill tone="action">{entry.eventType || '—'}</Pill>

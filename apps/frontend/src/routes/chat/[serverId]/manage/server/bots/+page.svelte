@@ -1,22 +1,28 @@
 <script lang="ts">
+  import { errorMessage } from '$lib/utils/errorMessage';
   import { goto } from '$app/navigation';
   import { resolve } from '$app/paths';
   import { PresenceStatus } from '@chatto/api-types/api/v1/presence_pb';
-  import { createInfiniteQuery, createQuery } from '@tanstack/svelte-query';
-  import { createBotAPI } from '$lib/api-client/bots';
-  import { createUserAPI } from '$lib/api-client/users';
-  import { viewerResponseToState } from '$lib/api-client/viewer';
-  import DataTable from '$lib/ui/DataTable.svelte';
-  import Panel from '$lib/ui/Panel.svelte';
+  import { createBotAPI } from '@chatto/client/api/bots';
+  import { createUserAPI } from '@chatto/client/api/users';
+  import {
+    DataTable,
+    Panel,
+    FormDialog,
+    Hint,
+    LoadingFog,
+    PageTitle,
+    PaneContent,
+    PaneHeader
+  } from '$lib/ui';
   import ShowOnceCredentialDialog from '$lib/components/bots/ShowOnceCredentialDialog.svelte';
   import UserIdentity from '$lib/components/users/UserIdentity.svelte';
   import { useDebounce } from '$lib/hooks/useDebounce.svelte';
   import { m } from '$lib/i18n/messages';
   import { serverIdToSegment } from '$lib/navigation';
-  import { queryClient } from '$lib/query/client';
+  import { createInfiniteQuery, createQuery, queryClient } from '$lib/query/client';
   import { settingsQueryKeys } from '$lib/query/settings';
   import { useServerScope } from '$lib/state/server/scope.svelte';
-  import { FormDialog, Hint, PageTitle, PaneContent, PaneHeader } from '$lib/ui';
   import { Button, TextInput, validate, z } from '$lib/ui/form';
   import { toast } from '$lib/ui/toast';
   import { SvelteSet } from 'svelte/reactivity';
@@ -24,13 +30,7 @@
 
   const PAGE_SIZE = 20;
   const serverScope = useServerScope();
-  const supportsBots = $derived(serverScope.store.serverInfo.supportsFeature('botAccounts'));
-  const canCreateBots = $derived.by(() => {
-    const viewer = serverScope.store.projection.viewer;
-    return viewer
-      ? (viewerResponseToState(viewer).viewerPermissions['bot.create'] ?? false)
-      : false;
-  });
+  const canCreateBots = $derived(serverScope.store.permissions.canCreateBots);
 
   let searchInput = $state('');
   let activeSearch = $state('');
@@ -42,27 +42,23 @@
     componentActive = false;
   });
 
-  const botsQuery = createInfiniteQuery(
-    () => {
-      const serverId = serverScope.serverId;
-      const connection = serverScope.connection;
-      const search = activeSearch;
-      return {
-        queryKey: settingsQueryKeys.bots(serverId, connection, search),
-        queryFn: ({ pageParam, signal }) =>
-          connection
-            .getAPI(createBotAPI)
-            .listBots({ search: search || null, limit: PAGE_SIZE, offset: pageParam }, { signal }),
-        initialPageParam: 0,
-        getNextPageParam: (lastPage, _pages, lastPageParam) =>
-          lastPage.hasMore && lastPage.bots.length > 0
-            ? lastPageParam + lastPage.bots.length
-            : undefined,
-        enabled: supportsBots
-      };
-    },
-    () => queryClient
-  );
+  const botsQuery = createInfiniteQuery(() => {
+    const serverId = serverScope.serverId;
+    const connection = serverScope.connection;
+    const search = activeSearch;
+    return {
+      queryKey: settingsQueryKeys.bots(serverId, connection, search),
+      queryFn: ({ pageParam, signal }) =>
+        connection
+          .getAPI(createBotAPI)
+          .listBots({ search: search || null, limit: PAGE_SIZE, offset: pageParam }, { signal }),
+      initialPageParam: 0,
+      getNextPageParam: (lastPage, _pages, lastPageParam) =>
+        lastPage.hasMore && lastPage.bots.length > 0
+          ? lastPageParam + lastPage.bots.length
+          : undefined
+    };
+  });
 
   const bots = $derived.by(() => {
     const seen = new SvelteSet<string>();
@@ -80,26 +76,23 @@
     for (const bot of bots) ids.add(bot.ownerUserId);
     return [...ids];
   });
-  const ownersQuery = createQuery(
-    () => {
-      const serverId = serverScope.serverId;
-      const connection = serverScope.connection;
-      const userIds = ownerUserIds;
-      return {
-        queryKey: [...settingsQueryKeys.botsRoot(serverId, connection), 'owners', userIds],
-        queryFn: async () => {
-          const api = connection.getAPI(createUserAPI);
-          const batches = [];
-          for (let offset = 0; offset < userIds.length; offset += 100) {
-            batches.push(api.batchGetUsers(userIds.slice(offset, offset + 100)));
-          }
-          return (await Promise.all(batches)).flat();
-        },
-        enabled: supportsBots && userIds.length > 0
-      };
-    },
-    () => queryClient
-  );
+  const ownersQuery = createQuery(() => {
+    const serverId = serverScope.serverId;
+    const connection = serverScope.connection;
+    const userIds = ownerUserIds;
+    return {
+      queryKey: [...settingsQueryKeys.botsRoot(serverId, connection), 'owners', userIds],
+      queryFn: async () => {
+        const api = connection.getAPI(createUserAPI);
+        const batches = [];
+        for (let offset = 0; offset < userIds.length; offset += 100) {
+          batches.push(api.batchGetUsers(userIds.slice(offset, offset + 100)));
+        }
+        return (await Promise.all(batches)).flat();
+      },
+      enabled: userIds.length > 0
+    };
+  });
   const ownersById = $derived(new Map((ownersQuery.data ?? []).map((owner) => [owner.id, owner])));
 
   let createVisible = $state(false);
@@ -116,8 +109,7 @@
     .min(2, m('common.validation.username_min'))
     .max(32, m('common.validation.username_max'))
     .regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/, m('common.validation.username_charset'))
-    .refine((value) => !value.endsWith('.'), m('common.validation.username_end_alphanumeric'))
-    .refine((value) => value.toLowerCase().endsWith('_bot'), m('settings.bots.username_hint'));
+    .refine((value) => !value.endsWith('.'), m('common.validation.username_end_alphanumeric'));
   const normalizedCreateLogin = $derived(createLogin.trim());
   const createLoginError = $derived(
     normalizedCreateLogin ? validate(botLoginSchema, normalizedCreateLogin) : undefined
@@ -156,13 +148,7 @@
         login: normalizedCreateLogin,
         displayName: createDisplayName.trim()
       });
-      if (
-        !componentActive ||
-        !serverScope.isCurrent() ||
-        serverId !== serverScope.serverId ||
-        connection.queryScope !== serverScope.connection.queryScope
-      )
-        return;
+      if (!componentActive || !serverScope.isCurrent()) return;
       createdBotId = created.bot.id;
       createVisible = false;
       apiKey = created.apiKey;
@@ -173,7 +159,7 @@
       });
     } catch (error) {
       if (!componentActive) return;
-      createError = error instanceof Error ? error.message : m('settings.bots.create_failed');
+      createError = errorMessage(error, m('settings.bots.create_failed'));
     } finally {
       if (componentActive) createLoading = false;
     }
@@ -196,34 +182,32 @@
 </script>
 
 <PageTitle title={m('admin.common.server_admin_page_title', { title: m('settings.bots.title') })} />
-<PaneHeader title={m('settings.bots.title')} subtitle={m('settings.bots.subtitle')} showMobileNav />
 
-<PaneContent bind:scrollContainer>
-  {#if !supportsBots}
-    <Hint tone="warning">{m('settings.bots.unsupported')}</Hint>
-  {:else}
+<div class="pane-page">
+  <PaneHeader title={m('settings.bots.title')} subtitle={m('settings.bots.subtitle')} />
+
+  <PaneContent bind:scrollContainer>
     <div class="flex flex-col gap-6">
       {#if !canCreateBots}
         <Hint>{m('settings.bots.create_permission_required')}</Hint>
       {/if}
 
-      <div class="max-w-md">
-        <TextInput
-          id="bot-search"
-          label={m('settings.bots.list_title')}
-          labelHidden
-          leadingIcon="iconify icon-[uil--search]"
-          bind:value={searchInput}
-          oninput={scheduleSearch}
-        />
-      </div>
-
       {#if botsQuery.error}
-        <Hint tone="danger">{botsQuery.error.message}</Hint>
+        <Hint tone="danger">{errorMessage(botsQuery.error)}</Hint>
       {/if}
 
       <Panel title={m('settings.bots.list_title')} count={totalCount} noPadding>
         {#snippet actions()}
+          <div class="w-48 sm:w-64">
+            <TextInput
+              id="bot-search"
+              label={m('settings.bots.list_title')}
+              labelHidden
+              leadingIcon="iconify icon-[uil--search]"
+              bind:value={searchInput}
+              oninput={scheduleSearch}
+            />
+          </div>
           {#if canCreateBots}
             <Button size="sm" onclick={openCreate}>
               <span class="iconify icon-[uil--plus]" aria-hidden="true"></span>
@@ -234,20 +218,12 @@
         <DataTable
           items={bots}
           columns={3}
-          emptyMessage={botsQuery.isPending
-            ? m('settings.bots.loading')
-            : m('settings.bots.empty_body')}
+          loading={botsQuery.isPending}
+          emptyMessage={m('settings.bots.empty_body')}
           hasMore={botsQuery.hasNextPage && !botsQuery.error}
           loadingMore={botsQuery.isFetchingNextPage}
           onLoadMore={loadMore}
           loadMoreRoot={scrollContainer}
-          onRowClick={(bot) =>
-            goto(
-              resolve('/chat/[serverId]/manage/server/bots/[botId]', {
-                serverId: serverIdToSegment(serverScope.serverId),
-                botId: bot.id
-              })
-            )}
         >
           {#snippet header()}
             <th class="table-header-cell">{m('settings.bots.singular')}</th>
@@ -273,12 +249,11 @@
             </td>
             <td class="px-4 py-3">
               <a
-                class="link text-muted"
+                class="data-table-row-link link text-muted"
                 href={resolve('/chat/[serverId]/manage/server/bots/[botId]', {
                   serverId: serverIdToSegment(serverScope.serverId),
                   botId: bot.id
-                })}
-                onclick={(event) => event.stopPropagation()}>@{bot.login}</a
+                })}>@{bot.login}</a
               >
             </td>
             <td class="px-4 py-3">
@@ -288,8 +263,7 @@
                   viewerSettings={serverScope.store.currentUser.user?.settings}
                 />
               {:else if ownersQuery.isPending}
-                <span class="skeleton block h-8 w-32 rounded-md" aria-label={m('common.loading')}
-                ></span>
+                <LoadingFog class="h-5 w-28" />
               {:else}
                 <span class="text-muted">{m('common.unknown')}</span>
               {/if}
@@ -298,8 +272,8 @@
         </DataTable>
       </Panel>
     </div>
-  {/if}
-</PaneContent>
+  </PaneContent>
+</div>
 
 <FormDialog
   bind:visible={createVisible}
@@ -315,7 +289,6 @@
   <TextInput
     id="bot-login"
     label={m('settings.bots.username')}
-    description={normalizedCreateLogin ? undefined : m('settings.bots.username_hint')}
     error={createLoginError}
     maxlength={32}
     required

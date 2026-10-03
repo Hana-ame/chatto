@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: 2026 ChattoCorp GmbH
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+services:
+  mongodb:
+    image: mongo@sha256:b415b12f638e2685d06c58ab7fb5943577c50fadec6d9340ef67d21aeac72070
+    volumes: ['${CONFORMANCE_MONGO_VOLUME:-${CONFORMANCE_STATE}/mongo}:/data/db']
+    logging: {driver: none}
+
+  server:
+    # OpenID conformance suite release-v5.2.4.
+    image: registry.gitlab.com/openid/conformance-suite@sha256:77eb9b8044bb0bd8f8a370de261aa83716c3f231d5f3b73a63d25da49a0ad542
+    environment:
+      BASE_URL: https://conformance.localhost:8443
+      MONGODB_HOST: mongodb
+      SPRING_PROFILES_ACTIVE: dev
+      OIDC_GOOGLE_CLIENTID: local-unused
+      OIDC_GOOGLE_SECRET: local-unused
+      OIDC_GITLAB_CLIENTID: local-unused
+      OIDC_GITLAB_SECRET: local-unused
+    depends_on: [mongodb]
+    logging: {driver: none}
+  nginx:
+    image: registry.gitlab.com/openid/conformance-suite/nginx@sha256:826f5aa7cacc82fb16ace1c3c2d1ac91ea4184d0ad3cd2e5870e09c726d4cd8f
+    extra_hosts: ['host.docker.internal:host-gateway']
+    ports: ['127.0.0.1:8443:8443', '127.0.0.1:9443:9443']
+    volumes:
+      - '${CONFORMANCE_SOURCE}/nginx.conf:/etc/nginx/nginx.conf:ro'
+      - '${CONFORMANCE_STATE}/proxy.crt:/etc/ssl/certs/nginx-selfsigned.crt:ro'
+      - '${CONFORMANCE_STATE}/proxy.key:/etc/ssl/private/nginx-selfsigned.key:ro'
+    networks:
+      default:
+        aliases: [conformance.localhost]
+    depends_on: [server]
+    logging: {driver: none}
+
+volumes:
+  ephemeral-mongo:

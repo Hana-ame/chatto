@@ -2,6 +2,7 @@ package http_server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -22,64 +23,14 @@ import (
 
 const protectedAssetCacheControl = "private, no-store"
 
-// stripServerAssetFilenameTail removes a single trailing {fn.ext} segment from
-// a /assets/server/ request path. The segment must be a short dot-bearing name
-// in the URL-safe filename alphabet; anything else (or a path without '/') is
-// not a decorated URL and is returned unchanged.
-//
-// 【本地改动 2026-08-23】配合 core 侧带 {fn.ext} 的公开 server 资产 URL。
-// 只在「整路径分类失败」后才尝试剥尾段，且剥掉后的 key 仍走完整公开分类，
-// 因此该容错不会让私有对象或保留命名空间变得可达。
-func stripServerAssetFilenameTail(path string) (string, bool) {
-	idx := strings.LastIndexByte(path, '/')
-	if idx <= 0 {
-		return path, false
-	}
-	tail := path[idx+1:]
-	if tail == "" || len(tail) > 128 || !strings.Contains(tail, ".") {
-		return path, false
-	}
-	for _, r := range tail {
-		ok := r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '-' || r == '_'
-		if !ok {
-			return path, false
-		}
-	}
-	return path[:idx], true
-}
-
-// publicAssetCacheControl is used for everything addressable by an immutable
-// URL: public server assets and (【本地改动 2026-08-18】) attachment binaries
-// and derivatives, whose URLs are keyed by assetID and never change.
-const publicAssetCacheControl = "public, max-age=31536000, immutable"
-
 func (s *HTTPServer) setupAssetRoutes() {
 	// Server assets use *path which catches everything including /t/signedPath for transforms
 	// The serveServerAsset handler detects and routes transform requests appropriately
 	// These handlers probe both NATS and S3 backends automatically
 	s.router.GET("/assets/server/*path", s.serveServerAsset)
-	// 【本地改动 2026-08-18】附件 URL 增加 {fn.ext} 尾段的新路由：带文件名的
-	// 走公开入口（仅 assetID 访问 + public immutable 缓存）；旧的无文件名
-	// 路由保留原 ticket/成员校验语义，历史消息与已发出的 URL 继续有效。
+	s.router.GET("/assets/neighborhood/:name", s.serveNeighborhoodImage)
 	s.router.GET("/assets/files/:assetID", s.serveStableAttachment)
-	s.router.GET("/assets/files/:assetID/:filename", s.servePublicStableAttachment)
 	s.router.GET("/assets/files/:assetID/image/:dimensions/:fit", s.serveStableTransformedAttachment)
-	s.router.GET("/assets/files/:assetID/image/:dimensions/:fit/:filename", s.servePublicStableTransformedAttachment)
-	// 【本地改动 2026-08-23】补注册 HEAD：gin 不会把 HEAD 映射到 GET 路由，
-	// 未注册时源站对所有 /assets/* 的 HEAD 一律 404——CF 边缘未命中转发
-	// HEAD 时拿到 404+no-store，缓存状态被标成 BYPASS（2026-08-23 线上定位）。
-	headRoutes := []struct {
-		path    string
-		handler gin.HandlerFunc
-	}{
-		{"/assets/files/:assetID", s.serveStableAttachment},
-		{"/assets/files/:assetID/:filename", s.servePublicStableAttachment},
-		{"/assets/files/:assetID/image/:dimensions/:fit", s.serveStableTransformedAttachment},
-		{"/assets/files/:assetID/image/:dimensions/:fit/:filename", s.servePublicStableTransformedAttachment},
-	}
-	for _, route := range headRoutes {
-		s.router.HEAD(route.path, route.handler)
-	}
 	s.router.GET("/assets/hls/:assetID/master.m3u8", s.serveHLSMasterPlaylist)
 	s.router.GET("/assets/hls/:assetID/renditions/:rendition/playlist.m3u8", s.serveHLSMediaPlaylist)
 	s.router.GET("/assets/hls/:assetID/renditions/:rendition/segments/:segment", s.serveHLSSegment)
@@ -106,26 +57,6 @@ type transformRequest struct {
 	// Authorize checks if access is allowed. Return true if authorized.
 	// If nil, asset is considered public and no authorization is needed.
 	Authorize func(c *gin.Context) bool
-
-	// 【本地改动 2026-09-12】BypassTransform 为 true 时不做任何缩放/重编码:
-	// 直接返回存储的那一份原文件字节(原尺寸、原 Content-Type、原字节数),
-	// 不读也不写 resize 缓存。此模式下 CachePrefix 与 JPEGQuality 被忽略。
-	//
-	// 目的:fork 上传时已经把图片编码成**原尺寸** AVIF(动画输入产出动画
-	// AVIF),存一份、发一份,请求期再缩放只会引入衍生图。旧链路是线上 500
-	// 的主要来源:ffmpeg 缩放拿到不可 seek 的 pipe 输入会报 partial file
-	// (ISO-BMFF 容器探测失败),缓存又把它固化下来。
-	//
-	// 【2026-09-12 第二轮】主防线已移到 URL 生成层:core/attachments.go 的
-	// Get*TransformedAttachmentAssetURL 直接把「衍生图 URL」override 成原图
-	// URL,客户端根本不会再请求 /image/ 路径。这里保留 bypass 是兼底——已经
-	// 发出去的旧 /image/ 链接(旧客户端缓存、CDN 缓存、被人粘贴到别处的
-	// URL)仍然返回原图字节,而不是 500 或 404。
-	// 【2026-09-13】策略扩展到服务端资产:头像/logo/banner/链接预览也改成上传期
-	// 就缩放到上限并压缩(见 core 的 GetTransformedServerAssetURLWithFilename
-	// override 注释),请求期不再缩放,所以这里也设 BypassTransform——已发出去的
-	// 旧 /t/{sig} 链接返回存储的原档字节。
-	BypassTransform bool
 }
 
 type assetDeliveryMode int
@@ -178,26 +109,8 @@ func (s *HTTPServer) serveServerAsset(c *gin.Context) {
 		transformRequest = true
 		key = path[:idx]
 		signedPath = path[idx+3:]
-		// 【本地改动 2026-08-23】transform URL 可带 {fn.ext} 尾段
-		// （/t/{params}.{sig}/{fn.ext}）。签名只覆盖第一段，剥掉装饰性尾段
-		// 再验证；签名段本身不含 '/'。
-		if cut := strings.IndexByte(signedPath, '/'); cut != -1 {
-			signedPath = signedPath[:cut]
-		}
 	}
 	location, public := s.core.ResolvePublicServerAsset(c.Request.Context(), key)
-	if !public {
-		// 【本地改动 2026-08-23】原始 URL 也可带 {fn.ext} 尾段
-		// （/{key}/{fn.ext}）。合法 key 永远不含 '.'（canonical ID 是固定
-		// 字母表、public/ 前缀下也是纯 ID），所以「整路径分类失败 → 剥掉
-		// 最后一个点段重试」不会歧义。剥掉后仍走完整公开分类，私有对象与
-		// 保留命名空间照旧 fail closed，不产生新的可达面。
-		if base, ok := stripServerAssetFilenameTail(key); ok {
-			if loc2, pub2 := s.core.ResolvePublicServerAsset(c.Request.Context(), base); pub2 {
-				key, location, public = base, loc2, true
-			}
-		}
-	}
 	if key == "" || !public {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Asset not found"})
 		return
@@ -248,12 +161,36 @@ func (s *HTTPServer) serveServerAsset(c *gin.Context) {
 	)
 }
 
+// serveNeighborhoodImage serves one public, content-addressed copy of a
+// Neighborhood server logo or banner. The route needs no authentication
+// because discovery stores only public profile images in its own bucket.
+func (s *HTTPServer) serveNeighborhoodImage(c *gin.Context) {
+	name := c.Param("name")
+	reader, info, err := s.core.OpenNeighborhoodImage(c.Request.Context(), name)
+	if err != nil {
+		if !errors.Is(err, core.ErrNeighborhoodImageNotFound) {
+			s.logger.Warn("Failed to read Neighborhood image", "error", err)
+		}
+		c.JSON(http.StatusNotFound, gin.H{"error": "Asset not found"})
+		return
+	}
+	defer reader.Close()
+
+	// The name is the SHA-256 hash of the image bytes, so the content at one
+	// URL never changes.
+	c.Header("Cache-Control", "public, max-age=31536000, immutable")
+	c.Header("ETag", fmt.Sprintf("\"%s\"", name))
+	c.Header("X-Content-Type-Options", "nosniff")
+	c.DataFromReader(http.StatusOK, int64(info.Size), "image/webp", reader, nil)
+}
+
 // serveStableAttachment serves the canonical authenticated asset URL:
 //
 //	/assets/files/{assetID}
 //
 // The URL identifies the binary, while the access ticket (or, for API clients,
-// the request's cookie/bearer token) authorizes access.
+// the request's cookie/bearer token) authorizes access. download=1 streams the
+// original with an attachment disposition, including when storage is on S3.
 func (s *HTTPServer) serveStableAttachment(c *gin.Context) {
 	ctx := c.Request.Context()
 	assetID := c.Param("assetID")
@@ -263,7 +200,8 @@ func (s *HTTPServer) serveStableAttachment(c *gin.Context) {
 		return
 	}
 
-	if protectedAssetDeliveryMode(attachment) == deliveryS3Redirect {
+	download := c.Query("download") == "1"
+	if !download && protectedAssetDeliveryMode(attachment) == deliveryS3Redirect {
 		if presignedURL, err := s.core.TryPresignedAttachmentURL(ctx, attachment, core.S3AssetRedirectTTL); err == nil {
 			c.Header("Cache-Control", protectedAssetCacheControl)
 			c.Redirect(http.StatusFound, presignedURL)
@@ -286,64 +224,15 @@ func (s *HTTPServer) serveStableAttachment(c *gin.Context) {
 		contentType = "application/octet-stream"
 	}
 	setOriginalAttachmentSecurityHeaders(c, contentType)
+	if download {
+		c.Header("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{
+			"filename": attachmentDownloadFilename(attachment.GetFilename()),
+		}))
+	}
 
 	c.Header("Cache-Control", protectedAssetCacheControl)
 	c.Header("ETag", fmt.Sprintf("\"%s\"", assetID))
-	// 【本地改动 2026-08-23】Vary 不再携带 Authorization/Cookie：响应字节只由
-	// assetID 决定，凭据只是访问门控而非表示选择器；这些 ticket URL 即将被
-	// 带 {fn.ext} 的公开 URL 全面取代（仅剩历史客户端兜底），对它们做按凭据
-	// 缓存分片毫无收益，反而干扰共享缓存键。
-	c.Header("Vary", "Accept-Encoding")
-	// Chatto-backed streams are sequential. Seekable media delivery requires an
-	// S3 redirect, whose object server handles byte ranges directly.
-	c.Header("Accept-Ranges", "none")
-	c.DataFromReader(http.StatusOK, info.Size, contentType, reader, nil)
-}
-
-// servePublicStableAttachment serves the canonical public asset URL:
-//
-//	/assets/files/{assetID}/{fn.ext}
-//
-// 【本地改动 2026-08-18】带 {fn.ext} 尾段的新 URL 走公开入口：访问仅凭
-// assetID（无 ticket、无成员校验），响应 public immutable 可长期缓存。
-// 旧的无文件名 URL 继续走 serveStableAttachment（ticket 语义）。
-func (s *HTTPServer) servePublicStableAttachment(c *gin.Context) {
-	ctx := c.Request.Context()
-	assetID := c.Param("assetID")
-
-	attachment, ok := s.resolvePublicAttachment(c, assetID)
-	if !ok {
-		return
-	}
-
-	if protectedAssetDeliveryMode(attachment) == deliveryS3Redirect {
-		if presignedURL, err := s.core.TryPresignedAttachmentURL(ctx, attachment, core.S3AssetRedirectTTL); err == nil {
-			// 302 重定向本身不缓存；presigned URL 短期有效。
-			c.Header("Cache-Control", protectedAssetCacheControl)
-			c.Redirect(http.StatusFound, presignedURL)
-			return
-		}
-	}
-
-	reader, info, err := s.core.GetAttachmentReader(ctx, attachment)
-	if err != nil {
-		s.logger.Error("Failed to get stable attachment", "error", err, "attachment_id", assetID)
-		c.JSON(http.StatusNotFound, gin.H{"error": "Attachment not found"})
-		return
-	}
-	if closer, ok := reader.(io.Closer); ok {
-		defer closer.Close()
-	}
-
-	contentType := info.ContentType
-	if contentType == "" {
-		contentType = "application/octet-stream"
-	}
-	setOriginalAttachmentSecurityHeaders(c, contentType)
-
-	c.Header("Cache-Control", publicAssetCacheControl)
-	c.Header("ETag", fmt.Sprintf("\"%s\"", assetID))
-	c.Header("Vary", "Accept-Encoding")
+	c.Header("Vary", "Accept-Encoding, Authorization, Cookie")
 	// Chatto-backed streams are sequential. Seekable media delivery requires an
 	// S3 redirect, whose object server handles byte ranges directly.
 	c.Header("Accept-Ranges", "none")
@@ -352,10 +241,29 @@ func (s *HTTPServer) servePublicStableAttachment(c *gin.Context) {
 
 const originalAttachmentSandboxCSP = "sandbox"
 
+// attachmentDownloadFilename removes path components and control characters
+// before the MIME encoder quotes or encodes the user-supplied filename.
+func attachmentDownloadFilename(filename string) string {
+	filename = filepath.Base(strings.ReplaceAll(filename, "\\", "/"))
+	filename = strings.Map(func(r rune) rune {
+		if r < 32 || r == 127 {
+			return -1
+		}
+		return r
+	}, filename)
+	if filename == "" || filename == "." || filename == ".." || filename == "/" {
+		return "attachment"
+	}
+	return filename
+}
+
 func setOriginalAttachmentSecurityHeaders(c *gin.Context, contentType string) {
 	c.Header("X-Content-Type-Options", "nosniff")
 	if originalAttachmentNeedsSandbox(contentType) {
 		c.Header("Content-Security-Policy", originalAttachmentSandboxCSP)
+		// The document may load external resources after preview consent. Do not
+		// expose its ticketed URL through those requests' Referer headers.
+		c.Header("Referrer-Policy", "no-referrer")
 	}
 }
 
@@ -409,43 +317,7 @@ func (s *HTTPServer) serveStableTransformedAttachment(c *gin.Context) {
 			}
 			return reader, info.ContentType, nil
 		},
-		Authorize:       func(c *gin.Context) bool { return true },
-		BypassTransform: true, // 【本地改动 2026-09-12】附件不再产衍生图。
-	}, params)
-}
-
-// servePublicStableTransformedAttachment serves a public image derivative:
-//
-//	/assets/files/{assetID}/image/{width}x{height}/{fit}/{fn.ext}
-//
-// 【本地改动 2026-08-18】带 {fn.ext} 尾段的新 URL 走公开入口：仅凭 assetID
-// 访问，Authorize 为 nil → 响应 public immutable 可长期缓存。
-func (s *HTTPServer) servePublicStableTransformedAttachment(c *gin.Context) {
-	assetID := c.Param("assetID")
-	params, err := parseStableTransformParams(c.Param("dimensions"), c.Param("fit"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	attachment, ok := s.resolvePublicAttachment(c, assetID)
-	if !ok {
-		return
-	}
-
-	s.serveTransformedAssetWithParams(c, transformRequest{
-		CachePrefix: AttachmentStableCachePrefix,
-		AssetID:     assetID,
-		JPEGQuality: AttachmentDerivativeJPEGQuality,
-		FetchAsset: func(ctx context.Context) (io.Reader, string, error) {
-			reader, info, err := s.core.GetAttachmentReader(ctx, attachment)
-			if err != nil {
-				return nil, "", err
-			}
-			return reader, info.ContentType, nil
-		},
-		Authorize:       nil,  // Attachment derivatives are publicly readable by assetID.
-		BypassTransform: true, // 【本地改动 2026-09-12】附件不再产衍生图。
+		Authorize: func(c *gin.Context) bool { return true },
 	}, params)
 }
 
@@ -490,11 +362,11 @@ func (s *HTTPServer) resolveStableAttachment(c *gin.Context, ctx context.Context
 		return nil, false
 	}
 
-	userID, ok := s.resolveStableAssetViewerID(c, assetID, params)
+	userID, authCtx, ok := s.resolveStableAssetViewerID(c, ctx, assetID, params)
 	if !ok {
 		return nil, false
 	}
-	return s.resolveAttachmentForViewer(c, ctx, assetID, userID)
+	return s.resolveAttachmentForViewer(c, authCtx, assetID, userID)
 }
 
 func (s *HTTPServer) resolveAttachmentForViewer(c *gin.Context, ctx context.Context, assetID, userID string) (*evtv1.Attachment, bool) {
@@ -547,32 +419,6 @@ func (s *HTTPServer) resolveAttachmentForViewer(c *gin.Context, ctx context.Cont
 	return attachment, true
 }
 
-// resolvePublicAttachment resolves an attachment by assetID without any
-// viewer checks. 【本地改动 2026-08-18】带 {fn.ext} 的公开 URL 专用：访问
-// 仅凭 assetID，不再校验成员身份/会话/ticket。assetID 即访问凭证。
-// 2026-08-29 合并 upstream：返回值类型跟随 upstream #2162 从 corev1.Attachment
-// 迁移到 evtv1.Attachment（core/v1 pb 包已拆分删除，AttachmentFromAsset 现返回 evtv1）。
-func (s *HTTPServer) resolvePublicAttachment(c *gin.Context, assetID string) (*evtv1.Attachment, bool) {
-	if assetID == "" {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Attachment not found"})
-		return nil, false
-	}
-	state := s.core.GetAssetState(assetID)
-	declared := state.Creation
-	if declared == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Attachment not found"})
-		return nil, false
-	}
-	attachment := core.AttachmentFromAsset(declared.GetAsset())
-	if attachment == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Attachment not found"})
-		return nil, false
-	}
-	return attachment, true
-}
-
-// 【本地改动 2026-08-29】返回值类型从 corev1.AssetProcessedHLS 迁移到 evtv1
-// （原因同 resolvePublicAttachment）；函数体为上游实现，未改动。
 func (s *HTTPServer) resolveHLS(c *gin.Context) (*evtv1.AssetProcessedHLS, string, bool) {
 	assetID := c.Param("assetID")
 	access := c.Query("access")
@@ -745,45 +591,49 @@ func (s *HTTPServer) serveHLSSegment(c *gin.Context) {
 	c.DataFromReader(http.StatusOK, info.Size, "video/mp2t", reader, nil)
 }
 
-func (s *HTTPServer) resolveStableAssetViewerID(c *gin.Context, assetID string, params *signedurl.TransformParams) (string, bool) {
+// resolveStableAssetViewerID returns the viewer and the context that must
+// authorize the read. A signed ticket is a bounded capability without a
+// runtime credential. A cookie or bearer request authorizes with its
+// credential, so privileged mode applies as for other requests.
+func (s *HTTPServer) resolveStableAssetViewerID(c *gin.Context, ctx context.Context, assetID string, params *signedurl.TransformParams) (string, context.Context, bool) {
 	if access := c.Query("access"); access != "" {
 		ticket, err := signedurl.ParseSignedAssetAccessTicket(s.config.Core.Assets.SigningSecret, access)
 		if err != nil {
 			s.logger.Warn("Invalid asset access ticket", "error", err, "asset_id", assetID)
 			c.JSON(http.StatusForbidden, gin.H{"error": "Invalid asset access ticket"})
-			return "", false
+			return "", nil, false
 		}
 		if ticket.Expired(time.Now().Unix()) {
 			c.JSON(http.StatusForbidden, gin.H{"error": "Asset access ticket expired"})
-			return "", false
+			return "", nil, false
 		}
 		if ticket.AssetID != assetID {
 			c.JSON(http.StatusForbidden, gin.H{"error": "Asset access ticket does not match asset"})
-			return "", false
+			return "", nil, false
 		}
 		if !ticket.MatchesTransform(params) {
 			c.JSON(http.StatusForbidden, gin.H{"error": "Asset access ticket does not match derivative"})
-			return "", false
+			return "", nil, false
 		}
-		return ticket.UserID, true
+		return ticket.UserID, ctx, true
 	}
 
 	if params != nil {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Asset derivative URL requires a signed access ticket"})
-		return "", false
+		return "", nil, false
 	}
 
 	reqWithUser := s.injectUserIntoContext(c)
 	if authenticationValidationError(reqWithUser.Context()) != nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Authentication service temporarily unavailable"})
-		return "", false
+		return "", nil, false
 	}
 	user := authctx.ForContext(reqWithUser.Context())
 	if user == nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
-		return "", false
+		return "", nil, false
 	}
-	return user.Id, true
+	return user.Id, reqWithUser.Context(), true
 }
 
 // serveTransformedAsset handles the common logic for serving transformed images.
@@ -805,16 +655,6 @@ func (s *HTTPServer) serveTransformedAsset(c *gin.Context, req transformRequest)
 
 func (s *HTTPServer) serveTransformedAssetWithParams(c *gin.Context, req transformRequest, params *signedurl.TransformParams) {
 	ctx := c.Request.Context()
-
-	// 【本地改动 2026-09-12】附件的 transform 请求整体 bypass:上传时已经是
-	// 原尺寸 AVIF,这里直接回原文件字节。放在函数入口,让缓存查找、缩放、
-	// 缓存写入全都不发生——旧缓存里的衍生图字节也不会被再读出来。
-	// 正常路径下这个分支不该被走到(URL 生成层已 override 成原图链接),它
-	// 只服务于已经发出去的旧 /image/ 链接。
-	if req.BypassTransform {
-		s.serveBypassedOriginalAsset(c, req, ctx)
-		return
-	}
 
 	// Build cache key with prefix to distinguish between asset types
 	cacheKey := core.ImageCacheKey(req.CachePrefix, req.AssetID, params.Width, params.Height, params.Fit)
@@ -870,17 +710,14 @@ func (s *HTTPServer) serveTransformedAssetWithParams(c *gin.Context, req transfo
 		return
 	}
 
-	// Transform the image. 【本地改动 32e1f566】AVIF 输入需要 ffmpeg 解码
-	// (Go 标准库不认识 AVIF),用的就是上传阶段 AVIF 重编码那同一个二进制。
+	// Transform the image
 	var result *assets.TransformResult
 	if req.JPEGQuality > 0 {
-		result, err = assets.TransformImageWithFFmpeg(data, params.Width, params.Height, assets.FitMode(params.Fit), assets.TransformOptions{
+		result, err = assets.TransformImageWithOptions(data, params.Width, params.Height, assets.FitMode(params.Fit), assets.TransformOptions{
 			JPEGQuality: req.JPEGQuality,
-		}, s.core.AssetsConfig().FFmpegPath)
+		})
 	} else {
-		result, err = assets.TransformImageWithFFmpeg(data, params.Width, params.Height, assets.FitMode(params.Fit), assets.TransformOptions{
-			JPEGQuality: assets.DefaultTransformJPEGQuality,
-		}, s.core.AssetsConfig().FFmpegPath)
+		result, err = assets.TransformImage(data, params.Width, params.Height, assets.FitMode(params.Fit))
 	}
 	if err != nil {
 		s.logger.Error("Failed to transform image", "error", err)
@@ -915,54 +752,6 @@ func (s *HTTPServer) serveTransformedAssetWithParams(c *gin.Context, req transfo
 	c.Data(http.StatusOK, result.ContentType, transformedData)
 }
 
-// serveBypassedOriginalAsset 把一次「transform」请求当作原文件请求处理:
-// 不缩放、不重编码,直接返回存储的那一份字节。
-//
-// 【本地改动 2026-09-12】目的与踩坑见 transformRequest.BypassTransform。
-// 与正常 transform 路径相比少三件事:不查衍生图缓存、不调 ffmpeg、不写缓存。
-// 响应头仍按 assetID 维度给 immutable 长缓存,因为内容确实永不变化;ETag 只
-// 由 assetID + 内容类型决定(URL 里残留的宽高已无意义)。
-//
-// 顺序刻意与 transform 路径一致:先 FetchAsset 再 Authorize——Authorize 可能
-// 依赖 FetchAsset 缓存的元数据。附件的 Authorize 为 nil 或恒 true,语义不变。
-//
-// 已知代价:原文件一次性读进内存再回写,和 transform 路径一样;附件体积上限由
-// MaxUploadSize 约束(默认 25 MB),可接受。
-func (s *HTTPServer) serveBypassedOriginalAsset(c *gin.Context, req transformRequest, ctx context.Context) {
-	reader, contentType, err := req.FetchAsset(ctx)
-	if err != nil {
-		s.logger.Error("Failed to get asset", "error", err, "asset_id", req.AssetID)
-		c.JSON(http.StatusNotFound, gin.H{"error": "Asset not found"})
-		return
-	}
-	if closer, ok := reader.(io.Closer); ok {
-		defer closer.Close()
-	}
-
-	if req.Authorize != nil && !req.Authorize(c) {
-		return
-	}
-
-	if contentType == "" || !isImageContentType(contentType) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Asset is not an image"})
-		return
-	}
-
-	data, err := io.ReadAll(reader)
-	if err != nil {
-		s.logger.Error("Failed to read asset", "error", err, "asset_id", req.AssetID)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read asset"})
-		return
-	}
-
-	c.Header("Cache-Control", transformedAssetCacheControl(req.Authorize == nil))
-	c.Header("ETag", fmt.Sprintf("\"orig-%s-%s\"", req.AssetID, contentType))
-	c.Header("Vary", transformedAssetVary(req.Authorize == nil))
-	// 与 HIT/MISS 并列的新取值:这个 /image/ 请求没有走任何编码。
-	c.Header("X-Cache", "BYPASS")
-	c.Data(http.StatusOK, contentType, data)
-}
-
 func transformedAssetCacheControl(public bool) string {
 	if public {
 		return "public, max-age=31536000, immutable"
@@ -971,10 +760,10 @@ func transformedAssetCacheControl(public bool) string {
 }
 
 func transformedAssetVary(public bool) string {
-	// 【本地改动 2026-08-23】两种分支统一为 Accept-Encoding：响应字节只由
-	// assetID + transform 参数决定，凭据只是访问门控而非表示选择器；
-	// per-user ticket 路由本身 no-store，按凭据分片缓存毫无收益。
-	return "Accept-Encoding"
+	if public {
+		return "Accept-Encoding"
+	}
+	return "Accept-Encoding, Authorization, Cookie"
 }
 
 // serveTransformedServerAsset serves a dynamically transformed version of an server asset.
@@ -990,11 +779,6 @@ func (s *HTTPServer) serveTransformedServerAsset(c *gin.Context, key, signedPath
 		SignedPath:  signedPath,
 		CachePrefix: core.ServerAssetSignResource,
 		AssetID:     key,
-		// 【本地改动 2026-09-13】服务端资产也取消请求期缩放:URL 生成层已把
-		// /t/{sig} override 成原档 URL,这个分支只服务于已发出去的旧链接
-		// (旧客户端缓存、CDN、被粘贴到别处的 URL),返回存储的原字节 +
-		// X-Cache: BYPASS,不读也不写 server.* 缩放缓存。
-		BypassTransform: true,
 		FetchAsset: func(ctx context.Context) (io.Reader, string, error) {
 			reader, info, err := s.core.GetPublicServerAsset(ctx, location)
 			if err != nil {
@@ -1022,17 +806,10 @@ func (s *HTTPServer) serveTransformedServerAsset(c *gin.Context, key, signedPath
 
 // isImageContentType checks if the content type is an image.
 func isImageContentType(contentType string) bool {
-	// 【本地改动 32e1f566】识别 image/avif:上传阶段可能把附件转成 AVIF,
-	// 渲染/下载路径必须当作图片处理。
 	return contentType == "image/jpeg" ||
 		contentType == "image/png" ||
 		contentType == "image/gif" ||
-		contentType == "image/webp" ||
-		contentType == "image/avif" ||
-		// 【本地改动 2026-09-12】HEIC:服务端 ffmpeg 没有 heif 解码器,这类
-		// 图片无法编码成 AVIF,只能原样存储;这里认它是图片,让附件 bypass
-		// 路径把原字节原样回给浏览器,而不是 400 "Asset is not an image"。
-		contentType == "image/heic"
+		contentType == "image/webp"
 }
 
 // getContentType returns the MIME type based on file extension.
@@ -1047,8 +824,6 @@ func getContentType(path string) string {
 		return "image/jpeg"
 	case ".gif":
 		return "image/gif"
-	case ".avif":
-		return "image/avif"
 	default:
 		return "application/octet-stream"
 	}

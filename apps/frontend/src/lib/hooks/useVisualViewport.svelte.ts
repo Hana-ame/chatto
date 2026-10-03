@@ -1,3 +1,5 @@
+import { Capacitor } from '@capacitor/core';
+
 /**
  * Handles virtual keyboard and scroll-to-focus fixes for iOS Safari.
  *
@@ -14,6 +16,8 @@
  * stored reference height (captured when no keyboard is visible). When the
  * keyboard is open, it sets an explicit body height to shrink above the
  * keyboard. When closed, it clears the override and lets CSS handle sizing.
+ * The body has `data-keyboard-open` while the keyboard is detected. Headers
+ * can use `keyboard-hide-mobile` to give this space to the page content.
  *
  * Also counteracts iOS Safari's scroll-to-focus behavior that shifts the
  * document even when the body is `position: fixed`.
@@ -22,6 +26,9 @@
  */
 export function useVisualViewport() {
   $effect(() => {
+    // The iOS host resizes the webview itself. Applying the Safari workaround
+    // as well changes header visibility and competes with native layout.
+    if (Capacitor.getPlatform() === 'ios') return;
     const vv = window.visualViewport;
     if (!vv) return;
 
@@ -35,12 +42,14 @@ export function useVisualViewport() {
         fullHeight = vv!.height;
         lastWidth = vv!.width;
         document.body.style.height = '';
+        document.body.removeAttribute('data-keyboard-open');
         return;
       }
 
       // Keyboard detection: if visual viewport is significantly shorter than
       // the reference height, the keyboard is open.
       const keyboardLikelyOpen = vv!.height < fullHeight * 0.75;
+      document.body.toggleAttribute('data-keyboard-open', keyboardLikelyOpen);
 
       if (keyboardLikelyOpen) {
         // Override body height to shrink above the keyboard.
@@ -65,6 +74,7 @@ export function useVisualViewport() {
       vv.removeEventListener('resize', update);
       vv.removeEventListener('scroll', update);
       document.body.style.height = '';
+      document.body.removeAttribute('data-keyboard-open');
     };
   });
 }

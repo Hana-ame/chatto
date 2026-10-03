@@ -3,10 +3,10 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { FetchLinkPreviewRequest, FetchLinkPreviewResponse } from "./link_previews_pb.js";
+import { AddReactionRequest, AddReactionResponse, ListReactionUsersRequest, ListReactionUsersResponse, RemoveReactionRequest, RemoveReactionResponse } from "./reactions_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
-import { BatchGetMessagesRequest, BatchGetMessagesResponse, CreateMessageRequest, CreateMessageResponse, DeleteAttachmentRequest, DeleteAttachmentResponse, DeleteLinkPreviewRequest, DeleteLinkPreviewResponse, DeleteMessageRequest, DeleteMessageResponse, GetMessageRequest, GetMessageResponse, UpdateMessageRequest, UpdateMessageResponse } from "./messages_pb.js";
-import { AddReactionRequest, AddReactionResponse, RemoveReactionRequest, RemoveReactionResponse } from "./reactions_pb.js";
+import { FetchLinkPreviewRequest, FetchLinkPreviewResponse } from "./link_previews_pb.js";
+import { BatchGetMessagesRequest, BatchGetMessagesResponse, CreateMessageRequest, CreateMessageResponse, DeleteAttachmentRequest, DeleteAttachmentResponse, DeleteLinkPreviewRequest, DeleteLinkPreviewResponse, DeleteMessageRequest, DeleteMessageResponse, GetMessageRequest, GetMessageResponse, SetAttachmentDescriptionRequest, SetAttachmentDescriptionResponse, UpdateMessageRequest, UpdateMessageResponse } from "./messages_pb.js";
 
 /**
  * Creates messages in room and thread timelines.
@@ -16,6 +16,19 @@ import { AddReactionRequest, AddReactionResponse, RemoveReactionRequest, RemoveR
 export const MessageService = {
   typeName: "chatto.api.v1.MessageService",
   methods: {
+    /**
+     * Lists all users with the requested reaction. Requires room membership and
+     * permission to read the message. A missing reaction returns an empty page;
+     * a missing or hidden message returns NOT_FOUND or PERMISSION_DENIED.
+     *
+     * @generated from rpc chatto.api.v1.MessageService.ListReactionUsers
+     */
+    listReactionUsers: {
+      name: "ListReactionUsers",
+      I: ListReactionUsersRequest,
+      O: ListReactionUsersResponse,
+      kind: MethodKind.Unary,
+    },
     /**
      * Fetches and caches metadata for a composer URL. Authentication is required
      * to avoid exposing the preview fetcher as an unauthenticated network proxy.
@@ -31,8 +44,10 @@ export const MessageService = {
     },
     /**
      * Creates a message for the current user. The user must be a room member and
-     * must have message.post for room messages or message.post-in-thread for
-     * thread replies. Echoing a thread reply also requires message.echo and
+     * must have message.post for room messages. Thread replies require read
+     * access and either message.post, message.post-in-thread, or
+     * message.post-in-interactions with an existing interaction relationship.
+     * Echoing a thread reply also requires message.echo and
      * message.post. The room's Threading Mode may automatically establish a root
      * thread or reject a thread placement that the mode does not allow.
      *
@@ -46,12 +61,14 @@ export const MessageService = {
     },
     /**
      * Edits a message body. Authors can edit their own messages within the edit
-     * window. Effective message.manage permits edits at any time. Only the
-     * message author can change channel echo state. Disabled rooms reject
+     * window. Effective message.manage permits edits at any time and removal of
+     * another author's channel echo. Only the author can enable an echo, which
+     * also requires message.echo and message.post. Omit unchanged echo state.
+     * Disabled rooms reject
      * creation of a new channel echo while allowing an existing echo to be
      * removed. Room membership is also required.
-     * Channel-room edits require message.read or a matching thread relationship
-     * with message.read-interactions. DM membership authorizes the DM read.
+     * Edits require message.read or a matching thread relationship with
+     * message.read-interactions.
      *
      * @generated from rpc chatto.api.v1.MessageService.UpdateMessage
      */
@@ -85,6 +102,20 @@ export const MessageService = {
       kind: MethodKind.Unary,
     },
     /**
+     * Sets or clears one attachment description. Authors can change descriptions
+     * within the message edit window. Effective message.manage permits changes
+     * at any time and to other users' messages. Room membership and message read
+     * access are required.
+     *
+     * @generated from rpc chatto.api.v1.MessageService.SetAttachmentDescription
+     */
+    setAttachmentDescription: {
+      name: "SetAttachmentDescription",
+      I: SetAttachmentDescriptionRequest,
+      O: SetAttachmentDescriptionResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
      * Removes the accepted link preview from the author's own message.
      *
      * @generated from rpc chatto.api.v1.MessageService.DeleteLinkPreview
@@ -98,9 +129,9 @@ export const MessageService = {
     /**
      * Reads one renderable message, including current body, attachment metadata,
      * link preview, reactions, thread metadata, and pin state. Authentication
-     * and room membership are required. Channel-room reads also require
+     * and room membership are required. Reads also require
      * message.read or a matching thread relationship with
-     * message.read-interactions. DM membership authorizes DM reads. Returns
+     * message.read-interactions. Returns
      * NOT_FOUND when the event does not exist, is not a message, has been
      * retracted, or belongs to a different room.
      *
@@ -114,9 +145,9 @@ export const MessageService = {
     },
     /**
      * Reads many renderable messages and their current pin state in one room.
-     * Authentication and room membership are required. Channel-room reads also
+     * Authentication and room membership are required. Reads also
      * require message.read or a matching thread relationship with
-     * message.read-interactions. DM membership authorizes DM reads. Missing,
+     * message.read-interactions. Missing,
      * retracted, non-message, wrong-room, and inaccessible event IDs are omitted.
      * Results preserve first-seen request order, and repeated event IDs are
      * de-duplicated.
@@ -131,9 +162,8 @@ export const MessageService = {
     },
     /**
      * Adds a reaction to a message. The user must be a room member and have
-     * message.react. Channel-room reactions also require message.read or a
-     * matching thread relationship with message.read-interactions. DM membership
-     * authorizes the DM read.
+     * message.react. Reactions also require message.read or a matching thread
+     * relationship with message.read-interactions.
      *
      * @generated from rpc chatto.api.v1.MessageService.AddReaction
      */
@@ -145,9 +175,8 @@ export const MessageService = {
     },
     /**
      * Removes a reaction from a message. The user must be a room member and have
-     * message.react. Channel-room reactions also require message.read or a
-     * matching thread relationship with message.read-interactions. DM membership
-     * authorizes the DM read.
+     * message.react. Reactions also require message.read or a matching thread
+     * relationship with message.read-interactions.
      *
      * @generated from rpc chatto.api.v1.MessageService.RemoveReaction
      */

@@ -33,6 +33,12 @@ func TestChattoCore_AdminMemberReads(t *testing.T) {
 	if err := c.AddVerifiedEmailDirect(ctx, target.Id, "adminmember-target@example.test"); err != nil {
 		t.Fatalf("AddVerifiedEmailDirect target: %v", err)
 	}
+	if err := c.AddVerifiedEmailDirect(ctx, target.Id, "adminmember-primary@example.test"); err != nil {
+		t.Fatalf("AddVerifiedEmailDirect target primary: %v", err)
+	}
+	if err := c.SetPrimaryVerifiedEmail(ctx, target.Id, "adminmember-primary@example.test"); err != nil {
+		t.Fatalf("SetPrimaryVerifiedEmail target: %v", err)
+	}
 	if _, err := c.UpdateUserLogin(ctx, target.Id, "adminmember-target-renamed"); err != nil {
 		t.Fatalf("UpdateUserLogin target: %v", err)
 	}
@@ -78,17 +84,8 @@ func TestChattoCore_AdminMemberReads(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListAdminMembers: %v", err)
 	}
-	if list.TotalCount != 1 || len(list.Users) != 1 {
-		t.Fatalf("ListAdminMembers returned %d/%d users, want 1/1", len(list.Users), list.TotalCount)
-	}
-	if got := list.Users[0].Roles; len(got) != 1 || got[0] != RoleModerator {
-		t.Fatalf("list user roles = %v, want explicit moderator only", got)
-	}
-	if !list.Users[0].HasVerifiedEmail || len(list.Users[0].VerifiedEmails) != 1 || list.Users[0].VerifiedEmails[0] != "adminmember-target@example.test" {
-		t.Fatalf("list user emails = has:%v emails:%v, want target email", list.Users[0].HasVerifiedEmail, list.Users[0].VerifiedEmails)
-	}
-	if list.Users[0].LastLoginChange == nil {
-		t.Fatal("list user LastLoginChange is nil, want visible cooldown timestamp")
+	if list.TotalCount != 1 || !slices.Equal(list.UserIDs, []string{target.Id}) {
+		t.Fatalf("ListAdminMembers = %+v, want target ID only", list)
 	}
 
 	batch, err := c.BatchGetAdminMembers(ctx, admin.Id, []string{target.Id, "missing-user", regular.Id, target.Id})
@@ -101,8 +98,8 @@ func TestChattoCore_AdminMemberReads(t *testing.T) {
 	if got := batch.Users[0].Roles; len(got) != 1 || got[0] != RoleModerator {
 		t.Fatalf("batch target roles = %v, want explicit moderator only", got)
 	}
-	if !batch.Users[0].HasVerifiedEmail || len(batch.Users[0].VerifiedEmails) != 1 || batch.Users[0].VerifiedEmails[0] != "adminmember-target@example.test" {
-		t.Fatalf("batch target emails = has:%v emails:%v, want target email", batch.Users[0].HasVerifiedEmail, batch.Users[0].VerifiedEmails)
+	if !batch.Users[0].HasVerifiedEmail || len(batch.Users[0].VerifiedEmails) != 2 || batch.Users[0].PrimaryVerifiedEmail != "adminmember-primary@example.test" {
+		t.Fatalf("batch target emails = has:%v emails:%v primary:%q, want both addresses and selected primary", batch.Users[0].HasVerifiedEmail, batch.Users[0].VerifiedEmails, batch.Users[0].PrimaryVerifiedEmail)
 	}
 	if batch.Users[0].LastLoginChange == nil {
 		t.Fatal("batch target LastLoginChange is nil, want visible cooldown timestamp")
@@ -118,8 +115,8 @@ func TestChattoCore_AdminMemberReads(t *testing.T) {
 	if adminDetails.Member == nil {
 		t.Fatal("admin details member is nil")
 	}
-	if !adminDetails.Member.HasVerifiedEmail || len(adminDetails.Member.VerifiedEmails) != 1 || adminDetails.Member.VerifiedEmails[0] != "adminmember-target@example.test" {
-		t.Fatalf("admin details emails = has:%v emails:%v, want target email", adminDetails.Member.HasVerifiedEmail, adminDetails.Member.VerifiedEmails)
+	if !adminDetails.Member.HasVerifiedEmail || len(adminDetails.Member.VerifiedEmails) != 2 || adminDetails.Member.PrimaryVerifiedEmail != "adminmember-primary@example.test" {
+		t.Fatalf("admin details emails = has:%v emails:%v primary:%q, want both addresses and selected primary", adminDetails.Member.HasVerifiedEmail, adminDetails.Member.VerifiedEmails, adminDetails.Member.PrimaryVerifiedEmail)
 	}
 	if adminDetails.Member.LastLoginChange == nil {
 		t.Fatal("admin details LastLoginChange is nil, want visible cooldown timestamp")
@@ -164,14 +161,8 @@ func TestChattoCore_ListAdminMembersPaginationRolesAndDeletion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListAdminMembers: %v", err)
 	}
-	if page.TotalCount != 3 || !page.HasMore || len(page.Users) != 1 {
-		t.Fatalf("page = users:%d total:%d hasMore:%v, want 1/3/true", len(page.Users), page.TotalCount, page.HasMore)
-	}
-	if page.Users[0].ID != users[1] {
-		t.Fatalf("page user = %q, want %q", page.Users[0].ID, users[1])
-	}
-	if got := page.Users[0].Roles; len(got) != 1 || got[0] != RoleModerator {
-		t.Fatalf("page roles = %v, want explicit moderator only", got)
+	if page.TotalCount != 3 || !page.HasMore || !slices.Equal(page.UserIDs, users[1:2]) {
+		t.Fatalf("page = %+v, want second ID and 3/true", page)
 	}
 
 	serverMembers, total, err := c.GetServerMembers(ctx, "member-page-two", 1, 0)
@@ -192,13 +183,11 @@ func TestChattoCore_ListAdminMembersPaginationRolesAndDeletion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListAdminMembers after deletion: %v", err)
 	}
-	if afterDelete.TotalCount != 2 || len(afterDelete.Users) != 2 || afterDelete.HasMore {
-		t.Fatalf("after deletion = users:%d total:%d hasMore:%v, want 2/2/false", len(afterDelete.Users), afterDelete.TotalCount, afterDelete.HasMore)
+	if afterDelete.TotalCount != 2 || len(afterDelete.UserIDs) != 2 || afterDelete.HasMore {
+		t.Fatalf("after deletion = %+v, want 2/2/false", afterDelete)
 	}
-	for _, member := range afterDelete.Users {
-		if member.ID == users[1] || member.Deleted {
-			t.Fatalf("deleted user remained in list: %+v", member)
-		}
+	if slices.Contains(afterDelete.UserIDs, users[1]) {
+		t.Fatal("deleted user remained in list")
 	}
 }
 

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
 import { q } from '$lib/test-utils';
 
@@ -10,14 +10,14 @@ const { mocks } = vi.hoisted(() => ({
     notifyPageState: () => {},
     closeModal: vi.fn(),
     goto: vi.fn(),
-    replaceState: vi.fn(),
-    refreshAttachmentUrlsForAssets: vi.fn(),
     toastSuccess: vi.fn(),
     toastError: vi.fn(),
     leaveRoom: vi.fn(),
     deleteMessage: vi.fn(),
     deleteAttachment: vi.fn(),
     deleteLinkPreview: vi.fn(),
+    applyLocalMessageMutation: vi.fn(),
+    tryGetStore: vi.fn(),
     mutation: vi.fn(() => ({
       toPromise: () => Promise.resolve({ data: {}, error: null })
     })),
@@ -43,6 +43,50 @@ const { mocks } = vi.hoisted(() => ({
     signOutAllAccount: vi.fn(),
     unsubscribePushBeforeLeaving: vi.fn()
   }
+}));
+
+vi.mock('$lib/client', async () => ({
+  ...(await import('$lib/test-utils/clientMock')).clientMockDefaults,
+  serverRegistry: {
+    getServer: vi.fn((id: string) => mocks.servers.find((server) => server.id === id)),
+    isOriginServer: vi.fn((id: string) => mocks.originServer?.id === id),
+    isAuthenticated: vi.fn((id: string) => mocks.authenticated[id] === true),
+    clearServerAuthentication: mocks.clearServerAuthentication,
+    tryGetStore: mocks.tryGetStore,
+    removeServer: mocks.removeServer,
+    removeAll: mocks.removeAll,
+    resetToOrigin: mocks.resetToOrigin,
+    get servers() {
+      return mocks.servers;
+    },
+    get originServer() {
+      return mocks.originServer;
+    }
+  },
+  serverConnectionManager: {
+    getClient: (serverId: string) => {
+      mocks.getClient(serverId);
+      return {
+        serverId,
+        connectBaseUrl: `https://${serverId}.example.test/api/connect`,
+        bearerToken: null,
+        getAPI: (factory: (config: never) => unknown) => factory({} as never),
+        client: {
+          mutation: mocks.mutation
+        }
+      };
+    }
+  }
+}));
+
+vi.mock('$lib/serverCatalogue', () => ({
+  firstAuthenticatedServerId: vi.fn((excludedId: string) => {
+    const originId = mocks.originServer?.id;
+    if (originId && originId !== excludedId && mocks.authenticated[originId]) return originId;
+    return mocks.servers.find(
+      (server) => server.id !== excludedId && mocks.authenticated[server.id]
+    )?.id;
+  })
 }));
 
 vi.mock('$app/state', async () => {
@@ -71,8 +115,7 @@ vi.mock('$app/state', async () => {
 });
 
 vi.mock('$app/navigation', () => ({
-  goto: mocks.goto,
-  replaceState: mocks.replaceState
+  goto: mocks.goto
 }));
 
 vi.mock('$app/environment', () => ({ version: '0.5.0-test' }));
@@ -93,48 +136,6 @@ vi.mock('$lib/state/activeServer.svelte', () => ({
   getActiveServer: () => mocks.activeServer
 }));
 
-vi.mock('$lib/state/server/registry.svelte', () => ({
-  serverRegistry: {
-    getServer: vi.fn((id: string) => mocks.servers.find((server) => server.id === id)),
-    isOriginServer: vi.fn((id: string) => mocks.originServer?.id === id),
-    isAuthenticated: vi.fn((id: string) => mocks.authenticated[id] === true),
-    firstAuthenticatedServerId: vi.fn((excludedId: string) => {
-      const originId = mocks.originServer?.id;
-      if (originId && originId !== excludedId && mocks.authenticated[originId]) return originId;
-      return mocks.servers.find(
-        (server) => server.id !== excludedId && mocks.authenticated[server.id]
-      )?.id;
-    }),
-    clearServerAuthentication: mocks.clearServerAuthentication,
-    removeServer: mocks.removeServer,
-    removeAll: mocks.removeAll,
-    resetToOrigin: mocks.resetToOrigin,
-    get servers() {
-      return mocks.servers;
-    },
-    get originServer() {
-      return mocks.originServer;
-    }
-  }
-}));
-
-vi.mock('$lib/state/server/serverConnection.svelte', () => ({
-  serverConnectionManager: {
-    getClient: (serverId: string) => {
-      mocks.getClient(serverId);
-      return {
-        serverId,
-        connectBaseUrl: `https://${serverId}.example.test/api/connect`,
-        bearerToken: null,
-        getAPI: (factory: (config: never) => unknown) => factory({} as never),
-        client: {
-          mutation: mocks.mutation
-        }
-      };
-    }
-  }
-}));
-
 vi.mock('$lib/ui/toast', () => ({
   toast: {
     success: mocks.toastSuccess,
@@ -150,10 +151,13 @@ vi.mock('$lib/auth/sessionChannel', () => ({
   notifyLogout: mocks.notifyLogout
 }));
 
-vi.mock('$lib/auth/signOut', () => ({
+vi.mock('@chatto/client/auth/signOut', () => ({
   beginExplicitSignOutRedirect: mocks.beginExplicitSignOutRedirect,
   signOutServer: mocks.signOutServer,
-  signOutServers: mocks.signOutServers,
+  signOutServers: mocks.signOutServers
+}));
+
+vi.mock('$lib/auth/signOutRedirect', () => ({
   hardRedirectAfterSignOut: mocks.hardRedirectAfterSignOut
 }));
 
@@ -173,16 +177,7 @@ vi.mock('$lib/state/clientAccount', () => ({
   }
 }));
 
-vi.mock('$lib/attachments/attachmentUrls', () => ({
-  LIGHTBOX_ATTACHMENT_IMAGE_REFRESH: {
-    width: 2048,
-    height: 2048,
-    fit: 'contain'
-  },
-  refreshAttachmentUrlsForAssets: mocks.refreshAttachmentUrlsForAssets
-}));
-
-vi.mock('$lib/api-client/messages', () => ({
+vi.mock('@chatto/client/api/messages', () => ({
   createMessageAPI: () => ({
     deleteMessage: mocks.deleteMessage,
     deleteAttachment: mocks.deleteAttachment,
@@ -190,11 +185,17 @@ vi.mock('$lib/api-client/messages', () => ({
   })
 }));
 
-vi.mock('$lib/api-client/rooms', () => ({
+vi.mock('@chatto/client/api/rooms', () => ({
   createRoomCommandAPI: () => ({
     leaveRoom: mocks.leaveRoom
   })
 }));
+
+vi.mock('$lib/components/ServerDirectory.svelte', async () => {
+  const { default: ServerDirectoryMock } =
+    await import('./ModalContainerServerDirectoryMock.svelte');
+  return { default: ServerDirectoryMock };
+});
 
 vi.mock('$lib/ui/ConfirmDialog.svelte', async () => {
   const { default: ConfirmDialogMock } = await import('./ModalContainerConfirmDialogMock.svelte');
@@ -211,12 +212,21 @@ vi.mock('$lib/ui', async () => {
     import('./ModalContainerConfirmDialogMock.svelte'),
     import('./ModalContainerDialogMock.svelte')
   ]);
-  return { ConfirmDialog, Dialog };
+  return {
+    MarkdownHtml: (await import('$lib/ui/MarkdownHtml.svelte')).default,
+    ConfirmDialog,
+    Dialog
+  };
 });
 
 vi.mock('$lib/ui/form', async () => {
   const { default: ButtonMock } = await import('./ModalContainerButtonMock.svelte');
   return { Button: ButtonMock };
+});
+
+vi.mock('./modals/EditAttachmentDescriptionModal.svelte', async () => {
+  const { default: DialogMock } = await import('./ModalContainerDialogMock.svelte');
+  return { default: DialogMock };
 });
 
 import ModalContainer from './ModalContainer.svelte';
@@ -251,7 +261,9 @@ beforeEach(() => {
   mocks.deleteMessage.mockResolvedValue(true);
   mocks.deleteAttachment.mockResolvedValue(true);
   mocks.deleteLinkPreview.mockResolvedValue(true);
-  mocks.refreshAttachmentUrlsForAssets.mockResolvedValue(new Map());
+  mocks.tryGetStore.mockReturnValue({
+    applyLocalMessageMutation: mocks.applyLocalMessageMutation
+  });
   mocks.mutation.mockReturnValue({
     toPromise: () => Promise.resolve({ data: {}, error: null })
   });
@@ -304,166 +316,16 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
-afterEach(() => {
-  vi.useRealTimers();
-});
-
-describe('ModalContainer image viewer', () => {
-  it('refreshes compressed display and original URLs independently', async () => {
-    vi.useFakeTimers();
-    mocks.modal = {
-      type: 'imageViewer',
-      serverId: 'remote',
-      roomId: 'room_1',
-      eventId: 'event_1',
-      imageItems: [
-        {
-          id: 'att_1',
-          src: '/assets/files/att_1/image/2048x2048/contain?access=old',
-          originalSrc: '/assets/files/att_1?access=old',
-          filename: 'image.jpg'
-        }
-      ],
-      imageIndex: 0
-    };
-    mocks.servers.push({
-      id: 'remote',
-      url: 'https://remote.example.test',
-      name: 'Remote',
-      token: 'remote-token'
-    });
-    mocks.refreshAttachmentUrlsForAssets.mockResolvedValue(
-      new Map([
-        [
-          'att_1',
-          {
-            assetUrl: { url: '/assets/files/att_1?access=fresh' },
-            thumbnailAssetUrl: {
-              url: '/assets/files/att_1/image/2048x2048/contain?access=fresh'
-            }
-          }
-        ]
-      ])
-    );
-
-    render(ModalContainer);
-    await vi.advanceTimersByTimeAsync(22 * 60 * 60 * 1000);
-
-    expect(mocks.refreshAttachmentUrlsForAssets).toHaveBeenCalledWith(
-      expect.anything(),
-      'room_1',
-      ['att_1'],
-      { width: 2048, height: 2048, fit: 'contain' }
-    );
-    expect(mocks.getClient).toHaveBeenCalledWith('remote');
-    expect(mocks.replaceState).toHaveBeenCalledWith('', {
-      modal: {
-        ...mocks.modal,
-        imageItems: [
-          {
-            id: 'att_1',
-            src: 'https://remote.example.test/assets/files/att_1/image/2048x2048/contain?access=fresh',
-            originalSrc: 'https://remote.example.test/assets/files/att_1?access=fresh',
-            filename: 'image.jpg'
-          }
-        ],
-        imageIndex: 0
-      }
-    });
-  });
-
-  it('preserves an image selected while URL refresh is pending', async () => {
-    vi.useFakeTimers();
-    mocks.modal = {
-      type: 'imageViewer',
-      serverId: 'origin',
-      roomId: 'room_1',
-      eventId: 'event_1',
-      imageItems: [
-        { id: 'att_1', src: '/assets/files/att_1?access=old', filename: 'first.jpg' },
-        { id: 'att_2', src: '/assets/files/att_2?access=old', filename: 'second.jpg' }
-      ],
-      imageIndex: 0
-    };
-    let finishRefresh: ((urls: Map<string, unknown>) => void) | undefined;
-    mocks.refreshAttachmentUrlsForAssets.mockImplementationOnce(
-      () =>
-        new Promise((resolve) => {
-          finishRefresh = resolve;
-        })
-    );
-    mocks.replaceState.mockImplementationOnce(
-      (_url: string, state: { modal?: Record<string, unknown> }) => setModal(state.modal)
-    );
+describe('ModalContainer add server modal', () => {
+  it('shows the Server Directory in a dialog', async () => {
+    mocks.modal = { type: 'addServer' };
 
     const { container } = render(ModalContainer);
-    vi.advanceTimersByTime(22 * 60 * 60 * 1000);
-    await vi.waitFor(() => expect(mocks.refreshAttachmentUrlsForAssets).toHaveBeenCalledOnce());
 
-    container.querySelector<HTMLButtonElement>('button[aria-label="Next image"]')?.click();
-    await vi.waitFor(() => {
-      expect(container.textContent).toContain('2 / 2');
-    });
-
-    finishRefresh?.(
-      new Map([
-        [
-          'att_1',
-          {
-            assetUrl: { url: '/assets/files/att_1?access=fresh' },
-            thumbnailAssetUrl: { url: '/assets/files/att_1/thumbnail?access=fresh' }
-          }
-        ]
-      ])
-    );
-
-    await vi.waitFor(() => {
-      expect(mocks.replaceState).toHaveBeenCalledOnce();
-      expect(container.textContent).toContain('2 / 2');
-    });
-  });
-
-  it('does not apply a late refresh to the same room on another server', async () => {
-    vi.useFakeTimers();
-    mocks.modal = {
-      type: 'imageViewer',
-      serverId: 'remote',
-      roomId: 'room_1',
-      eventId: 'event_1',
-      imageItems: [{ id: 'att_1', src: '/assets/files/att_1?access=old' }],
-      imageIndex: 0
-    };
-    let finishRefresh: ((urls: Map<string, unknown>) => void) | undefined;
-    mocks.refreshAttachmentUrlsForAssets.mockImplementationOnce(
-      () =>
-        new Promise((resolve) => {
-          finishRefresh = resolve;
-        })
-    );
-
-    render(ModalContainer);
-    vi.advanceTimersByTime(22 * 60 * 60 * 1000);
-    await vi.waitFor(() => expect(mocks.getClient).toHaveBeenCalledWith('remote'));
-
-    setModal({
-      ...mocks.modal,
-      serverId: 'origin'
-    });
-    finishRefresh?.(
-      new Map([
-        [
-          'att_1',
-          {
-            assetUrl: { url: '/assets/files/att_1?access=fresh' },
-            thumbnailAssetUrl: { url: '/assets/files/att_1/thumbnail?access=fresh' }
-          }
-        ]
-      ])
-    );
-    await Promise.resolve();
-    await Promise.resolve();
-
-    expect(mocks.replaceState).not.toHaveBeenCalled();
+    await expect.element(q(container, 'dialog')).toHaveAttribute('aria-label', 'Add Server');
+    expect(
+      container.querySelector('[data-testid="server-directory"]')?.getAttribute('data-in-dialog')
+    ).toBe('true');
   });
 });
 
@@ -478,8 +340,8 @@ describe('ModalContainer sign out modal', () => {
       .toHaveTextContent('Sign out of only the selected server');
     expect(
       [...container.querySelectorAll('button')].map((button) => button.textContent?.trim())
-    ).toEqual(['Cancel', 'Current Server', 'All Servers']);
-    expect(findButton(container, 'All Servers').dataset.variant).toBe('danger');
+    ).toEqual(['Cancel', 'All Servers', 'Current Server']);
+    expect(findButton(container, 'All Servers').dataset.variant).toBe('danger-secondary');
   });
 
   it('signs out of only the active remote server', async () => {
@@ -674,9 +536,7 @@ describe('ModalContainer About Chatto modal', () => {
     expect(q(container, 'dialog')?.getAttribute('aria-label')).toBe('About Chatto');
     expect(container.textContent ?? '').toContain('v0.5.0-test');
     expect(
-      // 【本地改动】与 AboutChattoModal 的 fork 仓库链接保持一致;
-      // 上游断言的是 chattocorp/chatto。
-      container.querySelector('a[href="https://github.com/Hana-ame/chatto"]')
+      container.querySelector('a[href="https://github.com/chattocorp/chatto"]')
     ).not.toBeNull();
     expect(container.querySelector('a[href="https://docs.chatto.run"]')).not.toBeNull();
     await vi.waitFor(
@@ -835,38 +695,32 @@ describe('ModalContainer message mutation modals', () => {
     expect(mocks.modal).toBe(replacementModal);
   });
 
-  it('notifies the visible room after message deletion succeeds', async () => {
+  it('applies a message deletion to the server store after it succeeds', async () => {
     mocks.modal = {
       type: 'deleteMessage',
       serverId: 'remote',
       roomId: 'room-1',
       eventId: 'event-1'
     };
-    const listener = vi.fn();
-    window.addEventListener('chatto:room-message-mutated', listener);
 
-    try {
-      const { container } = render(ModalContainer);
-      clickButton(container, 'Delete');
+    const { container } = render(ModalContainer);
+    clickButton(container, 'Delete');
 
-      await vi.waitFor(() => {
-        expect(mocks.deleteMessage).toHaveBeenCalledWith('room-1', 'event-1');
-        expect(mocks.getClient).toHaveBeenCalledWith('remote');
-        expect(listener).toHaveBeenCalledOnce();
-      });
-      expect((listener.mock.calls[0][0] as CustomEvent).detail).toEqual({
-        serverId: 'remote',
-        roomId: 'room-1',
-        eventId: 'event-1',
-        reason: 'message-deleted'
-      });
-      expect(mocks.toastSuccess).toHaveBeenCalledOnce();
-    } finally {
-      window.removeEventListener('chatto:room-message-mutated', listener);
-    }
+    await vi.waitFor(() => {
+      expect(mocks.deleteMessage).toHaveBeenCalledWith('room-1', 'event-1');
+      expect(mocks.getClient).toHaveBeenCalledWith('remote');
+      expect(mocks.applyLocalMessageMutation).toHaveBeenCalledOnce();
+    });
+    expect(mocks.tryGetStore).toHaveBeenCalledWith('remote');
+    expect(mocks.applyLocalMessageMutation).toHaveBeenCalledWith(
+      'room-1',
+      'event-1',
+      'message-deleted'
+    );
+    expect(mocks.toastSuccess).toHaveBeenCalledOnce();
   });
 
-  it('notifies the visible room after attachment deletion succeeds', async () => {
+  it('applies an attachment deletion to the server store after it succeeds', async () => {
     mocks.modal = {
       type: 'deleteAttachment',
       serverId: 'remote',
@@ -874,30 +728,24 @@ describe('ModalContainer message mutation modals', () => {
       eventId: 'event-1',
       attachmentId: 'attachment-1'
     };
-    const listener = vi.fn();
-    window.addEventListener('chatto:room-message-mutated', listener);
 
-    try {
-      const { container } = render(ModalContainer);
-      clickButton(container, 'Delete');
+    const { container } = render(ModalContainer);
+    clickButton(container, 'Delete');
 
-      await vi.waitFor(() => {
-        expect(mocks.deleteAttachment).toHaveBeenCalledWith('room-1', 'event-1', 'attachment-1');
-        expect(mocks.getClient).toHaveBeenCalledWith('remote');
-        expect(listener).toHaveBeenCalledOnce();
-      });
-      expect((listener.mock.calls[0][0] as CustomEvent).detail).toEqual({
-        serverId: 'remote',
-        roomId: 'room-1',
-        eventId: 'event-1',
-        reason: 'attachment-deleted'
-      });
-    } finally {
-      window.removeEventListener('chatto:room-message-mutated', listener);
-    }
+    await vi.waitFor(() => {
+      expect(mocks.deleteAttachment).toHaveBeenCalledWith('room-1', 'event-1', 'attachment-1');
+      expect(mocks.getClient).toHaveBeenCalledWith('remote');
+      expect(mocks.applyLocalMessageMutation).toHaveBeenCalledOnce();
+    });
+    expect(mocks.tryGetStore).toHaveBeenCalledWith('remote');
+    expect(mocks.applyLocalMessageMutation).toHaveBeenCalledWith(
+      'room-1',
+      'event-1',
+      'attachment-deleted'
+    );
   });
 
-  it('notifies the visible room after link preview deletion succeeds', async () => {
+  it('applies a link preview deletion to the server store after it succeeds', async () => {
     mocks.modal = {
       type: 'deleteLinkPreview',
       serverId: 'remote',
@@ -905,30 +753,45 @@ describe('ModalContainer message mutation modals', () => {
       eventId: 'event-1',
       previewUrl: 'https://example.test/article'
     };
-    const listener = vi.fn();
-    window.addEventListener('chatto:room-message-mutated', listener);
+
+    const { container } = render(ModalContainer);
+    clickButton(container, 'Delete');
+
+    await vi.waitFor(() => {
+      expect(mocks.deleteLinkPreview).toHaveBeenCalledWith(
+        'room-1',
+        'event-1',
+        'https://example.test/article'
+      );
+      expect(mocks.getClient).toHaveBeenCalledWith('remote');
+      expect(mocks.applyLocalMessageMutation).toHaveBeenCalledOnce();
+    });
+    expect(mocks.tryGetStore).toHaveBeenCalledWith('remote');
+    expect(mocks.applyLocalMessageMutation).toHaveBeenCalledWith(
+      'room-1',
+      'event-1',
+      'link-preview-deleted'
+    );
+  });
+
+  it('does not apply a local mutation when the deletion fails', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    mocks.deleteMessage.mockRejectedValue(new Error('delete failed'));
+    mocks.modal = {
+      type: 'deleteMessage',
+      serverId: 'remote',
+      roomId: 'room-1',
+      eventId: 'event-1'
+    };
 
     try {
       const { container } = render(ModalContainer);
       clickButton(container, 'Delete');
 
-      await vi.waitFor(() => {
-        expect(mocks.deleteLinkPreview).toHaveBeenCalledWith(
-          'room-1',
-          'event-1',
-          'https://example.test/article'
-        );
-        expect(mocks.getClient).toHaveBeenCalledWith('remote');
-        expect(listener).toHaveBeenCalledOnce();
-      });
-      expect((listener.mock.calls[0][0] as CustomEvent).detail).toEqual({
-        serverId: 'remote',
-        roomId: 'room-1',
-        eventId: 'event-1',
-        reason: 'link-preview-deleted'
-      });
+      await vi.waitFor(() => expect(mocks.toastError).toHaveBeenCalledOnce());
+      expect(mocks.applyLocalMessageMutation).not.toHaveBeenCalled();
     } finally {
-      window.removeEventListener('chatto:room-message-mutated', listener);
+      consoleError.mockRestore();
     }
   });
 });

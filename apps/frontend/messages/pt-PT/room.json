@@ -71,7 +71,9 @@
     },
     "timeline": {
       "beginning": "Este é o início desta conversa.",
-      "read_denied": "Não tens permissão para ler mensagens nesta sala."
+      "read_denied": "Não tens permissão para ler mensagens nesta sala.",
+      "limited_empty": "Ainda não há conversas que possas ler.",
+      "loading": "A carregar mensagens..."
     },
     "message": {
       "empty": "Ainda não há mensagens",
@@ -87,6 +89,7 @@
         "remove_reaction": "Remover {emoji}",
         "add_reaction": "Adicionar reação",
         "more_reactions": "Mais reações",
+        "reactions": "Reações",
         "reply": "Responder",
         "reply_room": "Responder na sala",
         "reply_thread": "Responder no tópico",
@@ -96,9 +99,18 @@
         "edit_short": "Editar",
         "copy_text": "Copiar texto",
         "copy_text_failed": "Não foi possível copiar o texto",
-        "copy_link": "Copiar link"
+        "copy_link": "Copiar link",
+        "copy_message_link": "Copiar ligação da mensagem",
+        "copy_image": "Copiar imagem",
+        "link_copied": "Ligação copiada",
+        "message_link_copied": "Ligação da mensagem copiada",
+        "copy_link_failed": "Não foi possível copiar a ligação",
+        "image_copied": "Imagem copiada",
+        "copy_image_failed": "Não foi possível copiar a imagem"
       },
       "meta": {
+        "echo": "Eco",
+        "edited_short": "Editada",
         "pinned": "Mensagem fixada",
         "thread": "Tópico",
         "edited": "Mensagem editada",
@@ -142,15 +154,43 @@
       },
       "show_less": "mostrar menos"
     },
+    "typing": {
+      "one": "{name} está a escrever",
+      "two": "{first} e {second} estão a escrever",
+      "many_count": {
+        "other": "{names} e {count} outros estão a escrever",
+        "one": "{names} e {count} outro estão a escrever"
+      }
+    },
     "attachment": {
       "delete_title": "Apagar anexo",
       "delete_prompt": "Tem a certeza que pretende eliminar este anexo? Isto não pode ser desfeito.",
       "delete_label": "Apagar anexo",
       "delete_failed": "Falha ao eliminar anexo",
       "view_label": "Ver {filename}",
-      "download_label": "Download {filename}",
+      "download_label": "Transferir {filename}",
       "image_refresh_failed": "Não foi possível atualizar o link da imagem",
-      "download_refresh_failed": "Não foi possível atualizar o link de download"
+      "download_refresh_failed": "Não foi possível atualizar o link de download",
+      "add_description": "Adicionar descrição",
+      "edit_description": "Editar descrição",
+      "description_title": "Descrição do anexo",
+      "description_label": "Descrição (opcional)",
+      "description_help": "Descreva o anexo para pessoas que não o conseguem ver ou ouvir.",
+      "description_too_long": "As descrições podem ter, no máximo, {max} caracteres.",
+      "description_update_failed": "Não foi possível atualizar a descrição do anexo",
+      "html_viewer": {
+        "download": "Transferir",
+        "show_preview": "Mostrar pré-visualização",
+        "warning": "Este documento pode carregar conteúdo de sites externos. Estes sites podem ver o teu endereço IP.",
+        "preview_title": "Pré-visualização de {filename}",
+        "preview_failed": "Não foi possível carregar a pré-visualização. Tenta novamente.",
+        "document_type": "Tipo de documento",
+        "html_document": "Documento HTML",
+        "xhtml_document": "Documento XHTML",
+        "file_size": "Tamanho do ficheiro",
+        "unavailable": "Indisponível",
+        "no_preview": "Não existe pré-visualização para este ficheiro. Transfere-o para o guardar."
+      }
     },
     "link_preview": {
       "delete_title": "Apagar visualização do link",
@@ -158,6 +198,7 @@
       "delete_failed": "Falha ao eliminar a visualização do link"
     },
     "sidebar": {
+      "go_to_message": "Ir para a mensagem",
       "extras": "Extras do quarto",
       "resize": "Redimensionar painel de extras da sala",
       "hide": "Ocultar extras do quarto",
@@ -170,24 +211,25 @@
       "clear_member_search": "Limpar pesquisa de membros",
       "no_members": "Nenhum membro encontrado.",
       "online": "On-line ({count})",
+      "bots": "Bots ({count})",
       "offline": "Offline ({count})",
       "no_files": "Ainda não existem ficheiros nesta sala.",
       "files": "Ficheiros",
       "pins": "Mensagens fixadas",
-      "call": "Ligar",
+      "call": "Chamada",
       "jump_to_file": "Ir para {filename}",
       "loading_files": "A carregar ficheiros...",
+      "loading_members": "A carregar membros...",
       "calls_unavailable": "As chamadas não estão disponíveis neste servidor.",
       "view_profile": "Ver perfil de {name}",
       "in_voice_call": "Numa chamada de voz",
       "in_video_call": "Numa videochamada",
-      "ban_failed": "Falha ao banir membro da sala",
-      "ban_success": "{name} banido da sala"
+      "remove_failed": "Não foi possível remover o utilizador da sala",
+      "remove_success": "{name} foi removido da sala",
+      "search": "Pesquisar"
     },
     "pins": {
-      "show": "Mostrar mensagens fixadas",
       "unseen": "Novas mensagens fixadas",
-      "hide": "Ocultar mensagens fixadas",
       "pin": "Fixar mensagem",
       "unpin": "Desafixar mensagem",
       "unpin_prompt": "Tem a certeza de que pretende remover esta mensagem fixada?",

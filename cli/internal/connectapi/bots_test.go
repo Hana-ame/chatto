@@ -3,6 +3,8 @@ package connectapi
 import (
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"connectrpc.com/connect"
 	"hmans.de/chatto/internal/core"
 	adminv1 "hmans.de/chatto/internal/pb/chatto/admin/v1"
@@ -14,12 +16,12 @@ func TestBotServiceLifecycleAndCanonicalPermissionMatrix(t *testing.T) {
 	service := &botService{api: env.api}
 	ctx := withCaller(env.ctx, env.viewer)
 
-	created, err := service.CreateBot(ctx, connect.NewRequest(&apiv1.CreateBotRequest{Login: "connect_bot", DisplayName: "Connect Bot"}))
+	created, err := service.CreateBot(ctx, connect.NewRequest(&apiv1.CreateBotRequest{Login: "connect-helper", DisplayName: "Connect Bot"}))
 	if err != nil {
 		t.Fatalf("CreateBot: %v", err)
 	}
 	bot := created.Msg.GetBot()
-	if !bot.GetUser().GetIsBot() || bot.GetOwnerUserId() != env.viewer.GetId() {
+	if bot.GetUser().GetBot() == nil || bot.GetOwnerUserId() != env.viewer.GetId() {
 		t.Fatalf("created bot = %+v", bot)
 	}
 	if created.Msg.GetApiKey() == "" {
@@ -34,7 +36,7 @@ func TestBotServiceLifecycleAndCanonicalPermissionMatrix(t *testing.T) {
 		t.Fatalf("ListBots = %+v, %v", listed, err)
 	}
 	got, err := service.GetBot(ctx, connect.NewRequest(&apiv1.GetBotRequest{BotUserId: bot.GetUser().GetId()}))
-	if err != nil || got.Msg.GetBot().GetUser().GetLogin() != "connect_bot" {
+	if err != nil || got.Msg.GetBot().GetUser().GetLogin() != "connect-helper" {
 		t.Fatalf("GetBot = %+v, %v", got, err)
 	}
 	firstKey, err := service.CreateBotApiKey(ctx, connect.NewRequest(&apiv1.CreateBotApiKeyRequest{
@@ -62,7 +64,7 @@ func TestBotServiceLifecycleAndCanonicalPermissionMatrix(t *testing.T) {
 		t.Fatalf("unrelated named API key: %v", err)
 	}
 	env.api.config.Webserver.URL = "https://configured.example"
-	webhookCtx := WithRequestBaseURL(ctx, "https://spoofed.example")
+	webhookCtx := WithRequestBaseURL(ctx, "https://alias.example")
 	webhook, err := service.CreateBotIncomingWebhook(webhookCtx, connect.NewRequest(&apiv1.CreateBotIncomingWebhookRequest{BotUserId: bot.GetUser().GetId(), Name: "CI"}))
 	if err != nil || len(webhook.Msg.GetBot().GetIncomingWebhooks()) != 1 || webhook.Msg.GetWebhookUrl() == "" {
 		t.Fatalf("CreateBotIncomingWebhook = %+v, %v", webhook, err)
@@ -78,7 +80,7 @@ func TestBotServiceLifecycleAndCanonicalPermissionMatrix(t *testing.T) {
 	if state := got.Msg.GetBot().GetIncomingWebhooks()[0].GetLastUsedState(); state != apiv1.CredentialLastUsedState_CREDENTIAL_LAST_USED_STATE_NO_USE_RECORDED {
 		t.Fatalf("missing webhook usage record state = %v", state)
 	}
-	if wantPrefix := "https://configured.example/webhooks/incoming/cht_IW_"; len(webhook.Msg.GetWebhookUrl()) < len(wantPrefix) || webhook.Msg.GetWebhookUrl()[:len(wantPrefix)] != wantPrefix {
+	if wantPrefix := "https://alias.example/webhooks/incoming/cht_IW_"; len(webhook.Msg.GetWebhookUrl()) < len(wantPrefix) || webhook.Msg.GetWebhookUrl()[:len(wantPrefix)] != wantPrefix {
 		t.Fatalf("webhook URL = %q, want prefix %q", webhook.Msg.GetWebhookUrl(), wantPrefix)
 	}
 	secondWebhook, err := service.CreateBotIncomingWebhook(webhookCtx, connect.NewRequest(&apiv1.CreateBotIncomingWebhookRequest{BotUserId: bot.GetUser().GetId(), Name: "Deployments"}))
@@ -102,26 +104,55 @@ func TestBotServiceLifecycleAndCanonicalPermissionMatrix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetUser bot: %v", err)
 	}
-	updated, err := env.account.UpdateProfile(withCaller(env.ctx, botCore), connect.NewRequest(&apiv1.UpdateProfileRequest{
-		Login:       stringPtr("updated_connect_bot"),
+	updated, err := env.users.UpdateUserProfile(withCaller(env.ctx, botCore), connect.NewRequest(&apiv1.UpdateUserProfileRequest{
+		UserId:      botCore.GetId(),
+		Login:       stringPtr("updated-connect-helper"),
 		DisplayName: stringPtr("Updated Connect Bot"),
 		Bio:         stringPtr("**Build helper**"),
 	}))
 	if err != nil {
-		t.Fatalf("bot UpdateProfile: %v", err)
+		t.Fatalf("bot UpdateUserProfile: %v", err)
 	}
-	if user := updated.Msg.GetUser(); user.GetLogin() != "updated_connect_bot" || user.GetDisplayName() != "Updated Connect Bot" || user.GetBio() != "**Build helper**" {
+	if user := updated.Msg.GetUser(); user.GetLogin() != "updated-connect-helper" || user.GetDisplayName() != "Updated Connect Bot" || user.GetBio() != "**Build helper**" {
 		t.Fatalf("updated bot user = %+v", user)
+	}
+	ownerUpdated, err := env.users.UpdateUserProfile(ctx, connect.NewRequest(&apiv1.UpdateUserProfileRequest{
+		UserId: bot.GetUser().GetId(),
+		Bio:    stringPtr("Maintained by its owner."),
+	}))
+	if err != nil {
+		t.Fatalf("owner UpdateUserProfile bot: %v", err)
+	}
+	if user := ownerUpdated.Msg.GetUser(); user.GetBio() != "Maintained by its owner." || user.GetLogin() != "updated-connect-helper" {
+		t.Fatalf("owner-updated bot user = %+v", user)
+	}
+	// The bot's own rename above started its username cooldown. It also
+	// applies to the owner, and bot reads expose it.
+	if _, err := env.users.UpdateUserProfile(ctx, connect.NewRequest(&apiv1.UpdateUserProfileRequest{
+		UserId: bot.GetUser().GetId(),
+		Login:  stringPtr("owner-renamed-helper"),
+	})); errorCode(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("owner rename during bot cooldown code = %v, want failed precondition", errorCode(err))
+	}
+	cooldownBot, err := service.GetBot(ctx, connect.NewRequest(&apiv1.GetBotRequest{BotUserId: bot.GetUser().GetId()}))
+	if err != nil || cooldownBot.Msg.GetBot().GetLastLoginChange() == nil {
+		t.Fatalf("GetBot during cooldown = %+v, %v; want last_login_change", cooldownBot, err)
 	}
 	recipient, err := env.core.CreateUser(env.ctx, core.SystemActorID, "connect-recipient", "Connect Recipient", "password123")
 	if err != nil {
 		t.Fatalf("CreateUser recipient: %v", err)
 	}
+	if _, err := env.users.UpdateUserProfile(withCaller(env.ctx, recipient), connect.NewRequest(&apiv1.UpdateUserProfileRequest{
+		UserId: bot.GetUser().GetId(),
+		Bio:    stringPtr("Not my bot."),
+	})); errorCode(err) != connect.CodePermissionDenied {
+		t.Fatalf("stranger UpdateUserProfile bot code = %v, want permission denied", errorCode(err))
+	}
 	_, err = service.ReassignBotOwner(ctx, connect.NewRequest(&apiv1.ReassignBotOwnerRequest{
 		BotUserId: bot.GetUser().GetId(), OwnerUserId: recipient.GetId(),
 	}))
-	if connect.CodeOf(err) != connect.CodePermissionDenied {
-		t.Fatalf("owner-only ReassignBotOwner code = %v, want permission denied", connect.CodeOf(err))
+	if errorCode(err) != connect.CodePermissionDenied {
+		t.Fatalf("owner-only ReassignBotOwner code = %v, want permission denied", errorCode(err))
 	}
 	if err := env.core.GrantUserPermission(env.ctx, core.SystemActorID, env.viewer.GetId(), core.PermBotManage); err != nil {
 		t.Fatalf("GrantUserPermission bot.manage: %v", err)
@@ -153,7 +184,7 @@ func TestBotServiceLifecycleAndCanonicalPermissionMatrix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetViewer bot: %v", err)
 	}
-	if profile := viewer.Msg.GetUser().GetProfile(); !profile.GetIsBot() {
+	if profile := viewer.Msg.GetUser().GetProfile(); profile.GetBot() == nil {
 		t.Fatalf("bot viewer profile = %+v", profile)
 	}
 	if !apiPermissionGranted(viewer.Msg.GetViewerPermissions().GetPermissions(), string(core.PermMessagePost)) {
@@ -171,11 +202,11 @@ func TestBotServiceLifecycleAndCanonicalPermissionMatrix(t *testing.T) {
 		t.Fatal("bot unexpectedly granted dm.start capability")
 	}
 
-	if _, err := service.ListBots(withCaller(env.ctx, botCore), connect.NewRequest(&apiv1.ListBotsRequest{})); connect.CodeOf(err) != connect.CodeFailedPrecondition {
-		t.Fatalf("bot caller ListBots code = %v, want failed precondition", connect.CodeOf(err))
+	if _, err := service.ListBots(withCaller(env.ctx, botCore), connect.NewRequest(&apiv1.ListBotsRequest{})); errorCode(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("bot caller ListBots code = %v, want failed precondition", errorCode(err))
 	}
-	if _, err := service.CreateBotIncomingWebhook(withCaller(env.ctx, botCore), connect.NewRequest(&apiv1.CreateBotIncomingWebhookRequest{BotUserId: bot.GetUser().GetId(), Name: "Denied"})); connect.CodeOf(err) != connect.CodeFailedPrecondition {
-		t.Fatalf("bot caller CreateBotIncomingWebhook code = %v, want failed precondition", connect.CodeOf(err))
+	if _, err := service.CreateBotIncomingWebhook(withCaller(env.ctx, botCore), connect.NewRequest(&apiv1.CreateBotIncomingWebhookRequest{BotUserId: bot.GetUser().GetId(), Name: "Denied"})); errorCode(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("bot caller CreateBotIncomingWebhook code = %v, want failed precondition", errorCode(err))
 	}
 
 	deleted, err := service.DeleteBot(ctx, connect.NewRequest(&apiv1.DeleteBotRequest{BotUserId: bot.GetUser().GetId()}))
@@ -184,15 +215,15 @@ func TestBotServiceLifecycleAndCanonicalPermissionMatrix(t *testing.T) {
 	}
 }
 
-func TestBotServiceRejectsInvalidSuffixAndOwnerCeiling(t *testing.T) {
+func TestBotServiceRejectsInvalidLoginAndOwnerCeiling(t *testing.T) {
 	env := newConnectAPITestEnv(t)
 	service := &botService{api: env.api}
 	ctx := withCaller(env.ctx, env.viewer)
 
-	if _, err := service.CreateBot(ctx, connect.NewRequest(&apiv1.CreateBotRequest{Login: "no-suffix", DisplayName: "No Suffix"})); connect.CodeOf(err) != connect.CodeInvalidArgument {
-		t.Fatalf("CreateBot invalid suffix code = %v", connect.CodeOf(err))
+	if _, err := service.CreateBot(ctx, connect.NewRequest(&apiv1.CreateBotRequest{Login: "invalid!", DisplayName: "Invalid"})); errorCode(err) != connect.CodeInvalidArgument {
+		t.Fatalf("CreateBot invalid login code = %v", errorCode(err))
 	}
-	created, err := service.CreateBot(ctx, connect.NewRequest(&apiv1.CreateBotRequest{Login: "ceiling_bot", DisplayName: "Ceiling Bot"}))
+	created, err := service.CreateBot(ctx, connect.NewRequest(&apiv1.CreateBotRequest{Login: "no-suffix", DisplayName: "Ceiling Bot"}))
 	if err != nil {
 		t.Fatalf("CreateBot: %v", err)
 	}
@@ -201,7 +232,77 @@ func TestBotServiceRejectsInvalidSuffixAndOwnerCeiling(t *testing.T) {
 		Scope:    &adminv1.PermissionScope{Kind: adminv1.PermissionScopeKind_PERMISSION_SCOPE_KIND_SERVER},
 		Decision: adminv1.PermissionDecision_PERMISSION_DECISION_ALLOW,
 	}))
-	if connect.CodeOf(err) != connect.CodeFailedPrecondition {
-		t.Fatalf("over-ceiling code = %v, want failed precondition", connect.CodeOf(err))
+	if errorCode(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("over-ceiling code = %v, want failed precondition", errorCode(err))
 	}
+}
+
+func TestBotOwnerMembershipThroughRoomAPI(t *testing.T) {
+	env := newConnectAPITestEnv(t)
+	ctx := withCaller(env.ctx, env.viewer)
+	bot, err := env.core.CreateBot(env.ctx, env.viewer.Id, "room_api_bot", "Room API Bot")
+	require.NoError(t, err)
+	room, err := env.core.CreateRoom(env.ctx, core.SystemActorID, core.KindChannel, "", "bot-room-api", "")
+	require.NoError(t, err)
+	_, err = env.rooms.GetMember(ctx, connect.NewRequest(&apiv1.GetMemberRequest{RoomId: room.Id, UserId: bot.User.Id}))
+	require.Equal(t, connect.CodeNotFound, errorCode(err), "owner can inspect its bot before joining")
+	_, err = env.rooms.GetMember(ctx, connect.NewRequest(&apiv1.GetMemberRequest{RoomId: room.Id, UserId: env.viewer.Id}))
+	require.Equal(t, connect.CodePermissionDenied, errorCode(err), "bot ownership must not authorize human lookups")
+	add := connect.NewRequest(&apiv1.AddMemberRequest{RoomId: room.Id, UserId: bot.User.Id})
+	_, err = env.rooms.AddMember(ctx, add)
+	require.Equal(t, connect.CodePermissionDenied, errorCode(err))
+	require.NoError(t, env.core.SetUserPermissionState(env.ctx, env.viewer.Id, bot.User.Id,
+		core.PermissionTargetScope{Kind: core.MatrixScopeRoom, ID: room.Id}, core.PermRoomJoin, core.PermissionStateAllow))
+	added, err := env.rooms.AddMember(ctx, add)
+	require.NoError(t, err)
+	require.NotNil(t, added.Msg.Member)
+	member, err := env.rooms.GetMember(ctx, connect.NewRequest(&apiv1.GetMemberRequest{RoomId: room.Id, UserId: bot.User.Id}))
+	require.NoError(t, err)
+	require.Equal(t, bot.User.Id, member.Msg.Member.User.Id)
+	batch, err := env.rooms.BatchGetMembers(ctx, connect.NewRequest(&apiv1.BatchGetMembersRequest{RoomId: room.Id, UserIds: []string{bot.User.Id, bot.User.Id}}))
+	require.NoError(t, err)
+	require.Len(t, batch.Msg.Members, 1)
+	_, err = env.rooms.BatchGetMembers(ctx, connect.NewRequest(&apiv1.BatchGetMembersRequest{RoomId: room.Id, UserIds: []string{bot.User.Id, env.viewer.Id}}))
+	require.Equal(t, connect.CodePermissionDenied, errorCode(err), "mixed lookups cannot expose other accounts")
+	require.NoError(t, env.core.SetUserPermissionState(env.ctx, env.viewer.Id, bot.User.Id,
+		core.PermissionTargetScope{Kind: core.MatrixScopeRoom, ID: room.Id}, core.PermRoomJoin, core.PermissionStateNone))
+	removed, err := env.rooms.RemoveMember(ctx, connect.NewRequest(&apiv1.RemoveMemberRequest{RoomId: room.Id, UserId: bot.User.Id}))
+	require.NoError(t, err)
+	require.True(t, removed.Msg.Removed)
+}
+
+func TestBotServiceOutboundWebhookPatchPresence(t *testing.T) {
+	env := newConnectAPITestEnv(t)
+	service := &botService{api: env.api}
+	ctx := withCaller(env.ctx, env.viewer)
+	// Empty patches are rejected before target lookup, but after authentication.
+	request := &apiv1.UpdateBotOutboundWebhookRequest{BotUserId: "missing", WebhookId: "missing"}
+	_, err := service.UpdateBotOutboundWebhook(env.ctx, connect.NewRequest(request))
+	requireConnectCode(t, err, connect.CodeUnauthenticated)
+	_, err = service.UpdateBotOutboundWebhook(ctx, connect.NewRequest(request))
+	requireConnectCode(t, err, connect.CodeInvalidArgument)
+
+	bot, err := service.CreateBot(ctx, connect.NewRequest(&apiv1.CreateBotRequest{Login: "patch_bot", DisplayName: "Patch Bot"}))
+	require.NoError(t, err)
+	created, err := service.CreateBotOutboundWebhook(ctx, connect.NewRequest(&apiv1.CreateBotOutboundWebhookRequest{
+		BotUserId: bot.Msg.GetBot().GetUser().GetId(), Name: "Patch", Url: "https://example.com/webhook", Authorization: "test-credential",
+	}))
+	require.NoError(t, err)
+	request.BotUserId = bot.Msg.GetBot().GetUser().GetId()
+	request.WebhookId = created.Msg.GetWebhook().GetId()
+	_, err = service.UpdateBotOutboundWebhook(ctx, connect.NewRequest(request))
+	requireConnectCode(t, err, connect.CodeInvalidArgument)
+	request.Enabled = new(bool)
+	updated, err := service.UpdateBotOutboundWebhook(ctx, connect.NewRequest(request))
+	require.NoError(t, err)
+	require.False(t, updated.Msg.GetWebhook().GetEnabled())
+	require.Equal(t, "https://example.com/webhook", updated.Msg.GetWebhook().GetUrl())
+	require.True(t, updated.Msg.GetWebhook().GetHasAuthorization())
+	request.Enabled = nil
+	request.Authorization = new(string)
+	updated, err = service.UpdateBotOutboundWebhook(ctx, connect.NewRequest(request))
+	require.NoError(t, err)
+	require.False(t, updated.Msg.GetWebhook().GetHasAuthorization())
+	require.False(t, updated.Msg.GetWebhook().GetEnabled())
+	require.Equal(t, "https://example.com/webhook", updated.Msg.GetWebhook().GetUrl())
 }

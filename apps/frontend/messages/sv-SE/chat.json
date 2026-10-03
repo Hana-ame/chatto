@@ -1,8 +1,14 @@
 {
   "chat": {
+    "privileged_mode": {
+      "enable": "Aktivera privilegierat läge",
+      "disable": "Inaktivera privilegierat läge",
+      "confirmation": "I 15 minuter aktiverar detta de ytterligare behörigheter som du har tilldelats på den här servern."
+    },
     "notifications": {
       "title": "Aviseringar",
       "subtitle": "Här är vad som är nytt",
+      "list_title": "Senaste aktivitet",
       "clear_read": "Rensa lästa",
       "empty_title": "Inga aviseringar",
       "empty_body": "Ni är alla ikapp!",
@@ -42,40 +48,96 @@
       "send_message": "Skicka meddelande",
       "view_profile": "Visa profil",
       "profile_requires_direct_message": "Ett direktmeddelande krävs för att visa den här profilen.",
+      "manage_bot": "Hantera bot",
       "view_in_admin": "Visa i serveradministrationen",
       "copy_user_id": "Kopiera användar-ID"
     },
     "server_gutter": {
       "add_server": "Lägg till server",
+      "log_in": "Logga in på den här servern",
+      "sign_out": "Logga ut från den här servern",
       "version": "Version {version}",
-      "version_unknown": "Okänd version",
       "unreachable": "Servern kan inte nås",
+      "connection_unavailable": "Anslutningen är inte tillgänglig",
       "compatibility_server_too_old": "Den här servern måste uppgraderas till Chatto 0.5 eller senare innan appen kan ansluta.",
-      "compatibility_unknown": "Den här appen kan inte avgöra kompatibiliteten utifrån serverversionen."
+      "compatibility_unknown": "Den här appen kan inte avgöra kompatibiliteten utifrån serverversionen.",
+      "go_to_notifications_count": {
+        "one": "Gå till {count} avisering",
+        "other": "Gå till {count} aviseringar"
+      },
+      "go_to_notification": "Gå till aviseringen",
+      "go_to_first_unread": "Gå till första olästa rummet",
+      "notifications_count": {
+        "one": "{count} avisering",
+        "other": "{count} aviseringar"
+      }
+    },
+    "server_unavailable": {
+      "too_old_title": "Servern behöver uppgraderas",
+      "too_old_body": "Den här servern kör en Chatto-version som appen inte längre stöder. Be serverns administratör att uppgradera Chatto.",
+      "unknown_title": "Okänd serverversion",
+      "unknown_body": "Appen kan inte identifiera serverns Chatto-version och kan därför inte ansluta.",
+      "unreachable_body": "Appen kan inte ansluta till den här servern. Kontrollera din nätverksanslutning eller försök igen senare.",
+      "server_version": "Serverversion",
+      "required_version": "Version som krävs",
+      "required_version_value": "{version} eller senare",
+      "check_again": "Kontrollera igen"
+    },
+    "server_signed_out": {
+      "title": "Du är utloggad från den här servern",
+      "body": "Logga in för att läsa och skicka meddelanden på den här servern."
     },
     "threads": {
       "title": "Mina trådar",
       "subtitle": "Trådar du följer",
+      "list_title": "Följda trådar",
       "filter_label": "Filtertrådar",
       "filter_all": "Alla",
       "filter_unread": "Oläst",
       "empty_title": "Inga följda trådar",
       "empty_body": "Trådar du följer kommer att visas här. Du följer automatiskt trådar du deltar i.",
-      "no_unread_loaded": "Inga olästa trådar laddade",
       "all_caught_up": "Alla kom ikapp",
-      "loaded_summary": "{loaded} av {total} följde trådar laddade.",
       "load_more": "Ladda mer",
       "no_unread": "Inga olästa trådar just nu.",
       "message_missing": "Meddelandet är inte längre tillgängligt",
       "in_room": "in",
-      "in_room_capitalized": "In"
+      "in_room_capitalized": "In",
+      "load_failed": "Det gick inte att läsa in trådar",
+      "notifications_count": {
+        "one": "{count} avisering",
+        "other": "{count} aviseringar"
+      }
     },
     "profile": {
       "title": "Profil",
       "fallback_title": "Profil",
       "not_found": "Användaren hittades inte",
       "bot": "Bot",
-      "local_time": "{time} lokal tid ({zone})"
+      "local_time": "{time} lokal tid ({zone})",
+      "permissions": {
+        "title": "Vad den kan göra",
+        "empty": "Inga aktiva behörigheter är synliga för dig.",
+        "error": "Det gick inte att läsa in botens behörigheter.",
+        "inactive_title": "Inaktiva behörigheter",
+        "inactive_note": "Dessa behörigheter är sparade, men ägarens aktuella behörigheter tillåter dem inte.",
+        "read": "Läsa alla meddelanden",
+        "interactions": "Läsa trådar som den har skapat eller där den har nämnts direkt",
+        "post": "Skicka nya meddelanden",
+        "room": "#{name}",
+        "group": "Grupp: {name}",
+        "dm": "Dess direktmeddelanden",
+        "joined_rooms": "Rum som den har gått med i",
+        "all_rooms": "Rum",
+        "server": "Den här servern",
+        "list_rooms": "Bläddra bland rum",
+        "echo": "Visa trådsvar i rummets tidslinje",
+        "start_calls": "Starta samtal",
+        "browse_join": "Bläddra bland och gå med i rum",
+        "reply": "Svara i trådar",
+        "manage_messages": "Hantera meddelanden"
+      },
+      "owned_by": "Ägs av",
+      "open_card": "Öppna profilkortet för {name}"
     }
   }
 }

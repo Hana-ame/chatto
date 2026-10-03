@@ -1,6 +1,7 @@
 import { expect, type Page } from '@playwright/test';
 import { test } from './setup';
 import {
+  activatePrivilegedMode,
   createAndLoginTestUser,
   grantPermission,
   loginAsAdmin,
@@ -94,10 +95,10 @@ test.describe('Server Admin Members', () => {
       await serverAdminPage.gotoMembersDirectly(server.id);
 
       // Should see the members page header
-      await expect(page.getByRole('heading', { name: 'Members', exact: true })).toBeVisible();
+      await expect(page.getByRole('heading', { name: 'Members', level: 1 })).toBeVisible();
 
       // Should see the admin user in the list
-      await expect(page.getByText(admin.login)).toBeVisible();
+      await expect(page.getByRole('cell', { name: `@${admin.login}`, exact: true })).toBeVisible();
     });
 
     test('server admin can navigate to their own member details from list', async ({
@@ -117,7 +118,7 @@ test.describe('Server Admin Members', () => {
         timeout: TIMEOUTS.REALTIME_EVENT
       });
 
-      // Click on the row containing the admin's login (DataTable uses onRowClick)
+      // Click the row; DataTable forwards the click to the row link.
       await page.getByRole('row').filter({ hasText: admin.login }).click();
 
       // Should navigate to member details page
@@ -127,6 +128,27 @@ test.describe('Server Admin Members', () => {
       await expect(page.getByRole('heading', { name: 'Member Details' })).toBeVisible({
         timeout: TIMEOUTS.REALTIME_EVENT
       });
+    });
+  });
+
+  test.describe('Members List Keyboard Access', () => {
+    test('server admin can open a member from the list with the keyboard', async ({
+      serverAdminPage
+    }) => {
+      const { page } = serverAdminPage;
+      const admin = await createAndLoginTestUser(page);
+      const server = await usePrimaryServerViaAPI(page);
+
+      await serverAdminPage.gotoMembersDirectly(server.id);
+
+      const row = page.getByRole('row').filter({ hasText: `@${admin.login}` });
+      const memberLink = row.getByRole('link');
+      await expect(memberLink).toBeVisible({ timeout: TIMEOUTS.REALTIME_EVENT });
+
+      await memberLink.focus();
+      await page.keyboard.press('Enter');
+
+      await expect(page).toHaveURL(routes.serverAdminMember(admin.id!));
     });
   });
 
@@ -147,7 +169,7 @@ test.describe('Server Admin Members', () => {
       });
 
       // Should NOT be loading or showing error
-      await expect(page.getByText('Loading member...')).not.toBeVisible({
+      await expect(page.getByRole('status', { name: 'Loading member...' })).not.toBeVisible({
         timeout: TIMEOUTS.REALTIME_EVENT
       });
       await expect(page.getByText('Member not found')).not.toBeVisible({
@@ -164,8 +186,12 @@ test.describe('Server Admin Members', () => {
 
       // The refreshed summary should show manage/server-relevant account facts.
       await expect(page.getByText('Space Roles')).not.toBeVisible();
-      await expect(page.locator('div').filter({ hasText: /^Roles$/ })).toBeVisible();
-      await expect(page.getByText('Joined')).toBeVisible();
+      const summary = page.locator('.panel-shell').filter({
+        has: page.getByRole('heading', { name: 'User Details', exact: true })
+      });
+      // The account summary and permission matrix share these labels.
+      await expect(summary.getByText('Roles', { exact: true })).toBeVisible();
+      await expect(summary.getByText('Joined', { exact: true })).toBeVisible();
       await expect(page.getByTitle('Copy to clipboard')).toBeVisible();
       await expect(page.getByText('Email verified')).toBeVisible();
       await expect(page.getByText(`${admin.login}@example.com`)).toBeVisible();
@@ -211,11 +237,12 @@ test.describe('Server Admin Members', () => {
       });
 
       // Should NOT be loading
-      await expect(page.getByText('Loading member...')).not.toBeVisible({
+      await expect(page.getByRole('status', { name: 'Loading member...' })).not.toBeVisible({
         timeout: TIMEOUTS.REALTIME_EVENT
       });
 
-      // Should see Role Assignments section heading
+      // Role assignments have their own section.
+      await serverAdminPage.openMemberSection('Roles');
       await expect(page.locator('h2', { hasText: 'Role Assignments' })).toBeVisible();
 
       // The visible option label owns the hit area; the native checkbox remains
@@ -245,7 +272,7 @@ test.describe('Server Admin Members', () => {
 
       // Should navigate back to members list
       await expect(page).toHaveURL(routes.serverAdminMembers);
-      await expect(page.getByRole('heading', { name: 'Members', exact: true })).toBeVisible();
+      await expect(page.getByRole('heading', { name: 'Members', level: 1 })).toBeVisible();
     });
 
     test('non-admin member sees access denied on member details page', async ({
@@ -297,6 +324,7 @@ test.describe('Server Admin Members', () => {
       const target = await createSecondTestUser(page);
 
       await serverAdminPage.gotoMemberDetails(server.id, target.id!);
+      await serverAdminPage.openMemberSection('Account');
       const deleteButton = page.getByRole('link', { name: 'Delete account' });
       await expect(deleteButton).toBeVisible({ timeout: TIMEOUTS.REALTIME_EVENT });
       await deleteButton.click();
@@ -319,7 +347,7 @@ test.describe('Server Admin Members', () => {
 
       // Success returns to the members list.
       await expect(page).toHaveURL(routes.serverAdminMembers, { timeout: TIMEOUTS.UI_STANDARD });
-      await expect(page.getByRole('heading', { name: 'Members', exact: true })).toBeVisible();
+      await expect(page.getByRole('heading', { name: 'Members', level: 1 })).toBeVisible();
 
       // The server actually deleted the account.
       await waitForUserDeletedViaConnect(page, target.id!);
@@ -340,6 +368,7 @@ test.describe('Server Admin Members', () => {
       await grantPermission(page, 'everyone', 'admin.view-users');
       await logoutUser(page);
       await loginUser(page, viewer.login, viewer.password);
+      await activatePrivilegedMode(page);
       await page.goto(routes.serverAdminMemberDelete(target.id!));
       await expect(page.getByText('You cannot delete this account.')).toBeVisible({
         timeout: TIMEOUTS.REALTIME_EVENT

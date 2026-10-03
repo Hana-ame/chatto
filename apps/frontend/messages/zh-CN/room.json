@@ -71,7 +71,9 @@
     },
     "timeline": {
       "beginning": "这是本次对话的开端。",
-      "read_denied": "你没有权限阅读此房间中的消息。"
+      "read_denied": "你没有权限阅读此房间中的消息。",
+      "limited_empty": "还没有你可以阅读的对话。",
+      "loading": "正在加载消息..."
     },
     "message": {
       "empty": "暂无消息",
@@ -87,6 +89,7 @@
         "remove_reaction": "移除 {emoji}",
         "add_reaction": "添加回应",
         "more_reactions": "更多回应",
+        "reactions": "回应",
         "reply": "回复",
         "reply_room": "在房间中回复",
         "reply_thread": "在话题串中回复",
@@ -96,9 +99,18 @@
         "edit_short": "编辑",
         "copy_text": "复制文本",
         "copy_text_failed": "复制文本失败",
-        "copy_link": "复制链接"
+        "copy_link": "复制链接",
+        "copy_message_link": "复制消息链接",
+        "copy_image": "复制图片",
+        "link_copied": "链接已复制",
+        "message_link_copied": "消息链接已复制",
+        "copy_link_failed": "无法复制链接",
+        "image_copied": "图片已复制",
+        "copy_image_failed": "无法复制图片"
       },
       "meta": {
+        "echo": "回声",
+        "edited_short": "已编辑",
         "pinned": "已置顶消息",
         "thread": "话题串",
         "edited": "已编辑的消息",
@@ -142,6 +154,14 @@
       },
       "show_less": "收起"
     },
+    "typing": {
+      "one": "{name} 正在输入",
+      "two": "{first} 和 {second} 正在输入",
+      "many_count": {
+        "other": "{names} 等其他 {count} 人正在输入",
+        "one": "{names} 等其他 {count} 人正在输入"
+      }
+    },
     "attachment": {
       "delete_title": "删除附件",
       "delete_prompt": "确定要删除此附件吗？此操作无法撤销。",
@@ -150,7 +170,27 @@
       "view_label": "查看 {filename}",
       "download_label": "下载 {filename}",
       "image_refresh_failed": "无法刷新图片链接",
-      "download_refresh_failed": "无法刷新下载链接"
+      "download_refresh_failed": "无法刷新下载链接",
+      "add_description": "添加描述",
+      "edit_description": "编辑描述",
+      "description_title": "附件描述",
+      "description_label": "描述（可选）",
+      "description_help": "请为无法看到或听到此附件的人描述其内容。",
+      "description_too_long": "描述最多可包含 {max} 个字符。",
+      "description_update_failed": "无法更新附件描述",
+      "html_viewer": {
+        "download": "下载",
+        "show_preview": "显示预览",
+        "warning": "此文档可能会从外部网站加载内容。这些网站可以看到你的 IP 地址。",
+        "preview_title": "{filename} 的预览",
+        "preview_failed": "无法加载预览。请重试。",
+        "document_type": "文档类型",
+        "html_document": "HTML 文档",
+        "xhtml_document": "XHTML 文档",
+        "file_size": "文件大小",
+        "unavailable": "无法获取",
+        "no_preview": "无法预览此文件。请下载以保存。"
+      }
     },
     "link_preview": {
       "delete_title": "删除链接预览",
@@ -158,6 +198,7 @@
       "delete_failed": "删除链接预览失败"
     },
     "sidebar": {
+      "go_to_message": "转到消息",
       "extras": "聊天室附加内容",
       "resize": "调整聊天室附加内容面板大小",
       "hide": "隐藏聊天室附加内容",
@@ -170,6 +211,7 @@
       "clear_member_search": "清除成员搜索",
       "no_members": "未找到成员。",
       "online": "在线（{count}）",
+      "bots": "机器人（{count}）",
       "offline": "离线（{count}）",
       "no_files": "此聊天室中还没有文件。",
       "files": "文件",
@@ -177,17 +219,17 @@
       "call": "通话",
       "jump_to_file": "跳转到 {filename}",
       "loading_files": "正在加载文件...",
+      "loading_members": "正在加载成员...",
       "calls_unavailable": "此服务器不支持通话。",
       "view_profile": "查看 {name} 的个人资料",
       "in_voice_call": "正在语音通话",
       "in_video_call": "正在视频通话",
-      "ban_failed": "禁止成员进入聊天室失败",
-      "ban_success": "已禁止 {name} 进入聊天室"
+      "remove_failed": "无法将用户移出聊天室",
+      "remove_success": "已将 {name} 移出聊天室",
+      "search": "搜索"
     },
     "pins": {
-      "show": "显示置顶消息",
       "unseen": "有新的置顶消息",
-      "hide": "隐藏置顶消息",
       "pin": "置顶消息",
       "unpin": "取消置顶",
       "unpin_prompt": "确定要取消置顶这条消息吗？",

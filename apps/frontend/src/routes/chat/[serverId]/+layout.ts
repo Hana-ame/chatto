@@ -2,7 +2,7 @@ import { redirect } from '@sveltejs/kit';
 import { resolve } from '$app/paths';
 import { saveReturnUrl } from '$lib/auth/returnNavigation';
 import { segmentToServerId } from '$lib/navigation';
-import { serverRegistry } from '$lib/state/server/registry.svelte';
+import { serverRegistry } from '$lib/client';
 import type { LayoutLoad } from './$types';
 
 function redirectToLogin(url: URL): never {
@@ -11,32 +11,32 @@ function redirectToLogin(url: URL): never {
 }
 
 export const load: LayoutLoad = async ({ params, parent, url }) => {
-  const { user } = await parent();
+  const { user, serverInfo } = await parent();
   const serverId = segmentToServerId(params.serverId);
   const serverStore = serverId ? serverRegistry.tryGetStore(serverId) : undefined;
 
   if (!serverId || !serverStore) redirectToLogin(url);
 
-  let reauthRequired = serverRegistry.getServer(serverId)?.reauthRequiredAt != null;
-  if (!reauthRequired && !serverRegistry.isOriginServer(serverId)) {
-    // Registry initialisation begins remote viewer loading before route loads.
-    // Await it only while the first request is still in flight.
-    if (serverStore.currentUser.loading) await serverStore.currentUser.load();
+  if (serverRegistry.isOriginServer(serverId) && serverInfo?.setupRequired) {
+    redirect(302, resolve('/setup'));
   }
 
-  // A failed remote viewer request can transition the session to the existing
-  // reauthentication recovery state while it is awaited above.
-  reauthRequired = serverRegistry.getServer(serverId)?.reauthRequiredAt != null;
+  if (serverRegistry.isOriginServer(serverId)) {
+    // `/login` is the origin's own sign-in page. Reauthentication recovery
+    // keeps the shell mounted and shows its reconnect notice instead.
+    const reauthRequired = serverRegistry.getServer(serverId)?.reauthRequiredAt != null;
+    if (!reauthRequired && user === null) redirectToLogin(url);
+  } else if (serverStore.currentUser.loading) {
+    // Registry initialisation begins remote viewer loading before route loads.
+    // Await the first request so the layout does not show a signed-out or
+    // empty view only for a moment. A remote server never redirects to the
+    // origin's `/login`: the layout shows a view for each of its states.
+    await serverStore.currentUser.load();
+  }
 
-  const authenticated = serverRegistry.isOriginServer(serverId)
-    ? user !== null
-    : serverStore.currentUser.user !== undefined;
-  if (!reauthRequired && !authenticated) redirectToLogin(url);
-
+  // Do not read child params here. SvelteKit re-runs a load when a param that
+  // it read changes, and this load checks access.
   return {
-    serverSegment: params.serverId,
-
-    /** The currently active room (from child route params). */
-    roomId: params.roomId
+    serverSegment: params.serverId
   };
 };

@@ -2,6 +2,7 @@ syntax = "proto3";
 
 package chatto.api.v1;
 
+import "google/protobuf/field_mask.proto";
 import "buf/validate/validate.proto";
 import "chatto/api/v1/attachments.proto";
 import "chatto/api/v1/common.proto";
@@ -10,7 +11,6 @@ import "chatto/api/v1/pagination.proto";
 import "chatto/api/v1/read_state.proto";
 import "chatto/api/v1/room_timeline.proto";
 import "chatto/api/v1/message_types.proto";
-import "chatto/api/v1/users.proto";
 import "google/protobuf/timestamp.proto";
 
 // Kind of room represented by the public API.
@@ -86,6 +86,8 @@ message CreateRoomResponse {
 }
 
 // Request to update a room's editable metadata.
+// update_mask selects editable fields to apply or reset. Fields outside the
+// mask stay unchanged.
 message UpdateRoomRequest {
   // Required. Room to update.
   string room_id = 1 [(buf.validate.field).string.min_len = 1];
@@ -108,6 +110,11 @@ message UpdateRoomRequest {
   // New threading policy. Direct-message rooms cannot set this field, and an
   // explicitly supplied UNSPECIFIED or unknown value is rejected.
   optional RoomThreadingMode threading_mode = 6;
+  // Editable fields to apply or reset: name, description, universal, slow_mode_seconds, threading_mode.
+  // Omit to infer populated fields; * selects all editable fields. An explicit
+  // empty mask is invalid. Unselected values are ignored. Selected absent values
+  // reset the field to its default, subject to field validation.
+  google.protobuf.FieldMask update_mask = 7;
 }
 
 // Result of updating a room.
@@ -194,8 +201,8 @@ message LeaveRoomRequest {
 
 // Result of leaving a room.
 message LeaveRoomResponse {
-  // True when the current user is no longer an explicit member after the call.
-  bool left = 1;
+  reserved 1;
+  reserved "left";
 }
 
 // Request to add a user to a channel room.
@@ -226,32 +233,35 @@ message RemoveMemberResponse {
   bool removed = 1;
 }
 
-// Request to ban a member from a channel room.
-message BanMemberRequest {
-  // Required. Channel room to ban the user from.
+// Request to remove a user from a channel room for moderation.
+message RemoveUserRequest {
+  // Required. Channel room to remove the user from.
   string room_id = 1 [(buf.validate.field).string.min_len = 1];
-  // Required. User to ban from the room.
+  // Required. Current room member to remove.
   string user_id = 2 [(buf.validate.field).string.min_len = 1];
   // Required moderator-entered reason stored for audit.
   string reason = 3 [(buf.validate.field).string = {
     min_len: 1
     max_len: 1000
   }];
-  // Optional future time when the ban expires.
-  google.protobuf.Timestamp expires_at = 4;
+  // Omit suspension to allow rejoining under normal room permissions.
+  // A Universal room requires one suspension choice.
+  oneof suspension {
+    // Future time after which the user may rejoin.
+    google.protobuf.Timestamp suspension_expires_at = 4;
+    // Must be true. The user cannot rejoin until the suspension is lifted.
+    bool suspend_indefinitely = 5;
+  }
 }
 
-// Result of banning a room member.
-message BanMemberResponse {
-  // True when the ban operation completed.
-  bool banned = 1;
-}
+// Result of a moderated room removal.
+message RemoveUserResponse {}
 
-// Request to remove a channel room ban.
-message UnbanMemberRequest {
-  // Required. Channel room to unban the user from.
+// Request to lift a channel room suspension.
+message LiftSuspensionRequest {
+  // Required. Channel room containing the suspension.
   string room_id = 1 [(buf.validate.field).string.min_len = 1];
-  // Required. User to unban.
+  // Required. Suspended user.
   string user_id = 2 [(buf.validate.field).string.min_len = 1];
   // Required moderator-entered reason stored for audit.
   string reason = 3 [(buf.validate.field).string = {
@@ -260,48 +270,46 @@ message UnbanMemberRequest {
   }];
 }
 
-// Result of removing a room ban.
-message UnbanMemberResponse {
-  // True when the unban operation completed.
-  bool unbanned = 1;
-}
+// Result of lifting a room suspension.
+message LiftSuspensionResponse {}
 
-// Active channel room ban with optional hydrated room and user references.
-message RoomBan {
-  // Stable ban event ID.
+// Active channel room suspension with optional hydrated references.
+message RoomSuspension {
+  // Stable suspension event ID.
   string id = 1;
   // Channel room ID.
   string room_id = 2;
   // Channel room metadata, when the referenced room still exists.
   Room room = 3;
-  // Banned user ID.
+  // Suspended user ID.
   string user_id = 4;
-  // Banned user profile, when the referenced user still exists.
+  // Suspended user profile, when the referenced user still exists.
   DirectoryMember user = 5;
-  // Moderator user ID that created the ban.
+  // Moderator user ID that created the suspension.
   string moderator_id = 6;
   // Moderator profile, when the referenced user still exists.
   DirectoryMember moderator = 7;
-  // Moderator-entered ban reason.
+  // Moderator-entered removal reason.
   string reason = 8;
-  // Time the ban was created.
+  // Time the suspension was created.
   google.protobuf.Timestamp created_at = 9;
-  // Optional future time when the ban expires.
+  // Optional future time when the suspension expires. Absence means indefinite.
   google.protobuf.Timestamp expires_at = 10;
 }
 
-// Request to list active room bans.
-message ListBansRequest {
-  // Optional channel room filter. Empty lists active bans across all rooms.
+// Request to list active room suspensions.
+message ListSuspensionsRequest {
+  // Optional channel room filter. Empty lists active suspensions across all rooms.
   string room_id = 1;
-  // Page request. Defaults are applied when absent or limit is zero.
+  // Defaults to 50 results when absent or limit is zero. Maximum: 100.
   PageRequest page = 2;
 }
 
-// Active room bans visible to the current moderator.
-message ListBansResponse {
-  // Active bans, newest first.
-  repeated RoomBan bans = 1;
+// Active room suspensions visible to the current moderator.
+message ListSuspensionsResponse {
+  // Active suspensions by creation time, newest first; equal times use event ID
+  // in ascending order.
+  repeated RoomSuspension suspensions = 1;
   // Page metadata.
   PageInfo page = 2;
 }
@@ -315,7 +323,7 @@ message ListRoomAttachmentsRequest {
   string room_id = 1 [(buf.validate.field).string.min_len = 1];
   // Thumbnail URL options. Defaults are applied when absent.
   ImageTransformOptions thumbnail = 4;
-  // Page request. Defaults are applied when absent or limit is zero.
+  // Defaults to 50 results when absent or limit is zero. Maximum: 100.
   PageRequest page = 5;
 }
 
@@ -340,7 +348,7 @@ message PinnedMessage {
 message ListPinnedMessagesRequest {
   // Required channel room ID.
   string room_id = 1 [(buf.validate.field).string.min_len = 1];
-  // Page request. Defaults are applied when absent or limit is zero.
+  // Defaults to 50 results when absent or limit is zero. Maximum: 100.
   PageRequest page = 2;
 }
 
@@ -385,7 +393,7 @@ message DeletePinnedMessageResponse {
 }
 
 // Request to refresh the current user's live-only typing indicator.
-message UpdateTypingIndicatorRequest {
+message RefreshTypingIndicatorRequest {
   // Required. Room where the current user is typing.
   string room_id = 1 [(buf.validate.field).string.min_len = 1];
   // Event ID of the thread root when typing inside a thread.
@@ -393,9 +401,9 @@ message UpdateTypingIndicatorRequest {
 }
 
 // Result of refreshing a typing indicator.
-message UpdateTypingIndicatorResponse {
-  // True when the typing indicator was accepted for publish.
-  bool updated = 1;
+message RefreshTypingIndicatorResponse {
+  reserved 1;
+  reserved "updated";
 }
 
 // Manages room-scoped operations for the current user.
@@ -406,6 +414,14 @@ message UpdateTypingIndicatorResponse {
 // should still be preferred when an operation is not naturally room-scoped or
 // when the resource needs an independent CRUD/batch surface.
 service RoomService {
+  // Reads the current viewer's stored marker without changing it. Requires the
+  // same membership and read access as MarkRoomAsRead. Missing resources
+  // return NOT_FOUND; inaccessible resources return PERMISSION_DENIED.
+  rpc GetRoomReadState(GetRoomReadStateRequest) returns (GetRoomReadStateResponse);
+  // Reads up to 100 states under the same authorization as GetRoomReadState.
+  // Missing and inaccessible resources are omitted; duplicates use first-seen order.
+  rpc BatchGetRoomReadStates(BatchGetRoomReadStatesRequest) returns (BatchGetRoomReadStatesResponse);
+
   // Creates a new channel room in a room group. The caller must be allowed to
   // create rooms in the target group.
   rpc CreateRoom(CreateRoomRequest) returns (CreateRoomResponse);
@@ -431,32 +447,35 @@ service RoomService {
   // Leaves the room as the current user. Direct-message and universal rooms
   // cannot be left.
   rpc LeaveRoom(LeaveRoomRequest) returns (LeaveRoomResponse);
-  // Lists effective room members. Existing members and room.manage holders may
+  // Lists effective room member IDs in ascending ID order. Resolve user details
+  // with UserService.BatchGetUsers. Existing members and room.manage holders may
   // list a channel room; other nonmembers need both room.list and room.join.
-  rpc ListMembers(ListRoomMembersRequest) returns (ListRoomMembersResponse);
-  // Gets one explicit member of a room. Existing members and room.manage
-  // holders may read channel-room members; DMs remain membership-only. Returns
-  // NOT_FOUND when the target is unknown or not a room member.
-  rpc GetMember(GetRoomMemberRequest) returns (GetRoomMemberResponse);
-  // Gets explicit room member rows for multiple users. Existing members and
-  // room.manage holders may read channel-room members; DMs remain
-  // membership-only.
-  rpc BatchGetMembers(BatchGetRoomMembersRequest) returns (BatchGetRoomMembersResponse);
-  // Adds a user as an explicit member of a channel room. The caller must be
-  // allowed to manage the room. Direct-message and universal rooms cannot be
-  // managed this way.
+  rpc ListMembers(ListMembersRequest) returns (ListMembersResponse);
+  // Gets one effective member, including automatic universal membership.
+  // Channel-room members, room.manage holders, and user.manage-accounts holders
+  // may read members. Bot owners and bot.manage holders may read their target
+  // bots only. DMs require caller membership. Returns NOT_FOUND for nonmembers.
+  rpc GetMember(GetMemberRequest) returns (GetMemberResponse);
+  // Gets effective member rows for the requested accounts. Uses the same
+  // authorization as GetMember; omits unknown accounts and nonmembers.
+  rpc BatchGetMembers(BatchGetMembersRequest) returns (BatchGetMembersResponse);
+  // Adds an account as an explicit channel-room member. room.manage for this
+  // room or user.manage-accounts overrides the target's missing room.join.
+  // Bot owners and bot.manage holders may also add bots, but without either
+  // override the bot needs effective room.join, bounded by its owner's authority.
+  // Preserves permission grants. Suspensions, archived, universal, and DM rooms prevent adding.
   rpc AddMember(AddMemberRequest) returns (AddMemberResponse);
-  // Removes a user from a channel room's explicit members. The caller must be
-  // allowed to manage the room. Direct-message and universal rooms cannot be
-  // managed this way.
+  // Removes an explicit channel-room member. Requires room.manage for this room,
+  // user.manage-accounts, ownership of the target bot, or bot.manage.
+  // Removal is allowed after room.join is lost and from archived rooms.
+  // Preserves permission grants. Universal and DM membership cannot be edited.
   rpc RemoveMember(RemoveMemberRequest) returns (RemoveMemberResponse);
-  // Lists active channel room bans. The caller must be allowed to moderate room
-  // membership bans.
-  rpc ListBans(ListBansRequest) returns (ListBansResponse);
+  // Lists active channel room suspensions. Requires server-scope
+  // room.remove-member.
+  rpc ListSuspensions(ListSuspensionsRequest) returns (ListSuspensionsResponse);
   // Lists current message-owned room attachments. Authentication and room
-  // membership are required. Channel-room attachments also require message.read
-  // or a matching thread relationship with message.read-interactions. DM
-  // membership authorizes DM attachments. The server omits attachments from
+  // membership are required. Attachments also require message.read or a
+  // matching thread relationship with message.read-interactions. The server omits attachments from
   // inaccessible threads. Returns PERMISSION_DENIED when the room is
   // inaccessible to the caller.
   rpc ListRoomAttachments(ListRoomAttachmentsRequest) returns (ListRoomAttachmentsResponse);
@@ -474,32 +493,34 @@ service RoomService {
   rpc DeletePinnedMessage(DeletePinnedMessageRequest) returns (DeletePinnedMessageResponse);
   // Refreshes the current user's live-only typing indicator for a room or
   // thread. Room membership is required; message posting permission is not.
-  rpc UpdateTypingIndicator(UpdateTypingIndicatorRequest) returns (UpdateTypingIndicatorResponse);
+  // Send at most once every 2 seconds while typing. After posting a message,
+  // the next typing activity can send immediately. Stop sending when typing
+  // stops; receivers clear the indicator after 6 seconds without an event.
+  rpc RefreshTypingIndicator(RefreshTypingIndicatorRequest) returns (RefreshTypingIndicatorResponse);
   // Returns one page of room timeline events, including related user data
-  // needed to render the page. Room membership is required. Channel-room reads
-  // also require message.read or message.read-interactions. The server returns
-  // only related thread roots for an interaction-scoped caller. DM membership
-  // authorizes DM reads.
+  // needed to render the page. Room membership is required. Reads also require
+  // message.read or message.read-interactions. The server returns only related
+  // thread roots for an interaction-scoped caller.
   rpc GetRoomEvents(GetRoomEventsRequest) returns (GetRoomEventsResponse);
   // Returns a room timeline window centered around a specific event. Use this to
   // open a permalink, search result, or notification target in context. Returns
   // NOT_FOUND when the anchor event is missing or not visible in the room
   // timeline. Returns PERMISSION_DENIED when room membership or both read modes
-  // are missing, or when the anchor is in an unrelated thread. DM membership
-  // authorizes DM reads.
+  // are missing, or when the anchor is in an unrelated thread.
   rpc GetRoomEventsAround(GetRoomEventsAroundRequest) returns (GetRoomEventsAroundResponse);
   // Marks a room timeline as read through the supplied event. Room membership
-  // is required. Channel-room reads also require message.read or
-  // message.read-interactions. DM membership authorizes DM reads. If no event
+  // is required. Reads also require message.read or
+  // message.read-interactions. If no event
   // is supplied, the server marks through the latest root event that the caller
   // can read. Clients
   // usually call this after the user has viewed the latest visible event in the
   // room.
   rpc MarkRoomAsRead(MarkRoomAsReadRequest) returns (MarkRoomAsReadResponse);
-  // Bans a member from a channel room. Direct-message rooms cannot be moderated
-  // this way, and the target must currently be a room member.
-  rpc BanMember(BanMemberRequest) returns (BanMemberResponse);
-  // Removes an active channel room ban. Calling this when no active ban exists
-  // is allowed and still returns success.
-  rpc UnbanMember(UnbanMemberRequest) returns (UnbanMemberResponse);
+  // Removes a current channel room member with a required reason. Requires
+  // room.remove-member. Without suspension, ordinary join rules apply afterward.
+  // Universal rooms require a suspension. Direct-message rooms are excluded.
+  rpc RemoveUser(RemoveUserRequest) returns (RemoveUserResponse);
+  // Lifts an active channel room suspension. Requires room.remove-member.
+  // Calling this when no active suspension exists succeeds.
+  rpc LiftSuspension(LiftSuspensionRequest) returns (LiftSuspensionResponse);
 }

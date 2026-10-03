@@ -2,9 +2,11 @@ import { test, expect } from './setup';
 import type { Page } from '@playwright/test';
 import * as routes from './routes';
 import { TIMEOUTS } from './constants';
+import { createAndLoginTestUser } from './fixtures/testUser';
 
 const VIEWER_RPC_PATH = '/api/connect/chatto.api.v1.ViewerService/GetViewer';
 const VIEWER_RPC_ROUTE = `**${VIEWER_RPC_PATH}`;
+const VIEWER_RPC_PATH_PATTERN = new RegExp(`${VIEWER_RPC_PATH}$`);
 
 /**
  * Navigate to a route and wait for the client-side app to be fully hydrated.
@@ -118,6 +120,19 @@ async function expectLoggedOutRedirect(page: Page): Promise<void> {
     (url) => url.pathname === routes.root || url.pathname === routes.login,
     { timeout: TIMEOUTS.REALTIME_EVENT }
   );
+}
+
+/** Hold viewer verification requests until the returned release function runs. */
+async function holdViewerVerification(page: Page): Promise<{ release: () => void }> {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route('**/chatto.api.v1.ViewerService/GetViewer', async (route) => {
+    await gate;
+    await route.continue();
+  });
+  return { release };
 }
 
 test.describe('Session Expiration Handling', () => {
@@ -311,6 +326,48 @@ test.describe('Session Expiration Handling', () => {
       const url = page.url();
       expect(url.endsWith('/') || url.includes('/chat') || url.includes('/login')).toBe(true);
     }).toPass({ timeout: TIMEOUTS.UI_STANDARD, intervals: [500, 1000] });
+  });
+
+  test('a session marked for reauthentication verifies its cookie live on reload', async ({
+    page,
+    chatPage,
+    roomPage
+  }) => {
+    await createAndLoginTestUser(page);
+    await chatPage.goto();
+    await chatPage.enterRoom('general');
+    const message = `Posted before reauthentication ${Date.now()}`;
+    await roomPage.sendMessage(message);
+
+    // An earlier launch recorded that the viewer was rejected. The cookie is
+    // still valid, so live verification succeeds and clears the record.
+    await page.evaluate((origin) => {
+      const servers = JSON.parse(localStorage.getItem('chatto:instances') ?? '[]') as {
+        id: string;
+        url: string;
+      }[];
+      const server = servers.find((entry) => new URL(entry.url).origin === origin);
+      const key = `chatto:i:${server!.id}:authentication`;
+      const authentication = JSON.parse(localStorage.getItem(key)!) as Record<string, unknown>;
+      localStorage.setItem(
+        key,
+        JSON.stringify({ ...authentication, reauthRequiredAt: Date.now() })
+      );
+    }, new URL(page.url()).origin);
+
+    const viewer = await holdViewerVerification(page);
+    try {
+      const viewerRequested = page.waitForRequest(VIEWER_RPC_PATH_PATTERN);
+      await page.reload();
+      await viewerRequested;
+      await expect(page.getByText(message)).toHaveCount(0);
+      viewer.release();
+      await expect(page.getByText(message)).toBeVisible();
+      await expect(page.getByText('Session expired')).toHaveCount(0);
+    } finally {
+      viewer.release();
+      await page.unrouteAll({ behavior: 'wait' });
+    }
   });
 });
 

@@ -19,9 +19,21 @@
     children
   }: {
     type?: 'button' | 'submit' | 'reset';
+    /**
+     * `danger-ghost` rests like a quiet ghost button and turns danger on hover,
+     * for a state that becomes a destructive action, such as Joined → Leave.
+     */
     variant?:
-      'action' | 'neutral' | 'secondary' | 'ghost' | 'warning' | 'danger' | 'danger-secondary';
-    size?: 'sm' | 'md' | 'lg';
+      | 'action'
+      | 'neutral'
+      | 'secondary'
+      | 'ghost'
+      | 'warning'
+      | 'danger'
+      | 'danger-secondary'
+      | 'danger-ghost';
+    /** `icon` is a square 40 px control for a single icon; pass `label` as its accessible name. */
+    size?: 'sm' | 'md' | 'lg' | 'icon';
     loading?: boolean;
     disabled?: boolean;
     fullWidth?: boolean;
@@ -49,13 +61,15 @@
     ghost: 'btn-ghost',
     warning: 'btn-warning',
     danger: 'btn-danger',
-    'danger-secondary': 'btn-danger-secondary'
+    'danger-secondary': 'btn-danger-secondary',
+    'danger-ghost': 'btn-danger-ghost'
   };
 
   const sizeClasses = {
     sm: 'btn-sm',
     md: '',
-    lg: 'btn-lg'
+    lg: 'btn-lg',
+    icon: 'btn-icon'
   };
 
   function handleClick(e: MouseEvent) {
@@ -100,12 +114,13 @@
     class={[
       variantClasses[variant],
       sizeClasses[size],
+      label && 'rounded-md',
       'shrink-0 whitespace-nowrap',
       fullWidth ? 'w-full' : '',
       disabled || loading ? 'pointer-events-none opacity-60' : ''
     ]}
   >
-    <span class="button-content inline-flex items-center gap-2 [&>.iconify]:shrink-0">
+    <span class="inline-flex button-content items-center gap-2 [&>.iconify]:shrink-0">
       {@render content()}
     </span>
   </a>
@@ -123,11 +138,12 @@
     class={[
       variantClasses[variant],
       sizeClasses[size],
+      label && 'rounded-md',
       'shrink-0 whitespace-nowrap',
       fullWidth ? 'w-full' : ''
     ]}
   >
-    <span class="button-content inline-flex items-center gap-2 [&>.iconify]:shrink-0">
+    <span class="inline-flex button-content items-center gap-2 [&>.iconify]:shrink-0">
       {@render content()}
     </span>
   </button>

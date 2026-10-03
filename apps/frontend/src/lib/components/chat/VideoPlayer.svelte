@@ -1,8 +1,8 @@
 <script lang="ts">
   import { tick, onMount } from 'svelte';
-  import type { VideoProcessingStatus } from '$lib/render/messageAttachments';
+  import type { VideoProcessingStatus } from '@chatto/client/timeline/messageAttachments';
   import { fullscreenVideo } from '$lib/state/globals.svelte';
-  import VideoProcessingAnimation from './VideoProcessingAnimation.svelte';
+  import VideoProcessingPlaceholder from './VideoProcessingPlaceholder.svelte';
   import {
     configureBundledHLSProvider,
     recoverFatalHLS,
@@ -47,7 +47,9 @@
     height = null,
     reasonCode = null,
     filename,
+    describedBy,
     autoLoop = false,
+    viewer = false,
     onMediaError,
     onPosterError
   }: {
@@ -61,7 +63,10 @@
     height?: number | null;
     reasonCode?: string | null;
     filename: string;
+    describedBy?: string;
     autoLoop?: boolean;
+    /** Fit the player to the shared attachment viewer rather than a timeline thumbnail. */
+    viewer?: boolean;
     onMediaError?: () => void | Promise<string | null>;
     onPosterError?: () => void;
   } = $props();
@@ -130,7 +135,9 @@
   });
 
   const frameStyle = $derived(
-    `width: ${displaySize.width}px; max-width: 100%; aspect-ratio: ${displaySize.width} / ${displaySize.height};`
+    viewer
+      ? 'width: 100%; height: 100%; max-width: 100%; max-height: 100%;'
+      : `width: ${displaySize.width}px; max-width: 100%; aspect-ratio: ${displaySize.width} / ${displaySize.height};`
   );
 
   // Vidstack auto-detects media type from URL extensions, but our stable asset
@@ -209,6 +216,8 @@
   // unmount the DOM node. Instead, open our CSS overlay outside the list.
   function interceptFullscreenRequest(node: HTMLElement) {
     function handleFullscreenRequest(e: Event) {
+      // Viewer media lives outside the virtual list and can use native fullscreen.
+      if (viewer) return;
       e.preventDefault();
       if (!playbackSource) return;
 
@@ -325,6 +334,7 @@
       onerror={handlePlayerError}
       onloadedmetadata={handleVideoMetadata}
       class="block h-full w-full object-contain"
+      aria-describedby={describedBy}
     >
       <source src={selectedVariant.url} type="video/mp4" onerror={onMediaError} />
     </video>
@@ -338,6 +348,7 @@
       playsinline
       onerror={handlePlayerError}
       class="block h-full w-full"
+      aria-describedby={describedBy}
     >
       <media-provider>
         {#if thumbnailUrl}
@@ -354,13 +365,14 @@
   </div>
 {:else if status === 'PENDING' || status === 'PROCESSING'}
   <div class="embed-frame" style={frameStyle}>
-    <VideoProcessingAnimation
+    <VideoProcessingPlaceholder
       label={status === 'PENDING' ? m('media.video_queued') : m('media.video_processing')}
     />
   </div>
 {:else if status === 'FAILED'}
   <div class="embed-frame flex items-center gap-3 px-4 py-3" style={frameStyle}>
-    <span class="iconify icon-[uil--exclamation-triangle] text-lg text-danger"></span>
+    <span aria-hidden="true" class="iconify icon-[uil--exclamation-triangle] text-lg text-danger"
+    ></span>
     <div class="text-sm text-muted">
       {m('media.video_processing_failed')}
       {#if failureMessage}
@@ -370,7 +382,7 @@
   </div>
 {:else}
   <div class="embed-frame flex items-center gap-2 px-3 py-2">
-    <span class="iconify icon-[uil--video] text-lg text-muted"></span>
+    <span aria-hidden="true" class="iconify icon-[uil--video] text-lg text-muted"></span>
     <span class="text-sm">{filename}</span>
   </div>
 {/if}

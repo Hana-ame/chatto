@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/url"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -126,51 +125,23 @@ func (c *MediaModel) uploadAttachmentBinary(
 ) (*evtv1.Attachment, error) {
 	attachmentID := NewAssetID()
 
-	// 【本地改动 2026-09-12】先读文件头纠正声明类型再分派管线;嗅探后的
-	// reader 仍产出完整内容流。
-	declaredContentType := contentType
-	header, stream := readUploadHeader(reader)
-	reader = stream
-	contentType = correctUploadContentType(declaredContentType, header)
-	if contentType != declaredContentType {
-		c.logger.Info("Corrected upload content type from file header",
-			"attachment_id", attachmentID,
-			"declared", declaredContentType,
-			"detected", contentType)
-	}
-
 	isImage := strings.HasPrefix(contentType, "image/")
 
 	var content []byte
 	var size int64
 	var width, height int32
 
-	assetsCfg := c.AssetsConfig()
-
 	if isImage {
-		// 【本地改动 2026-09-12】图片管线收敛成单一入口 prepareUploadImage:
-		// 静态与动画输入统一重编码为**原尺寸** AVIF(动画输入产出动画 AVIF),
-		// 存一份、请求期不再缩放,因此不再有衍生图。
-		//
-		// 取代两段旧逻辑:① ProcessAttachmentImageWithConfig(只支持 Go 能解的
-		// jpeg/png/gif,WebP 输入——也就是我们自己存的格式——直接
-		// image: unknown format 上传失败);② 动画 GIF 特判 + EncodeWebP
-		// (32e1f566 / 2026-09-02 引入),其输出格式与本次策略冲突。
-		// ffmpeg/AV1 不可用或瞬时失败时 best-effort 存原图,只有读不出字节
-		// 或超过 MaxUploadSize 才是硬错误。
-		prepared, err := prepareUploadImage(ctx, reader, declaredContentType, assetsCfg, attachmentID,
-			func(msg string, args ...any) {
-				c.logger.Warn(msg, args...)
-			})
+		result, err := assets.ProcessAttachmentImageWithConfig(reader, c.AssetsConfig())
 		if err != nil {
 			return nil, fmt.Errorf("failed to process image: %w", err)
 		}
-		content = prepared.content
-		contentType = prepared.contentType
-		width = int32(prepared.width)
-		height = int32(prepared.height)
-		size = int64(len(content))
+		content = result.Original
+		size = int64(len(result.Original))
+		width = int32(result.Width)
+		height = int32(result.Height)
 	} else {
+		assetsCfg := c.AssetsConfig()
 		maxSize := assetsCfg.MaxUploadSize
 		if strings.HasPrefix(contentType, "video/") && c.VideoMaxUploadSize > 0 {
 			maxSize = c.VideoMaxUploadSize
@@ -186,10 +157,22 @@ func (c *MediaModel) uploadAttachmentBinary(
 		size = int64(len(content))
 	}
 
+	return c.storeAttachmentBinary(ctx, attachmentID, roomID, filename, contentType, bytes.NewReader(content), size, width, height)
+}
+
+// storeAttachmentBinary writes a prepared binary without applying upload limits.
+// Callers must validate user uploads before they call this method.
+func (c *MediaModel) storeAttachmentBinary(
+	ctx context.Context,
+	attachmentID, roomID, filename, contentType string,
+	reader io.Reader,
+	size int64,
+	width, height int32,
+) (*evtv1.Attachment, error) {
 	var storage *evtv1.DeprecatedAsset
 	if c.ShouldUseS3() {
 		s3Key := S3KeyAttachment(attachmentID)
-		if _, err := c.s3Client.PutObjectFromBytes(ctx, s3Key, content, contentType); err != nil {
+		if _, err := c.s3Client.PutObject(ctx, s3Key, reader, size, contentType); err != nil {
 			return nil, fmt.Errorf("failed to upload attachment to S3: %w", err)
 		}
 		storage = &evtv1.DeprecatedAsset{
@@ -212,7 +195,7 @@ func (c *MediaModel) uploadAttachmentBinary(
 				"Filename":     {filename},
 				"Room-Id":      {roomID},
 			},
-		}, bytes.NewReader(content)); err != nil {
+		}, reader); err != nil {
 			return nil, fmt.Errorf("failed to store attachment: %w", err)
 		}
 		storage = &evtv1.DeprecatedAsset{
@@ -235,7 +218,7 @@ func (c *MediaModel) uploadAttachmentBinary(
 }
 
 // UploadDerivativeAttachment is the worker-side variant of UploadAttachment.
-// It writes bytes through the same storage path and emits AssetCreatedEvent
+// It streams generated non-image bytes without a user upload limit and emits AssetCreatedEvent
 // with parent_asset_id + derivative_role already set, so the projection
 // knows this asset is a child of `parentAssetID` (thumbnails, transcoded
 // video variants, etc.). Always attributed to SystemActorID — derivatives
@@ -247,14 +230,15 @@ func (c *MediaModel) UploadDerivativeAttachment(
 	roomID string,
 	filename string,
 	contentType string,
-	reader io.Reader,
+	reader io.ReadSeeker,
 ) (*evtv1.Attachment, error) {
 	return c.UploadDerivativeAttachmentWithDimensions(ctx, parentAssetID, derivativeRole, roomID, filename, contentType, reader, 0, 0)
 }
 
 // UploadDerivativeAttachmentWithDimensions is UploadDerivativeAttachment with
 // explicit media dimensions supplied by the worker for generated non-image
-// derivatives such as transcoded video variants.
+// derivatives such as transcoded video variants. The reader must be seekable
+// so storage can receive the binary size without buffering its content.
 func (c *MediaModel) UploadDerivativeAttachmentWithDimensions(
 	ctx context.Context,
 	parentAssetID string,
@@ -262,11 +246,27 @@ func (c *MediaModel) UploadDerivativeAttachmentWithDimensions(
 	roomID string,
 	filename string,
 	contentType string,
-	reader io.Reader,
+	reader io.ReadSeeker,
 	width int32,
 	height int32,
 ) (*evtv1.Attachment, error) {
-	attachment, err := c.uploadAttachmentBinary(ctx, roomID, filename, contentType, reader)
+	var attachment *evtv1.Attachment
+	var err error
+	if strings.HasPrefix(contentType, "image/") {
+		// Image derivatives still use image validation and metadata extraction.
+		attachment, err = c.uploadAttachmentBinary(ctx, roomID, filename, contentType, reader)
+	} else {
+		// Workers write generated media to seekable files. Stream the bytes to
+		// storage so their size does not increase the worker's memory use.
+		size, seekErr := reader.Seek(0, io.SeekEnd)
+		if seekErr != nil {
+			return nil, fmt.Errorf("measure derivative binary: %w", seekErr)
+		}
+		if _, seekErr = reader.Seek(0, io.SeekStart); seekErr != nil {
+			return nil, fmt.Errorf("rewind derivative binary: %w", seekErr)
+		}
+		attachment, err = c.storeAttachmentBinary(ctx, NewAssetID(), roomID, filename, contentType, reader, size, 0, 0)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -298,6 +298,10 @@ type AttachmentInfo struct {
 	RoomID      string
 }
 
+// StableAssetURL is an asset URL together with the expiry of its access ticket.
+// Core asset URL methods return server-relative paths. With webserver.url, the
+// API layer makes them absolute on the public origin of each request, so a
+// client on a configured hostname alias gets URLs on that alias.
 type StableAssetURL struct {
 	URL       string
 	ExpiresAt time.Time
@@ -542,13 +546,6 @@ func assetDimensions(asset *evtv1.AssetRecord) (int32, int32) {
 	return asset.GetWidth(), asset.GetHeight()
 }
 
-func cloneDeprecatedAsset(storage *evtv1.DeprecatedAsset) *evtv1.DeprecatedAsset {
-	if storage == nil {
-		return nil
-	}
-	return proto.Clone(storage).(*evtv1.DeprecatedAsset)
-}
-
 func cloneAssetRecord(asset *evtv1.AssetRecord) *evtv1.AssetRecord {
 	if asset == nil {
 		return nil
@@ -753,23 +750,18 @@ const assetAccessTicketIssueBucket = time.Hour
 // short-lived S3 URL only for cases where proxying the bytes would be costly.
 const S3AssetRedirectTTL = 5 * time.Minute
 
-// GetStableAttachmentURL returns the canonical URL for an asset binary. The
-// path identifies the asset; the asset-scoped access ticket authorizes the
-// viewer so browsers and standalone clients can load the URL directly from the
-// owning host without custom headers.
-func (c *MediaModel) GetStableAttachmentURL(assetID, userID string) string {
-	return c.GetStableAttachmentAssetURL(assetID, userID).URL
-}
-
 // GetStableAttachmentAssetURL returns the canonical URL for an asset binary
-// together with the exact expiry embedded in its access ticket.
+// together with the exact expiry embedded in its access ticket. The path
+// identifies the asset; the asset-scoped access ticket authorizes the viewer so
+// browsers and standalone clients can load the URL directly from the owning
+// host without custom headers.
 func (c *MediaModel) GetStableAttachmentAssetURL(assetID, userID string) StableAssetURL {
 	if assetID == "" || userID == "" {
 		return StableAssetURL{}
 	}
 	expiresAt := c.assetAccessTicketExpiry()
 	return StableAssetURL{
-		URL:       c.assetURL(c.stableAttachmentPathWithAccess(assetID, userID, "", nil, expiresAt)),
+		URL:       c.stableAttachmentPathWithAccess(assetID, userID, "", nil, expiresAt),
 		ExpiresAt: expiresAt,
 	}
 }
@@ -793,34 +785,31 @@ func (c *MediaModel) GetStableHLSMasterPlaylistAssetURL(assetID, userID string) 
 	values := url.Values{}
 	values.Set("access", ticket)
 	path := fmt.Sprintf("/assets/hls/%s/master.m3u8?%s", url.PathEscape(assetID), values.Encode())
-	return StableAssetURL{URL: c.assetURL(path), ExpiresAt: expiresAt}
-}
-
-// GetStableTransformedAttachmentURL returns the canonical URL for a derived
-// image form factor. The dimensions are visible in the URL; authorization is a
-// scoped access ticket.
-func (c *MediaModel) GetStableTransformedAttachmentURL(assetID, userID string, width, height int, fit string) string {
-	return c.GetStableTransformedAttachmentAssetURL(assetID, userID, width, height, fit).URL
+	return StableAssetURL{URL: path, ExpiresAt: expiresAt}
 }
 
 // GetStableTransformedAttachmentAssetURL returns the canonical URL for a
 // derived image form factor together with the exact expiry embedded in its
-// access ticket.
-//
-// 【本地改动 2026-09-12】fork 不再生成衍生图 URL:width/height/fit 直接忽略,
-// 回原图链接(仍带 per-user access ticket)。上传时已经把图片编码成**原尺寸**
-// AVIF(动画输入产出动画 AVIF),请求期没有第二份更小的字节,拼出衍生图 URL
-// 只会让客户端去请求一份和原图逐字节相同的资源;而请求期 ffmpeg 缩放恰恰是
-// 线上 500 的主要来源(pipe 不可 seek 导致 ISO-BMFF 探测报 partial file,
-// 缓存还会把坏字节固化)。函数名与签名保留,merge upstream 时调用点不炸。
+// access ticket. The dimensions are visible in the URL; authorization is a
+// scoped access ticket.
 func (c *MediaModel) GetStableTransformedAttachmentAssetURL(assetID, userID string, width, height int, fit string) StableAssetURL {
 	if assetID == "" || userID == "" {
 		return StableAssetURL{}
 	}
+	transformPath := fmt.Sprintf(
+		"/assets/files/%s/image/%dx%d/%s",
+		url.PathEscape(assetID),
+		width,
+		height,
+		url.PathEscape(fit),
+	)
 	expiresAt := c.assetAccessTicketExpiry()
 	return StableAssetURL{
-		// 尾段为空、无 transform 参数：URL 与原始附件形式一致，ticket 也不带宽高。
-		URL:       c.assetURL(c.stableAttachmentPathWithAccess(assetID, userID, "", nil, expiresAt)),
+		URL: c.stableAttachmentPathWithAccess(assetID, userID, transformPath, &signedurl.TransformParams{
+			Width:  width,
+			Height: height,
+			Fit:    fit,
+		}, expiresAt),
 		ExpiresAt: expiresAt,
 	}
 }
@@ -857,214 +846,17 @@ func (c *MediaModel) stableAttachmentPathWithAccess(assetID, userID, path string
 	return path + "?" + values.Encode()
 }
 
-// ----------------------------------------------------------------------------
-// 【本地改动 2026-08-18】公开附件 URL（不删除上面的 ticket 实现，只是新增）
-// 附件访问由「仅凭 URL 中 assetID 可读 + public immutable 缓存」的公开版
-// 承担：URL 形如 /assets/files/{assetID}/{fn.ext}，无签名 ticket、无会话/
-// 成员校验，assetID 本身就是访问凭证（URL 泄露即可读取，已缓存内容在成员
-// 移除后仍有效）。connectapi 这层入口选择调用 Public* 版本；ticket 版保留
-// 给旧的无文件名 URL 继续使用，两套实现并存。
-// ----------------------------------------------------------------------------
-//
-// 【本地改动 2026-08-29】合并 upstream #2162 后把本节所有 corev1.Attachment /
-// corev1.AssetRecord 迁移为 evtv1.*：upstream 删除了 core/v1 pb 包，类型分散到
-// evt/v1、runtime_state/v1、notification/v1 等。上游迁移了它自己拥有的调用点，
-// 本节的公开 URL 构造器全是本 fork 新增（GetPublicStable*、stableAttachmentPath、
-// ServerAssetURLFilename），无人迁移，若不手动改会直接编译失败。
-// ----------------------------------------------------------------------------
-
-// GetPublicStableAttachmentAssetURL returns the canonical public URL for an
-// asset binary: /assets/files/{assetID}/{fn.ext}. The trailing filename is
-// derived from stored attachment metadata, keeping the URL stable for the
-// asset's lifetime so browsers and CDNs can cache it immutably.
-func (c *MediaModel) GetPublicStableAttachmentAssetURL(attachment *evtv1.Attachment) StableAssetURL {
-	if attachment == nil || attachment.GetId() == "" {
-		return StableAssetURL{}
-	}
-	return StableAssetURL{URL: c.assetURL(stableAttachmentPath(attachment, ""))}
-}
-
-// GetPublicStableTransformedAttachmentAssetURL returns the canonical public
-// URL for a derived image form factor:
-// /assets/files/{assetID}/image/{width}x{height}/{fit}/{fn.ext}
-//
-// 【本地改动 2026-09-12】不再拼 /image/{w}x{h}/{fit}:无论调用方要多大的图,
-// 直接 override 成原图链接 /assets/files/{assetID}/{fn.ext}(见
-// GetStableTransformedAttachmentAssetURL 的说明)。两个 connectapi 调用点
-// (apiAsset 的 ThumbnailAssetUrl、时间线装配)因此拿到的就是原图 URL。
-func (c *MediaModel) GetPublicStableTransformedAttachmentAssetURL(attachment *evtv1.Attachment, width, height int, fit string) StableAssetURL {
-	// 【本地改动 2026-08-23 的坑(已随本次 override 一起消失)】历史上这里自己拼
-	// /image/{w}x{h}/{fit} 尾段,曾误传完整路径导致 stableAttachmentPath 双重
-	// 前缀、线上缩略图全部 404。现在本函数已不拼任何尾段,坑不在了。
-	return c.GetPublicStableAttachmentAssetURL(attachment)
-}
-
-// stableAttachmentPath builds /assets/files/{assetID}/{suffix}/{fn.ext} where
-// suffix is empty or "/image/{w}x{h}/{fit}". The trailing filename is part of
-// the URL purely for readability and cache-key variety; the server resolves
-// the asset by ID alone and ignores the filename segment.
-func stableAttachmentPath(attachment *evtv1.Attachment, suffix string) string {
-	base := fmt.Sprintf("/assets/files/%s", url.PathEscape(attachment.GetId()))
-	if suffix != "" {
-		base += suffix
-	}
-	if fn := attachmentURLFilename(attachment.GetFilename(), attachment.GetContentType()); fn != "" {
-		base += "/" + url.PathEscape(fn)
-	}
-	return base
-}
-
-// attachmentURLFilename builds the {fn.ext} tail of stable attachment URLs.
-// 原始用户文件名不可信（可能含路径分隔符/../、非 ASCII、控制字符），这里
-// 只保留 [A-Za-z0-9._-] 的安全子集；扩展名必须匹配白名单，否则按
-// ContentType 映射兜底，保证 URL 后缀与真实字节格式一致（例如 AVIF 重编码
-// 后的 image/avif 附件落到 .avif）。
-func attachmentURLFilename(filename, contentType string) string {
-	base := sanitizeAttachmentFilename(filename)
-	ext := safeAttachmentExtension(base, contentType)
-	base = strings.TrimSuffix(base, filepath.Ext(base))
-	base = strings.Trim(base, ".-")
-	if base == "" {
-		base = "file"
-	}
-	return base + ext
-}
-
-// sanitizeAttachmentFilename keeps only [A-Za-z0-9._-] from the filename base,
-// collapsing every other run into a single dash.
-func sanitizeAttachmentFilename(filename string) string {
-	base := filepath.Base(filename)
-	var b strings.Builder
-	lastDash := false
-	for _, r := range base {
-		ok := r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '-' || r == '_'
-		if ok {
-			b.WriteRune(r)
-			lastDash = false
-		} else if !lastDash {
-			b.WriteByte('-')
-			lastDash = true
-		}
-	}
-	return b.String()
-}
-
-// attachmentExtWhitelist receives URL-visible extensions from user filenames.
-// Anything else falls back to ContentType mapping so the extension never lies
-// about the byte format.
-var attachmentExtWhitelist = map[string]bool{
-	".jpg": true, ".jpeg": true, ".png": true, ".gif": true, ".webp": true,
-	".avif": true, ".mp4": true, ".webm": true, ".mov": true, ".ogg": true,
-	".m4a": true, ".mp3": true, ".wav": true, ".flac": true, ".pdf": true,
-	".txt": true, ".zip": true, ".7z": true, ".tar": true, ".gz": true,
-}
-
-// safeAttachmentExtension prefers the sanitized filename's own extension when
-// it is whitelisted, otherwise derives one from ContentType.
-func safeAttachmentExtension(filename, contentType string) string {
-	ext := strings.ToLower(filepath.Ext(filename))
-	if attachmentExtWhitelist[ext] {
-		return ext
-	}
-	switch strings.ToLower(strings.TrimSpace(strings.Split(contentType, ";")[0])) {
-	case "image/jpeg":
-		return ".jpg"
-	case "image/png":
-		return ".png"
-	case "image/gif":
-		return ".gif"
-	case "image/webp":
-		return ".webp"
-	case "image/avif":
-		return ".avif"
-	case "video/mp4":
-		return ".mp4"
-	case "video/webm":
-		return ".webm"
-	case "video/quicktime":
-		return ".mov"
-	case "video/ogg":
-		return ".ogg"
-	case "audio/mpeg":
-		return ".mp3"
-	case "audio/ogg":
-		return ".ogg"
-	case "audio/mp4":
-		return ".m4a"
-	case "audio/wav":
-		return ".wav"
-	case "audio/flac":
-		return ".flac"
-	case "application/pdf":
-		return ".pdf"
-	case "text/plain":
-		return ".txt"
-	case "application/zip":
-		return ".zip"
-	}
-	return ""
-}
-
 // GetTransformedServerAssetURL returns the URL for accessing a transformed version of an server asset.
 // Server assets include server logos, server banners, and user avatars stored in SERVER_ASSETS.
 // The URL includes HMAC signature to prevent parameter tampering.
 // Format: /assets/server/{key}/t/{params}.{signature}
 // where {params} is base64url-encoded JSON: {"w":width,"h":height,"f":"fit"}
 func (c *MediaModel) GetTransformedServerAssetURL(key string, width, height int, fit string) string {
-	return c.GetTransformedServerAssetURLWithFilename(key, "", width, height, fit)
-}
+	// Generate signed transform path component using the server asset resource ID.
+	signedPath := signedurl.SignedTransformPath(c.config.Assets.SigningSecret, ServerAssetSignResource, key, width, height, fit)
 
-// GetTransformedServerAssetURLWithFilename is GetTransformedServerAssetURL
-// with a trailing {fn.ext} URL segment.
-//
-// 【本地改动 2026-08-23】头像/logo/banner/链接预览的公开 URL 统一带 {fn.ext}
-// 尾段：浏览器按扩展名嗅探类型、CDN 缓存键更可读。签名仍只覆盖 {key} 与
-// transform 参数，文件名段纯粹是装饰，serving 端会剥掉它再验证。
-// filename 为空时保持旧的无尾段形态（推导不出安全扩展名的兜底）。
-//
-// 【本地改动 2026-09-13 覆盖上方签名语义】fork 的「无请求期编码」策略已从
-// room 附件扩展到**服务端资产**：头像/logo/banner/链接预览在上传时就缩放到
-// 上限并压缩成有损 WebP（assets.processServerAssetImage），请求期没有第二份
-// 更小的字节，拼 /t/{w}x{h}/{fit} 只会让客户端去请求一份和原档等价的资源。
-// 所以这里直接忽略 width/height/fit，override 成原档 URL
-// /assets/server/{key}[/{fn.ext}]——客户端根本拿不到 /t/ 链接。
-// 函数名与签名保留，merge upstream 时调用点不炸。
-func (c *MediaModel) GetTransformedServerAssetURLWithFilename(key, filename string, width, height int, fit string) string {
-	_ = width // 【本地改动 2026-09-13】fork 无服务端资产衍生图，尺寸参数被忽略。
-	_ = height
-	_ = fit
-	path := fmt.Sprintf("/assets/server/%s", key)
-	if filename != "" {
-		path += "/" + url.PathEscape(filename)
-	}
-	return c.assetURL(path)
-}
-
-// ServerAssetURLFilename builds the safe {fn.ext} tail for public
-// /assets/server/ URLs from the asset record. It prefers the stored filename's
-// sanitized base and falls back to fallbackBase (e.g. "avatar"/"logo"); the
-// extension must be derivable and URL-safe, otherwise the returned string is
-// empty and callers keep the legacy filename-less URL shape.
-//
-// 【本地改动 2026-08-23】与附件的 attachmentURLFilename 同一套白名单逻辑，
-// 保证 URL 扩展名永远不撒谎（如头像统一转 WebP 后落 .webp）。
-func ServerAssetURLFilename(record *evtv1.AssetRecord, fallbackBase string) string {
-	name := ""
-	contentType := ""
-	if record != nil {
-		if fn := record.GetFilename(); fn != "" {
-			name = fn
-		}
-		contentType = record.GetContentType()
-	}
-	if name == "" {
-		name = fallbackBase
-	}
-	out := attachmentURLFilename(name, contentType)
-	if out == "" || filepath.Ext(out) == "" {
-		return ""
-	}
-	return out
+	// Return signed transform URL
+	return fmt.Sprintf("/assets/server/%s/t/%s", key, signedPath)
 }
 
 // ============================================================================
@@ -1195,126 +987,14 @@ func (c *MediaModel) DeleteCachedResizesForKey(ctx context.Context, prefix, asse
 	return deleted, deleteErr
 }
 
-// 【本地改动 2026-09-12】上传内容类型纠正,单请求路径
-// (uploadAttachmentBinary)与分片路径(storeCompletedUpload)共用。
-//
-// 背景:上传方声明的 Content-Type 不可信——浏览器按操作系统的扩展名注册表
-// 填 File.type,扩展名与真实编码不一致时声明就是错的(部分系统还会直接报
-// application/octet-stream);服务端此前完全信任声明,而声明决定走图片管线
-// 还是视频管线。发现于 2026-09-12 .avif 附件被认成 mp4 的 bug。
-//
-// 只在声明不是 image/ 时覆盖:声明 image/* 的上传已经进了图片管线,保持
-// 不动;文件头证明是已知图片签名才纠正。文件头无法识别("")时保留声明,
-// 所以没有任何"图片签名"会把真视频重分类为图片。
-
-// uploadContentTypeHeaderBytes is how many leading bytes of an upload are read
-// before its declared content type is trusted. The ISO-BMFF "ftyp" box with its
-// major brand and the RIFF/WebP signature both fit in 12 bytes.
-const uploadContentTypeHeaderBytes = 12
-
-// correctUploadContentType returns the content type to trust for an upload.
-//
-// Browsers fill File.type from the operating system's extension registry, so an
-// AVIF image can arrive declared as video/mp4. The declared type chooses between
-// the image pipeline and the video pipeline, so a confident image signature is
-// enough to override it. Declared image types are always kept, and a header that
-// proves nothing leaves the declaration untouched.
-func correctUploadContentType(declared string, header []byte) string {
-	if strings.HasPrefix(declared, "image/") {
-		return declared
-	}
-	if detected := assets.DetectContentType(header); detected != "" {
-		return detected
-	}
-	return declared
-}
-
-// readUploadHeader reads the leading bytes of an upload for
-// correctUploadContentType and returns them together with a reader that still
-// yields the complete stream.
-func readUploadHeader(reader io.Reader) ([]byte, io.Reader) {
-	header := make([]byte, uploadContentTypeHeaderBytes)
-	n, _ := io.ReadFull(reader, header) // a short read just means no signature
-	return header[:n], io.MultiReader(bytes.NewReader(header[:n]), reader)
-}
-
-// preparedUploadImage 是一次图片上传的处理结果,见 prepareUploadImage。
-type preparedUploadImage struct {
-	content     []byte
-	contentType string
-	width       int
-	height      int
-}
-
-// prepareUploadImage 把上传的图片处理成"要存储的那一份"字节。
-//
-// 【本地改动 2026-09-12】fork 的图片策略:上传时统一重编码为**原尺寸**
-// AVIF(动画输入产出动画 AVIF),存一份、发一份,不再生成衍生图。
-//
-// 目的:取代 2026-09-02 的 WebP 存储 + 请求期 ffmpeg 缩放衍生图链路。那条
-// 链路是线上 500 的主要来源(pipe 不可 seek 导致 avif 衍生图全灭),而且
-// Go 侧只注册了 jpeg/png/gif 解码器,把聊天里存下来的 WebP 再传回去会直接
-// 报 image: unknown format,连上传都过不去。
-//
-// 思路:编码/尺寸都交给 ffmpeg 与 AVIF 头部解析,Go 解码器只当兜底。
-// best-effort:ffmpeg 或 AV1 编码器不可用时存原图字节;瞬时编码失败记日志
-// 后同样存原图,绝不因为"服务器压不动"而让上传失败。
-//
-// 边界:只处理 room 附件。头像、branding、链接预览仍是 Go 直出的 WebP
-// (见 assets.ProcessAvatarImageWithConfig 等)。日志回调由调用方给,因为
-// 单请求路径挂在 MediaModel 上、分片路径挂在 AssetUploadModel 上,两者各自
-// 持有 ChattoCore 的 logger,这里不想为一个函数再造一层依赖。
-func prepareUploadImage(
-	ctx context.Context,
-	reader io.Reader,
-	declaredContentType string,
-	assetsCfg assets.Config,
-	attachmentID string,
-	warn func(msg string, args ...any),
-) (*preparedUploadImage, error) {
-	result, err := assets.PrepareAttachmentImage(ctx, reader, assetsCfg)
-	if err != nil {
-		if result == nil {
-			return nil, err
-		}
-		// 编码失败但原图可读:存原图。ErrAVIFUnavailable 是"环境不支持",
-		// 属于预期配置状态,不记日志;其余是真正的瞬时失败。
-		if !errors.Is(err, assets.ErrAVIFUnavailable) && warn != nil {
-			warn("Failed to re-encode attachment image to AVIF; storing original", "error", err, "attachment_id", attachmentID)
-		}
-	}
-	contentType := result.ContentType
-	if contentType == "" {
-		contentType = declaredContentType
-	}
-	return &preparedUploadImage{
-		content:     result.Content,
-		contentType: contentType,
-		width:       result.Width,
-		height:      result.Height,
-	}, nil
-}
-
 // AttachmentNeedsVideoProcessing returns whether an attachment should enter the
 // video processing pipeline. Static GIFs stay image-only; callers that inspect
 // the upload bytes can set animatedGIF for GIF-to-MP4 conversion.
-//
-// 【本地改动 2026-09-12】fork 停用视频管线:cmd/run.go 不再置
-// VideoUploadsEnabled,所以本函数的 true 分支(video/*、动画 GIF)不再会触发
-// 转码任务,视频与动画图都按上传原样存储、原样发送。函数与 animatedGIF 参数
-// 保留,是为了 merge upstream 时这条判断仍然在同一处,而不是被上游的调用点
-// 悄悄改回"视频必须转码"。
 func AttachmentNeedsVideoProcessing(attachment *evtv1.Attachment, animatedGIF bool) bool {
 	if attachment == nil {
 		return false
 	}
 	return strings.HasPrefix(attachment.GetContentType(), "video/") || animatedGIF
-}
-
-// videoProcessingKey returns the historical SERVER_RUNTIME key for a video's
-// processing state. New processing no longer writes runtime state.
-func videoProcessingKey(attachmentID string) string {
-	return "video." + attachmentID
 }
 
 // AttachmentBinaryStatus is the tri-state result of probing an attachment's

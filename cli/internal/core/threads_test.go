@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 	"hmans.de/chatto/internal/config"
 	"hmans.de/chatto/internal/core/subjects"
 	"hmans.de/chatto/internal/evtstream"
@@ -149,8 +151,8 @@ func TestChattoCore_PostMessage_Threading(t *testing.T) {
 		if !ok {
 			t.Fatalf("reply %s was not projected", reply.Id)
 		}
-		if replyEntry.Event.GetMessagePosted().GetInThread() != root.Id {
-			t.Fatalf("reply in_thread = %q, want %q", replyEntry.Event.GetMessagePosted().GetInThread(), root.Id)
+		if replyEntry.InThreadEventID != root.Id {
+			t.Fatalf("reply in_thread = %q, want %q", replyEntry.InThreadEventID, root.Id)
 		}
 		if !core.roomModel.threadExists(root.Id) {
 			t.Fatalf("thread projection does not know root %s exists", root.Id)
@@ -892,7 +894,7 @@ func TestChattoCore_ListFollowedThreads(t *testing.T) {
 	})
 
 	t.Run("returns a paged followed thread list", func(t *testing.T) {
-		page, err := core.ListFollowedThreadsPage(ctx, userA.Id, []string{LegacyServerSpaceID}, 1, 0)
+		page, err := core.ListFollowedThreadsPage(ctx, userA.Id, []string{LegacyServerSpaceID}, false, 1, 0)
 		if err != nil {
 			t.Fatalf("Failed to list followed thread page: %v", err)
 		}
@@ -909,7 +911,7 @@ func TestChattoCore_ListFollowedThreads(t *testing.T) {
 			t.Errorf("first page root = %q, want %q", page.Threads[0].ThreadRootEventID, rootMsg2.Id)
 		}
 
-		page, err = core.ListFollowedThreadsPage(ctx, userA.Id, []string{LegacyServerSpaceID}, 1, 1)
+		page, err = core.ListFollowedThreadsPage(ctx, userA.Id, []string{LegacyServerSpaceID}, false, 1, 1)
 		if err != nil {
 			t.Fatalf("Failed to list followed thread second page: %v", err)
 		}
@@ -991,6 +993,34 @@ func TestChattoCore_ListFollowedThreads(t *testing.T) {
 					t.Error("Expected HasUnreadReplies=true for thread 1 (not opened)")
 				}
 			}
+		}
+	})
+
+	t.Run("unread-only page counts and returns only unread threads", func(t *testing.T) {
+		// Thread 2 was opened in the previous subtest; thread 1 remains unread.
+		page, err := core.ListFollowedThreadsPage(ctx, userA.Id, []string{LegacyServerSpaceID}, true, 1, 0)
+		if err != nil {
+			t.Fatalf("Failed to list unread followed thread page: %v", err)
+		}
+		if page.TotalCount != 1 {
+			t.Fatalf("TotalCount = %d, want 1", page.TotalCount)
+		}
+		if page.HasMore {
+			t.Fatal("HasMore = true, want false")
+		}
+		if len(page.Threads) != 1 || page.Threads[0].ThreadRootEventID != rootMsg1.Id {
+			t.Fatalf("unread page = %+v, want only thread 1", page.Threads)
+		}
+		if !page.Threads[0].HasUnreadReplies {
+			t.Error("HasUnreadReplies = false, want true")
+		}
+
+		page, err = core.ListFollowedThreadsPage(ctx, userA.Id, []string{LegacyServerSpaceID}, false, 0, 0)
+		if err != nil {
+			t.Fatalf("Failed to list all followed threads: %v", err)
+		}
+		if page.TotalCount != 2 {
+			t.Fatalf("unfiltered TotalCount = %d, want 2", page.TotalCount)
 		}
 	})
 
@@ -1567,7 +1597,7 @@ func TestChattoCore_PostMessage_ThreadReplyEcho(t *testing.T) {
 		}
 	})
 
-	t.Run("echo carries the same body content as the reply", func(t *testing.T) {
+	t.Run("echo resolves the original body without storing a copy", func(t *testing.T) {
 		// Post root and reply with echo.
 		rootEvent, _ := core.PostMessage(ctx, KindChannel, room.Id, user.Id, "Root for body test", nil, "", "", nil, false)
 		replyEvent, err := core.PostMessage(ctx, KindChannel, room.Id, user.Id, "Shared body content", nil, rootEvent.Id, "", nil, true)
@@ -1575,10 +1605,9 @@ func TestChattoCore_PostMessage_ThreadReplyEcho(t *testing.T) {
 			t.Fatalf("Failed to post reply: %v", err)
 		}
 
-		// Echo and reply each have their own envelope id and encryption
-		// context, but decrypt to the same visible content.
-		replyBody, retracted, ok := core.roomModel.latestBody(replyEvent.Id)
-		if !ok || retracted || replyBody == nil {
+		// Echo and reply share the original body reference and encryption context.
+		replyBody, err := core.currentMessageBody(ctx, replyEvent.Id)
+		if err != nil || replyBody == nil {
 			t.Fatal("reply has no projected body")
 		}
 
@@ -1592,8 +1621,8 @@ func TestChattoCore_PostMessage_ThreadReplyEcho(t *testing.T) {
 			}
 		}
 		if echoID != "" {
-			echoBody, retracted, ok = core.roomModel.latestBody(echoID)
-			if !ok || retracted {
+			echoBody, err = core.currentMessageBody(ctx, echoID)
+			if err != nil {
 				echoBody = nil
 			}
 		}
@@ -1603,9 +1632,32 @@ func TestChattoCore_PostMessage_ThreadReplyEcho(t *testing.T) {
 		if echoID == "" {
 			t.Fatal("Echo event has no id")
 		}
-		if string(echoBody.EncryptedBody) == string(replyBody.EncryptedBody) {
-			t.Errorf("Echo body ciphertext should be independently encrypted")
+		if !proto.Equal(echoBody, replyBody) {
+			t.Error("Echo must resolve the original body")
 		}
+		seqs, _, _ := core.roomModel.bodyEventSeqs(echoID)
+		if len(seqs) != 0 {
+			t.Fatalf("echo owns body sequences: %v", seqs)
+		}
+		posts, _, err := core.EventPublisher.SubjectEvents(ctx, evtstream.RoomAggregate(room.Id).Subject(evtstream.EventMessagePosted))
+		require.NoError(t, err)
+		for _, post := range posts {
+			if post.Id == echoID {
+				require.Empty(t, post.GetMessagePosted().GetMentions())
+				require.Empty(t, post.GetMessagePosted().GetMentionedUserIds())
+				require.Empty(t, post.GetMessagePosted().GetInReplyTo())
+			}
+		}
+		before, _, err := core.EventPublisher.SubjectEvents(ctx, evtstream.RoomAggregate(room.Id).Subject(evtstream.EventMessageEdited))
+		require.NoError(t, err)
+		require.NoError(t, core.EditMessage(ctx, user.Id, KindChannel, room.Id, echoID, "Shared body content"))
+		after, _, err := core.EventPublisher.SubjectEvents(ctx, evtstream.RoomAggregate(room.Id).Subject(evtstream.EventMessageEdited))
+		require.NoError(t, err)
+		require.Len(t, after, len(before)+1)
+		require.Equal(t, replyEvent.Id, after[len(after)-1].GetMessageEdited().GetEventId())
+		seqs, _, _ = core.roomModel.bodyEventSeqs(echoID)
+		require.Empty(t, seqs)
+
 		echoText, err := core.GetMessageBody(ctx, echoID)
 		if err != nil {
 			t.Fatalf("Failed to decrypt echo body: %v", err)
@@ -1649,10 +1701,31 @@ func TestChattoCore_PostMessage_EchoMentionNotification(t *testing.T) {
 		}
 
 		// Post thread reply with echo, mentioning the target user
-		_, err = core.PostMessage(ctx, KindChannel, room.Id, author.Id, "Hey @mention-target check this out", nil, rootEvent.Id, "", nil, true)
+		reply, err := core.PostMessage(ctx, KindChannel, room.Id, author.Id, "Hey @mention-target check this out", nil, rootEvent.Id, rootEvent.Id, nil, true)
 		if err != nil {
 			t.Fatalf("Failed to post echo reply with mention: %v", err)
 		}
+
+		require.NotEmpty(t, reply.GetMessagePosted().GetMentions())
+		echoID, ok := core.roomModel.channelEchoEventID(reply.Id)
+		require.True(t, ok)
+		facts, _, err := core.EventPublisher.SubjectEvents(ctx, evtstream.RoomAggregate(room.Id).Subject(evtstream.EventMessagePosted))
+		require.NoError(t, err)
+		var storedEcho *evtv1.Event
+		for _, fact := range facts {
+			if fact.Id == echoID {
+				storedEcho = fact
+			}
+		}
+		require.NotNil(t, storedEcho)
+		require.Empty(t, storedEcho.GetMessagePosted().GetMentions())
+		require.Empty(t, storedEcho.GetMessagePosted().GetMentionedUserIds())
+		require.Empty(t, storedEcho.GetMessagePosted().GetInReplyTo())
+		hydrated, err := core.HydrateMessagePost(ctx, storedEcho)
+		require.NoError(t, err)
+		require.Equal(t, rootEvent.Id, hydrated.GetInReplyTo())
+		require.Equal(t, reply.GetMessagePosted().GetMentionedUserIds(), hydrated.GetMentionedUserIds())
+		require.Len(t, hydrated.GetMentions(), len(reply.GetMessagePosted().GetMentions()))
 
 		// Wait for async notifications to be delivered
 		nc.Flush()

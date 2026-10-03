@@ -1,7 +1,7 @@
 # FDR-021: Admin Dashboard & System Monitoring
 
 **Status:** Active
-**Last reviewed:** 2026-08-27
+**Last reviewed:** 2026-09-27
 
 ## Overview
 
@@ -13,7 +13,11 @@ The server-management section gives owners and admins visibility into the server
 - Legacy `/chat/[serverId]/server-admin/...` deep links permanently redirect to their equivalent management routes so bookmarks and shared links continue to work.
 - Every member can open Settings from the primary server navigation. The server sidebar then shows a unified Settings sidebar with three collapsible groups: App preferences, Your account, and Server configuration. It also shows a Back to Server action. App preferences apply to all servers. Your account and Server configuration apply to the server named in the Settings header. Server configuration contains only the destinations that the viewer can use. Settings opens the first permitted server-wide destination. If there is no permitted destination, Settings opens the member's Profile.
 - Delegated managers enter a specific room or room group through its contextual settings action. Resource pages use effective scoped permissions and do not imply access to unrelated server-management pages.
-- **Users page** — paginated list of all server members with login, email, roles, verification status. Admins can edit profiles, assign roles, suspend, or delete users when they hold the relevant permission.
+- **Users page** — paginated list of all server members with login, primary
+  verified email, roles, and verification status. The API identifies the
+  primary email explicitly instead of relying on address order. Admins can edit
+  profiles, assign roles, suspend, or delete users when they hold the relevant
+  permission.
 - **System Info page** — owner-only page showing backing message-broker connection status, storage account limits and current usage, stream/consumer health, known durable-worker queue health, projection health (lag, entry counts, and rough memory estimates), and `AdminDiagnosticsService.GetSystemInfo` stats (user count, channel room count, DM room count).
 - **Audit log page** — chronological diagnostic event-log view for forensic review, grouped by event creation date. The list view uses `AdminEventLogService.ListEvents`; the detail view uses `AdminEventLogService.GetEvent` to show sanitized payload JSON for human inspection. Password verifiers are omitted.
 - The audit log UI can be filtered by exact event type and exact actor ID. Event type suggestions come from the admin event-log API; the actor field reuses the server member lookup but still accepts synthetic actor IDs such as `system:bootstrap`. The API also supports inclusive created-at bounds for callers, but the server-management page does not expose time-range controls.
@@ -88,12 +92,17 @@ even if its durable consumer remains retained.
 - `role.manage` — configures roles and role permission decisions, including scoped room and room-group matrices without granting general room-management authority.
 - `role.assign` — gates user role assignment and revocation; non-owner assignments remain bounded by the actor's own scoped authority.
 - `room.manage` — gates general room and room-group settings at the effective resource scope; server-scope grants also gate global room-group creation and ordering.
-- `user.manage-accounts` — gates user creation, cross-user identity edits, password resets, verified-email attachment, and login-cooldown resets.
+- `user.manage-accounts` — gates user creation, cross-user identity edits of humans, password resets, verified-email attachment, and login-cooldown resets.
+
+These administrative permissions and owner-only diagnostics require active
+privileged mode for a human session. The server configuration entry remains
+discoverable from entitlement while protected pages and actions use effective
+permissions.
 
 ## Related
 
 - **ADRs:** ADR-001 (NATS JetStream as primary data store), ADR-033 (event-sourced state with projections), ADR-034 (single event stream), ADR-036 (runtime state in `RUNTIME_STATE`), ADR-069 (explicit durable consumer lifecycle)
-- **FDRs:** FDR-001 (Roles & Permissions), FDR-018 (Account Lifecycle), FDR-020 (Server Branding & Configuration), FDR-022 (User Profile), FDR-024 (Permission Inspection Tool), FDR-025 (User Search & Member Directory)
+- **FDRs:** FDR-001 (Roles & Permissions), FDR-018 (Account Lifecycle), FDR-020 (Server Branding & Configuration), FDR-022 (User Profile), FDR-024 (Permission Inspection Tool), FDR-025 (User Search & Member Directory), FDR-045 (Privileged Mode)
 
 ## Open Questions
 

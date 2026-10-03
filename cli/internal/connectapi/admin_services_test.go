@@ -304,8 +304,8 @@ func TestExternalIdentityFlowsAndAccountManagement(t *testing.T) {
 	if _, err := env.account.StartExternalIdentityLink(withCaller(env.ctx, createdUserRef), connect.NewRequest(&apiv1.StartExternalIdentityLinkRequest{
 		ProviderId:   "discord-main",
 		RedirectPath: "/chat/-/settings/account",
-	})); connect.CodeOf(err) != connect.CodeFailedPrecondition {
-		t.Fatalf("StartExternalIdentityLink without credential code = %v, want failed_precondition", connect.CodeOf(err))
+	})); errorCode(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("StartExternalIdentityLink without credential code = %v, want failed_precondition", errorCode(err))
 	}
 	started, err := env.account.StartExternalIdentityLink(createdCtx, connect.NewRequest(&apiv1.StartExternalIdentityLinkRequest{
 		ProviderId:   "discord-main",
@@ -353,10 +353,22 @@ func TestExternalIdentityFlowsAndAccountManagement(t *testing.T) {
 	}
 	oauthCredentialCtx := withBearerCredential(env.ctx, env.viewer, oauthViewerToken)
 	_, err = env.account.DisconnectExternalIdentity(oauthCredentialCtx, connect.NewRequest(&apiv1.DisconnectExternalIdentityRequest{
+		SubjectHash: linked.Msg.LinkedIdentity.GetSubjectHash(),
+	}))
+	requireConnectCode(t, err, connect.CodeFailedPrecondition)
+	_, err = env.account.DisconnectExternalIdentity(oauthCredentialCtx, connect.NewRequest(&apiv1.DisconnectExternalIdentityRequest{
 		SubjectHash:     linked.Msg.LinkedIdentity.GetSubjectHash(),
 		CurrentPassword: "password",
 	}))
-	requireConnectCode(t, err, connect.CodeFailedPrecondition)
+	if err != nil {
+		t.Fatalf("DisconnectExternalIdentity delegated password proof: %v", err)
+	}
+	if err := env.core.RequireFreshAuthForBearerToken(env.ctx, oauthViewerToken); !errors.Is(err, core.ErrFreshAuthRequired) {
+		t.Fatalf("delegated credential freshness = %v, want unchanged privileges", err)
+	}
+	if err := env.core.LinkExternalIdentity(env.ctx, "discord-main", config.AuthProviderTypeDiscord, "discord-main", "abc123", env.viewer.Id); err != nil {
+		t.Fatalf("LinkExternalIdentity again: %v", err)
+	}
 
 	staleViewerToken, err := env.core.CreateAuthTokenWithSource(env.ctx, env.viewer.Id, "unknown")
 	if err != nil {
@@ -374,9 +386,7 @@ func TestExternalIdentityFlowsAndAccountManagement(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DisconnectExternalIdentity: %v", err)
 	}
-	if !disconnected.Msg.GetDisconnected() {
-		t.Fatalf("DisconnectExternalIdentity disconnected = false")
-	}
+	requireEmptyResponse(t, disconnected.Msg)
 	found, err := env.core.GetUserByExternalIdentity(env.ctx, "discord-main", "abc123")
 	if err != nil {
 		t.Fatalf("GetUserByExternalIdentity after disconnect: %v", err)
@@ -488,7 +498,7 @@ func TestOperatorUserServiceLifecycle(t *testing.T) {
 	if getByEmailResp.Msg.GetMember().GetUser().GetId() != user.GetId() {
 		t.Fatalf("GetMember by email id = %q, want %q", getByEmailResp.Msg.GetMember().GetUser().GetId(), user.GetId())
 	}
-	if _, err := operator.GetUser(env.ctx, connect.NewRequest(&operatorv1.GetUserRequest{Email: "missing-operator-api@example.com"})); connect.CodeOf(err) != connect.CodeNotFound {
+	if _, err := operator.GetUser(env.ctx, connect.NewRequest(&operatorv1.GetUserRequest{Email: "missing-operator-api@example.com"})); errorCode(err) != connect.CodeNotFound {
 		t.Fatalf("missing GetUser by email err = %v, want not found", err)
 	}
 
@@ -545,7 +555,7 @@ func TestOperatorUserServiceLifecycle(t *testing.T) {
 	if _, err := operator.DeleteUser(env.ctx, connect.NewRequest(&operatorv1.DeleteUserRequest{UserId: user.GetId()})); err != nil {
 		t.Fatalf("DeleteUser: %v", err)
 	}
-	if _, err := operator.GetUser(env.ctx, connect.NewRequest(&operatorv1.GetUserRequest{UserId: user.GetId()})); connect.CodeOf(err) != connect.CodeNotFound {
+	if _, err := operator.GetUser(env.ctx, connect.NewRequest(&operatorv1.GetUserRequest{UserId: user.GetId()})); errorCode(err) != connect.CodeNotFound {
 		t.Fatalf("GetUser after delete err = %v, want not found", err)
 	}
 }
@@ -624,7 +634,7 @@ func TestOperatorUserServiceUpdateUserValidatesAllFieldsBeforeWriting(t *testing
 		DisplayName: stringPtr("Changed Display"),
 		Login:       stringPtr("bad login"),
 	}))
-	if connect.CodeOf(err) != connect.CodeInvalidArgument {
+	if errorCode(err) != connect.CodeInvalidArgument {
 		t.Fatalf("UpdateUser error = %v, want invalid argument", err)
 	}
 
@@ -728,7 +738,7 @@ func TestOperatorUserServiceAddVerifiedEmailRejectsMissingUserWithoutClaimingEma
 		UserId: "UmissingVerifiedEmail",
 		Email:  "missing-operator@example.com",
 	}))
-	if connect.CodeOf(err) != connect.CodeNotFound {
+	if errorCode(err) != connect.CodeNotFound {
 		t.Fatalf("AddVerifiedEmail error = %v, want not found", err)
 	}
 	if claimed, err := env.core.IsEmailClaimed(env.ctx, "missing-operator@example.com"); err != nil || claimed {
@@ -744,7 +754,7 @@ func TestOperatorUserServiceAssignRoleRejectsMissingUserWithoutPersistingRole(t 
 		UserId:   "UmissingAdminUser",
 		RoleName: core.RoleAdmin,
 	}))
-	if connect.CodeOf(err) != connect.CodeNotFound {
+	if errorCode(err) != connect.CodeNotFound {
 		t.Fatalf("AssignRole error = %v, want not found", err)
 	}
 	roles, rolesErr := env.core.GetUserRoles(env.ctx, "UmissingAdminUser")
@@ -763,7 +773,7 @@ func TestOperatorUserServiceAssignRoleRejectsMissingUserWithoutPersistingRole(t 
 		UserId:   "UmissingAdminUser",
 		RoleName: core.RoleAdmin,
 	}))
-	if connect.CodeOf(err) != connect.CodeNotFound {
+	if errorCode(err) != connect.CodeNotFound {
 		t.Fatalf("RevokeRole error = %v, want not found", err)
 	}
 	afterRevocations, _, err := env.core.EventPublisher.SubjectEvents(env.ctx, evtstream.RBACAggregate().Subject(evtstream.EventRBACRoleRevoked))
@@ -778,11 +788,11 @@ func TestOperatorUserServiceAssignRoleRejectsMissingUserWithoutPersistingRole(t 
 func TestUserServiceGetUserReadsPublicUsers(t *testing.T) {
 	env := newConnectAPITestEnv(t)
 
-	if _, err := env.users.GetUser(env.ctx, connect.NewRequest(&apiv1.GetUserRequest{Target: &apiv1.GetUserRequest_UserId{UserId: env.viewer.Id}})); connect.CodeOf(err) != connect.CodeUnauthenticated {
-		t.Fatalf("unauthenticated GetUser code = %v, want unauthenticated", connect.CodeOf(err))
+	if _, err := env.users.GetUser(env.ctx, connect.NewRequest(&apiv1.GetUserRequest{Target: &apiv1.GetUserRequest_UserId{UserId: env.viewer.Id}})); errorCode(err) != connect.CodeUnauthenticated {
+		t.Fatalf("unauthenticated GetUser code = %v, want unauthenticated", errorCode(err))
 	}
-	if _, err := env.users.BatchGetUsers(env.ctx, connect.NewRequest(&apiv1.BatchGetUsersRequest{UserIds: []string{env.viewer.Id}})); connect.CodeOf(err) != connect.CodeUnauthenticated {
-		t.Fatalf("unauthenticated BatchGetUsers code = %v, want unauthenticated", connect.CodeOf(err))
+	if _, err := env.users.BatchGetUsers(env.ctx, connect.NewRequest(&apiv1.BatchGetUsersRequest{UserIds: []string{env.viewer.Id}})); errorCode(err) != connect.CodeUnauthenticated {
+		t.Fatalf("unauthenticated BatchGetUsers code = %v, want unauthenticated", errorCode(err))
 	}
 
 	ctx := withCaller(env.ctx, env.viewer)
@@ -846,33 +856,33 @@ func TestUserServiceGetUserReadsPublicUsers(t *testing.T) {
 		t.Fatalf("GetUser by login id = %q, want %q", byLoginResp.Msg.GetUser().GetUser().GetId(), env.viewer.Id)
 	}
 
-	if _, err := env.users.GetUser(ctx, connect.NewRequest(&apiv1.GetUserRequest{Target: &apiv1.GetUserRequest_Login{Login: "missing-user"}})); connect.CodeOf(err) != connect.CodeNotFound {
-		t.Fatalf("missing GetUser by login code = %v, want not found", connect.CodeOf(err))
+	if _, err := env.users.GetUser(ctx, connect.NewRequest(&apiv1.GetUserRequest{Target: &apiv1.GetUserRequest_Login{Login: "missing-user"}})); errorCode(err) != connect.CodeNotFound {
+		t.Fatalf("missing GetUser by login code = %v, want not found", errorCode(err))
 	}
 
-	if _, err := env.users.GetUser(ctx, connect.NewRequest(&apiv1.GetUserRequest{Target: &apiv1.GetUserRequest_UserId{UserId: "missing-user"}})); connect.CodeOf(err) != connect.CodeNotFound {
-		t.Fatalf("missing GetUser code = %v, want not found", connect.CodeOf(err))
+	if _, err := env.users.GetUser(ctx, connect.NewRequest(&apiv1.GetUserRequest{Target: &apiv1.GetUserRequest_UserId{UserId: "missing-user"}})); errorCode(err) != connect.CodeNotFound {
+		t.Fatalf("missing GetUser code = %v, want not found", errorCode(err))
 	}
 
-	if _, err := env.users.GetUser(ctx, connect.NewRequest(&apiv1.GetUserRequest{})); connect.CodeOf(err) != connect.CodeInvalidArgument {
-		t.Fatalf("missing GetUser target code = %v, want invalid_argument", connect.CodeOf(err))
+	if _, err := env.users.GetUser(ctx, connect.NewRequest(&apiv1.GetUserRequest{})); errorCode(err) != connect.CodeInvalidArgument {
+		t.Fatalf("missing GetUser target code = %v, want invalid_argument", errorCode(err))
 	}
 }
 
 func TestAdminRoleServiceManagesRoles(t *testing.T) {
 	env := newConnectAPITestEnv(t)
 
-	if _, err := env.roles.ListRoles(env.ctx, connect.NewRequest(&adminv1.ListRolesRequest{})); connect.CodeOf(err) != connect.CodeUnauthenticated {
-		t.Fatalf("unauthenticated ListRoles code = %v, want unauthenticated", connect.CodeOf(err))
+	if _, err := env.roles.ListRoles(env.ctx, connect.NewRequest(&adminv1.ListRolesRequest{})); errorCode(err) != connect.CodeUnauthenticated {
+		t.Fatalf("unauthenticated ListRoles code = %v, want unauthenticated", errorCode(err))
 	}
-	if _, err := env.publicRoles.ListRoles(env.ctx, connect.NewRequest(&apiv1.ListRolesRequest{})); connect.CodeOf(err) != connect.CodeUnauthenticated {
-		t.Fatalf("unauthenticated public ListRoles code = %v, want unauthenticated", connect.CodeOf(err))
+	if _, err := env.publicRoles.ListRoles(env.ctx, connect.NewRequest(&apiv1.ListRolesRequest{})); errorCode(err) != connect.CodeUnauthenticated {
+		t.Fatalf("unauthenticated public ListRoles code = %v, want unauthenticated", errorCode(err))
 	}
-	if _, err := env.publicRoles.GetRole(env.ctx, connect.NewRequest(&apiv1.GetRoleRequest{Name: core.RoleEveryone})); connect.CodeOf(err) != connect.CodeUnauthenticated {
-		t.Fatalf("unauthenticated public GetRole code = %v, want unauthenticated", connect.CodeOf(err))
+	if _, err := env.publicRoles.GetRole(env.ctx, connect.NewRequest(&apiv1.GetRoleRequest{Name: core.RoleEveryone})); errorCode(err) != connect.CodeUnauthenticated {
+		t.Fatalf("unauthenticated public GetRole code = %v, want unauthenticated", errorCode(err))
 	}
-	if _, err := env.publicRoles.BatchGetRoles(env.ctx, connect.NewRequest(&apiv1.BatchGetRolesRequest{Names: []string{core.RoleEveryone}})); connect.CodeOf(err) != connect.CodeUnauthenticated {
-		t.Fatalf("unauthenticated public BatchGetRoles code = %v, want unauthenticated", connect.CodeOf(err))
+	if _, err := env.publicRoles.BatchGetRoles(env.ctx, connect.NewRequest(&apiv1.BatchGetRolesRequest{Names: []string{core.RoleEveryone}})); errorCode(err) != connect.CodeUnauthenticated {
+		t.Fatalf("unauthenticated public BatchGetRoles code = %v, want unauthenticated", errorCode(err))
 	}
 
 	publicListResp, err := env.publicRoles.ListRoles(withCaller(env.ctx, env.viewer), connect.NewRequest(&apiv1.ListRolesRequest{}))
@@ -900,8 +910,8 @@ func TestAdminRoleServiceManagesRoles(t *testing.T) {
 	if _, err := env.roles.CreateRole(withCaller(env.ctx, env.viewer), connect.NewRequest(&adminv1.CreateRoleRequest{
 		Name:        "helpdesk",
 		DisplayName: "Helpdesk",
-	})); connect.CodeOf(err) != connect.CodePermissionDenied {
-		t.Fatalf("regular CreateRole code = %v, want permission denied", connect.CodeOf(err))
+	})); errorCode(err) != connect.CodePermissionDenied {
+		t.Fatalf("regular CreateRole code = %v, want permission denied", errorCode(err))
 	}
 
 	if err := env.core.AssignServerRole(env.ctx, core.SystemActorID, env.viewer.Id, core.RoleAdmin); err != nil {
@@ -911,8 +921,8 @@ func TestAdminRoleServiceManagesRoles(t *testing.T) {
 	if _, err := env.roles.CreateRole(withCaller(env.ctx, env.viewer), connect.NewRequest(&adminv1.CreateRoleRequest{
 		Name:        "InvalidName",
 		DisplayName: "Invalid",
-	})); connect.CodeOf(err) != connect.CodeInvalidArgument {
-		t.Fatalf("invalid CreateRole code = %v, want invalid argument", connect.CodeOf(err))
+	})); errorCode(err) != connect.CodeInvalidArgument {
+		t.Fatalf("invalid CreateRole code = %v, want invalid argument", errorCode(err))
 	}
 
 	createResp, err := env.roles.CreateRole(withCaller(env.ctx, env.viewer), connect.NewRequest(&adminv1.CreateRoleRequest{
@@ -931,8 +941,8 @@ func TestAdminRoleServiceManagesRoles(t *testing.T) {
 	if _, err := env.roles.CreateRole(withCaller(env.ctx, env.viewer), connect.NewRequest(&adminv1.CreateRoleRequest{
 		Name:        "helpdesk",
 		DisplayName: "Duplicate",
-	})); connect.CodeOf(err) != connect.CodeAlreadyExists {
-		t.Fatalf("duplicate CreateRole code = %v, want already exists", connect.CodeOf(err))
+	})); errorCode(err) != connect.CodeAlreadyExists {
+		t.Fatalf("duplicate CreateRole code = %v, want already exists", errorCode(err))
 	}
 	if _, err := env.roles.CreateRole(withCaller(env.ctx, env.viewer), connect.NewRequest(&adminv1.CreateRoleRequest{
 		Name:        "triage",
@@ -947,8 +957,8 @@ func TestAdminRoleServiceManagesRoles(t *testing.T) {
 	if got := publicGetResp.Msg.GetRole(); got.GetName() != "helpdesk" || got.GetDisplayName() != "Helpdesk" || !got.GetPingable() {
 		t.Fatalf("public GetRole role = %+v, want helpdesk metadata", got)
 	}
-	if _, err := env.publicRoles.GetRole(withCaller(env.ctx, env.viewer), connect.NewRequest(&apiv1.GetRoleRequest{Name: "missing-role"})); connect.CodeOf(err) != connect.CodeNotFound {
-		t.Fatalf("missing public GetRole code = %v, want not found", connect.CodeOf(err))
+	if _, err := env.publicRoles.GetRole(withCaller(env.ctx, env.viewer), connect.NewRequest(&apiv1.GetRoleRequest{Name: "missing-role"})); errorCode(err) != connect.CodeNotFound {
+		t.Fatalf("missing public GetRole code = %v, want not found", errorCode(err))
 	}
 	publicBatchResp, err := env.publicRoles.BatchGetRoles(withCaller(env.ctx, env.viewer), connect.NewRequest(&apiv1.BatchGetRolesRequest{
 		Names: []string{"helpdesk", "missing-role", core.RoleEveryone, "helpdesk"},
@@ -990,17 +1000,22 @@ func TestAdminRoleServiceManagesRoles(t *testing.T) {
 	if !getResp.Msg.GetViewerCanManageRoles() || !getResp.Msg.GetViewerCanAssignRoles() {
 		t.Fatalf("GetRole capabilities manage=%v assign=%v, want true/true", getResp.Msg.GetViewerCanManageRoles(), getResp.Msg.GetViewerCanAssignRoles())
 	}
-	if len(getResp.Msg.GetUsers()) != 1 || getResp.Msg.GetUsers()[0].GetId() != member.Id {
-		t.Fatalf("GetRole users = %+v, want member %s", getResp.Msg.GetUsers(), member.Id)
+	membersResp, err := env.roles.ListMembers(withCaller(env.ctx, env.viewer), connect.NewRequest(&adminv1.AdminRoleServiceListMembersRequest{Name: "helpdesk"}))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := env.roles.GetRole(withCaller(env.ctx, env.viewer), connect.NewRequest(&adminv1.GetRoleRequest{Name: "missing-role"})); connect.CodeOf(err) != connect.CodeNotFound {
-		t.Fatalf("missing GetRole code = %v, want not found", connect.CodeOf(err))
+	if len(membersResp.Msg.Members) != 1 || membersResp.Msg.Members[0].Id != member.Id {
+		t.Fatal("expected explicit member")
+	}
+
+	if _, err := env.roles.GetRole(withCaller(env.ctx, env.viewer), connect.NewRequest(&adminv1.GetRoleRequest{Name: "missing-role"})); errorCode(err) != connect.CodeNotFound {
+		t.Fatalf("missing GetRole code = %v, want not found", errorCode(err))
 	}
 
 	if _, err := env.roles.UpdateRole(withCaller(env.ctx, env.viewer), connect.NewRequest(&adminv1.UpdateRoleRequest{
 		Name: "helpdesk",
-	})); connect.CodeOf(err) != connect.CodeInvalidArgument {
-		t.Fatalf("empty UpdateRole code = %v, want invalid argument", connect.CodeOf(err))
+	})); errorCode(err) != connect.CodeInvalidArgument {
+		t.Fatalf("empty UpdateRole code = %v, want invalid argument", errorCode(err))
 	}
 	pingable := false
 	updateResp, err := env.roles.UpdateRole(withCaller(env.ctx, env.viewer), connect.NewRequest(&adminv1.UpdateRoleRequest{
@@ -1028,16 +1043,14 @@ func TestAdminRoleServiceManagesRoles(t *testing.T) {
 
 	if _, err := env.roles.DeleteRole(withCaller(env.ctx, env.viewer), connect.NewRequest(&adminv1.DeleteRoleRequest{
 		Name: core.RoleOwner,
-	})); connect.CodeOf(err) != connect.CodeFailedPrecondition {
-		t.Fatalf("DeleteRole owner code = %v, want failed precondition", connect.CodeOf(err))
+	})); errorCode(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("DeleteRole owner code = %v, want failed precondition", errorCode(err))
 	}
 	deleteResp, err := env.roles.DeleteRole(withCaller(env.ctx, env.viewer), connect.NewRequest(&adminv1.DeleteRoleRequest{Name: "helpdesk"}))
 	if err != nil {
 		t.Fatalf("DeleteRole: %v", err)
 	}
-	if !deleteResp.Msg.GetDeleted() {
-		t.Fatal("DeleteRole Deleted = false, want true")
-	}
+	requireEmptyResponse(t, deleteResp.Msg)
 	if _, err := env.roles.DeleteRole(withCaller(env.ctx, env.viewer), connect.NewRequest(&adminv1.DeleteRoleRequest{Name: "triage"})); err != nil {
 		t.Fatalf("DeleteRole triage: %v", err)
 	}
@@ -1046,11 +1059,11 @@ func TestAdminRoleServiceManagesRoles(t *testing.T) {
 func TestAdminPermissionServiceMatricesAndWrites(t *testing.T) {
 	env := newConnectAPITestEnv(t)
 
-	if _, err := env.permissions.GetRolePermissionTierMatrix(env.ctx, connect.NewRequest(&adminv1.GetRolePermissionTierMatrixRequest{})); connect.CodeOf(err) != connect.CodeUnauthenticated {
-		t.Fatalf("unauthenticated GetRolePermissionTierMatrix code = %v, want unauthenticated", connect.CodeOf(err))
+	if _, err := env.permissions.GetRolePermissionTierMatrix(env.ctx, connect.NewRequest(&adminv1.GetRolePermissionTierMatrixRequest{})); errorCode(err) != connect.CodeUnauthenticated {
+		t.Fatalf("unauthenticated GetRolePermissionTierMatrix code = %v, want unauthenticated", errorCode(err))
 	}
-	if _, err := env.permissions.GetRolePermissionTierMatrix(withCaller(env.ctx, env.viewer), connect.NewRequest(&adminv1.GetRolePermissionTierMatrixRequest{})); connect.CodeOf(err) != connect.CodePermissionDenied {
-		t.Fatalf("regular GetRolePermissionTierMatrix code = %v, want permission denied", connect.CodeOf(err))
+	if _, err := env.permissions.GetRolePermissionTierMatrix(withCaller(env.ctx, env.viewer), connect.NewRequest(&adminv1.GetRolePermissionTierMatrixRequest{})); errorCode(err) != connect.CodePermissionDenied {
+		t.Fatalf("regular GetRolePermissionTierMatrix code = %v, want permission denied", errorCode(err))
 	}
 
 	if err := env.core.GrantUserPermission(env.ctx, core.SystemActorID, env.viewer.Id, core.PermRoleManage); err != nil {
@@ -1074,6 +1087,13 @@ func TestAdminPermissionServiceMatricesAndWrites(t *testing.T) {
 		t.Fatalf("empty-scope tier matrix = %+v, want roles and permissions", emptyScopeTierResp.Msg.GetMatrix())
 	}
 
+	if _, err := env.permissions.SetRolePermission(ctx, connect.NewRequest(&adminv1.SetRolePermissionRequest{
+		RoleName:   core.RoleModerator,
+		Permission: "unknown.permission",
+		Decision:   adminv1.PermissionDecision_PERMISSION_DECISION_ALLOW,
+	})); errorCode(err) != connect.CodeInvalidArgument {
+		t.Fatalf("SetRolePermission unknown permission code = %v, want invalid argument (err=%v)", errorCode(err), err)
+	}
 	setResp, err := env.permissions.SetRolePermission(ctx, connect.NewRequest(&adminv1.SetRolePermissionRequest{
 		RoleName:   core.RoleModerator,
 		Permission: string(core.PermMessagePost),
@@ -1095,6 +1115,35 @@ func TestAdminPermissionServiceMatricesAndWrites(t *testing.T) {
 	if cell := findAPIPermissionCell(roleMatrixResp.Msg.GetMatrix().GetCells(), "server", string(core.PermMessagePost)); cell == nil || cell.GetOverride() != adminv1.PermissionDecision_PERMISSION_DECISION_ALLOW {
 		t.Fatalf("server message.post cell = %+v, want allow override", cell)
 	}
+	for _, scope := range roleMatrixResp.Msg.GetMatrix().GetScopes() {
+		if scope.GetKind() == adminv1.PermissionScopeKind_PERMISSION_SCOPE_KIND_DM {
+			t.Fatal("legacy-shaped role matrix included the DM scope")
+		}
+	}
+	dmMatrixResp, err := env.permissions.GetRolePermissionMatrix(ctx, connect.NewRequest(&adminv1.GetRolePermissionMatrixRequest{
+		RoleName:                  core.RoleModerator,
+		IncludeDirectMessageScope: true,
+	}))
+	if err != nil {
+		t.Fatalf("GetRolePermissionMatrix with DM: %v", err)
+	}
+	var dmScopeFound bool
+	for _, scope := range dmMatrixResp.Msg.GetMatrix().GetScopes() {
+		if scope.GetKind() == adminv1.PermissionScopeKind_PERMISSION_SCOPE_KIND_DM {
+			dmScopeFound = scope.GetId() == "dm"
+		}
+	}
+	if !dmScopeFound {
+		t.Fatalf("DM matrix scope missing or invalid: %+v", dmMatrixResp.Msg.GetMatrix().GetScopes())
+	}
+	if _, err := env.permissions.SetRolePermission(ctx, connect.NewRequest(&adminv1.SetRolePermissionRequest{
+		RoleName:   core.RoleModerator,
+		Permission: string(core.PermMessagePost),
+		Decision:   adminv1.PermissionDecision_PERMISSION_DECISION_DENY,
+		Scope:      &adminv1.PermissionScope{Kind: adminv1.PermissionScopeKind_PERMISSION_SCOPE_KIND_DM},
+	})); err != nil {
+		t.Fatalf("SetRolePermission DM deny: %v", err)
+	}
 	roleDecisionsResp, err := env.permissions.ListRolePermissionDecisions(ctx, connect.NewRequest(&adminv1.ListRolePermissionDecisionsRequest{
 		RoleName: core.RoleModerator,
 	}))
@@ -1107,18 +1156,31 @@ func TestAdminPermissionServiceMatricesAndWrites(t *testing.T) {
 	if decision := findAPIPermissionDecision(roleDecisionsResp.Msg.GetDecisions(), adminv1.PermissionScopeKind_PERMISSION_SCOPE_KIND_SERVER, "", string(core.PermMessagePost)); decision == nil || decision.GetOverride() != adminv1.PermissionDecision_PERMISSION_DECISION_ALLOW {
 		t.Fatalf("server message.post decision = %+v, want allow override", decision)
 	}
+	if decision := findAPIPermissionDecision(roleDecisionsResp.Msg.GetDecisions(), adminv1.PermissionScopeKind_PERMISSION_SCOPE_KIND_DM, "", string(core.PermMessagePost)); decision != nil {
+		t.Fatalf("legacy-shaped decision list included DM decision: %+v", decision)
+	}
+	dmDecisionsResp, err := env.permissions.ListRolePermissionDecisions(ctx, connect.NewRequest(&adminv1.ListRolePermissionDecisionsRequest{
+		RoleName:                  core.RoleModerator,
+		IncludeDirectMessageScope: true,
+	}))
+	if err != nil {
+		t.Fatalf("ListRolePermissionDecisions with DM: %v", err)
+	}
+	if decision := findAPIPermissionDecision(dmDecisionsResp.Msg.GetDecisions(), adminv1.PermissionScopeKind_PERMISSION_SCOPE_KIND_DM, "", string(core.PermMessagePost)); decision == nil || decision.GetOverride() != adminv1.PermissionDecision_PERMISSION_DECISION_DENY {
+		t.Fatalf("DM message.post decision = %+v, want deny override", decision)
+	}
 	if _, err := env.permissions.GetRolePermissionMatrix(ctx, connect.NewRequest(&adminv1.GetRolePermissionMatrixRequest{
 		RoleName: "missing-role",
-	})); connect.CodeOf(err) != connect.CodeNotFound {
-		t.Fatalf("missing GetRolePermissionMatrix code = %v, want not found", connect.CodeOf(err))
+	})); errorCode(err) != connect.CodeNotFound {
+		t.Fatalf("missing GetRolePermissionMatrix code = %v, want not found", errorCode(err))
 	}
 	if _, err := env.permissions.SetRolePermission(env.ctx, connect.NewRequest(&adminv1.SetRolePermissionRequest{
 		RoleName:   core.RoleModerator,
 		Permission: string(core.PermMessagePost),
 		Decision:   adminv1.PermissionDecision_PERMISSION_DECISION_NONE,
 		Scope:      &adminv1.PermissionScope{Kind: adminv1.PermissionScopeKind_PERMISSION_SCOPE_KIND_SERVER},
-	})); connect.CodeOf(err) != connect.CodeUnauthenticated {
-		t.Fatalf("unauthenticated SetRolePermission clear code = %v, want unauthenticated", connect.CodeOf(err))
+	})); errorCode(err) != connect.CodeUnauthenticated {
+		t.Fatalf("unauthenticated SetRolePermission clear code = %v, want unauthenticated", errorCode(err))
 	}
 	clearResp, err := env.permissions.SetRolePermission(ctx, connect.NewRequest(&adminv1.SetRolePermissionRequest{
 		RoleName:   core.RoleModerator,
@@ -1146,8 +1208,8 @@ func TestAdminPermissionServiceMatricesAndWrites(t *testing.T) {
 		Permission: string(core.PermMessagePost),
 		Decision:   adminv1.PermissionDecision_PERMISSION_DECISION_ALLOW,
 		Scope:      &adminv1.PermissionScope{Kind: adminv1.PermissionScopeKind(99), Id: "future"},
-	})); connect.CodeOf(err) != connect.CodeInvalidArgument {
-		t.Fatalf("future scope SetRolePermission code = %v, want invalid_argument", connect.CodeOf(err))
+	})); errorCode(err) != connect.CodeInvalidArgument {
+		t.Fatalf("future scope SetRolePermission code = %v, want invalid_argument", errorCode(err))
 	}
 
 	if err := env.core.GrantUserPermission(env.ctx, core.SystemActorID, env.viewer.Id, core.PermUserManagePermissions); err != nil {
@@ -1156,6 +1218,13 @@ func TestAdminPermissionServiceMatricesAndWrites(t *testing.T) {
 	target, err := env.core.CreateUser(env.ctx, core.SystemActorID, "permission-target", "Permission Target", "password")
 	if err != nil {
 		t.Fatalf("CreateUser target: %v", err)
+	}
+	if _, err := env.permissions.SetUserPermission(ctx, connect.NewRequest(&adminv1.SetUserPermissionRequest{
+		UserId:     target.Id,
+		Permission: "unknown.permission",
+		Decision:   adminv1.PermissionDecision_PERMISSION_DECISION_ALLOW,
+	})); errorCode(err) != connect.CodeInvalidArgument {
+		t.Fatalf("SetUserPermission unknown permission code = %v, want invalid argument (err=%v)", errorCode(err), err)
 	}
 	if _, err := env.permissions.SetUserPermission(ctx, connect.NewRequest(&adminv1.SetUserPermissionRequest{
 		UserId:     target.Id,
@@ -1176,8 +1245,8 @@ func TestAdminPermissionServiceMatricesAndWrites(t *testing.T) {
 	}
 	if _, err := env.permissions.GetUserPermissionMatrix(ctx, connect.NewRequest(&adminv1.GetUserPermissionMatrixRequest{
 		UserId: "missing-user",
-	})); connect.CodeOf(err) != connect.CodeNotFound {
-		t.Fatalf("missing GetUserPermissionMatrix code = %v, want not found", connect.CodeOf(err))
+	})); errorCode(err) != connect.CodeNotFound {
+		t.Fatalf("missing GetUserPermissionMatrix code = %v, want not found", errorCode(err))
 	}
 	userDecisionsResp, err := env.permissions.ListUserPermissionDecisions(ctx, connect.NewRequest(&adminv1.ListUserPermissionDecisionsRequest{
 		UserId: target.Id,
@@ -1193,21 +1262,21 @@ func TestAdminPermissionServiceMatricesAndWrites(t *testing.T) {
 	}
 	if _, err := env.permissions.ListUserPermissionDecisions(ctx, connect.NewRequest(&adminv1.ListUserPermissionDecisionsRequest{
 		UserId: "missing-user",
-	})); connect.CodeOf(err) != connect.CodeNotFound {
-		t.Fatalf("missing ListUserPermissionDecisions code = %v, want not found", connect.CodeOf(err))
+	})); errorCode(err) != connect.CodeNotFound {
+		t.Fatalf("missing ListUserPermissionDecisions code = %v, want not found", errorCode(err))
 	}
-	if _, err := env.permissions.ExplainPermissions(env.ctx, connect.NewRequest(&adminv1.ExplainPermissionsRequest{UserId: target.Id})); connect.CodeOf(err) != connect.CodeUnauthenticated {
-		t.Fatalf("unauthenticated ExplainPermissions code = %v, want unauthenticated", connect.CodeOf(err))
+	if _, err := env.permissions.ExplainPermissions(env.ctx, connect.NewRequest(&adminv1.ExplainPermissionsRequest{UserId: target.Id})); errorCode(err) != connect.CodeUnauthenticated {
+		t.Fatalf("unauthenticated ExplainPermissions code = %v, want unauthenticated", errorCode(err))
 	}
-	if _, err := env.permissions.ExplainPermissions(ctx, connect.NewRequest(&adminv1.ExplainPermissionsRequest{UserId: env.viewer.Id})); connect.CodeOf(err) != connect.CodePermissionDenied {
-		t.Fatalf("self ExplainPermissions code = %v, want permission denied", connect.CodeOf(err))
+	if _, err := env.permissions.ExplainPermissions(ctx, connect.NewRequest(&adminv1.ExplainPermissionsRequest{UserId: env.viewer.Id})); errorCode(err) != connect.CodePermissionDenied {
+		t.Fatalf("self ExplainPermissions code = %v, want permission denied", errorCode(err))
 	}
 	unprivileged, err := env.core.CreateUser(env.ctx, core.SystemActorID, "permission-unprivileged", "Permission Unprivileged", "password")
 	if err != nil {
 		t.Fatalf("CreateUser unprivileged: %v", err)
 	}
-	if _, err := env.permissions.ExplainPermissions(withCaller(env.ctx, unprivileged), connect.NewRequest(&adminv1.ExplainPermissionsRequest{UserId: target.Id})); connect.CodeOf(err) != connect.CodePermissionDenied {
-		t.Fatalf("unprivileged ExplainPermissions code = %v, want permission denied", connect.CodeOf(err))
+	if _, err := env.permissions.ExplainPermissions(withCaller(env.ctx, unprivileged), connect.NewRequest(&adminv1.ExplainPermissionsRequest{UserId: target.Id})); errorCode(err) != connect.CodePermissionDenied {
+		t.Fatalf("unprivileged ExplainPermissions code = %v, want permission denied", errorCode(err))
 	}
 	explainResp, err := env.permissions.ExplainPermissions(ctx, connect.NewRequest(&adminv1.ExplainPermissionsRequest{UserId: target.Id}))
 	if err != nil {
@@ -1290,27 +1359,44 @@ func TestAdminPermissionServiceMatricesAndWrites(t *testing.T) {
 	if len(roomExplainResp.Msg.GetExplanations()) == 0 {
 		t.Fatal("ExplainPermissions room returned no explanations")
 	}
+	dmExplainResp, err := env.permissions.ExplainPermissions(ctx, connect.NewRequest(&adminv1.ExplainPermissionsRequest{
+		UserId: target.Id,
+		Scope:  &adminv1.PermissionScope{Kind: adminv1.PermissionScopeKind_PERMISSION_SCOPE_KIND_DM},
+	}))
+	if err != nil {
+		t.Fatalf("ExplainPermissions DM: %v", err)
+	}
+	if len(dmExplainResp.Msg.GetExplanations()) == 0 || dmExplainResp.Msg.GetExplanations()[0].GetDecidedAt() == adminv1.PermissionDecisionLevel_PERMISSION_DECISION_LEVEL_UNSPECIFIED {
+		t.Fatalf("ExplainPermissions DM returned no typed levels: %+v", dmExplainResp.Msg.GetExplanations())
+	}
+	if _, err := env.permissions.ExplainPermissions(ctx, connect.NewRequest(&adminv1.ExplainPermissionsRequest{
+		UserId: target.Id,
+		RoomId: room.Id,
+		Scope:  &adminv1.PermissionScope{Kind: adminv1.PermissionScopeKind_PERMISSION_SCOPE_KIND_DM},
+	})); errorCode(err) != connect.CodeInvalidArgument {
+		t.Fatalf("conflicting ExplainPermissions target code = %v, want invalid argument", errorCode(err))
+	}
 	if _, err := env.permissions.ExplainPermissions(ctx, connect.NewRequest(&adminv1.ExplainPermissionsRequest{
 		UserId: target.Id,
 		RoomId: "missing-room",
-	})); connect.CodeOf(err) != connect.CodePermissionDenied {
-		t.Fatalf("missing room ExplainPermissions code = %v, want permission denied", connect.CodeOf(err))
+	})); errorCode(err) != connect.CodePermissionDenied {
+		t.Fatalf("missing room ExplainPermissions code = %v, want permission denied", errorCode(err))
 	}
 }
 
 func TestAdminDiagnosticsServiceGetSystemInfoRequiresOwner(t *testing.T) {
 	env := newConnectAPITestEnv(t)
 
-	if _, err := env.adminDiagnostics.GetSystemInfo(env.ctx, connect.NewRequest(&adminv1.GetSystemInfoRequest{})); connect.CodeOf(err) != connect.CodeUnauthenticated {
-		t.Fatalf("unauthenticated GetSystemInfo code = %v, want unauthenticated", connect.CodeOf(err))
+	if _, err := env.adminDiagnostics.GetSystemInfo(env.ctx, connect.NewRequest(&adminv1.GetSystemInfoRequest{})); errorCode(err) != connect.CodeUnauthenticated {
+		t.Fatalf("unauthenticated GetSystemInfo code = %v, want unauthenticated", errorCode(err))
 	}
 
 	member, err := env.core.CreateUser(env.ctx, core.SystemActorID, "diagnostics-member", "Diagnostics Member", "password")
 	if err != nil {
 		t.Fatalf("CreateUser member: %v", err)
 	}
-	if _, err := env.adminDiagnostics.GetSystemInfo(withCaller(env.ctx, member), connect.NewRequest(&adminv1.GetSystemInfoRequest{})); connect.CodeOf(err) != connect.CodePermissionDenied {
-		t.Fatalf("non-owner GetSystemInfo code = %v, want permission denied", connect.CodeOf(err))
+	if _, err := env.adminDiagnostics.GetSystemInfo(withCaller(env.ctx, member), connect.NewRequest(&adminv1.GetSystemInfoRequest{})); errorCode(err) != connect.CodePermissionDenied {
+		t.Fatalf("non-owner GetSystemInfo code = %v, want permission denied", errorCode(err))
 	}
 
 	if err := env.core.AssignServerRole(env.ctx, core.SystemActorID, env.viewer.Id, core.RoleOwner); err != nil {
@@ -1412,16 +1498,16 @@ func TestAdminAssetCleanupUnavailableStatusMapping(t *testing.T) {
 func TestAdminEventLogServiceListsFiltersAndReadsEntries(t *testing.T) {
 	env := newConnectAPITestEnv(t)
 
-	if _, err := env.adminEventLog.ListEvents(env.ctx, connect.NewRequest(&adminv1.ListEventsRequest{})); connect.CodeOf(err) != connect.CodeUnauthenticated {
-		t.Fatalf("unauthenticated ListEvents code = %v, want unauthenticated", connect.CodeOf(err))
+	if _, err := env.adminEventLog.ListEvents(env.ctx, connect.NewRequest(&adminv1.ListEventsRequest{})); errorCode(err) != connect.CodeUnauthenticated {
+		t.Fatalf("unauthenticated ListEvents code = %v, want unauthenticated", errorCode(err))
 	}
 
 	member, err := env.core.CreateUser(env.ctx, core.SystemActorID, "event-log-member", "Event Log Member", "password")
 	if err != nil {
 		t.Fatalf("CreateUser member: %v", err)
 	}
-	if _, err := env.adminEventLog.ListEvents(withCaller(env.ctx, member), connect.NewRequest(&adminv1.ListEventsRequest{})); connect.CodeOf(err) != connect.CodePermissionDenied {
-		t.Fatalf("non-auditor ListEvents code = %v, want permission denied", connect.CodeOf(err))
+	if _, err := env.adminEventLog.ListEvents(withCaller(env.ctx, member), connect.NewRequest(&adminv1.ListEventsRequest{})); errorCode(err) != connect.CodePermissionDenied {
+		t.Fatalf("non-auditor ListEvents code = %v, want permission denied", errorCode(err))
 	}
 
 	if err := env.core.GrantUserPermission(env.ctx, core.SystemActorID, env.viewer.Id, core.PermAdminAuditView); err != nil {
@@ -1505,11 +1591,11 @@ func TestAdminEventLogServiceListsFiltersAndReadsEntries(t *testing.T) {
 		t.Fatalf("GetEvent entry = %+v, want payload for sequence %s", getResp.Msg.GetEntry(), entry.GetSequence())
 	}
 
-	if _, err := env.adminEventLog.GetEvent(ctx, connect.NewRequest(&adminv1.GetEventRequest{Sequence: "9999999"})); connect.CodeOf(err) != connect.CodeNotFound {
-		t.Fatalf("missing GetEvent code = %v, want not_found", connect.CodeOf(err))
+	if _, err := env.adminEventLog.GetEvent(ctx, connect.NewRequest(&adminv1.GetEventRequest{Sequence: "9999999"})); errorCode(err) != connect.CodeNotFound {
+		t.Fatalf("missing GetEvent code = %v, want not_found", errorCode(err))
 	}
-	if _, err := env.adminEventLog.GetEvent(ctx, connect.NewRequest(&adminv1.GetEventRequest{Sequence: "not-a-number"})); connect.CodeOf(err) != connect.CodeInvalidArgument {
-		t.Fatalf("invalid sequence code = %v, want invalid_argument", connect.CodeOf(err))
+	if _, err := env.adminEventLog.GetEvent(ctx, connect.NewRequest(&adminv1.GetEventRequest{Sequence: "not-a-number"})); errorCode(err) != connect.CodeInvalidArgument {
+		t.Fatalf("invalid sequence code = %v, want invalid_argument", errorCode(err))
 	}
 }
 
@@ -1587,8 +1673,8 @@ func TestAdminRoomLayoutServiceCreateRoomGroupRequiresRoomManage(t *testing.T) {
 	}
 	if _, err := env.adminLayout.UpdateRoomGroup(withCaller(env.ctx, env.viewer), connect.NewRequest(&adminv1.UpdateRoomGroupRequest{
 		GroupId: resp.Msg.GetGroup().GetId(),
-	})); connect.CodeOf(err) != connect.CodeInvalidArgument {
-		t.Fatalf("empty UpdateRoomGroup code = %v, want invalid argument", connect.CodeOf(err))
+	})); errorCode(err) != connect.CodeInvalidArgument {
+		t.Fatalf("empty UpdateRoomGroup code = %v, want invalid argument", errorCode(err))
 	}
 	partialResp, err := env.adminLayout.UpdateRoomGroup(withCaller(env.ctx, env.viewer), connect.NewRequest(&adminv1.UpdateRoomGroupRequest{
 		GroupId:     resp.Msg.GetGroup().GetId(),
@@ -1620,8 +1706,8 @@ func TestAdminRoomLayoutServiceManagementReadsDoNotRequireDirectoryVisibility(t 
 		t.Fatalf("GrantUserPermission role.manage: %v", err)
 	}
 	ctx := withCaller(env.ctx, roleManager)
-	if _, err := env.directory.GetRoom(ctx, connect.NewRequest(&apiv1.GetRoomRequest{RoomId: room.Id})); connect.CodeOf(err) != connect.CodePermissionDenied {
-		t.Fatalf("directory GetRoom code = %v, want permission_denied", connect.CodeOf(err))
+	if _, err := env.directory.GetRoom(ctx, connect.NewRequest(&apiv1.GetRoomRequest{RoomId: room.Id})); errorCode(err) != connect.CodePermissionDenied {
+		t.Fatalf("directory GetRoom code = %v, want permission_denied", errorCode(err))
 	}
 	roomResp, err := env.adminLayout.GetRoom(ctx, connect.NewRequest(&adminv1.GetRoomRequest{RoomId: room.Id}))
 	if err != nil {
@@ -1681,8 +1767,8 @@ func TestAdminRoomLayoutServiceCreateSidebarLinkRequiresRoomManage(t *testing.T)
 	}
 	if _, err := env.adminLayout.UpdateSidebarLink(withCaller(env.ctx, env.viewer), connect.NewRequest(&adminv1.UpdateSidebarLinkRequest{
 		LinkId: resp.Msg.GetSidebarLink().GetId(),
-	})); connect.CodeOf(err) != connect.CodeInvalidArgument {
-		t.Fatalf("empty UpdateSidebarLink code = %v, want invalid argument", connect.CodeOf(err))
+	})); errorCode(err) != connect.CodeInvalidArgument {
+		t.Fatalf("empty UpdateSidebarLink code = %v, want invalid argument", errorCode(err))
 	}
 	partialResp, err := env.adminLayout.UpdateSidebarLink(withCaller(env.ctx, env.viewer), connect.NewRequest(&adminv1.UpdateSidebarLinkRequest{
 		LinkId: resp.Msg.GetSidebarLink().GetId(),
@@ -1723,13 +1809,11 @@ func TestAdminRoomLayoutServiceRelativePlacements(t *testing.T) {
 
 	moveResp, err := env.adminLayout.MoveSidebarItem(ctx, connect.NewRequest(&adminv1.MoveSidebarItemRequest{
 		Item: &adminv1.AdminRoomLayoutItemInput{
-			Kind: adminv1.AdminRoomLayoutItemKind_ADMIN_ROOM_LAYOUT_ITEM_KIND_SIDEBAR_LINK,
-			Id:   linkResp.Msg.GetSidebarLink().GetId(),
+			Item: &adminv1.AdminRoomLayoutItemInput_SidebarLinkId{SidebarLinkId: linkResp.Msg.GetSidebarLink().GetId()},
 		},
 		GroupId: secondGroupID,
 		Before: &adminv1.AdminRoomLayoutItemInput{
-			Kind: adminv1.AdminRoomLayoutItemKind_ADMIN_ROOM_LAYOUT_ITEM_KIND_ROOM,
-			Id:   room.GetId(),
+			Item: &adminv1.AdminRoomLayoutItemInput_RoomId{RoomId: room.GetId()},
 		},
 	}))
 	if err != nil {
@@ -1750,5 +1834,42 @@ func TestAdminRoomLayoutServiceRelativePlacements(t *testing.T) {
 	groups := groupMoveResp.Msg.GetGroups()
 	if len(groups) < 2 || groups[0].GetId() != secondGroupID || groups[1].GetId() != firstGroupID {
 		t.Fatalf("moved room groups = %+v, want second group before first", groups)
+	}
+}
+
+// Check the public JSON boundary before any layout mutation can run.
+func TestSidebarItemJSONRejectsInvalidReferences(t *testing.T) {
+	env := newConnectAPITestEnv(t)
+	mux := http.NewServeMux()
+	for _, handler := range env.api.Handlers() {
+		mux.Handle(handler.ServicePath, handler.Handler)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mux.ServeHTTP(w, r.WithContext(withCaller(r.Context(), env.viewer)))
+	}))
+	t.Cleanup(server.Close)
+	for _, body := range []string{
+		`{"groupId":"group","item":{}}`,
+		`{"groupId":"group","item":{"roomId":""}}`,
+		`{"groupId":"group","item":{"sidebarLinkId":""}}`,
+		`{"groupId":"group","item":{"roomId":"room","sidebarLinkId":"link"}}`,
+		`{"groupId":"group","item":{"roomId":"room"},"before":{}}`,
+	} {
+		t.Run(body, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodPost, server.URL+"/chatto.admin.v1.AdminRoomLayoutService/MoveSidebarItem", strings.NewReader(body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Connect-Protocol-Version", "1")
+			resp, err := server.Client().Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400", resp.StatusCode)
+			}
+		})
 	}
 }

@@ -1,11 +1,11 @@
 <script lang="ts">
+  import { errorMessage } from '$lib/utils/errorMessage';
   import { m } from '$lib/i18n/messages';
   import { getLocale } from '$lib/i18n/runtime';
   import { useServerScope } from '$lib/state/server/scope.svelte';
-  import { createAccountAPI, type UpdateSettingsInput } from '$lib/api-client/account';
-  import Panel from '$lib/ui/Panel.svelte';
+  import { createAccountAPI, type UpdateSettingsInput } from '@chatto/client/api/account';
+  import { Panel, PageTitle, ChoiceRow, FormSection, Hint, PaneContent, PaneHeader } from '$lib/ui';
   import { TimeFormat } from '@chatto/api-types/api/v1/viewer_pb';
-  import { ChoiceRow, FormSection, Hint, PaneContent, PaneHeader } from '$lib/ui';
   import { Button, Checkbox, Combobox, FormError } from '$lib/ui/form';
   import { toast } from '$lib/ui/toast';
   import { formatMessageTime, hour12ForTimeFormat } from '$lib/utils/formatTime';
@@ -56,7 +56,7 @@
   // Track if the form has been modified
   const isModified = $derived(
     settingsInitialized &&
-      ((selectedTimezone || null) !== (savedSettings?.timezone ?? null) ||
+      ((selectedTimezone || null) !== (savedSettings?.timezone || null) ||
         selectedTimeFormat !== (savedSettings?.timeFormat ?? TimeFormat.TIME_FORMAT_AUTO) ||
         (savedSettings?.shareTimezone !== undefined &&
           shareTimezone !== savedSettings.shareTimezone))
@@ -87,6 +87,12 @@
     if (!text || allTimezones.includes(text)) selectedTimezone = text;
   }
 
+  function handleSubmit(event: SubmitEvent) {
+    event.preventDefault();
+    if (!isModified || isSaving || timezoneError) return;
+    void handleSave();
+  }
+
   async function handleSave() {
     // Validate timezone if set
     if (timezoneSearch && !allTimezones.includes(timezoneSearch)) {
@@ -96,10 +102,11 @@
 
     isSaving = true;
     error = '';
+    const userId = serverScope.store.accountId;
 
     try {
       const input: UpdateSettingsInput = {};
-      if ((selectedTimezone || null) !== (savedSettings?.timezone ?? null)) {
+      if ((selectedTimezone || null) !== (savedSettings?.timezone || null)) {
         input.timezone = selectedTimezone || null;
       }
       if (selectedTimeFormat !== (savedSettings?.timeFormat ?? TimeFormat.TIME_FORMAT_AUTO)) {
@@ -110,17 +117,12 @@
       }
       const settings = await accountAPI().updateSettings(input);
       if (!serverScope.isCurrent()) return;
-      if (currentUser.user) {
-        currentUser.user = {
-          ...currentUser.user,
-          settings
-        };
-      }
+      currentUser.update(userId, () => ({ settings }));
 
       toast.success(m('settings.preferences.saved'));
     } catch (err) {
       if (!serverScope.isCurrent()) return;
-      error = err instanceof Error ? err.message : m('settings.preferences.save_failed');
+      error = errorMessage(err, m('settings.preferences.save_failed'));
     } finally {
       if (serverScope.isCurrent()) isSaving = false;
     }
@@ -149,100 +151,103 @@
   }>);
 </script>
 
-<PaneHeader
-  title={m('settings.preferences.title')}
-  subtitle={m('settings.preferences.subtitle')}
-  showMobileNav
-/>
+<PageTitle title={m('settings.preferences.title')} />
 
-<PaneContent>
-  <Panel title={m('settings.preferences.title')} icon="iconify icon-[uil--clock-three]">
-    <div class="flex max-w-md flex-col gap-6">
-      <FormSection title={m('settings.preferences.timezone.title')}>
-        <Combobox
-          id="timezone"
-          testid="timezone-input"
-          label={m('settings.preferences.timezone.title')}
-          labelHidden
-          description={m('settings.preferences.timezone.description')}
-          error={timezoneError}
-          items={displayedTimezones}
-          getValue={(timezone) => timezone}
-          getLabel={(timezone) => timezone}
-          placeholder={m('settings.preferences.timezone.browser_default')}
-          clearLabel={m('settings.preferences.timezone.clear')}
-          allowFreeform={false}
-          disabled={!settingsInitialized}
-          bind:value={selectedTimezone}
-          bind:text={timezoneSearch}
-          ontextchange={handleTimezoneTextChange}
-        />
+<div class="pane-page">
+  <PaneHeader
+    title={m('settings.preferences.title')}
+    subtitle={m('settings.preferences.subtitle')}
+  />
 
-        {#if selectedTimezoneTime}
-          <p class="mt-1 text-sm text-muted">
-            {m('settings.preferences.timezone.current_time', {
-              time: selectedTimezoneTime
-            })}
-          </p>
-        {/if}
-      </FormSection>
-
-      <FormSection title={m('settings.preferences.timezone_sharing.title')} bordered>
-        {#if !settingsInitialized}
-          <Checkbox
-            id="share-timezone"
-            label={m('settings.preferences.timezone_sharing.label')}
-            description={m('settings.preferences.timezone_sharing.description')}
-            disabled
-            bind:checked={shareTimezone}
-          />
-        {:else if supportsTimezoneSharing}
-          <Checkbox
-            id="share-timezone"
-            label={m('settings.preferences.timezone_sharing.label')}
-            description={m('settings.preferences.timezone_sharing.description')}
+  <PaneContent>
+    <Panel title={m('settings.preferences.title')} icon="iconify icon-[uil--clock-three]">
+      <form class="flex max-w-md flex-col gap-6" onsubmit={handleSubmit}>
+        <FormSection title={m('settings.preferences.timezone.title')}>
+          <Combobox
+            id="timezone"
+            testid="timezone-input"
+            label={m('settings.preferences.timezone.title')}
+            labelHidden
+            description={m('settings.preferences.timezone.description')}
+            error={timezoneError}
+            items={displayedTimezones}
+            getValue={(timezone) => timezone}
+            getLabel={(timezone) => timezone}
+            placeholder={m('settings.preferences.timezone.browser_default')}
+            clearLabel={m('settings.preferences.timezone.clear')}
+            allowFreeform={false}
             disabled={!settingsInitialized}
-            bind:checked={shareTimezone}
+            bind:value={selectedTimezone}
+            bind:text={timezoneSearch}
+            ontextchange={handleTimezoneTextChange}
           />
-        {:else}
-          <Hint tone="warning">
-            {m('settings.preferences.timezone_sharing.unsupported')}
-          </Hint>
-        {/if}
-      </FormSection>
 
-      <FormSection title={m('settings.preferences.time_format.title')} bordered>
-        <div
-          class="flex flex-col gap-2"
-          role="radiogroup"
-          aria-label={m('settings.preferences.time_format.title')}
-        >
-          {#each timeFormatOptions as option (option.value)}
-            {@const isSelected = selectedTimeFormat === option.value}
-            <ChoiceRow
-              label={option.label}
-              description={option.description}
-              selected={isSelected}
-              disabled={!settingsInitialized}
-              onclick={() => (selectedTimeFormat = option.value)}
+          {#if selectedTimezoneTime}
+            <p class="mt-1 text-sm text-muted">
+              {m('settings.preferences.timezone.current_time', {
+                time: selectedTimezoneTime
+              })}
+            </p>
+          {/if}
+        </FormSection>
+
+        <FormSection title={m('settings.preferences.timezone_sharing.title')} bordered>
+          {#if !settingsInitialized}
+            <Checkbox
+              id="share-timezone"
+              label={m('settings.preferences.timezone_sharing.label')}
+              description={m('settings.preferences.timezone_sharing.description')}
+              disabled
+              bind:checked={shareTimezone}
             />
-          {/each}
+          {:else if supportsTimezoneSharing}
+            <Checkbox
+              id="share-timezone"
+              label={m('settings.preferences.timezone_sharing.label')}
+              description={m('settings.preferences.timezone_sharing.description')}
+              disabled={!settingsInitialized}
+              bind:checked={shareTimezone}
+            />
+          {:else}
+            <Hint tone="warning">
+              {m('settings.preferences.timezone_sharing.unsupported')}
+            </Hint>
+          {/if}
+        </FormSection>
+
+        <FormSection title={m('settings.preferences.time_format.title')} bordered>
+          <div
+            class="flex flex-col gap-2"
+            role="radiogroup"
+            aria-label={m('settings.preferences.time_format.title')}
+          >
+            {#each timeFormatOptions as option (option.value)}
+              {@const isSelected = selectedTimeFormat === option.value}
+              <ChoiceRow
+                label={option.label}
+                description={option.description}
+                selected={isSelected}
+                disabled={!settingsInitialized}
+                onclick={() => (selectedTimeFormat = option.value)}
+              />
+            {/each}
+          </div>
+        </FormSection>
+
+        {#if error}
+          <FormError {error} />
+        {/if}
+
+        <div class="flex gap-2">
+          <Button
+            type="submit"
+            disabled={!isModified || isSaving || !!timezoneError}
+            loading={isSaving}
+          >
+            {m('settings.preferences.save_button')}
+          </Button>
         </div>
-      </FormSection>
-
-      {#if error}
-        <FormError {error} />
-      {/if}
-
-      <div class="flex gap-2">
-        <Button
-          onclick={handleSave}
-          disabled={!isModified || isSaving || !!timezoneError}
-          loading={isSaving}
-        >
-          {m('settings.preferences.save_button')}
-        </Button>
-      </div>
-    </div>
-  </Panel>
-</PaneContent>
+      </form>
+    </Panel>
+  </PaneContent>
+</div>

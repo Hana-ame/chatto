@@ -77,7 +77,7 @@ Request to list durable EVT entries newest-first.
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `limit` | `int32` | Maximum entries to return. The server clamps this to its diagnostic limit. |
+| `limit` | `int32` | Maximum entries. Zero uses 50; values above 200 use 200. |
 | `before` | `optional string` | Exclusive sequence cursor. Returned entries are older than this sequence. |
 | `filter` | [`AdminEventLogFilter`](#chatto-admin-v1-AdminEventLogFilter) | Optional filter. Filtered scans inspect a bounded window per request. |
 
@@ -185,7 +185,7 @@ Requests a page of invite links, newest first.
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `page` | `chatto.api.v1.PageRequest` | No field description provided. |
+| `page` | `chatto.api.v1.PageRequest` | Defaults to 20 results when absent or limit is zero. Maximum: 100. |
 
 
 <a id="chatto-admin-v1-ListInviteLinksResponse"></a>
@@ -341,8 +341,7 @@ Finite role catalog snapshot plus viewer role-management capabilities.
 ### GetRole
 
 Gets one role plus admin detail metadata. Returns NOT_FOUND when the
-role does not exist. Requires an authenticated user; the assigned-user
-roster is empty unless the caller may assign roles.
+role does not exist. Requires an authenticated user.
 
 ```http
 POST /api/connect/chatto.admin.v1.AdminRoleService/GetRole
@@ -368,9 +367,45 @@ One role plus role-management metadata.
 | Field | Type | Description |
 | --- | --- | --- |
 | `role` | [`AdminRole`](#chatto-admin-v1-AdminRole) | Requested role. |
-| `users` | `repeated chatto.api.v1.User` | Explicit users with this role. Empty unless the caller may assign roles. |
 | `viewer_can_manage_roles` | `bool` | Whether the caller may create/update/delete role definitions. |
 | `viewer_can_assign_roles` | `bool` | Whether the caller may assign/revoke roles and view role rosters. |
+
+
+<a id="chatto-admin-v1-AdminRoleService-ListMembers"></a>
+
+### ListMembers
+
+Lists explicit role members. Requires role.assign, without requiring
+admin.view-users. Returns NOT_FOUND when the role does not exist.
+
+```http
+POST /api/connect/chatto.admin.v1.AdminRoleService/ListMembers
+```
+
+<a id="chatto-admin-v1-AdminRoleServiceListMembersRequest"></a>
+
+#### Input: AdminRoleServiceListMembersRequest
+
+Request a page of explicit role members.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `name` | `string` | Stable role name. |
+| `page` | `chatto.api.v1.PageRequest` | Defaults to 20 members; capped at 100. Offset counts explicit assignments. |
+
+
+<a id="chatto-admin-v1-AdminRoleServiceListMembersResponse"></a>
+
+#### Result: AdminRoleServiceListMembersResponse
+
+Explicit members sorted by user ID. Each page is a live read; assignment
+changes between requests can shift offsets. The implicit everyone role has
+no explicit members. Revoked assignments are excluded.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `members` | `repeated chatto.api.v1.User` | Canonical public user records for the selected assignments. |
+| `page` | `chatto.api.v1.PageInfo` | Total explicit assignment count and whether another page exists. |
 
 
 <a id="chatto-admin-v1-AdminRoleService-CreateRole"></a>
@@ -430,6 +465,7 @@ Request to update role metadata.
 | `display_name` | `optional string` | Display name shown in admin and mention UIs, when changing it. |
 | `description` | `optional string` | Role description, when changing it. Empty clears the description. |
 | `pingable` | `optional bool` | Whether messages may notify users assigned to this role, when changing it. |
+| `update_mask` | `google.protobuf.FieldMask` | Editable fields to apply or reset: display_name, description, pingable. Omit to infer populated fields; * selects all editable fields. An explicit empty mask is invalid. Unselected values are ignored. Selected absent values reset the field to its default, subject to field validation. |
 
 
 <a id="chatto-admin-v1-UpdateRoleResponse"></a>
@@ -469,10 +505,6 @@ Request to delete a role.
 #### Result: DeleteRoleResponse
 
 Result of deleting a role.
-
-| Field | Type | Description |
-| --- | --- | --- |
-| `deleted` | `bool` | True when the request completed. |
 
 
 <a id="chatto-admin-v1-AdminRoleService-ReorderRoles"></a>
@@ -528,25 +560,28 @@ POST /api/connect/chatto.admin.v1.AdminUserService/ListMembers
 
 #### Input: ListMembersRequest
 
-Request server-admin member rows.
+Request server-admin member IDs.
+Results use creation time, oldest first. Users without a creation time
+appear last, ordered by case-insensitive login. User IDs break ties.
 
 | Field | Type | Description |
 | --- | --- | --- |
 | `search` | `string` | Case-insensitive login/display-name search term. Empty disables search. |
-| `page` | `chatto.api.v1.PageRequest` | Page request. Defaults to 20 results when absent or limit is zero. |
+| `page` | `chatto.api.v1.PageRequest` | Defaults to 20 results when absent or limit is zero. Maximum: 100. |
 
 
 <a id="chatto-admin-v1-ListMembersResponse"></a>
 
 #### Result: ListMembersResponse
 
-Server-admin member rows plus role summaries.
+Ordered server-admin member IDs. Load rows and role summaries with
+BatchGetMembers. Advance the offset by the number of IDs, including IDs
+omitted by a later batch read.
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `members` | repeated [`AdminMember`](#chatto-admin-v1-AdminMember) | Matching members. |
-| `roles` | `repeated chatto.api.v1.Role` | Public roles for display-name lookup. |
 | `page` | `chatto.api.v1.PageInfo` | Page metadata. |
+| `user_ids` | `repeated string` | Matching member IDs in list order. |
 
 
 <a id="chatto-admin-v1-AdminUserService-GetMember"></a>
@@ -692,57 +727,21 @@ Result of revoking a role.
 | `member` | [`AdminMember`](#chatto-admin-v1-AdminMember) | Updated admin member row. |
 
 
-<a id="chatto-admin-v1-AdminUserService-UpdateUser"></a>
+<a id="chatto-admin-v1-AdminUserService-ChangeUserPassword"></a>
 
-### UpdateUser
-
-Updates another user's login and/or display name as an admin action.
-Requires user.manage-accounts; the caller cannot target their own account.
-
-```http
-POST /api/connect/chatto.admin.v1.AdminUserService/UpdateUser
-```
-
-<a id="chatto-admin-v1-UpdateUserRequest"></a>
-
-#### Input: UpdateUserRequest
-
-Request to update a user's identity as a server-admin action.
-
-| Field | Type | Description |
-| --- | --- | --- |
-| `user_id` | `string` | Target user ID. |
-| `display_name` | `optional string` | New display name, when changing it. Empty clears the explicit display name. The server also rejects control and confusing invisible characters. |
-| `login` | `optional string` | New login identifier, when changing it. The server accepts ASCII letters, digits, period, underscore, and hyphen, starting with a letter or digit. |
-
-
-<a id="chatto-admin-v1-UpdateUserResponse"></a>
-
-#### Result: UpdateUserResponse
-
-Result of an admin user update.
-
-| Field | Type | Description |
-| --- | --- | --- |
-| `user` | `chatto.api.v1.User` | Updated user profile. |
-| `member` | [`AdminMember`](#chatto-admin-v1-AdminMember) | Updated admin member row. |
-
-
-<a id="chatto-admin-v1-AdminUserService-UpdateUserPassword"></a>
-
-### UpdateUserPassword
+### ChangeUserPassword
 
 Updates another user's password as an admin action. Requires
 user.manage-accounts and a fresh credential for the caller; the caller
 cannot target their own account.
 
 ```http
-POST /api/connect/chatto.admin.v1.AdminUserService/UpdateUserPassword
+POST /api/connect/chatto.admin.v1.AdminUserService/ChangeUserPassword
 ```
 
-<a id="chatto-admin-v1-UpdateUserPasswordRequest"></a>
+<a id="chatto-admin-v1-ChangeUserPasswordRequest"></a>
 
-#### Input: UpdateUserPasswordRequest
+#### Input: ChangeUserPasswordRequest
 
 Request to update a user's password as a server-admin action.
 
@@ -752,9 +751,9 @@ Request to update a user's password as a server-admin action.
 | `password` | `string` | New password. The server applies the same password policy as registration and password reset. |
 
 
-<a id="chatto-admin-v1-UpdateUserPasswordResponse"></a>
+<a id="chatto-admin-v1-ChangeUserPasswordResponse"></a>
 
-#### Result: UpdateUserPasswordResponse
+#### Result: ChangeUserPasswordResponse
 
 Result of an admin password update.
 
@@ -768,7 +767,7 @@ Result of an admin password update.
 ### ClearUsernameCooldown
 
 Clears the target user's self-service username-change cooldown. Requires
-user.manage-accounts.
+user.manage-accounts, including when the caller targets their own account.
 
 ```http
 POST /api/connect/chatto.admin.v1.AdminUserService/ClearUsernameCooldown
@@ -790,10 +789,6 @@ Request to clear a user's self-service username-change cooldown.
 #### Result: ClearUsernameCooldownResponse
 
 Result of clearing a user's username-change cooldown.
-
-| Field | Type | Description |
-| --- | --- | --- |
-| `cleared` | `bool` | True when the request completed. |
 
 
 <a id="chatto-admin-v1-AdminUserService-DeleteUser"></a>
@@ -824,10 +819,6 @@ Request to delete a user account as a server-admin action.
 
 Result of deleting a user account.
 
-| Field | Type | Description |
-| --- | --- | --- |
-| `deleted` | `bool` | True when the user was deleted. |
-
 
 <a id="chatto-admin-v1-AdminOAuthClientService"></a>
 
@@ -850,10 +841,11 @@ POST /api/connect/chatto.admin.v1.AdminOAuthClientService/ListOAuthClients
 #### Input: ListOAuthClientsRequest
 
 Lists OAuth clients with recorded authorizations using offset pagination.
+Results use first authorization order, oldest first.
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `page` | `chatto.api.v1.PageRequest` | Requested offset and page size. |
+| `page` | `chatto.api.v1.PageRequest` | Defaults to 20 results when absent or limit is zero. Maximum: 100. |
 
 
 <a id="chatto-admin-v1-ListOAuthClientsResponse"></a>
@@ -919,7 +911,8 @@ Replaces the administrative policy for one OAuth client.
 | Field | Type | Description |
 | --- | --- | --- |
 | `client_id` | `string` | Exact CIMD URL or built-in application URI. |
-| `policy` | [`OAuthClientPolicy`](#chatto-admin-v1-OAuthClientPolicy) | New complete policy value. Default removes any trusted or blocked label. |
+| `policy` | [`OauthClientPolicy`](#chatto-admin-v1-OauthClientPolicy) | New complete policy value. Default removes any trusted or blocked label. |
+| `update_mask` | `google.protobuf.FieldMask` | Editable fields to apply or reset: policy. Omit to infer populated fields; * selects all editable fields. An explicit empty mask is invalid. Unselected values are ignored. Selected absent values reset the field to its default, subject to field validation. |
 
 
 <a id="chatto-admin-v1-UpdateOAuthClientPolicyResponse"></a>
@@ -937,7 +930,13 @@ Returns the OAuth client with its updated policy.
 
 ## AdminPermissionService
 
-Provides permission matrix reads and admin permission writes.
+Provides permission reads and admin permission writes.
+Matrix and decision pages use the same scope order: SERVER, DM, then each GROUP
+followed by its ROOM scopes. Groups and rooms within each group use ascending
+resource IDs. Only requested scopes are evaluated.
+Pages are live reads; layout or visibility changes can shift offsets. Keep the
+same filters on each request and advance by the number of returned scopes.
+A scope filter of DM selects DM even when include_direct_message_scope is false.
 
 <a id="chatto-admin-v1-AdminPermissionService-GetRolePermissionTierMatrix"></a>
 
@@ -977,7 +976,7 @@ Response containing a role-permission tier matrix.
 
 ### GetRolePermissionMatrix
 
-Gets one role's full permission matrix. Requires role.manage. Returns
+Gets one page of a role's permission matrix. Requires role.manage. Returns
 NOT_FOUND when the role does not exist.
 
 ```http
@@ -993,6 +992,9 @@ Request one role's permission matrix.
 | Field | Type | Description |
 | --- | --- | --- |
 | `role_name` | `string` | Stable role name. |
+| `include_direct_message_scope` | `bool` | Include the direct-message scope column. Defaults to false so an older client does not receive a scope kind that it cannot interpret. |
+| `page` | `chatto.api.v1.PageRequest` | Scope page. Default 20 scopes, maximum 100. Offsets count scopes, not decisions. |
+| `scope` | [`PermissionScope`](#chatto-admin-v1-PermissionScope) | Optional exact scope filter. Missing or inaccessible scopes produce an empty page. SERVER and DM require an empty ID; GROUP and ROOM require an ID. |
 
 
 <a id="chatto-admin-v1-GetRolePermissionMatrixResponse"></a>
@@ -1004,6 +1006,7 @@ Response containing one role's permission matrix.
 | Field | Type | Description |
 | --- | --- | --- |
 | `matrix` | [`RolePermissionMatrix`](#chatto-admin-v1-RolePermissionMatrix) | Requested matrix. |
+| `page` | `chatto.api.v1.PageInfo` | Total matching scopes and whether another scope page exists. |
 
 
 <a id="chatto-admin-v1-AdminPermissionService-ListRolePermissionDecisions"></a>
@@ -1026,6 +1029,9 @@ Request explicit/effective permission decisions for one role.
 | Field | Type | Description |
 | --- | --- | --- |
 | `role_name` | `string` | Stable role name. |
+| `include_direct_message_scope` | `bool` | Include direct-message decisions. Defaults to false for older clients. |
+| `page` | `chatto.api.v1.PageRequest` | Scope page. Default 20 scopes, maximum 100. Offsets count scopes, not decisions. |
+| `scope` | [`PermissionScope`](#chatto-admin-v1-PermissionScope) | Optional exact scope filter. Missing or inaccessible scopes produce an empty page. SERVER and DM require an empty ID; GROUP and ROOM require an ID. |
 
 
 <a id="chatto-admin-v1-ListRolePermissionDecisionsResponse"></a>
@@ -1038,13 +1044,15 @@ Resource-oriented permission decisions for one role.
 | --- | --- | --- |
 | `role_name` | `string` | Stable role name. |
 | `decisions` | repeated [`ScopedPermissionDecision`](#chatto-admin-v1-ScopedPermissionDecision) | Permission decisions keyed by permission and typed scope. |
+| `page` | `chatto.api.v1.PageInfo` | Total matching scopes and whether another scope page exists. |
+| `scopes` | repeated [`PermissionScope`](#chatto-admin-v1-PermissionScope) | Scopes in this page, including scopes with no applicable decisions. |
 
 
 <a id="chatto-admin-v1-AdminPermissionService-GetUserPermissionMatrix"></a>
 
 ### GetUserPermissionMatrix
 
-Gets one user's full permission matrix. Human targets require
+Gets one page of a user's permission matrix. Human targets require
 user.manage-permissions; bot targets require ownership or bot.manage.
 Returns NOT_FOUND when the user does not exist.
 
@@ -1061,6 +1069,9 @@ Request one user's permission matrix.
 | Field | Type | Description |
 | --- | --- | --- |
 | `user_id` | `string` | User ID. |
+| `include_direct_message_scope` | `bool` | Include the direct-message scope column. Defaults to false so an older client does not receive a scope kind that it cannot interpret. |
+| `page` | `chatto.api.v1.PageRequest` | Scope page. Default 20 scopes, maximum 100. Offsets count scopes, not decisions. |
+| `scope` | [`PermissionScope`](#chatto-admin-v1-PermissionScope) | Optional exact scope filter. Missing or inaccessible scopes produce an empty page. SERVER and DM require an empty ID; GROUP and ROOM require an ID. |
 
 
 <a id="chatto-admin-v1-GetUserPermissionMatrixResponse"></a>
@@ -1072,6 +1083,7 @@ Response containing one user's permission matrix.
 | Field | Type | Description |
 | --- | --- | --- |
 | `matrix` | [`UserPermissionMatrix`](#chatto-admin-v1-UserPermissionMatrix) | Requested matrix. |
+| `page` | `chatto.api.v1.PageInfo` | Total matching scopes and whether another scope page exists. |
 
 
 <a id="chatto-admin-v1-AdminPermissionService-ListUserPermissionDecisions"></a>
@@ -1095,6 +1107,9 @@ Request explicit/effective permission decisions for one user.
 | Field | Type | Description |
 | --- | --- | --- |
 | `user_id` | `string` | User ID. |
+| `include_direct_message_scope` | `bool` | Include direct-message decisions. Defaults to false for older clients. |
+| `page` | `chatto.api.v1.PageRequest` | Scope page. Default 20 scopes, maximum 100. Offsets count scopes, not decisions. |
+| `scope` | [`PermissionScope`](#chatto-admin-v1-PermissionScope) | Optional exact scope filter. Missing or inaccessible scopes produce an empty page. SERVER and DM require an empty ID; GROUP and ROOM require an ID. |
 
 
 <a id="chatto-admin-v1-ListUserPermissionDecisionsResponse"></a>
@@ -1107,6 +1122,8 @@ Resource-oriented permission decisions for one user.
 | --- | --- | --- |
 | `user_id` | `string` | User ID. |
 | `decisions` | repeated [`ScopedPermissionDecision`](#chatto-admin-v1-ScopedPermissionDecision) | Permission decisions keyed by permission and typed scope. |
+| `page` | `chatto.api.v1.PageInfo` | Total matching scopes and whether another scope page exists. |
+| `scopes` | repeated [`PermissionScope`](#chatto-admin-v1-PermissionScope) | Scopes in this page, including scopes with no applicable decisions. |
 
 
 <a id="chatto-admin-v1-AdminPermissionService-ExplainPermissions"></a>
@@ -1123,12 +1140,13 @@ POST /api/connect/chatto.admin.v1.AdminPermissionService/ExplainPermissions
 
 #### Input: ExplainPermissionsRequest
 
-Request permission explanations for a user at server or room scope.
+Request permission explanations for a user at a typed scope.
 
 | Field | Type | Description |
 | --- | --- | --- |
 | `user_id` | `string` | User whose permissions should be explained. |
-| `room_id` | `string` | Optional room scope. Omit for server-scoped permissions. |
+| `room_id` | `string` | Legacy room scope. Omit for server-scoped permissions. A request that also supplies scope must identify the same room. |
+| `scope` | [`PermissionScope`](#chatto-admin-v1-PermissionScope) | Optional typed target. Use DM with an empty ID for direct messages. Omit for server scope. This field replaces room_id for new clients. |
 
 
 <a id="chatto-admin-v1-ExplainPermissionsResponse"></a>
@@ -1374,6 +1392,7 @@ Request to update a room group.
 | `group_id` | `string` | Required room group ID. |
 | `name` | `optional string` | New group display name, when changing it. |
 | `description` | `optional string` | New public group description, when changing it. Empty clears the description. |
+| `update_mask` | `google.protobuf.FieldMask` | Editable fields to apply or reset: name, description. Omit to infer populated fields; * selects all editable fields. An explicit empty mask is invalid. Unselected values are ignored. Selected absent values reset the field to its default, subject to field validation. |
 
 
 <a id="chatto-admin-v1-UpdateRoomGroupResponse"></a>
@@ -1413,10 +1432,6 @@ Request to delete an empty room group.
 #### Result: DeleteRoomGroupResponse
 
 Result of deleting a room group.
-
-| Field | Type | Description |
-| --- | --- | --- |
-| `deleted` | `bool` | True when the room group was deleted. |
 
 
 <a id="chatto-admin-v1-AdminRoomLayoutService-ReorderRoomGroups"></a>
@@ -1646,6 +1661,7 @@ Request to update a sidebar link.
 | `link_id` | `string` | Required sidebar link ID. |
 | `label` | `optional string` | New display label, when changing it. |
 | `url` | `optional string` | New absolute http(s) URL or server-local path, when changing it. |
+| `update_mask` | `google.protobuf.FieldMask` | Editable fields to apply or reset: label, url. Omit to infer populated fields; * selects all editable fields. An explicit empty mask is invalid. Unselected values are ignored. Selected absent values reset the field to its default, subject to field validation. |
 
 
 <a id="chatto-admin-v1-UpdateSidebarLinkResponse"></a>
@@ -1685,10 +1701,6 @@ Request to delete a sidebar link.
 #### Result: DeleteSidebarLinkResponse
 
 Result of deleting a sidebar link.
-
-| Field | Type | Description |
-| --- | --- | --- |
-| `deleted` | `bool` | True when the sidebar link was deleted. |
 
 
 <a id="chatto-admin-v1-AdminRoomLayoutService-MoveSidebarLinkToGroup"></a>
@@ -1785,6 +1797,7 @@ Request to update runtime-editable server profile settings.
 | `description` | `optional string` | Optional short server description for OG link-preview metadata. Set to empty string to clear. |
 | `motd` | `optional string` | Optional message of the day for the header. Set to empty string to clear. |
 | `welcome_message` | `optional string` | Optional welcome message shown on the login page. Set to empty string to clear. |
+| `update_mask` | `google.protobuf.FieldMask` | Editable fields to apply or reset: server_name, description, motd, welcome_message. Omit to infer populated fields; * selects all editable fields. An explicit empty mask is invalid. Unselected values are ignored. Selected absent values reset the field to its default, subject to field validation. |
 
 
 <a id="chatto-admin-v1-UpdateServerConfigResponse"></a>
@@ -1967,7 +1980,8 @@ Request to update the server blocked-username list.
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `blocked_usernames` | `repeated string` | Blocked usernames. Empty entries are ignored and entries are normalized by the server. |
+| `blocked_usernames` | `repeated string` | Complete replacement list. Select blocked_usernames in update_mask and omit this field or send [] to clear the list. Empty entries are ignored and entries are normalized by the server. |
+| `update_mask` | `google.protobuf.FieldMask` | Editable fields to apply or reset: blocked_usernames. Omit to infer populated fields; * selects all editable fields. An explicit empty mask is invalid. Unselected values are ignored. Selected absent values reset the field to its default, subject to field validation. |
 
 
 <a id="chatto-admin-v1-UpdateBlockedUsernamesResponse"></a>
@@ -2096,6 +2110,7 @@ Request to change one advertised server origin.
 | `neighbor_id` | `string` | No field description provided. |
 | `origin` | `string` | No field description provided. |
 | `revision` | `string` | No field description provided. |
+| `update_mask` | `google.protobuf.FieldMask` | Editable fields to apply or reset: origin. Omit to infer populated fields; * selects all editable fields. An explicit empty mask is invalid. Unselected values are ignored. Selected absent values reset the field to its default, subject to field validation. |
 
 
 <a id="chatto-admin-v1-UpdateNeighborResponse"></a>
@@ -2440,8 +2455,9 @@ admin/member metadata with visibility controlled by the service.
 | `has_verified_email` | `bool` | Whether the caller may see that the user has a verified email and one exists. |
 | `verified_emails` | `repeated string` | Verified email addresses visible to the caller. |
 | `viewer_can_delete_account` | `bool` | Whether the caller may delete this account. |
-| `last_login_change` | `google.protobuf.Timestamp` | Last self-service username change, when visible and known. |
+| `last_login_change` | `google.protobuf.Timestamp` | Start of the current username-change cooldown, when visible and known. |
 | `user` | `chatto.api.v1.User` | Public identity fields for this user. |
+| `primary_verified_email` | `optional string` | Selected primary verified email visible to the caller. Absence can mean that no primary email exists or that the field is not visible. |
 
 
 
@@ -2456,8 +2472,8 @@ An OAuth client that completed at least one successful user authorization.
 | `client_id` | `string` | Stable client identifier: a CIMD URL or built-in application URI. |
 | `client_name` | `string` | Display name from validated client metadata. |
 | `client_origin` | `string` | Privacy-safe canonical origin derived from validated client metadata. |
-| `source` | [`OAuthClientSource`](#chatto-admin-v1-OAuthClientSource) | How the client identity was established. |
-| `policy` | [`OAuthClientPolicy`](#chatto-admin-v1-OAuthClientPolicy) | Current server-administrator policy for the client. |
+| `source` | [`OauthClientSource`](#chatto-admin-v1-OauthClientSource) | How the client identity was established. |
+| `policy` | [`OauthClientPolicy`](#chatto-admin-v1-OauthClientPolicy) | Current server-administrator policy for the client. |
 | `first_authorization_at` | `google.protobuf.Timestamp` | When this server first completed an authorization for the client. |
 | `last_authorization_at` | `google.protobuf.Timestamp` | When this server most recently completed an authorization for the client. |
 | `redirect_origins` | `repeated string` | Canonical web origins or native callback schemes seen during authorization. |
@@ -2474,7 +2490,7 @@ Stored permission decision returned after a write.
 | Field | Type | Description |
 | --- | --- | --- |
 | `permission` | `string` | Permission identifier. |
-| `scope` | [`PermissionScope`](#chatto-admin-v1-PermissionScope) | Server, group, or room scope this decision applies to. |
+| `scope` | [`PermissionScope`](#chatto-admin-v1-PermissionScope) | Server, direct-message, group, or room scope for this decision. |
 | `decision` | [`PermissionDecision`](#chatto-admin-v1-PermissionDecision) | Stored decision after the write. NONE means no explicit decision remains. |
 
 
@@ -2520,7 +2536,7 @@ Matrix column scope.
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `id` | `string` | Stable scope ID for the server, a group, or a room. |
+| `id` | `string` | Stable scope ID for the server, direct messages, a group, or a room. |
 | `label` | `string` | Human-readable label. |
 | `kind` | [`PermissionScopeKind`](#chatto-admin-v1-PermissionScopeKind) | Scope tier. |
 | `parent_group_id` | `string` | Parent group ID for room scopes. |
@@ -2536,7 +2552,7 @@ Permission scope reference.
 | Field | Type | Description |
 | --- | --- | --- |
 | `kind` | [`PermissionScopeKind`](#chatto-admin-v1-PermissionScopeKind) | Scope tier. |
-| `id` | `string` | Scope ID for group or room scope. Empty for server scope. |
+| `id` | `string` | Scope ID for group or room scope. Empty for server or direct-message scope. |
 
 
 
@@ -2559,7 +2575,7 @@ One explicit decision encountered while explaining a permission.
 
 ### RolePermissionMatrix
 
-Permission matrix for one role across all scopes.
+Permission matrix for one role within a scope page.
 
 | Field | Type | Description |
 | --- | --- | --- |
@@ -2582,7 +2598,7 @@ shape when building integrations that do not need matrix column joins.
 | Field | Type | Description |
 | --- | --- | --- |
 | `permission` | `string` | Permission identifier. |
-| `scope` | [`PermissionScope`](#chatto-admin-v1-PermissionScope) | Server, group, or room scope this decision applies to. |
+| `scope` | [`PermissionScope`](#chatto-admin-v1-PermissionScope) | Server, direct-message, group, or room scope for this decision. |
 | `override` | [`PermissionDecision`](#chatto-admin-v1-PermissionDecision) | Explicit decision stored at this scope. |
 | `effective` | [`PermissionDecision`](#chatto-admin-v1-PermissionDecision) | Effective decision after inherited broader scopes are applied. |
 
@@ -2633,7 +2649,7 @@ Role permission matrix for one tier.
 
 ### UserPermissionMatrix
 
-Permission matrix for one user across all scopes.
+Permission matrix for one user within a scope page.
 
 | Field | Type | Description |
 | --- | --- | --- |
@@ -2677,12 +2693,12 @@ One ordered sidebar item in an admin room group layout.
 
 ### AdminRoomLayoutItemInput
 
-One item reference in a sidebar order replacement.
+One room or sidebar link reference in a move or order replacement.
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `kind` | [`AdminRoomLayoutItemKind`](#chatto-admin-v1-AdminRoomLayoutItemKind) | Item kind. |
-| `id` | `string` | Room ID when kind is ROOM, sidebar link ID when kind is SIDEBAR_LINK. |
+| `item.room_id` | `string` | Channel room ID. |
+| `item.sidebar_link_id` | `string` | Sidebar link ID. |
 
 
 
@@ -2767,9 +2783,9 @@ Current lifecycle state of an invite link.
 | `INVITE_LINK_STATUS_REVOKED` | `4` | No value description provided. |
 
 
-<a id="chatto-admin-v1-OAuthClientPolicy"></a>
+<a id="chatto-admin-v1-OauthClientPolicy"></a>
 
-### OAuthClientPolicy
+### OauthClientPolicy
 
 Administrator policy for a public OAuth client. Trusted is an informational
 blessing and never bypasses individual user consent.
@@ -2782,9 +2798,9 @@ blessing and never bypasses individual user consent.
 | `OAUTH_CLIENT_POLICY_BLOCKED` | `3` | The client cannot authorize or use its existing OAuth access tokens. |
 
 
-<a id="chatto-admin-v1-OAuthClientSource"></a>
+<a id="chatto-admin-v1-OauthClientSource"></a>
 
-### OAuthClientSource
+### OauthClientSource
 
 How a public OAuth client establishes its identity with this server.
 
@@ -2821,6 +2837,7 @@ Level at which a permission explanation found a decision.
 | `PERMISSION_DECISION_LEVEL_SERVER` | `1` | Server-level role or user decision. |
 | `PERMISSION_DECISION_LEVEL_GROUP` | `2` | Room-group-level role or user decision. |
 | `PERMISSION_DECISION_LEVEL_ROOM` | `3` | Room-level role or user decision. |
+| `PERMISSION_DECISION_LEVEL_DM` | `4` | Direct-message-level role or user decision. |
 
 
 <a id="chatto-admin-v1-PermissionScopeKind"></a>
@@ -2835,16 +2852,4 @@ Scope tier for permission matrices and write requests.
 | `PERMISSION_SCOPE_KIND_SERVER` | `1` | Server tier. |
 | `PERMISSION_SCOPE_KIND_GROUP` | `2` | Room-group tier. |
 | `PERMISSION_SCOPE_KIND_ROOM` | `3` | Room tier. |
-
-
-<a id="chatto-admin-v1-AdminRoomLayoutItemKind"></a>
-
-### AdminRoomLayoutItemKind
-
-Sidebar item kind used in reorder requests.
-
-| Name | Number | Description |
-| --- | --- | --- |
-| `ADMIN_ROOM_LAYOUT_ITEM_KIND_UNSPECIFIED` | `0` | The item kind was not specified. |
-| `ADMIN_ROOM_LAYOUT_ITEM_KIND_ROOM` | `1` | Channel room entry. |
-| `ADMIN_ROOM_LAYOUT_ITEM_KIND_SIDEBAR_LINK` | `2` | Sidebar link entry. |
+| `PERMISSION_SCOPE_KIND_DM` | `4` | Server-wide direct-message tier. |

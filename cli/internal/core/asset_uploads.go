@@ -17,6 +17,7 @@ import (
 
 	"github.com/nats-io/nats.go/jetstream"
 	"google.golang.org/protobuf/proto"
+	"hmans.de/chatto/internal/assets"
 	evtv1 "hmans.de/chatto/internal/pb/chatto/core/evt/v1"
 )
 
@@ -25,10 +26,15 @@ const (
 	assetUploadTempObjectPrefix      = "asset-upload."
 	defaultAssetUploadSessionTTL     = 15 * time.Minute
 	defaultPendingAttachmentAssetTTL = 24 * time.Hour
-	defaultAssetUploadChunkSize      = 512 * 1024
 	assetUploadCleanupInterval       = 5 * time.Minute
 	assetUploadOrphanChunkMaxAge     = defaultAssetUploadSessionTTL + time.Hour
 )
+
+// DefaultAssetUploadChunkSize is the maximum chunk size in bytes for new
+// upload sessions. Larger chunks reduce acknowledgement waits on high-latency
+// connections. Transports must allow this payload plus request metadata.
+// Existing sessions retain the limit stored when they were created.
+const DefaultAssetUploadChunkSize = 10 * 1024 * 1024
 
 type AssetUploadStatus string
 
@@ -39,7 +45,11 @@ const (
 )
 
 type AssetUploadCreateInput struct {
-	ActorID     string
+	// ActorID is the authenticated user for a public upload or the mapped asset
+	// owner for an operator upload. The operator fact uses SystemActorID.
+	ActorID string
+	// Operator is set only by the private Operator API handler.
+	Operator    bool
 	RoomID      string
 	Filename    string
 	ContentType string
@@ -48,7 +58,9 @@ type AssetUploadCreateInput struct {
 }
 
 type AssetUploadChunkInput struct {
-	ActorID     string
+	ActorID string
+	// Operator selects a private upload session and requires SystemActorID.
+	Operator    bool
 	UploadID    string
 	Offset      int64
 	Content     []byte
@@ -56,18 +68,25 @@ type AssetUploadChunkInput struct {
 }
 
 type AssetUploadCompleteInput struct {
-	ActorID  string
+	ActorID string
+	// Operator selects a private upload session and requires SystemActorID.
+	Operator bool
 	UploadID string
 }
 
 type AssetUploadCancelInput struct {
-	ActorID  string
+	ActorID string
+	// Operator selects a private upload session and requires SystemActorID.
+	Operator bool
 	UploadID string
 }
 
 type AssetUploadSession struct {
-	UploadID        string            `json:"upload_id"`
-	ActorID         string            `json:"actor_id"`
+	UploadID string `json:"upload_id"`
+	// ActorID owns the asset, including when the upload was started by an operator.
+	ActorID string `json:"actor_id"`
+	// Operator prevents public upload calls from using this session.
+	Operator        bool              `json:"operator,omitempty"`
 	RoomID          string            `json:"room_id"`
 	Filename        string            `json:"filename"`
 	ContentType     string            `json:"content_type"`
@@ -107,7 +126,7 @@ func (m *AssetUploadModel) CreateUpload(ctx context.Context, input AssetUploadCr
 	if err := m.checkUploadSize(contentType, input.Size); err != nil {
 		return nil, err
 	}
-	if err := m.authorizeUpload(ctx, input.ActorID, input.RoomID); err != nil {
+	if err := m.authorizeUploadForSession(ctx, input.ActorID, input.RoomID, input.Operator); err != nil {
 		return nil, err
 	}
 
@@ -115,13 +134,14 @@ func (m *AssetUploadModel) CreateUpload(ctx context.Context, input AssetUploadCr
 	session := &AssetUploadSession{
 		UploadID:     NewAssetID(),
 		ActorID:      input.ActorID,
+		Operator:     input.Operator,
 		RoomID:       input.RoomID,
 		Filename:     filename,
 		ContentType:  contentType,
 		Size:         input.Size,
 		SHA256:       strings.ToLower(input.SHA256),
 		Status:       AssetUploadStatusOpen,
-		MaxChunkSize: defaultAssetUploadChunkSize,
+		MaxChunkSize: DefaultAssetUploadChunkSize,
 		ExpiresAt:    now.Add(defaultAssetUploadSessionTTL),
 	}
 	value, err := json.Marshal(session)
@@ -139,7 +159,7 @@ func (m *AssetUploadModel) GetUpload(ctx context.Context, actorID, uploadID stri
 	if err != nil {
 		return nil, err
 	}
-	if session.ActorID != actorID {
+	if session.ActorID != actorID || session.Operator {
 		return nil, ErrPermissionDenied
 	}
 	return session, nil
@@ -160,7 +180,7 @@ func (m *AssetUploadModel) UploadChunk(ctx context.Context, input AssetUploadChu
 	if err != nil {
 		return nil, err
 	}
-	if session.ActorID != input.ActorID {
+	if !uploadSessionMatches(session, input.ActorID, input.Operator) {
 		return nil, ErrPermissionDenied
 	}
 	if session.Status != AssetUploadStatusOpen {
@@ -198,7 +218,7 @@ func (m *AssetUploadModel) CompleteUpload(ctx context.Context, input AssetUpload
 	if err != nil {
 		return nil, nil, err
 	}
-	if session.ActorID != input.ActorID {
+	if !uploadSessionMatches(session, input.ActorID, input.Operator) {
 		return nil, nil, ErrPermissionDenied
 	}
 	if session.Status == AssetUploadStatusCompleted {
@@ -218,7 +238,7 @@ func (m *AssetUploadModel) CompleteUpload(ctx context.Context, input AssetUpload
 	if session.CommittedOffset != session.Size {
 		return nil, nil, invalidArgument("upload is incomplete")
 	}
-	if err := m.authorizeUpload(ctx, input.ActorID, session.RoomID); err != nil {
+	if err := m.authorizeUploadForSession(ctx, session.ActorID, session.RoomID, session.Operator); err != nil {
 		return nil, nil, err
 	}
 	tmp, err := m.materializeUpload(ctx, session)
@@ -233,7 +253,11 @@ func (m *AssetUploadModel) CompleteUpload(ctx context.Context, input AssetUpload
 	}
 	pendingExpiresAt := time.Now().Add(defaultPendingAttachmentAssetTTL)
 	needsVideoProcessing := m.core.VideoUploadsEnabled && AttachmentNeedsVideoProcessing(attachment, animatedGIF)
-	if err := m.core.assetModel.RecordUploadedPendingAttachmentAsset(ctx, input.ActorID, session.RoomID, attachment, session.SHA256, pendingExpiresAt, needsVideoProcessing); err != nil {
+	assetActorID := session.ActorID
+	if session.Operator {
+		assetActorID = SystemActorID
+	}
+	if err := m.core.assetModel.recordUploadedPendingAttachmentAsset(ctx, assetActorID, session.ActorID, session.RoomID, attachment, session.SHA256, pendingExpiresAt, needsVideoProcessing); err != nil {
 		m.core.mediaModel.DeleteAttachmentFromStorage(ctx, attachment)
 		return nil, nil, err
 	}
@@ -252,7 +276,7 @@ func (m *AssetUploadModel) CancelUpload(ctx context.Context, input AssetUploadCa
 	if err != nil {
 		return nil, err
 	}
-	if session.ActorID != input.ActorID {
+	if !uploadSessionMatches(session, input.ActorID, input.Operator) {
 		return nil, ErrPermissionDenied
 	}
 	if session.Status == AssetUploadStatusCompleted {
@@ -427,6 +451,35 @@ func (m *AssetUploadModel) authorizeUpload(ctx context.Context, actorID, roomID 
 	return nil
 }
 
+// authorizeUploadForSession keeps operator uploads separate from user uploads.
+// The private operator listener is the authority for the bypass path.
+func (m *AssetUploadModel) authorizeUploadForSession(ctx context.Context, actorID, roomID string, operator bool) error {
+	if !operator {
+		return m.authorizeUpload(ctx, actorID, roomID)
+	}
+	if _, err := m.core.GetUser(ctx, actorID); err != nil {
+		return err
+	}
+	room, err := m.core.GetRoom(ctx, KindChannel, roomID)
+	if err != nil {
+		return err
+	}
+	if room.Archived {
+		return ErrRoomArchived
+	}
+	return nil
+}
+
+func uploadSessionMatches(session *AssetUploadSession, actorID string, operator bool) bool {
+	if session.Operator != operator {
+		return false
+	}
+	if operator {
+		return actorID == SystemActorID
+	}
+	return session.ActorID == actorID
+}
+
 func (m *AssetUploadModel) loadUpload(ctx context.Context, uploadID string) (*AssetUploadSession, uint64, error) {
 	uploadID = strings.TrimSpace(uploadID)
 	if uploadID == "" {
@@ -508,23 +561,7 @@ func (m *AssetUploadModel) materializeUpload(ctx context.Context, session *Asset
 
 func (m *AssetUploadModel) storeCompletedUpload(ctx context.Context, session *AssetUploadSession, reader io.ReadSeeker) (*evtv1.Attachment, bool, error) {
 	attachmentID := NewAssetID()
-	// 【本地改动 2026-09-12】先嗅探文件头纠正声明类型:上传方(浏览器按
-	// 系统扩展名注册表填 File.type)声明的 Content-Type 不可信,而它决定走
-	// 图片管线还是视频管线。这里不能复用 readUploadHeader:后续逻辑会 Seek,
-	// 所以签名保持 io.ReadSeeker,读头后用 Seek 回退而不是 MultiReader。
-	declaredContentType := session.ContentType
-	header := make([]byte, uploadContentTypeHeaderBytes)
-	n, _ := io.ReadFull(reader, header) // a short read just means no signature
-	if _, err := reader.Seek(-int64(n), io.SeekCurrent); err != nil {
-		return nil, false, fmt.Errorf("rewind upload temp file: %w", err)
-	}
-	contentType := correctUploadContentType(declaredContentType, header[:n])
-	if contentType != declaredContentType {
-		m.core.logger.Info("Corrected upload content type from file header",
-			"attachment_id", attachmentID,
-			"declared", declaredContentType,
-			"detected", contentType)
-	}
+	contentType := session.ContentType
 	isImage := strings.HasPrefix(contentType, "image/")
 	var content []byte
 	var size int64
@@ -532,27 +569,15 @@ func (m *AssetUploadModel) storeCompletedUpload(ctx context.Context, session *As
 	var animatedGIF bool
 
 	if isImage {
-		assetsCfg := m.core.AssetsConfig()
-		// 【本地改动 2026-09-12】与单请求路径共用 prepareUploadImage:图片
-		// 统一重编码为原尺寸 AVIF(动画输入产出动画 AVIF),不再走
-		// ProcessAttachmentImageWithConfig + EncodeWebP,也不再特判动画 GIF。
-		prepared, err := prepareUploadImage(ctx, reader, declaredContentType, assetsCfg, attachmentID,
-			func(msg string, args ...any) {
-				m.core.logger.Warn(msg, args...)
-			})
+		result, err := assets.ProcessAttachmentImageWithConfig(reader, m.core.AssetsConfig())
 		if err != nil {
 			return nil, false, fmt.Errorf("failed to process image: %w", err)
 		}
-		content = prepared.content
-		contentType = prepared.contentType
-		width = int32(prepared.width)
-		height = int32(prepared.height)
-		// 【本地改动 2026-09-12】恒 false:fork 停用视频管线(cmd/run.go 不再置
-		// VideoUploadsEnabled),动画 GIF 已作为动画 AVIF 存入图片管线,不再生成
-		// MP4/HLS 衍生图。变量保留是为了 AttachmentNeedsVideoProcessing 的调用点
-		// 在 merge upstream 时仍然可见,而不是被上游悄悄改回"动画 GIF 必须转码"。
-		animatedGIF = false
+		content = result.Original
 		size = int64(len(content))
+		width = int32(result.Width)
+		height = int32(result.Height)
+		animatedGIF = contentType == "image/gif" && assets.IsAnimatedGIF(content)
 		reader = bytes.NewReader(content)
 	} else {
 		size = session.Size

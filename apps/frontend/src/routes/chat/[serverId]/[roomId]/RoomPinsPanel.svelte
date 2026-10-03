@@ -5,19 +5,20 @@ Channel pinned messages rendered through the room timeline's canonical
 message presentation. Each message row itself opens the original message.
 -->
 <script lang="ts">
+  import { formatAccountName } from '@chatto/client/timeline/accountName';
+  import { useLoadMoreWhenVisible } from '$lib/hooks/useLoadMoreWhenVisible.svelte';
   import { PresenceStatus } from '@chatto/api-types/api/v1/presence_pb';
-  import type { Attachment } from 'svelte/attachments';
   import type { Message } from '@chatto/api-types/api/v1/message_types_pb';
   import MessageView from '$lib/components/messages/MessageView.svelte';
   import { m } from '$lib/i18n/messages';
   import { getLocale } from '$lib/i18n/runtime';
-  import type { UserAvatarUserView } from '$lib/render/users';
+  import type { UserAvatarUserView } from '@chatto/client/timeline/users';
   import { getRoomMembers, type RoomMember, type RoomPinsStore } from '$lib/state/room';
-  import { getUserSummaryCache } from '$lib/state/userSummaries.svelte';
-  import type { UserSummary } from '$lib/api-client/users';
+  import { mapOptionalUserSummary } from '@chatto/client/api/userSummary';
+  import type { UserSummary } from '@chatto/client/api/users';
   import { useServerScope } from '$lib/state/server/scope.svelte';
   import { formatDateTime, timeFormatSettingsFor } from '$lib/utils/formatTime';
-  import { EmptyState, ScrollFader } from '$lib/ui';
+  import { EmptyState, LoadingFog, ScrollFader } from '$lib/ui';
   import { Button } from '$lib/ui/form';
   import ClampedMessagePreview from './ClampedMessagePreview.svelte';
 
@@ -30,7 +31,6 @@ message presentation. Each message row itself opens the original message.
   } = $props();
 
   const serverScope = useServerScope();
-  const userSummaries = getUserSummaryCache(serverScope.serverId);
   const members = $derived(getRoomMembers());
   const userSettings = $derived(
     timeFormatSettingsFor(serverScope.store.currentUser.user?.settings)
@@ -38,7 +38,10 @@ message presentation. Each message row itself opens the original message.
   const activeLocale = $derived(getLocale());
 
   function user(userId: string): RoomMember | UserSummary | null {
-    return members.find((member) => member.id === userId) ?? userSummaries.get(userId);
+    return (
+      members.find((member) => member.id === userId) ??
+      mapOptionalUserSummary(serverScope.store.projection.users.get(userId)?.user)
+    );
   }
 
   function messageActor(message: Message): UserAvatarUserView | null {
@@ -83,13 +86,11 @@ message presentation. Each message row itself opens the original message.
     openPin(message);
   }
 
-  const loadMoreWhenVisible: Attachment = (element) => {
-    const observer = new IntersectionObserver(([entry]) => {
-      if (entry.isIntersecting && !store.loadMoreError) void store.loadMore();
-    });
-    observer.observe(element);
-    return () => observer.disconnect();
-  };
+  const loadMoreWhenVisible = useLoadMoreWhenVisible({
+    getCursor: () => (store.hasMore ? store.items.length : null),
+    loadMore: () => store.loadMore(),
+    hasError: () => store.loadMoreError
+  });
 </script>
 
 <ScrollFader top bottom keyboardFocusable={false} class="min-h-0 flex-1">
@@ -102,10 +103,7 @@ message presentation. Each message row itself opens the original message.
         </div>
       </EmptyState>
     {:else if store.isInitialLoading && store.items.length === 0}
-      <div class="flex min-h-32 flex-1 items-center justify-center p-4 text-sm text-muted">
-        <span class="iconify me-2 icon-[uil--spinner-alt] animate-spin" aria-hidden="true"></span>
-        {m('room.pins.loading')}
-      </div>
+      <LoadingFog class="m-3 min-h-32 flex-1" label={m('room.pins.loading')} />
     {:else if store.items.length === 0}
       <EmptyState icon="icon-[mdi--pin-outline]" title={m('room.pins.empty_title')}>
         {m('room.pins.empty_description')}
@@ -120,7 +118,7 @@ message presentation. Each message row itself opens the original message.
               <div
                 role="link"
                 tabindex="0"
-                aria-label={`${actor?.displayName || actor?.login || m('common.unknown')}: ${message.body || ''}`}
+                aria-label={`${formatAccountName(actor?.displayName || actor?.login || m('common.unknown'), actor)}: ${message.body || ''}`}
                 data-room-pin-id={message.id}
                 class="group/search-result cursor-pointer selectable-list-item"
                 onclick={(pointerEvent) => openPinFromPointer(pointerEvent, message)}
@@ -137,7 +135,7 @@ message presentation. Each message row itself opens the original message.
                       viewerLogin={serverScope.store.currentUser.user?.login}
                       timestampSettings={userSettings}
                       timestampLocale={activeLocale}
-                      rowClass="hover:bg-transparent md:mx-0 md:pe-2"
+                      rowClass="hover:bg-transparent desktop-presentation:mx-0 desktop-presentation:pe-2"
                     >
                       {#snippet headerMeta()}
                         {#if message.createdAt}
@@ -173,8 +171,7 @@ message presentation. Each message row itself opens the original message.
               {m('common.retry')}
             </Button>
           {:else}
-            <span class="iconify icon-[uil--spinner-alt] animate-spin text-muted" aria-hidden="true"
-            ></span>
+            <LoadingFog class="h-8 w-full" />
           {/if}
         </div>
       {/if}

@@ -2,6 +2,7 @@ syntax = "proto3";
 
 package chatto.admin.v1;
 
+import "google/protobuf/field_mask.proto";
 import "buf/validate/validate.proto";
 import "chatto/api/v1/room_directory.proto";
 import "chatto/api/v1/rooms.proto";
@@ -76,25 +77,18 @@ message ListRoomGroupsResponse {
   repeated AdminRoomLayoutGroup groups = 1;
 }
 
-// Sidebar item kind used in reorder requests.
-enum AdminRoomLayoutItemKind {
-  // The item kind was not specified.
-  ADMIN_ROOM_LAYOUT_ITEM_KIND_UNSPECIFIED = 0;
-  // Channel room entry.
-  ADMIN_ROOM_LAYOUT_ITEM_KIND_ROOM = 1;
-  // Sidebar link entry.
-  ADMIN_ROOM_LAYOUT_ITEM_KIND_SIDEBAR_LINK = 2;
-}
-
-// One item reference in a sidebar order replacement.
+// One room or sidebar link reference in a move or order replacement.
 message AdminRoomLayoutItemInput {
-  // Item kind.
-  AdminRoomLayoutItemKind kind = 1 [(buf.validate.field).enum = {
-    defined_only: true
-    not_in: [0]
-  }];
-  // Room ID when kind is ROOM, sidebar link ID when kind is SIDEBAR_LINK.
-  string id = 2 [(buf.validate.field).string.min_len = 1];
+  reserved 1, 2;
+  reserved "kind", "id";
+
+  oneof item {
+    option (buf.validate.oneof).required = true;
+    // Channel room ID.
+    string room_id = 3 [(buf.validate.field).string.min_len = 1];
+    // Sidebar link ID.
+    string sidebar_link_id = 4 [(buf.validate.field).string.min_len = 1];
+  }
 }
 
 // Request to create a room group.
@@ -126,6 +120,11 @@ message UpdateRoomGroupRequest {
   // New public group description, when changing it. Empty clears the
   // description.
   optional string description = 3 [(buf.validate.field).string.max_len = 500];
+  // Editable fields to apply or reset: name, description.
+  // Omit to infer populated fields; * selects all editable fields. An explicit
+  // empty mask is invalid. Unselected values are ignored. Selected absent values
+  // reset the field to its default, subject to field validation.
+  google.protobuf.FieldMask update_mask = 4;
 }
 
 // Result of updating a room group.
@@ -142,8 +141,8 @@ message DeleteRoomGroupRequest {
 
 // Result of deleting a room group.
 message DeleteRoomGroupResponse {
-  // True when the room group was deleted.
-  bool deleted = 1;
+  reserved 1;
+  reserved "deleted";
 }
 
 // Request to replace the global room group order.
@@ -262,6 +261,11 @@ message UpdateSidebarLinkRequest {
     min_len: 1
     max_len: 2048
   }];
+  // Editable fields to apply or reset: label, url.
+  // Omit to infer populated fields; * selects all editable fields. An explicit
+  // empty mask is invalid. Unselected values are ignored. Selected absent values
+  // reset the field to its default, subject to field validation.
+  google.protobuf.FieldMask update_mask = 4;
 }
 
 // Result of updating a sidebar link.
@@ -278,8 +282,8 @@ message DeleteSidebarLinkRequest {
 
 // Result of deleting a sidebar link.
 message DeleteSidebarLinkResponse {
-  // True when the sidebar link was deleted.
-  bool deleted = 1;
+  reserved 1;
+  reserved "deleted";
 }
 
 // Request to move a sidebar link to another room group.

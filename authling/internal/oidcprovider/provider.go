@@ -5,11 +5,14 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/rs/cors"
 	liboidc "github.com/zitadel/oidc/v3/pkg/oidc"
@@ -18,6 +21,7 @@ import (
 	"hmans.de/authling/internal/config"
 	"hmans.de/authling/internal/issuer"
 	"hmans.de/authling/internal/keyvault"
+	"hmans.de/authling/internal/storage"
 )
 
 // Service owns Authling's OIDC protocol handler and user-consent operations.
@@ -75,8 +79,8 @@ func (s *Service) Initialize(ctx context.Context) error {
 		options = append(options, op.WithAllowInsecure())
 	}
 	provider, err := op.NewProvider(&op.Config{
-		CryptoKey: tokenKey, CryptoKeyId: "authling-oidc-token-v1", CodeMethodS256: true,
-		SupportedClaims: []string{"sub", "preferred_username", "name"}, SupportedScopes: []string{liboidc.ScopeOpenID},
+		CryptoKey: tokenKey, CryptoKeyId: "authling-oidc-token-v1", CodeMethodS256: true, AuthMethodPost: true,
+		SupportedClaims: []string{"sub", "preferred_username", "name", "email", "email_verified", "auth_time"}, SupportedScopes: []string{liboidc.ScopeOpenID, liboidc.ScopeProfile, liboidc.ScopeEmail},
 	}, s.storage, op.StaticIssuer(state.Issuer), options...)
 	if err != nil {
 		return fmt.Errorf("construct OIDC provider: %w", err)
@@ -110,31 +114,42 @@ func (s *Service) Consent(ctx context.Context, id string) (ConsentRequest, error
 	return s.storage.Consent(ctx, id)
 }
 
-// Authorize approves a pending request for the authenticated account and returns the provider callback.
-func (s *Service) Authorize(ctx context.Context, id, accountID string) (string, error) {
+// Authorize approves a pending request and returns the provider callback.
+// accountID and authenticatedAt must come from the validated browser session.
+func (s *Service) Authorize(ctx context.Context, id, accountID string, authenticatedAt time.Time) (string, error) {
 	consent, err := s.storage.Consent(ctx, id)
 	if err != nil {
 		return "", err
 	}
+	if consent.Silent {
+		return "", errOIDCStateNotFound
+	}
 	if s.grants == nil {
 		return "", fmt.Errorf("OIDC authorization grants unavailable")
+	}
+	if err := s.storage.CheckAuthentication(ctx, id, authenticatedAt); err != nil {
+		return "", err
 	}
 	if _, err := s.grants.Authorize(ctx, accountID, authorizations.Client{
 		ID: consent.ClientID, Name: consent.ClientName, Host: consent.ClientHost,
 	}, consent.Scopes); err != nil {
 		return "", err
 	}
-	if err := s.storage.Authorize(ctx, id, accountID); err != nil {
+	if err := s.storage.Authorize(ctx, id, accountID, authenticatedAt); err != nil {
 		return "", err
 	}
 	return s.callback(ctx, id)
 }
 
 // TryAuthorize approves a pending request from an existing durable grant.
-// prompt=consent always returns false so the browser sees explicit consent.
-func (s *Service) TryAuthorize(ctx context.Context, id, accountID string) (string, bool, error) {
+// accountID and authenticatedAt must come from the validated browser session.
+// prompt=consent requires an explicit decision even after fresh authentication.
+func (s *Service) TryAuthorize(ctx context.Context, id, accountID string, authenticatedAt time.Time) (string, bool, error) {
 	consent, err := s.storage.Consent(ctx, id)
 	if err != nil {
+		return "", false, err
+	}
+	if err := s.storage.CheckAuthentication(ctx, id, authenticatedAt); err != nil {
 		return "", false, err
 	}
 	if consent.ForceConsent || s.grants == nil {
@@ -147,7 +162,7 @@ func (s *Service) TryAuthorize(ctx context.Context, id, accountID string) (strin
 	if !covered {
 		return "", false, nil
 	}
-	if err := s.storage.Authorize(ctx, id, accountID); err != nil {
+	if err := s.storage.Authorize(ctx, id, accountID, authenticatedAt); err != nil {
 		return "", false, err
 	}
 	target, err := s.callback(ctx, id)
@@ -169,6 +184,19 @@ func (s *Service) Deny(ctx context.Context, id string) (string, error) {
 	return s.storage.Deny(ctx, id)
 }
 
+// RejectSilent ends a non-interactive request without displaying login or consent.
+func (s *Service) RejectSilent(ctx context.Context, id string, loginRequired bool) (string, error) {
+	consent, err := s.storage.Consent(ctx, id)
+	if err != nil || !consent.Silent {
+		return "", errOIDCStateNotFound
+	}
+	code := "consent_required"
+	if loginRequired {
+		code = "login_required"
+	}
+	return s.storage.reject(ctx, id, code)
+}
+
 func (s *Service) wrap(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/.well-known/openid-configuration" {
@@ -181,7 +209,15 @@ func (s *Service) wrap(next http.Handler) http.Handler {
 			return
 		}
 		if r.URL.Path == "/oauth/authorize" {
-			if err := validateAuthorizeRequest(r); err != nil {
+			requirePKCE := true
+			// Use only local configuration here. Bound parsing before admission;
+			// CIMD resolution and state creation happen after request validation.
+			if len(r.URL.RawQuery) <= 8<<10 && s.storage != nil && s.storage.clients != nil {
+				if client := s.storage.clients.configured[r.URL.Query().Get("client_id")]; client != nil {
+					requirePKCE = client.requiresPKCE()
+				}
+			}
+			if err := validateAuthorizeRequest(r, requirePKCE); err != nil {
 				if s.redirectAuthorizationError(w, r, err) {
 					return
 				}
@@ -189,11 +225,20 @@ func (s *Service) wrap(next http.Handler) http.Handler {
 				http.Error(w, "invalid authorization request", http.StatusBadRequest)
 				return
 			}
-		}
-		if r.URL.Path == "/oauth/token" {
-			if err := validateTokenRequest(w, r); err != nil {
-				w.Header().Set("Cache-Control", "no-store")
-				http.Error(w, "invalid token request", http.StatusBadRequest)
+			// Reject before library error handling, which logs request metadata.
+			// This also bounds client lookup work for syntactically valid requests.
+			w.Header().Set("Cache-Control", "no-store")
+			if s.storage == nil {
+				http.Error(w, "authorization unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			if err := s.storage.admitAuthRequest(r.Context()); err != nil {
+				if errors.Is(err, storage.ErrAdmissionLimited) {
+					w.Header().Set("Retry-After", "600")
+					http.Error(w, "authorization request limit reached; try again later", http.StatusTooManyRequests)
+				} else {
+					http.Error(w, "authorization unavailable", http.StatusServiceUnavailable)
+				}
 				return
 			}
 		}
@@ -203,6 +248,15 @@ func (s *Service) wrap(next http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
 			if r.Method == http.MethodOptions {
 				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+		}
+		if r.URL.Path == "/oauth/token" {
+			if err := validateTokenRequest(w, r); err != nil {
+				w.Header().Set("Cache-Control", "no-store")
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"error":"invalid_request"}`))
 				return
 			}
 		}
@@ -319,21 +373,21 @@ func (s *Service) serveDiscovery(w http.ResponseWriter, r *http.Request) {
 		"token_endpoint":                        issuer + "/oauth/token",
 		"userinfo_endpoint":                     issuer + "/oauth/userinfo",
 		"jwks_uri":                              issuer + "/oauth/jwks",
-		"scopes_supported":                      []string{"openid"},
+		"scopes_supported":                      []string{"openid", "profile", "email"},
 		"response_types_supported":              []string{"code"},
 		"response_modes_supported":              []string{"query"},
 		"grant_types_supported":                 []string{"authorization_code"},
 		"subject_types_supported":               []string{"public"},
 		"id_token_signing_alg_values_supported": []string{"RS256"},
-		"token_endpoint_auth_methods_supported": []string{"none", "client_secret_basic"},
-		"claims_supported":                      []string{"sub", "preferred_username", "name"},
+		"token_endpoint_auth_methods_supported": []string{"none", "client_secret_basic", "client_secret_post"},
+		"claims_supported":                      []string{"sub", "preferred_username", "name", "email", "email_verified", "auth_time"},
 		"code_challenge_methods_supported":      []string{"S256"},
 		"request_parameter_supported":           false,
-		"client_id_metadata_document_supported": true,
+		"client_id_metadata_document_supported": s.storage != nil && s.storage.clients != nil && s.storage.clients.cimd != nil,
 	})
 }
 
-func validateAuthorizeRequest(r *http.Request) *authorizationRequestError {
+func validateAuthorizeRequest(r *http.Request, requirePKCE bool) *authorizationRequestError {
 	localError := func() *authorizationRequestError {
 		return &authorizationRequestError{code: "invalid_request"}
 	}
@@ -347,7 +401,7 @@ func validateAuthorizeRequest(r *http.Request) *authorizationRequestError {
 		return localError()
 	}
 	query := r.URL.Query()
-	for _, name := range []string{"client_id", "redirect_uri", "response_type", "response_mode", "scope", "code_challenge", "code_challenge_method", "state", "nonce", "prompt"} {
+	for _, name := range []string{"client_id", "redirect_uri", "response_type", "response_mode", "scope", "code_challenge", "code_challenge_method", "state", "nonce", "prompt", "max_age"} {
 		if len(query[name]) > 1 {
 			return localError()
 		}
@@ -363,24 +417,46 @@ func validateAuthorizeRequest(r *http.Request) *authorizationRequestError {
 	if responseMode := query.Get("response_mode"); responseMode != "" && responseMode != string(liboidc.ResponseModeQuery) {
 		return localError()
 	}
+	if query.Get("response_type") == "" {
+		return clientError("invalid_request")
+	}
 	if query.Get("response_type") != string(liboidc.ResponseTypeCode) {
-		return clientError("unauthorized_client")
+		return clientError("unsupported_response_type")
 	}
 	if !validAuthorizeScopes(query.Get("scope")) {
 		return clientError("invalid_scope")
 	}
 	challenge := query.Get("code_challenge")
-	if !validPKCEValue(challenge) || query.Get("code_challenge_method") != string(liboidc.CodeChallengeMethodS256) {
+	if (requirePKCE || query.Has("code_challenge") || query.Has("code_challenge_method")) && (!validPKCEValue(challenge) || query.Get("code_challenge_method") != string(liboidc.CodeChallengeMethodS256)) {
 		return clientError("invalid_request")
 	}
 	prompts := strings.Fields(query.Get("prompt"))
-	if len(prompts) > 0 && !(len(prompts) == 1 && prompts[0] == liboidc.PromptConsent) {
-		return clientError("invalid_request")
+	seenPrompts := make(map[string]bool, len(prompts))
+	for _, prompt := range prompts {
+		switch prompt {
+		case liboidc.PromptConsent, liboidc.PromptLogin, liboidc.PromptNone:
+		default:
+			return clientError("invalid_request")
+		}
+		if seenPrompts[prompt] || prompt == liboidc.PromptNone && len(prompts) != 1 {
+			return clientError("invalid_request")
+		}
+		seenPrompts[prompt] = true
+	}
+	if query.Has("max_age") {
+		raw := query.Get("max_age")
+		// Decimal seconds only; uint matches the OIDC library without duration overflow.
+		if raw == "" || strings.Trim(raw, "0123456789") != "" {
+			return clientError("invalid_request")
+		}
+		if _, err := strconv.ParseUint(raw, 10, strconv.IntSize); err != nil {
+			return clientError("invalid_request")
+		}
 	}
 	if query.Get("request") != "" {
 		return clientError("request_not_supported")
 	}
-	if query.Has("max_age") || len(query.Get("nonce")) > 1024 {
+	if len(query.Get("nonce")) > 1024 {
 		return clientError("invalid_request")
 	}
 	return nil
@@ -388,12 +464,12 @@ func validateAuthorizeRequest(r *http.Request) *authorizationRequestError {
 
 func validAuthorizeScopes(raw string) bool {
 	scopes := strings.Fields(raw)
-	if len(scopes) != 1 {
+	if len(scopes) == 0 {
 		return false
 	}
 	seen := make(map[string]struct{}, len(scopes))
 	for _, scope := range scopes {
-		if scope != liboidc.ScopeOpenID {
+		if scope != liboidc.ScopeOpenID && scope != liboidc.ScopeProfile && scope != liboidc.ScopeEmail {
 			return false
 		}
 		if _, duplicate := seen[scope]; duplicate {
@@ -416,12 +492,31 @@ func validateTokenRequest(w http.ResponseWriter, r *http.Request) error {
 	if err := r.ParseForm(); err != nil {
 		return err
 	}
+	// The library decodes the merged Form map. Reject query parameters so
+	// credentials cannot be accepted from URLs or override body parameters.
+	if r.URL.RawQuery != "" {
+		return fmt.Errorf("token parameters must be in the body")
+	}
+	if r.PostForm.Has("client_assertion") || r.PostForm.Has("client_assertion_type") {
+		return fmt.Errorf("unsupported client authentication")
+	}
+	if len(r.Header.Values("Authorization")) > 1 {
+		return fmt.Errorf("multiple authorization headers")
+	}
+	if r.Header.Get("Authorization") != "" {
+		if _, _, ok := r.BasicAuth(); !ok {
+			return fmt.Errorf("unsupported authorization header")
+		}
+		if r.PostForm.Has("client_secret") {
+			return fmt.Errorf("multiple client authentication methods")
+		}
+	}
 	for _, name := range []string{"grant_type", "client_id", "client_secret", "redirect_uri", "code", "code_verifier"} {
 		if len(r.PostForm[name]) > 1 {
 			return fmt.Errorf("duplicate token parameter")
 		}
 	}
-	if r.PostForm.Get("grant_type") != string(liboidc.GrantTypeCode) || r.PostForm.Get("code") == "" || !validPKCEValue(r.PostForm.Get("code_verifier")) {
+	if r.PostForm.Get("grant_type") != string(liboidc.GrantTypeCode) || r.PostForm.Get("code") == "" || (r.PostForm.Has("code_verifier") && !validPKCEValue(r.PostForm.Get("code_verifier"))) {
 		return fmt.Errorf("unsupported token request")
 	}
 	if len(r.PostForm.Get("client_id")) > 2048 || len(r.PostForm.Get("redirect_uri")) > 2048 || len(r.PostForm.Get("code")) > 1024 || len(r.PostForm.Get("client_secret")) > 4096 {

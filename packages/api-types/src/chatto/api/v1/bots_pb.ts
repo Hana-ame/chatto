@@ -4,7 +4,7 @@
 // @ts-nocheck
 
 import type { BinaryReadOptions, FieldList, JsonReadOptions, JsonValue, PartialMessage, PlainMessage } from "@bufbuild/protobuf";
-import { Message, proto3, Timestamp } from "@bufbuild/protobuf";
+import { FieldMask, Message, proto3, Timestamp } from "@bufbuild/protobuf";
 import { User } from "./users_pb.js";
 import { PageInfo, PageRequest } from "./pagination_pb.js";
 
@@ -99,6 +99,16 @@ export class Bot extends Message<Bot> {
    */
   apiKeys: BotApiKey[] = [];
 
+  /**
+   * Time of the last username change that started the 30-day username
+   * cooldown. Absent when no cooldown was started. The bot, its owner, and
+   * bot managers cannot change the username again until the cooldown ends.
+   * A caller with user.manage-accounts can change it at any time.
+   *
+   * @generated from field: google.protobuf.Timestamp last_login_change = 8;
+   */
+  lastLoginChange?: Timestamp;
+
   constructor(data?: PartialMessage<Bot>) {
     super();
     proto3.util.initPartial(data, this);
@@ -113,6 +123,7 @@ export class Bot extends Message<Bot> {
     { no: 4, name: "api_key_created_at", kind: "message", T: Timestamp },
     { no: 6, name: "incoming_webhooks", kind: "message", T: BotIncomingWebhook, repeated: true },
     { no: 7, name: "api_keys", kind: "message", T: BotApiKey, repeated: true },
+    { no: 8, name: "last_login_change", kind: "message", T: Timestamp },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): Bot {
@@ -295,7 +306,7 @@ export class ListBotsRequest extends Message<ListBotsRequest> {
   search = "";
 
   /**
-   * Page request. Defaults to 20 results when absent or limit is zero.
+   * Defaults to 20 results when absent or limit is zero. Maximum: 100.
    *
    * @generated from field: chatto.api.v1.PageRequest page = 2;
    */
@@ -337,7 +348,7 @@ export class ListBotsRequest extends Message<ListBotsRequest> {
  */
 export class ListBotsResponse extends Message<ListBotsResponse> {
   /**
-   * Visible bots.
+   * Visible bots by case-insensitive login, then user ID, in ascending order.
    *
    * @generated from field: repeated chatto.api.v1.Bot bots = 1;
    */
@@ -550,7 +561,7 @@ export class BatchGetBotsResponse extends Message<BatchGetBotsResponse> {
  */
 export class CreateBotRequest extends Message<CreateBotRequest> {
   /**
-   * Bot login. Must end in `_bot`.
+   * Bot login. Uses the same username rules as a human account.
    *
    * @generated from field: string login = 1;
    */
@@ -1213,5 +1224,788 @@ export class ReassignBotOwnerResponse extends Message<ReassignBotOwnerResponse> 
 
   static equals(a: ReassignBotOwnerResponse | PlainMessage<ReassignBotOwnerResponse> | undefined, b: ReassignBotOwnerResponse | PlainMessage<ReassignBotOwnerResponse> | undefined): boolean {
     return proto3.util.equals(ReassignBotOwnerResponse, a, b);
+  }
+}
+
+/**
+ * Endpoint settings visible only to the bot owner or a caller with bot.manage.
+ * Authorization and signing credentials are write-only. The saved URL is visible.
+ *
+ * @generated from message chatto.api.v1.BotOutboundWebhook
+ */
+export class BotOutboundWebhook extends Message<BotOutboundWebhook> {
+  /**
+   * Stable ID of this endpoint.
+   *
+   * @generated from field: string id = 1;
+   */
+  id = "";
+
+  /**
+   * Whether this configuration accepts new messages.
+   *
+   * @generated from field: bool enabled = 2;
+   */
+  enabled = false;
+
+  /**
+   * Whether an Authorization header is configured.
+   *
+   * @generated from field: bool has_authorization = 3;
+   */
+  hasAuthorization = false;
+
+  /**
+   * Latest retained failure for this endpoint. Absent when no failure is retained.
+   * Later successes do not clear it. Absence does not prove successful delivery.
+   *
+   * @generated from field: chatto.api.v1.BotWebhookFailure latest_failure = 4;
+   */
+  latestFailure?: BotWebhookFailure;
+
+  /**
+   * Saved destination. May contain tool credentials; visible only to bot managers.
+   *
+   * @generated from field: string url = 5;
+   */
+  url = "";
+
+  /**
+   * Human-readable name assigned at creation.
+   *
+   * @generated from field: string name = 6;
+   */
+  name = "";
+
+  /**
+   * Time this endpoint was created.
+   *
+   * @generated from field: google.protobuf.Timestamp created_at = 7;
+   */
+  createdAt?: Timestamp;
+
+  constructor(data?: PartialMessage<BotOutboundWebhook>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "chatto.api.v1.BotOutboundWebhook";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "enabled", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+    { no: 3, name: "has_authorization", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+    { no: 4, name: "latest_failure", kind: "message", T: BotWebhookFailure },
+    { no: 5, name: "url", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 6, name: "name", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 7, name: "created_at", kind: "message", T: Timestamp },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): BotOutboundWebhook {
+    return new BotOutboundWebhook().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): BotOutboundWebhook {
+    return new BotOutboundWebhook().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): BotOutboundWebhook {
+    return new BotOutboundWebhook().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: BotOutboundWebhook | PlainMessage<BotOutboundWebhook> | undefined, b: BotOutboundWebhook | PlainMessage<BotOutboundWebhook> | undefined): boolean {
+    return proto3.util.equals(BotOutboundWebhook, a, b);
+  }
+}
+
+/**
+ * Safe summary of one recorded outbound webhook failure.
+ *
+ * @generated from message chatto.api.v1.BotWebhookFailure
+ */
+export class BotWebhookFailure extends Message<BotWebhookFailure> {
+  /**
+   * Stable delivery identifier shared by all retry attempts.
+   *
+   * @generated from field: string id = 1;
+   */
+  id = "";
+
+  /**
+   * Safe failure category. Never contains response bodies or credentials.
+   *
+   * @generated from field: string reason = 3;
+   */
+  reason = "";
+
+  /**
+   * Delivery attempts, up to the attempt limit. An attempt can fail
+   * before HTTP starts, so this is not an exact HTTP request count.
+   *
+   * @generated from field: uint32 attempts = 4;
+   */
+  attempts = 0;
+
+  /**
+   * Zero if no HTTP response was received.
+   *
+   * @generated from field: uint32 http_status = 5;
+   */
+  httpStatus = 0;
+
+  /**
+   * Time the retained failure was recorded.
+   *
+   * @generated from field: google.protobuf.Timestamp completed_at = 6;
+   */
+  completedAt?: Timestamp;
+
+  /**
+   * Source message ID associated with this delivery.
+   *
+   * @generated from field: string source_event_id = 7;
+   */
+  sourceEventId = "";
+
+  constructor(data?: PartialMessage<BotWebhookFailure>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "chatto.api.v1.BotWebhookFailure";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "reason", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 4, name: "attempts", kind: "scalar", T: 13 /* ScalarType.UINT32 */ },
+    { no: 5, name: "http_status", kind: "scalar", T: 13 /* ScalarType.UINT32 */ },
+    { no: 6, name: "completed_at", kind: "message", T: Timestamp },
+    { no: 7, name: "source_event_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): BotWebhookFailure {
+    return new BotWebhookFailure().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): BotWebhookFailure {
+    return new BotWebhookFailure().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): BotWebhookFailure {
+    return new BotWebhookFailure().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: BotWebhookFailure | PlainMessage<BotWebhookFailure> | undefined, b: BotWebhookFailure | PlainMessage<BotWebhookFailure> | undefined): boolean {
+    return proto3.util.equals(BotWebhookFailure, a, b);
+  }
+}
+
+/**
+ * Read all endpoints for one managed bot. At most 20 endpoints are returned.
+ *
+ * @generated from message chatto.api.v1.ListBotOutboundWebhooksRequest
+ */
+export class ListBotOutboundWebhooksRequest extends Message<ListBotOutboundWebhooksRequest> {
+  /**
+   * Required managed bot ID.
+   *
+   * @generated from field: string bot_user_id = 1;
+   */
+  botUserId = "";
+
+  constructor(data?: PartialMessage<ListBotOutboundWebhooksRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "chatto.api.v1.ListBotOutboundWebhooksRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "bot_user_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListBotOutboundWebhooksRequest {
+    return new ListBotOutboundWebhooksRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ListBotOutboundWebhooksRequest {
+    return new ListBotOutboundWebhooksRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ListBotOutboundWebhooksRequest {
+    return new ListBotOutboundWebhooksRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ListBotOutboundWebhooksRequest | PlainMessage<ListBotOutboundWebhooksRequest> | undefined, b: ListBotOutboundWebhooksRequest | PlainMessage<ListBotOutboundWebhooksRequest> | undefined): boolean {
+    return proto3.util.equals(ListBotOutboundWebhooksRequest, a, b);
+  }
+}
+
+/**
+ * All current endpoints, including paused ones.
+ *
+ * @generated from message chatto.api.v1.ListBotOutboundWebhooksResponse
+ */
+export class ListBotOutboundWebhooksResponse extends Message<ListBotOutboundWebhooksResponse> {
+  /**
+   * Complete collection, ordered by creation time and ID. No pagination is needed.
+   *
+   * @generated from field: repeated chatto.api.v1.BotOutboundWebhook webhooks = 1;
+   */
+  webhooks: BotOutboundWebhook[] = [];
+
+  constructor(data?: PartialMessage<ListBotOutboundWebhooksResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "chatto.api.v1.ListBotOutboundWebhooksResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "webhooks", kind: "message", T: BotOutboundWebhook, repeated: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListBotOutboundWebhooksResponse {
+    return new ListBotOutboundWebhooksResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ListBotOutboundWebhooksResponse {
+    return new ListBotOutboundWebhooksResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ListBotOutboundWebhooksResponse {
+    return new ListBotOutboundWebhooksResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ListBotOutboundWebhooksResponse | PlainMessage<ListBotOutboundWebhooksResponse> | undefined, b: ListBotOutboundWebhooksResponse | PlainMessage<ListBotOutboundWebhooksResponse> | undefined): boolean {
+    return proto3.util.equals(ListBotOutboundWebhooksResponse, a, b);
+  }
+}
+
+/**
+ * Read one endpoint belonging to the given managed bot.
+ *
+ * @generated from message chatto.api.v1.GetBotOutboundWebhookRequest
+ */
+export class GetBotOutboundWebhookRequest extends Message<GetBotOutboundWebhookRequest> {
+  /**
+   * Required managed bot ID.
+   *
+   * @generated from field: string bot_user_id = 1;
+   */
+  botUserId = "";
+
+  /**
+   * Required endpoint ID within this bot.
+   *
+   * @generated from field: string webhook_id = 2;
+   */
+  webhookId = "";
+
+  constructor(data?: PartialMessage<GetBotOutboundWebhookRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "chatto.api.v1.GetBotOutboundWebhookRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "bot_user_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "webhook_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): GetBotOutboundWebhookRequest {
+    return new GetBotOutboundWebhookRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): GetBotOutboundWebhookRequest {
+    return new GetBotOutboundWebhookRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): GetBotOutboundWebhookRequest {
+    return new GetBotOutboundWebhookRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: GetBotOutboundWebhookRequest | PlainMessage<GetBotOutboundWebhookRequest> | undefined, b: GetBotOutboundWebhookRequest | PlainMessage<GetBotOutboundWebhookRequest> | undefined): boolean {
+    return proto3.util.equals(GetBotOutboundWebhookRequest, a, b);
+  }
+}
+
+/**
+ * Metadata for the requested endpoint.
+ *
+ * @generated from message chatto.api.v1.GetBotOutboundWebhookResponse
+ */
+export class GetBotOutboundWebhookResponse extends Message<GetBotOutboundWebhookResponse> {
+  /**
+   * Endpoint metadata without Authorization or signing credentials.
+   *
+   * @generated from field: chatto.api.v1.BotOutboundWebhook webhook = 1;
+   */
+  webhook?: BotOutboundWebhook;
+
+  constructor(data?: PartialMessage<GetBotOutboundWebhookResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "chatto.api.v1.GetBotOutboundWebhookResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "webhook", kind: "message", T: BotOutboundWebhook },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): GetBotOutboundWebhookResponse {
+    return new GetBotOutboundWebhookResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): GetBotOutboundWebhookResponse {
+    return new GetBotOutboundWebhookResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): GetBotOutboundWebhookResponse {
+    return new GetBotOutboundWebhookResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: GetBotOutboundWebhookResponse | PlainMessage<GetBotOutboundWebhookResponse> | undefined, b: GetBotOutboundWebhookResponse | PlainMessage<GetBotOutboundWebhookResponse> | undefined): boolean {
+    return proto3.util.equals(GetBotOutboundWebhookResponse, a, b);
+  }
+}
+
+/**
+ * Create an independent endpoint with its own signing secret.
+ *
+ * @generated from message chatto.api.v1.CreateBotOutboundWebhookRequest
+ */
+export class CreateBotOutboundWebhookRequest extends Message<CreateBotOutboundWebhookRequest> {
+  /**
+   * Required managed bot ID.
+   *
+   * @generated from field: string bot_user_id = 1;
+   */
+  botUserId = "";
+
+  /**
+   * Absolute HTTPS destination; HTTP is also allowed for localhost names.
+   *
+   * @generated from field: string url = 2;
+   */
+  url = "";
+
+  /**
+   * Optional complete Authorization header value.
+   *
+   * @generated from field: string authorization = 3;
+   */
+  authorization = "";
+
+  /**
+   * False creates a paused endpoint.
+   *
+   * @generated from field: bool enabled = 4;
+   */
+  enabled = false;
+
+  /**
+   * Display name, fixed after creation.
+   *
+   * @generated from field: string name = 5;
+   */
+  name = "";
+
+  constructor(data?: PartialMessage<CreateBotOutboundWebhookRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "chatto.api.v1.CreateBotOutboundWebhookRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "bot_user_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "url", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "authorization", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 4, name: "enabled", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+    { no: 5, name: "name", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): CreateBotOutboundWebhookRequest {
+    return new CreateBotOutboundWebhookRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): CreateBotOutboundWebhookRequest {
+    return new CreateBotOutboundWebhookRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): CreateBotOutboundWebhookRequest {
+    return new CreateBotOutboundWebhookRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: CreateBotOutboundWebhookRequest | PlainMessage<CreateBotOutboundWebhookRequest> | undefined, b: CreateBotOutboundWebhookRequest | PlainMessage<CreateBotOutboundWebhookRequest> | undefined): boolean {
+    return proto3.util.equals(CreateBotOutboundWebhookRequest, a, b);
+  }
+}
+
+/**
+ * New endpoint and its show-once request verification secret.
+ *
+ * @generated from message chatto.api.v1.CreateBotOutboundWebhookResponse
+ */
+export class CreateBotOutboundWebhookResponse extends Message<CreateBotOutboundWebhookResponse> {
+  /**
+   * Endpoint metadata without Authorization or signing credentials.
+   *
+   * @generated from field: chatto.api.v1.BotOutboundWebhook webhook = 1;
+   */
+  webhook?: BotOutboundWebhook;
+
+  /**
+   * Returned only at creation. Configure the receiver with this HMAC secret if it verifies requests.
+   *
+   * @generated from field: string signing_secret = 2;
+   */
+  signingSecret = "";
+
+  constructor(data?: PartialMessage<CreateBotOutboundWebhookResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "chatto.api.v1.CreateBotOutboundWebhookResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "webhook", kind: "message", T: BotOutboundWebhook },
+    { no: 2, name: "signing_secret", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): CreateBotOutboundWebhookResponse {
+    return new CreateBotOutboundWebhookResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): CreateBotOutboundWebhookResponse {
+    return new CreateBotOutboundWebhookResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): CreateBotOutboundWebhookResponse {
+    return new CreateBotOutboundWebhookResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: CreateBotOutboundWebhookResponse | PlainMessage<CreateBotOutboundWebhookResponse> | undefined, b: CreateBotOutboundWebhookResponse | PlainMessage<CreateBotOutboundWebhookResponse> | undefined): boolean {
+    return proto3.util.equals(CreateBotOutboundWebhookResponse, a, b);
+  }
+}
+
+/**
+ * Patch delivery settings or pause/resume one endpoint. update_mask selects
+ * fields to apply or reset. Name and signing secret stay fixed.
+ *
+ * @generated from message chatto.api.v1.UpdateBotOutboundWebhookRequest
+ */
+export class UpdateBotOutboundWebhookRequest extends Message<UpdateBotOutboundWebhookRequest> {
+  /**
+   * Required managed bot ID.
+   *
+   * @generated from field: string bot_user_id = 1;
+   */
+  botUserId = "";
+
+  /**
+   * Required endpoint ID within this bot.
+   *
+   * @generated from field: string webhook_id = 2;
+   */
+  webhookId = "";
+
+  /**
+   * Selected enabled state. False pauses delivery; resume accepts only new messages.
+   *
+   * @generated from field: optional bool enabled = 3;
+   */
+  enabled?: boolean;
+
+  /**
+   * Selected new destination. Changing settings cancels queued retries.
+   *
+   * @generated from field: optional string url = 4;
+   */
+  url?: string;
+
+  /**
+   * Selected Authorization header. Absent or empty removes it. Never returned.
+   *
+   * @generated from field: optional string authorization = 5;
+   */
+  authorization?: string;
+
+  /**
+   * Editable fields to apply or reset: enabled, url, authorization.
+   * Omit to infer populated fields; * selects all editable fields. An explicit
+   * empty mask is invalid. Unselected values are ignored. Selected absent values
+   * reset the field to its default, subject to field validation.
+   *
+   * @generated from field: google.protobuf.FieldMask update_mask = 6;
+   */
+  updateMask?: FieldMask;
+
+  constructor(data?: PartialMessage<UpdateBotOutboundWebhookRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "chatto.api.v1.UpdateBotOutboundWebhookRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "bot_user_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "webhook_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "enabled", kind: "scalar", T: 8 /* ScalarType.BOOL */, opt: true },
+    { no: 4, name: "url", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
+    { no: 5, name: "authorization", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
+    { no: 6, name: "update_mask", kind: "message", T: FieldMask },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): UpdateBotOutboundWebhookRequest {
+    return new UpdateBotOutboundWebhookRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): UpdateBotOutboundWebhookRequest {
+    return new UpdateBotOutboundWebhookRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): UpdateBotOutboundWebhookRequest {
+    return new UpdateBotOutboundWebhookRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: UpdateBotOutboundWebhookRequest | PlainMessage<UpdateBotOutboundWebhookRequest> | undefined, b: UpdateBotOutboundWebhookRequest | PlainMessage<UpdateBotOutboundWebhookRequest> | undefined): boolean {
+    return proto3.util.equals(UpdateBotOutboundWebhookRequest, a, b);
+  }
+}
+
+/**
+ * Endpoint state after the update.
+ *
+ * @generated from message chatto.api.v1.UpdateBotOutboundWebhookResponse
+ */
+export class UpdateBotOutboundWebhookResponse extends Message<UpdateBotOutboundWebhookResponse> {
+  /**
+   * Endpoint metadata without Authorization or signing credentials.
+   *
+   * @generated from field: chatto.api.v1.BotOutboundWebhook webhook = 1;
+   */
+  webhook?: BotOutboundWebhook;
+
+  constructor(data?: PartialMessage<UpdateBotOutboundWebhookResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "chatto.api.v1.UpdateBotOutboundWebhookResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "webhook", kind: "message", T: BotOutboundWebhook },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): UpdateBotOutboundWebhookResponse {
+    return new UpdateBotOutboundWebhookResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): UpdateBotOutboundWebhookResponse {
+    return new UpdateBotOutboundWebhookResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): UpdateBotOutboundWebhookResponse {
+    return new UpdateBotOutboundWebhookResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: UpdateBotOutboundWebhookResponse | PlainMessage<UpdateBotOutboundWebhookResponse> | undefined, b: UpdateBotOutboundWebhookResponse | PlainMessage<UpdateBotOutboundWebhookResponse> | undefined): boolean {
+    return proto3.util.equals(UpdateBotOutboundWebhookResponse, a, b);
+  }
+}
+
+/**
+ * Revoke one endpoint and cancel its queued retries. In-flight HTTP may finish.
+ *
+ * @generated from message chatto.api.v1.RevokeBotOutboundWebhookRequest
+ */
+export class RevokeBotOutboundWebhookRequest extends Message<RevokeBotOutboundWebhookRequest> {
+  /**
+   * Required managed bot ID.
+   *
+   * @generated from field: string bot_user_id = 1;
+   */
+  botUserId = "";
+
+  /**
+   * Required endpoint ID within this bot.
+   *
+   * @generated from field: string webhook_id = 2;
+   */
+  webhookId = "";
+
+  constructor(data?: PartialMessage<RevokeBotOutboundWebhookRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "chatto.api.v1.RevokeBotOutboundWebhookRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "bot_user_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "webhook_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): RevokeBotOutboundWebhookRequest {
+    return new RevokeBotOutboundWebhookRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): RevokeBotOutboundWebhookRequest {
+    return new RevokeBotOutboundWebhookRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): RevokeBotOutboundWebhookRequest {
+    return new RevokeBotOutboundWebhookRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: RevokeBotOutboundWebhookRequest | PlainMessage<RevokeBotOutboundWebhookRequest> | undefined, b: RevokeBotOutboundWebhookRequest | PlainMessage<RevokeBotOutboundWebhookRequest> | undefined): boolean {
+    return proto3.util.equals(RevokeBotOutboundWebhookRequest, a, b);
+  }
+}
+
+/**
+ * Revocation completed, or this endpoint was already absent.
+ *
+ * @generated from message chatto.api.v1.RevokeBotOutboundWebhookResponse
+ */
+export class RevokeBotOutboundWebhookResponse extends Message<RevokeBotOutboundWebhookResponse> {
+  constructor(data?: PartialMessage<RevokeBotOutboundWebhookResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "chatto.api.v1.RevokeBotOutboundWebhookResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): RevokeBotOutboundWebhookResponse {
+    return new RevokeBotOutboundWebhookResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): RevokeBotOutboundWebhookResponse {
+    return new RevokeBotOutboundWebhookResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): RevokeBotOutboundWebhookResponse {
+    return new RevokeBotOutboundWebhookResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: RevokeBotOutboundWebhookResponse | PlainMessage<RevokeBotOutboundWebhookResponse> | undefined, b: RevokeBotOutboundWebhookResponse | PlainMessage<RevokeBotOutboundWebhookResponse> | undefined): boolean {
+    return proto3.util.equals(RevokeBotOutboundWebhookResponse, a, b);
+  }
+}
+
+/**
+ * Read the retained failure history for a current endpoint.
+ *
+ * @generated from message chatto.api.v1.ListBotWebhookFailuresRequest
+ */
+export class ListBotWebhookFailuresRequest extends Message<ListBotWebhookFailuresRequest> {
+  /**
+   * @generated from field: string bot_user_id = 1;
+   */
+  botUserId = "";
+
+  /**
+   * @generated from field: string webhook_id = 2;
+   */
+  webhookId = "";
+
+  /**
+   * Maximum records, from 1 to 100. Zero selects 20.
+   *
+   * @generated from field: uint32 page_size = 3;
+   */
+  pageSize = 0;
+
+  /**
+   * Opaque continuation from the previous response. Bound to viewer and endpoint.
+   *
+   * @generated from field: string cursor = 4;
+   */
+  cursor = "";
+
+  constructor(data?: PartialMessage<ListBotWebhookFailuresRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "chatto.api.v1.ListBotWebhookFailuresRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "bot_user_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "webhook_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "page_size", kind: "scalar", T: 13 /* ScalarType.UINT32 */ },
+    { no: 4, name: "cursor", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListBotWebhookFailuresRequest {
+    return new ListBotWebhookFailuresRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ListBotWebhookFailuresRequest {
+    return new ListBotWebhookFailuresRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ListBotWebhookFailuresRequest {
+    return new ListBotWebhookFailuresRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ListBotWebhookFailuresRequest | PlainMessage<ListBotWebhookFailuresRequest> | undefined, b: ListBotWebhookFailuresRequest | PlainMessage<ListBotWebhookFailuresRequest> | undefined): boolean {
+    return proto3.util.equals(ListBotWebhookFailuresRequest, a, b);
+  }
+}
+
+/**
+ * A bounded page of complete failure records. No per-record hydration is needed.
+ *
+ * @generated from message chatto.api.v1.ListBotWebhookFailuresResponse
+ */
+export class ListBotWebhookFailuresResponse extends Message<ListBotWebhookFailuresResponse> {
+  /**
+   * @generated from field: repeated chatto.api.v1.BotWebhookFailure failures = 1;
+   */
+  failures: BotWebhookFailure[] = [];
+
+  /**
+   * Empty at the end. Refresh without a cursor to include newer records.
+   *
+   * @generated from field: string next_cursor = 2;
+   */
+  nextCursor = "";
+
+  constructor(data?: PartialMessage<ListBotWebhookFailuresResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "chatto.api.v1.ListBotWebhookFailuresResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "failures", kind: "message", T: BotWebhookFailure, repeated: true },
+    { no: 2, name: "next_cursor", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListBotWebhookFailuresResponse {
+    return new ListBotWebhookFailuresResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ListBotWebhookFailuresResponse {
+    return new ListBotWebhookFailuresResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ListBotWebhookFailuresResponse {
+    return new ListBotWebhookFailuresResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ListBotWebhookFailuresResponse | PlainMessage<ListBotWebhookFailuresResponse> | undefined, b: ListBotWebhookFailuresResponse | PlainMessage<ListBotWebhookFailuresResponse> | undefined): boolean {
+    return proto3.util.equals(ListBotWebhookFailuresResponse, a, b);
   }
 }

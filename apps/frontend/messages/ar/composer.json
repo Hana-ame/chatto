@@ -5,6 +5,7 @@
     "send": "أرسل الرسالة",
     "send_label": "إرسال",
     "also_send_to_channel": "أرسل أيضًا إلى القناة",
+    "also_send_to_conversation": "أرسل أيضًا إلى المحادثة",
     "post_as_thread": "نشر كموضوع",
     "thread_label": "الموضوع",
     "echo_label": "صدى",
@@ -33,12 +34,16 @@
     "post_as_new_message": "نشر كرسالة جديدة",
     "continue_in_thread": "المتابعة في سلسلة المحادثة",
     "edit_failed": "فشل في تحرير الرسالة",
+    "edit_empty": "لا يمكن أن تكون الرسالة فارغة",
     "upload": {
       "preparing": "جارٍ التحضير...",
       "uploading": "{percentage}% تم تحميل",
       "uploaded": "تم الرفع",
       "failed": "فشل الرفع",
-      "remove": "قم بإزالة {filename}"
+      "remove": "قم بإزالة {filename}",
+      "video_disabled": "رفع مقاطع الفيديو معطّل على هذا الخادم.",
+      "prepare_failed": "فشل تجهيز المرفق",
+      "too_large": "{filename} كبير جدًا ({size}). الحد الأقصى هو {limit}."
     },
     "format": {
       "bold": "جريئة",

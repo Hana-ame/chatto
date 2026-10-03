@@ -6,10 +6,32 @@ import { userEvent } from 'vitest/browser';
 import { render } from 'vitest-browser-svelte';
 import '../../app.css';
 import { q } from '$lib/test-utils';
+import { toast } from '$lib/ui/toast';
 
-import { presencePreference } from '$lib/state/presencePreference.svelte';
+import { presencePreferences } from '$lib/state/server/presencePreference';
+import { ServerPresence } from '@chatto/client/server/presence';
+import { setPresenceStatus } from '$lib/state/server/presenceTracking';
+import { deleteCustomStatus, setCustomStatus } from '@chatto/client/api/userStatus';
+import type { AppUiState } from '$lib/state/appUi.svelte';
 import { getRoomSidebarPanelState } from '$lib/storage/roomSidebarPanel';
+import { createTestServerScope, type TestServerScope } from '$lib/test-utils/serverScope.svelte';
 import CurrentUserBarTestHarness from './CurrentUserBarTestHarness.svelte';
+
+let presencePreference: ReturnType<typeof presencePreferences.get>;
+let presence: ServerPresence;
+
+vi.mock('@chatto/client/api/userStatus', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@chatto/client/api/userStatus')>()),
+  deleteCustomStatus: vi.fn(async () => null),
+  setCustomStatus: vi.fn(async (_config, status) => ({ ...status }))
+}));
+
+vi.mock('$lib/state/server/presenceTracking', () => ({
+  refreshPresencePreference: vi.fn(),
+  setPresenceStatus: vi.fn(async (scope, mode) => {
+    presencePreferences.get(scope).accept(mode, 'saved');
+  })
+}));
 
 function computedBackgroundColor(color: string): string {
   const element = document.createElement('span');
@@ -36,32 +58,25 @@ type MockRoom = {
 };
 
 const {
-  currentUserState,
   voiceCallState,
   roomsState,
   inputCapabilities,
-  customStatusEditorModuleLoaded
+  customStatusEditorModuleLoaded,
+  projectionState,
+  privilegedModeActions
 } = vi.hoisted(() => ({
-  currentUserState: {
-    user: null as {
-      id: string;
-      login: string;
-      displayName: string;
-      avatarUrl: string | null;
-      presenceStatus: PresenceStatus;
-      customStatus?: {
-        emoji: string;
-        text: string;
-        expiresAt?: string | null;
-      } | null;
-      hasVerifiedEmail: boolean;
-      settings: null;
-    } | null
-  },
   voiceCallState: {
+    canUseVoice: true,
+    canUseCamera: true,
+    canScreenShare: true,
     connected: false,
+    participants: [] as { isLocal: boolean; connectionQuality: 'poor' | 'lost' | 'excellent' }[],
     roomId: null as string | null,
     isMuted: false,
+    refreshDevices: vi.fn(),
+    audioDevices: [],
+    audioOutputDevices: [],
+    videoDevices: [],
     isMicrophonePending: false,
     isCameraEnabled: false,
     isCameraPending: false,
@@ -75,7 +90,6 @@ const {
     leave: vi.fn()
   },
   roomsState: {
-    currentUserId: 'user-1',
     rooms: [
       {
         id: 'room-1',
@@ -90,7 +104,20 @@ const {
     prefersTouchActions: false,
     supportsHoverActions: true
   },
-  customStatusEditorModuleLoaded: vi.fn()
+  customStatusEditorModuleLoaded: vi.fn(),
+  projectionState: {
+    viewer: null as null | {
+      privilegedMode?: {
+        available: boolean;
+        active: boolean;
+        expiresAt?: { toDate(): Date };
+      };
+    }
+  },
+  privilegedModeActions: {
+    set: vi.fn(),
+    expire: vi.fn()
+  }
 }));
 const navigation = vi.hoisted(() => ({
   goto: vi.fn(),
@@ -101,26 +128,12 @@ vi.mock('$lib/state/activeServer.svelte', () => ({
   getActiveServer: () => 'origin'
 }));
 
-vi.mock('$lib/state/server/scope.svelte', () => ({
-  useServerScope: () => ({
-    serverId: 'origin',
-    store: {
-      currentUser: currentUserState,
-      voiceCall: voiceCallState,
-      navigation: roomsState
-    },
-    connection: {
-      connectBaseUrl: 'https://chat.example.test',
-      bearerToken: 'token',
-      apiConfig: {
-        serverId: 'origin',
-        baseUrl: 'https://chat.example.test',
-        bearerToken: 'token'
-      }
-    },
-    isCurrent: () => true
-  })
-}));
+vi.mock(
+  '$lib/state/server/scope.svelte',
+  async () => (await import('$lib/test-utils/serverScope.svelte')).serverScopeModule
+);
+
+let server: TestServerScope;
 
 vi.mock('$app/navigation', () => ({
   goto: navigation.goto,
@@ -128,8 +141,10 @@ vi.mock('$app/navigation', () => ({
 }));
 
 vi.mock('$lib/state/userProfiles.svelte', () => ({
+  getLiveBotOwnerUserId: (_userId: string, fallback: string | null) => fallback,
   getLiveBio: () => null,
   getLiveTimezone: () => null,
+  getLiveLogin: (_userId: string, fallback: string) => fallback,
   getLiveAvatarUrl: (_userId: string, fallback: string | null) => fallback,
   getLiveCustomStatus: (_userId: string, fallback: unknown) => fallback,
   getLiveDisplayName: (_userId: string, fallback: string) => fallback
@@ -150,21 +165,37 @@ describe('CurrentUserBar', () => {
     document.documentElement.dir = 'ltr';
     localStorage.clear();
     sessionStorage.clear();
-    currentUserState.user = {
-      id: 'user-1',
-      login: 'alice',
-      displayName: 'Alice',
-      avatarUrl: null,
-      presenceStatus: PresenceStatus.OFFLINE,
-      customStatus: null,
-      hasVerifiedEmail: true,
-      settings: null
-    };
-    presencePreference.mode = 'online';
-    presencePreference.effectiveStatus = PresenceStatus.ONLINE;
+    presence = new ServerPresence();
+    server = createTestServerScope({
+      serverId: 'origin',
+      viewer: {
+        id: 'user-1',
+        login: 'alice',
+        displayName: 'Alice',
+        avatarUrl: null,
+        presenceStatus: PresenceStatus.OFFLINE,
+        customStatus: null,
+        hasVerifiedEmail: true
+      },
+      permissions: { loaded: false },
+      ui: { voiceCall: voiceCallState },
+      store: {
+        navigation: roomsState,
+        projection: projectionState,
+        presence,
+        setPrivilegedMode: privilegedModeActions.set,
+        expirePrivilegedMode: privilegedModeActions.expire
+      }
+    });
+    presencePreferences.clear();
+    presencePreference = presencePreferences.get({ serverId: 'origin', userId: 'user-1' });
+    presencePreference.status = PresenceStatus.ONLINE;
+    presencePreference.ready = true;
     voiceCallState.connected = false;
+    voiceCallState.participants = [];
     voiceCallState.roomId = null;
     voiceCallState.isMuted = false;
+    voiceCallState.refreshDevices.mockClear();
     voiceCallState.isMicrophonePending = false;
     voiceCallState.isCameraEnabled = false;
     voiceCallState.isCameraPending = false;
@@ -177,7 +208,6 @@ describe('CurrentUserBar', () => {
     voiceCallState.startNativeScreenShare.mockClear();
     voiceCallState.leave.mockClear();
     navigation.goto.mockClear();
-    roomsState.currentUserId = 'user-1';
     roomsState.rooms = [
       {
         id: 'room-1',
@@ -189,10 +219,106 @@ describe('CurrentUserBar', () => {
     inputCapabilities.prefersTouchActions = false;
     inputCapabilities.supportsHoverActions = true;
     customStatusEditorModuleLoaded.mockClear();
+    vi.mocked(deleteCustomStatus).mockReset().mockResolvedValue(null);
+    vi.mocked(setPresenceStatus).mockClear();
+    projectionState.viewer = null;
+    privilegedModeActions.set.mockReset();
+    privilegedModeActions.set.mockResolvedValue(undefined);
+    privilegedModeActions.expire.mockReset();
     delete window.chattoDesktop;
   });
 
-  it('uses the seeded presence cache instead of the first-login offline fallback', () => {
+  it('shows only the local participant network warning on the current-user card', async () => {
+    voiceCallState.connected = true;
+    voiceCallState.participants = [
+      { isLocal: false, connectionQuality: 'poor' },
+      { isLocal: true, connectionQuality: 'lost' }
+    ];
+    const screen = render(CurrentUserBarTestHarness);
+    await screen.getByRole('button', { name: 'Connection lost', exact: true }).click();
+    await expect
+      .element(screen.getByRole('dialog', { name: 'Connection lost' }))
+      .toBeInTheDocument();
+    await expect
+      .element(screen.getByRole('button', { name: 'Poor connection', exact: true }))
+      .not.toBeInTheDocument();
+    await userEvent.keyboard('{Escape}');
+    await expect
+      .element(screen.getByRole('dialog', { name: 'Connection lost' }))
+      .not.toBeInTheDocument();
+  });
+
+  it('asks before enabling privileged mode for this server', async () => {
+    projectionState.viewer = {
+      privilegedMode: { available: true, active: false }
+    };
+    const { getByRole } = render(CurrentUserBarTestHarness);
+
+    await userEvent.click(getByRole('button', { name: 'Enable privileged mode' }));
+    await expect
+      .element(getByRole('heading', { name: 'Enable privileged mode' }))
+      .toBeInTheDocument();
+    expect(privilegedModeActions.set).not.toHaveBeenCalled();
+
+    await userEvent.click(getByRole('button', { name: 'Enable privileged mode' }).last());
+    expect(privilegedModeActions.set).toHaveBeenCalledWith(true);
+  });
+
+  it('disables active privileged mode without another confirmation', async () => {
+    projectionState.viewer = {
+      privilegedMode: {
+        available: true,
+        active: true,
+        expiresAt: { toDate: () => new Date(Date.now() + 60_000) }
+      }
+    };
+    const { getByRole } = render(CurrentUserBarTestHarness);
+
+    await userEvent.click(getByRole('button', { name: 'Disable privileged mode' }));
+
+    expect(privilegedModeActions.set).toHaveBeenCalledWith(false);
+  });
+
+  it('expires privileged mode when its server deadline is reached', async () => {
+    projectionState.viewer = {
+      privilegedMode: {
+        available: true,
+        active: true,
+        expiresAt: { toDate: () => new Date(Date.now() - 1) }
+      }
+    };
+
+    render(CurrentUserBarTestHarness);
+
+    await expect.poll(() => privilegedModeActions.expire.mock.calls.length).toBe(1);
+  });
+
+  it('opens the user context menu from the card and keeps avatar clicks for presence', async () => {
+    const screen = render(CurrentUserBarTestHarness);
+    const card = q(screen.container, '[data-testid="current-user-identity-card"]')!;
+    const event = new MouseEvent('contextmenu', {
+      bubbles: true,
+      cancelable: true,
+      clientX: 120,
+      clientY: 80
+    });
+    card.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(true);
+    await expect
+      .element(screen.getByRole('dialog', { name: 'User profile', exact: true }))
+      .toBeVisible();
+    await expect.element(screen.getByTestId('copy-user-id')).toBeVisible();
+    await userEvent.keyboard('{Escape}');
+    await expect.element(screen.getByTestId('copy-user-id')).not.toBeInTheDocument();
+
+    await screen.getByTestId('current-user-presence-menu').click();
+    await expect
+      .element(screen.getByRole('menuitemradio', { name: 'Away', exact: true }))
+      .toBeVisible();
+  });
+
+  it('uses the chosen presence instead of the first-login offline fallback', () => {
     const { container } = render(CurrentUserBarTestHarness);
 
     expect(q(container, '[aria-label="Presence: Online"]')).toBeTruthy();
@@ -206,8 +332,9 @@ describe('CurrentUserBar', () => {
     expect(container.textContent).toContain('@alice');
   });
 
-  it('uses the presence cache instead of local presence preference for the current user dot', () => {
-    presencePreference.effectiveStatus = PresenceStatus.AWAY;
+  it('uses the server-reported presence instead of the chosen presence for the current user dot', () => {
+    presencePreference.status = PresenceStatus.AWAY;
+    presence.set('user-1', PresenceStatus.ONLINE);
 
     const { container } = render(CurrentUserBarTestHarness);
 
@@ -220,12 +347,11 @@ describe('CurrentUserBar', () => {
     expect(presenceDot.className).not.toContain('bg-presence-away');
   });
 
-  it('renders the current user dot from the seeded away presence cache value', () => {
-    presencePreference.effectiveStatus = PresenceStatus.ONLINE;
+  it('renders the current user dot from a server-reported away presence', () => {
+    presencePreference.status = PresenceStatus.ONLINE;
+    presence.set('user-1', PresenceStatus.AWAY);
 
-    const { container } = render(CurrentUserBarTestHarness, {
-      cachedPresence: PresenceStatus.AWAY
-    });
+    const { container } = render(CurrentUserBarTestHarness);
 
     expect(q(container, '[aria-label="Presence: Away"]')).toBeTruthy();
     const presenceDot = q(
@@ -235,9 +361,35 @@ describe('CurrentUserBar', () => {
     expect(presenceDot.className).toContain('bg-presence-away');
   });
 
+  it('follows server-reported presence changes and falls back to the chosen presence', async () => {
+    presencePreference.status = PresenceStatus.DO_NOT_DISTURB;
+    const screen = render(CurrentUserBarTestHarness);
+    const dot = (label: string) =>
+      q(screen.container, `[data-testid="current-user-presence-menu"] [aria-label="${label}"]`);
+
+    expect(dot('Do not disturb')).toBeTruthy();
+
+    presence.set('user-1', PresenceStatus.AWAY);
+    await expect.poll(() => dot('Away')).toBeTruthy();
+    expect(dot('Do not disturb')).toBeFalsy();
+
+    presence.clear();
+    await expect.poll(() => dot('Do not disturb')).toBeTruthy();
+    expect(dot('Away')).toBeFalsy();
+  });
+
+  it('ignores server-reported presence of other users', () => {
+    presence.set('user-2', PresenceStatus.AWAY);
+
+    const { container } = render(CurrentUserBarTestHarness);
+
+    expect(q(container, '[aria-label="Presence: Online"]')).toBeTruthy();
+    expect(q(container, '[aria-label="Presence: Away"]')).toBeFalsy();
+  });
+
   it('keeps the username line when display name and username match', () => {
-    currentUserState.user = {
-      ...currentUserState.user!,
+    server.currentUser.user = {
+      ...server.currentUser.user!,
       displayName: 'alice',
       login: 'alice'
     };
@@ -297,6 +449,8 @@ describe('CurrentUserBar', () => {
   });
 
   it('closes the presence menu after choosing a presence mode', async () => {
+    const remote = { serverId: 'remote', userId: 'user-1' };
+    presencePreferences.get(remote).accept(PresenceStatus.OFFLINE, 'remote');
     const { container } = render(CurrentUserBarTestHarness);
 
     (q(container, '[data-testid="current-user-presence-menu"]') as HTMLButtonElement).click();
@@ -309,13 +463,127 @@ describe('CurrentUserBar', () => {
     await vi.waitFor(() => {
       expect(container.textContent).not.toContain('Do Not Disturb');
     });
-    expect(presencePreference.mode).toBe('away');
+    expect(presencePreference.status).toBe(PresenceStatus.AWAY);
+    expect(presencePreferences.get(remote).status).toBe(PresenceStatus.OFFLINE);
   });
 
-  it('loads the custom status editor only after opening the touch bottom sheet', async () => {
-    inputCapabilities.prefersTouchActions = true;
-    inputCapabilities.supportsHoverActions = false;
+  it('shows a saved presence choice before the server reports it', async () => {
+    presence.set('user-1', PresenceStatus.ONLINE);
+    const { container } = render(CurrentUserBarTestHarness);
 
+    (q(container, '[data-testid="current-user-presence-menu"]') as HTMLButtonElement).click();
+    const away = await vi.waitFor(() => {
+      const item = Array.from(container.querySelectorAll('[role="menuitemradio"]')).find(
+        (candidate) => candidate.textContent?.includes('Away')
+      ) as HTMLButtonElement | undefined;
+      expect(item).toBeTruthy();
+      return item!;
+    });
+    away.click();
+
+    await vi.waitFor(() => {
+      expect(q(container, '[aria-label="Presence: Away"]')).toBeTruthy();
+    });
+    expect(presence.get('user-1')).toBe(PresenceStatus.AWAY);
+  });
+
+  it('keeps the previous selection and reports a failed presence save', async () => {
+    const { container } = render(CurrentUserBarTestHarness);
+    (q(container, '[data-testid="current-user-presence-menu"]') as HTMLButtonElement).click();
+    await vi.waitFor(() => expect(container.textContent).toContain('Away'));
+    vi.mocked(setPresenceStatus).mockRejectedValueOnce(new Error('Server unavailable'));
+    const notify = vi.spyOn(toast, 'error');
+    try {
+      (q(container, '[role="menuitemradio"][aria-checked="false"]') as HTMLButtonElement).click();
+      await vi.waitFor(() => expect(notify).toHaveBeenCalledWith('Failed to save status'));
+      expect(presencePreference.status).toBe(PresenceStatus.ONLINE);
+      expect(container.textContent).toContain('Presence on this server');
+    } finally {
+      notify.mockRestore();
+      toast.clear();
+    }
+  });
+
+  it('omits the clear status action when no custom status is set', async () => {
+    const screen = render(CurrentUserBarTestHarness);
+    await screen.getByTestId('current-user-presence-menu').click();
+    await expect.element(screen.getByTestId('current-user-custom-status-action')).toBeVisible();
+    await expect
+      .element(screen.getByTestId('current-user-clear-status-action'))
+      .not.toBeInTheDocument();
+  });
+
+  it('clears the custom status directly and prevents duplicate requests', async () => {
+    server.currentUser.user!.customStatus = { emoji: '🍜', text: 'Lunch', expiresAt: null };
+    const pending = Promise.withResolvers<null>();
+    vi.mocked(deleteCustomStatus).mockReturnValueOnce(pending.promise);
+    const notify = vi.spyOn(toast, 'success');
+    const screen = render(CurrentUserBarTestHarness);
+    try {
+      await screen.getByTestId('current-user-presence-menu').click();
+      const clear = screen.getByTestId('current-user-clear-status-action');
+      const edit = screen.getByTestId('current-user-custom-status-action');
+      await expect.element(clear).toHaveTextContent('Clear status');
+      expect(
+        clear.element().compareDocumentPosition(edit.element()) & Node.DOCUMENT_POSITION_FOLLOWING
+      ).toBeTruthy();
+      await clear.click();
+      await expect.element(clear).toBeDisabled();
+      await expect.element(edit).toBeDisabled();
+      (clear.element() as HTMLButtonElement).click();
+      expect(deleteCustomStatus).toHaveBeenCalledExactlyOnceWith(server.scope.connection.apiConfig);
+      pending.resolve(null);
+      await vi.waitFor(() => expect(server.currentUser.user!.customStatus).toBeNull());
+      await expect.element(clear).not.toBeInTheDocument();
+      expect(notify).toHaveBeenCalledWith('Status cleared');
+      expect(setPresenceStatus).not.toHaveBeenCalled();
+      expect(customStatusEditorModuleLoaded).not.toHaveBeenCalled();
+      await screen.getByTestId('current-user-presence-menu').click();
+      await expect.element(edit).toBeVisible();
+      await expect.element(clear).not.toBeInTheDocument();
+    } finally {
+      notify.mockRestore();
+      toast.clear();
+    }
+  });
+
+  it('preserves the custom status when clearing fails and allows retry', async () => {
+    const status = { emoji: '🍜', text: 'Lunch', expiresAt: null };
+    server.currentUser.user!.customStatus = status;
+    vi.mocked(deleteCustomStatus).mockRejectedValueOnce(new Error('Server unavailable'));
+    const notify = vi.spyOn(toast, 'error');
+    const screen = render(CurrentUserBarTestHarness);
+    try {
+      await screen.getByTestId('current-user-presence-menu').click();
+      const clear = screen.getByTestId('current-user-clear-status-action');
+      await clear.click();
+      await vi.waitFor(() => expect(notify).toHaveBeenCalledWith('Failed to clear status'));
+      expect(server.currentUser.user!.customStatus).toEqual(status);
+      await expect.element(clear).toBeEnabled();
+      expect(customStatusEditorModuleLoaded).not.toHaveBeenCalled();
+      await clear.click();
+      await vi.waitFor(() => expect(server.currentUser.user!.customStatus).toBeNull());
+    } finally {
+      notify.mockRestore();
+      toast.clear();
+    }
+  });
+
+  it('does not apply a pending clear to a different account', async () => {
+    const status = { emoji: '🍜', text: 'Lunch', expiresAt: null };
+    server.currentUser.user!.customStatus = status;
+    const pending = Promise.withResolvers<null>();
+    vi.mocked(deleteCustomStatus).mockReturnValueOnce(pending.promise);
+    const screen = render(CurrentUserBarTestHarness);
+    await screen.getByTestId('current-user-presence-menu').click();
+    await screen.getByTestId('current-user-clear-status-action').click();
+    server.currentUser.accept({ ...server.currentUser.user!, id: 'user-2' });
+    pending.resolve(null);
+    await expect.element(screen.getByTestId('current-user-clear-status-action')).toBeEnabled();
+    expect(server.currentUser.user?.customStatus).toEqual(status);
+  });
+
+  it('loads the custom status editor only after opening its dialog', async () => {
     const { container } = render(CurrentUserBarTestHarness);
 
     await tick();
@@ -338,8 +606,8 @@ describe('CurrentUserBar', () => {
   });
 
   it('opens the custom status dialog from the status menu', async () => {
-    currentUserState.user = {
-      ...currentUserState.user!,
+    server.currentUser.user = {
+      ...server.currentUser.user!,
       customStatus: {
         emoji: '🍜',
         text: 'chatto:status:out_for_lunch',
@@ -366,9 +634,140 @@ describe('CurrentUserBar', () => {
     });
   });
 
+  it('shows a custom clear time field after choosing the custom expiry preset', async () => {
+    const { container } = render(CurrentUserBarTestHarness);
+
+    (q(container, '[data-testid="current-user-presence-menu"]') as HTMLButtonElement).click();
+    await vi.waitFor(() => {
+      expect(q(container, '[data-testid="current-user-custom-status-action"]')).toBeTruthy();
+    });
+    (
+      q(container, '[data-testid="current-user-custom-status-action"]') as HTMLButtonElement
+    ).click();
+
+    const preset = await vi.waitFor(() => {
+      const select = q(
+        container,
+        '[data-testid="settings-custom-status-expiry-preset"]'
+      ) as HTMLSelectElement;
+      expect(select).toBeTruthy();
+      return select;
+    });
+    expect(q(container, '[data-testid="settings-custom-status-expires-at"]')).toBeNull();
+
+    preset.value = 'custom';
+    preset.dispatchEvent(new Event('change', { bubbles: true }));
+
+    await vi.waitFor(() => {
+      expect(preset.value).toBe('custom');
+      const custom = q(
+        container,
+        '[data-testid="settings-custom-status-expires-at"]'
+      ) as HTMLInputElement;
+      expect(custom.type).toBe('datetime-local');
+      expect(custom.value).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/);
+    });
+  });
+
+  async function openStatusDialog(container: HTMLElement) {
+    (q(container, '[data-testid="current-user-presence-menu"]') as HTMLButtonElement).click();
+    await vi.waitFor(() => {
+      expect(q(container, '[data-testid="current-user-custom-status-action"]')).toBeTruthy();
+    });
+    (
+      q(container, '[data-testid="current-user-custom-status-action"]') as HTMLButtonElement
+    ).click();
+    return vi.waitFor(() => {
+      const dialog = document.querySelector<HTMLDialogElement>('dialog[open]');
+      expect(dialog?.querySelector('[data-testid="custom-status-editor"]')).toBeTruthy();
+      return dialog!;
+    });
+  }
+
+  function footerButton(dialog: HTMLDialogElement, label: string) {
+    return Array.from(dialog.querySelectorAll<HTMLButtonElement>('footer button')).find(
+      (button) => button.textContent?.trim() === label
+    );
+  }
+
+  it('saves a custom status from the dialog and closes it', async () => {
+    const notify = vi.spyOn(toast, 'success');
+    vi.mocked(setCustomStatus).mockClear();
+    const { container } = render(CurrentUserBarTestHarness);
+    try {
+      const dialog = await openStatusDialog(container);
+      const text = dialog.querySelector<HTMLInputElement>(
+        '[data-testid="settings-custom-status-text"]'
+      )!;
+      await userEvent.fill(text, 'Deep work');
+      footerButton(dialog, 'Save status')!.click();
+
+      await vi.waitFor(() => {
+        expect(setCustomStatus).toHaveBeenCalledOnce();
+        expect(q(container, '[data-testid="custom-status-editor"]')).toBeFalsy();
+      });
+      expect(vi.mocked(setCustomStatus).mock.calls[0][1]).toMatchObject({ text: 'Deep work' });
+      expect(notify).toHaveBeenCalledWith('Status updated');
+    } finally {
+      notify.mockRestore();
+      toast.clear();
+    }
+  });
+
+  it('closes the status dialog with Cancel without saving', async () => {
+    vi.mocked(setCustomStatus).mockClear();
+    const { container } = render(CurrentUserBarTestHarness);
+    const dialog = await openStatusDialog(container);
+
+    footerButton(dialog, 'Cancel')!.click();
+
+    await vi.waitFor(() => {
+      expect(q(container, '[data-testid="custom-status-editor"]')).toBeFalsy();
+    });
+    expect(setCustomStatus).not.toHaveBeenCalled();
+  });
+
+  it('clears an active status from the status dialog footer', async () => {
+    server.currentUser.user!.customStatus = { emoji: '🍜', text: 'Lunch', expiresAt: null };
+    const { container } = render(CurrentUserBarTestHarness);
+    const dialog = await openStatusDialog(container);
+
+    footerButton(dialog, 'Clear status')!.click();
+
+    await vi.waitFor(() => {
+      expect(deleteCustomStatus).toHaveBeenCalledOnce();
+      expect(q(container, '[data-testid="custom-status-editor"]')).toBeFalsy();
+    });
+  });
+
+  it('picks an emoji inside the status dialog without submitting it', async () => {
+    vi.mocked(setCustomStatus).mockClear();
+    const { container } = render(CurrentUserBarTestHarness);
+    const dialog = await openStatusDialog(container);
+
+    dialog
+      .querySelector<HTMLButtonElement>('[data-testid="settings-custom-status-emoji-picker"]')!
+      .click();
+    const emoji = await vi.waitFor(() => {
+      const button = dialog.querySelector<HTMLButtonElement>('.grid button[title]');
+      expect(button).toBeTruthy();
+      return button!;
+    });
+    const picked = emoji.textContent?.trim();
+    await userEvent.click(emoji);
+
+    await vi.waitFor(() => {
+      expect(
+        dialog.querySelector('[data-testid="settings-custom-status-emoji-picker"]')?.textContent
+      ).toContain(picked);
+    });
+    expect(dialog.open).toBe(true);
+    expect(setCustomStatus).not.toHaveBeenCalled();
+  });
+
   it('shows the custom status emoji next to the display name, not on the avatar', () => {
-    currentUserState.user = {
-      ...currentUserState.user!,
+    server.currentUser.user = {
+      ...server.currentUser.user!,
       customStatus: {
         emoji: '🍜',
         text: 'chatto:status:out_for_lunch',
@@ -386,8 +785,8 @@ describe('CurrentUserBar', () => {
   });
 
   it('keeps the identity card at the same control height with long profile content', () => {
-    currentUserState.user = {
-      ...currentUserState.user!,
+    server.currentUser.user = {
+      ...server.currentUser.user!,
       login: 'alice-with-a-very-long-login-name-that-must-truncate',
       displayName: 'Alice With A Very Long Display Name That Must Stay Inside The User Card',
       customStatus: {
@@ -456,9 +855,10 @@ describe('CurrentUserBar', () => {
     const link = q(container, '[data-testid="current-user-call-link"]') as HTMLButtonElement;
     expect(link.getAttribute('aria-label')).toBe('Open # general');
     expect(link.textContent?.trim()).toBe('');
-    link.click();
 
     const muteButton = q(container, '[data-testid="current-user-call-mute"]') as HTMLButtonElement;
+    expect(muteButton.getAttribute('aria-label')).toBe('Mute');
+    expect(muteButton.getAttribute('aria-pressed')).toBe(String(voiceCallState.isMuted));
     const cameraButton = q(
       container,
       '[data-testid="current-user-call-camera"]'
@@ -472,25 +872,75 @@ describe('CurrentUserBar', () => {
       '[data-testid="current-user-call-leave"]'
     ) as HTMLButtonElement;
 
-    expect(muteButton.className).toContain('btn-success');
-    expect(cameraButton.className).toContain('btn-secondary');
-    expect(screenShareButton.className).toContain('btn-secondary');
-    expect(leaveButton.className).toContain('btn-danger');
+    const callGroup = q(container, '[data-testid="current-user-call-card"]')!;
+    const identityCard = q(container, '[data-testid="current-user-identity-card"]')!;
+    await vi.waitFor(() => expect(getComputedStyle(callGroup.parentElement!).opacity).toBe('1'));
+    expect(callGroup.getBoundingClientRect().height).toBe(
+      (identityCard.getBoundingClientRect().height * 7) / 12
+    );
+    expect(callGroup.getBoundingClientRect().width).toBe(
+      identityCard.getBoundingClientRect().width
+    );
+
+    expect(muteButton.className).toContain('pill-button-success');
+    expect(cameraButton.className).toContain('pill-button');
+    expect(screenShareButton.className).toContain('pill-button');
+    expect(leaveButton.className).toContain('pill-button-danger');
 
     muteButton.click();
     cameraButton.click();
     screenShareButton.click();
     leaveButton.click();
+    link.click();
+    await expect.poll(() => q(container, '[data-testid="current-user-call-card"]')).toBeTruthy();
 
     expect(navigation.goto).toHaveBeenCalledWith('/chat/-/room-1');
-    expect(getRoomSidebarPanelState('origin', 'room-1')).toBe('call');
+    expect(getRoomSidebarPanelState('origin', 'room-1')).toBe(
+      window.matchMedia('(min-width: 1024px)').matches ? 'call' : undefined
+    );
     expect(voiceCallState.toggleMute).toHaveBeenCalledOnce();
     expect(voiceCallState.toggleCamera).toHaveBeenCalledOnce();
     expect(voiceCallState.toggleScreenShare).toHaveBeenCalledOnce();
     expect(voiceCallState.leave).toHaveBeenCalledOnce();
   });
 
-  it('aligns the equal-width call controls with the user card', () => {
+  it('keeps call controls visible while opening the same call sidebar and navigating', async () => {
+    voiceCallState.connected = true;
+    voiceCallState.roomId = 'room-1';
+    let appUi!: AppUiState;
+    const { container } = render(CurrentUserBarTestHarness, {
+      onReady: (state) => {
+        appUi = state;
+      }
+    });
+    const toolbar = () => q(container, '[data-testid="current-user-call-card"]');
+    const desktop = window.matchMedia('(min-width: 1024px)').matches;
+    const open = () =>
+      desktop
+        ? appUi.openDesktopRoomSidebarPanel('call')
+        : appUi.openMobileRoomSidebarPanel('call');
+    expect(toolbar()).toBeTruthy();
+    open();
+    await expect.poll(toolbar).toBeTruthy();
+    if (desktop) appUi.closeDesktopRoomSidebarPanel();
+    else appUi.closeMobileRoomSidebarPanel();
+    await expect.poll(toolbar).toBeTruthy();
+    open();
+    await expect.poll(toolbar).toBeTruthy();
+    appUi.setActiveRoomScope('origin', 'room-2');
+    open();
+    await expect.poll(toolbar).toBeTruthy();
+    appUi.setActiveRoomScope('origin', 'room-1');
+    open();
+    await expect.poll(toolbar).toBeTruthy();
+    appUi.openRoomSidebarProfile('user-2', desktop ? 'desktop' : 'mobile');
+    await expect.poll(toolbar).toBeTruthy();
+    appUi.setActiveRoomScope('another-server', 'room-1');
+    open();
+    await expect.poll(toolbar).toBeTruthy();
+  });
+
+  it('aligns the equal-width call controls with the user card', async () => {
     voiceCallState.connected = true;
     voiceCallState.roomId = 'room-1';
 
@@ -500,6 +950,7 @@ describe('CurrentUserBar', () => {
 
     const callCard = q(container, '[data-testid="current-user-call-card"]')!;
     const identityCard = q(container, '[data-testid="current-user-identity-card"]')!;
+    await vi.waitFor(() => expect(getComputedStyle(callCard.parentElement!).opacity).toBe('1'));
     const callCardRect = callCard.getBoundingClientRect();
     const identityCardRect = identityCard.getBoundingClientRect();
     const controlWidths = Array.from(
@@ -510,7 +961,7 @@ describe('CurrentUserBar', () => {
     expect(callCardRect.left).toBe(identityCardRect.left);
     expect(callCardRect.right).toBe(identityCardRect.right);
     expect(controlWidths).toHaveLength(5);
-    expect(controlWidths.every((width) => width === controlWidths[0])).toBe(true);
+    expect(controlWidths.every((width) => Math.abs(width - controlWidths[0]) < 1)).toBe(true);
   });
 
   it('opens the native chooser when the host exposes screen sharing', async () => {
@@ -559,16 +1010,16 @@ describe('CurrentUserBar', () => {
     const { container } = render(CurrentUserBarTestHarness);
 
     expect(q(container, '[data-testid="current-user-call-mute"]')!.className).toContain(
-      'btn-secondary'
+      'pill-button'
     );
     expect(q(container, '[data-testid="current-user-call-camera"]')!.className).toContain(
-      'btn-success'
+      'pill-button-success'
     );
     expect(q(container, '[data-testid="current-user-call-screen-share"]')!.className).toContain(
-      'btn-success'
+      'pill-button-success'
     );
     expect(q(container, '[data-testid="current-user-call-leave"]')!.className).toContain(
-      'btn-danger'
+      'pill-button-danger'
     );
   });
 

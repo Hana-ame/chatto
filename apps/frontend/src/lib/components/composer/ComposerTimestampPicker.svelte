@@ -1,6 +1,7 @@
 <script lang="ts">
+  import { CompactActionButton, ContextMenu } from '$lib/ui';
   import { tick } from 'svelte';
-  import ContextMenu from '$lib/ui/ContextMenu.svelte';
+  import { Button, FormField, TextInput } from '$lib/ui/form';
   import { m } from '$lib/i18n/messages';
   import {
     createMessageTimestampToken,
@@ -20,6 +21,8 @@
   } = $props();
 
   const timezoneListId = `timestamp-timezones-${Math.random().toString(36).slice(2)}`;
+  const dateTimeInputId = $props.id();
+  const timezoneInputId = `${dateTimeInputId}-timezone`;
   const timezoneOptions = Intl.supportedValuesOf?.('timeZone') ?? [];
   let triggerElement = $state<HTMLButtonElement>();
   let dateTimeInput = $state<HTMLInputElement>();
@@ -99,18 +102,17 @@
   }
 </script>
 
-<button
+<CompactActionButton
+  wrapperClass="mobile-presentation:pill-button-group-touch"
+  label={m('composer.timestamp.insert_label')}
   type="button"
   onpointerdown={(event) => event.preventDefault()}
   onclick={openPicker}
-  bind:this={triggerElement}
   {disabled}
-  class="flex h-6 w-6 cursor-pointer items-center justify-center rounded text-muted transition-[background-color,color,scale] duration-100 active:scale-[0.96] enabled:hover:bg-surface-emphasized enabled:hover:text-text disabled:cursor-not-allowed disabled:opacity-50"
-  aria-label={m('composer.timestamp.insert_label')}
   title={m('composer.timestamp.insert_label')}
 >
-  <span class="iconify icon-[uil--clock] text-[15px]"></span>
-</button>
+  <span aria-hidden="true" class="iconify icon-[uil--clock] text-[15px]"></span>
+</CompactActionButton>
 
 {#if pickerOpen}
   <ContextMenu
@@ -122,26 +124,26 @@
   >
     <form class="flex flex-col gap-1" onsubmit={insertTimestamp}>
       <header class="flex items-center gap-2 menu-section px-3 py-2 text-sm font-medium">
-        <span class="iconify icon-[uil--clock] text-muted"></span>
+        <span aria-hidden="true" class="iconify icon-[uil--clock] text-muted"></span>
         <span>{m('composer.timestamp.title')}</span>
       </header>
 
       <section class="flex flex-col gap-3 menu-section px-3 py-2">
-        <label class="flex flex-col gap-1 text-sm">
-          <span class="text-muted">{m('composer.timestamp.date_time')}</span>
-          <input
-            class="input"
-            type="datetime-local"
-            name="timestamp-date-time"
-            bind:this={dateTimeInput}
-            bind:value={localValue}
-            required
-          />
-        </label>
+        <TextInput
+          id={dateTimeInputId}
+          type="datetime-local"
+          name="timestamp-date-time"
+          label={m('composer.timestamp.date_time')}
+          bind:element={dateTimeInput}
+          bind:value={localValue}
+          required
+        />
 
-        <label class="flex flex-col gap-1 text-sm">
-          <span class="text-muted">{m('composer.timestamp.timezone')}</span>
+        <!-- A native datalist keeps the time zone suggestions inside this popover.
+             Combobox would open a second floating layer above the context menu. -->
+        <FormField id={timezoneInputId} label={m('composer.timestamp.timezone')} required>
           <input
+            id={timezoneInputId}
             class="input"
             name="timestamp-timezone"
             list={timezoneListId}
@@ -155,20 +157,20 @@
               <option value={timezone}></option>
             {/each}
           </datalist>
-        </label>
+        </FormField>
 
         {#if pickerError}
-          <p class="form-error text-xs">{pickerError}</p>
+          <p class="form-error">{pickerError}</p>
         {/if}
       </section>
 
       <footer class="flex justify-end gap-2 menu-section px-3 py-2">
-        <button type="button" class="btn-secondary btn-sm" onclick={() => closePicker()}>
+        <Button size="sm" variant="secondary" onclick={() => closePicker()}>
           {m('common.cancel')}
-        </button>
-        <button type="submit" class="btn-action btn-sm" disabled={pickerError !== null}>
+        </Button>
+        <Button type="submit" size="sm" disabled={pickerError !== null}>
           {m('composer.timestamp.insert')}
-        </button>
+        </Button>
       </footer>
     </form>
   </ContextMenu>

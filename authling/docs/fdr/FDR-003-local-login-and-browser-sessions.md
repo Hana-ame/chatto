@@ -1,7 +1,7 @@
 # FDR-003: Local Login and Browser Sessions
 
 **Status:** Experimental
-**Last reviewed:** 2026-08-20
+**Last reviewed:** 2026-09-15
 
 ## Overview
 
@@ -22,7 +22,17 @@ experience.
   minutes after the tenth recorded failure. The limit is shared by Authling
   replicas. Password-verification concurrency is also bounded per process.
 - Successful login creates a new browser session. Successful signup does the
-  same and takes the person directly to the signed-in account page.
+  same and takes the person directly to the signed-in account page. Each new
+  session is bound to the credential generation that authorized login or signup.
+  A concurrent password or email change cannot upgrade that proof to a newer
+  generation. Login checks both account and email-registry projection boundaries
+  after password verification and rejects a credential that changed during the
+  check. Audit-only events do not invalidate an otherwise current proof.
+- Encrypted session state stores authentication time separately from session
+  creation and activity times. Login, signup, password reset, and signed-in
+  password change record the start of the successful credential ceremony.
+  Email-change session replacement preserves the previous authentication time.
+  OIDC uses this value for authentication freshness and the `auth_time` claim.
 - A session expires after 24 hours even if active, or after one hour without
   activity. Activity extends only the inactivity limit, never the absolute
   lifetime.
@@ -43,8 +53,11 @@ experience.
   process restarts; the completing browser receives a new session.
 - Protected pages reject absent, expired, malformed, forged, and revoked
   sessions. Cross-origin login and logout submissions are rejected.
-- The configured public origin is canonical: requests for another host are
-  rejected, and unsafe browser requests must carry that exact origin.
+- The configured public origin is canonical: requests for another host, port, or
+  scheme receive a temporary redirect (307) before any application handler.
+  The destination uses the configured origin and preserves the path and query.
+  Redirects preserve the method and are not cached. Unsafe browser requests
+  at the canonical origin must still carry that exact origin.
 - Deployments may explicitly trust sanitized `X-Forwarded-Host` and
   `X-Forwarded-Proto` from their sole reverse proxy. The listener must not be
   directly reachable by untrusted clients when that option is enabled.
@@ -73,7 +86,7 @@ attribute.
 
 **Why:** These attributes reduce script access, cross-site presentation, and
 cleartext transport risk while letting ordinary OIDC top-level navigation work
-in a later slice. A browser-session cookie avoids silently adding a "remember
+in the OIDC flow. A browser-session cookie avoids silently adding a "remember
 me" feature.
 
 **Tradeoff:** Browser session restoration behavior varies, and local HTTP
@@ -106,6 +119,15 @@ must not reveal whether an address is registered.
 attacker can temporarily deny login to a known address by exhausting its
 attempt budget.
 
+## Compatibility
+
+Session records must contain a valid authentication time. Older records without
+that value fail closed; Authling does not infer it from session creation or
+activity. Affected browsers must sign in again. Upgrade all replicas before
+relying on authentication-freshness checks, because older replicas do not
+enforce the same constraints. Current valid sessions retain their normal
+expiry and restart behavior.
+
 ## Limitations
 
 - There is no "remember me" or user-visible authentication history yet.
@@ -114,6 +136,8 @@ attempt budget.
 - Authling's listener does not terminate TLS. Production operators must expose
   login only through an HTTPS reverse proxy and configure its canonical
   `https://` public URL. Plain HTTP is a loopback development mode only.
+  Loopback hosts include names beneath `.localhost`. Concurrent development
+  stacks can use such names to get separate browser cookie scopes.
 
 ## Related
 

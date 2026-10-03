@@ -5,6 +5,9 @@ Renders the room list in the server sidebar. When a room layout is configured,
 rooms are organized into collapsible sections. Otherwise, rooms display alphabetically.
 -->
 <script lang="ts">
+  import { errorMessage } from '$lib/utils/errorMessage';
+  import { serverUi } from '$lib/state/server/serverUi';
+  import DirectMessageName from '$lib/components/users/DirectMessageName.svelte';
   import { RoomKind } from '@chatto/api-types/api/v1/rooms_pb';
   import { PresenceStatus } from '@chatto/api-types/api/v1/presence_pb';
   import { goto, pushState } from '$app/navigation';
@@ -17,41 +20,49 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
     sidebarLinkAnchorAttributes,
     sidebarLinkTarget
   } from '$lib/navigation/sidebarLinkTarget';
-  import { serverRegistry } from '$lib/state/server/registry.svelte';
+  import { serverRegistry } from '$lib/client';
   import { useServerScope } from '$lib/state/server/scope.svelte';
   import RoomGroupSection from '$lib/components/chat/RoomGroupSection.svelte';
   import CreateRoomGroupControl from '$lib/components/chat/CreateRoomGroupControl.svelte';
-  import EmptyState from '$lib/ui/EmptyState.svelte';
-  import { serverStorageKey } from '$lib/storage/serverStorage';
-  import { buildDirectMessagePresentation, type UserAvatarUserView } from '$lib/render/users';
+  import {
+    EmptyState,
+    NotificationBadge,
+    UnreadDot,
+    ContextMenu,
+    MenuItem,
+    MenuSection,
+    contextMenuTrigger,
+    type ContextMenuTriggerDetails
+  } from '$lib/ui';
+  import { serverStorageKey } from '@chatto/client/storage/serverStorage';
+  import {
+    buildDirectMessagePresentation,
+    type UserAvatarUserView
+  } from '@chatto/client/timeline/users';
+  import { directMessageLabels } from '$lib/render/directMessageLabels';
   import UserAvatar from '$lib/components/UserAvatar.svelte';
-  import NotificationBadge from '$lib/ui/NotificationBadge.svelte';
-  import UnreadDot from '$lib/ui/UnreadDot.svelte';
-  import { notificationTarget } from '$lib/state/server/notifications.svelte';
+  import { notificationTarget } from '@chatto/client/server/notifications';
+  import { NotificationAttentionLevel } from '@chatto/client/api/notifications';
   import { prepareUiForNotificationTarget } from '$lib/notifications/notificationNavigationUi';
   import { getAppUiState, getRoomSidebarPresentation } from '$lib/state/appUi.svelte';
+  import { sidebarNav } from '$lib/state/globals.svelte';
   import { getLiveDisplayName } from '$lib/state/userProfiles.svelte';
   import {
     isNavigationVisibleRoom,
     type RoomsListItem,
     type RoomsListGroup,
     type RoomsListGroupItem
-  } from '$lib/state/server/rooms.svelte';
-  import type { CallRoomParticipant } from '$lib/state/server/activeCallRooms.svelte';
-  import ContextMenu from '$lib/ui/ContextMenu.svelte';
-  import MenuItem from '$lib/ui/MenuItem.svelte';
-  import MenuSection from '$lib/ui/MenuSection.svelte';
+  } from '$lib/state/server/navigation';
+  import type { CallRoomParticipant } from '$lib/state/server/activeCallRooms';
   import NavigationContextMenu from '$lib/components/menus/NavigationContextMenu.svelte';
-  import {
-    contextMenuTrigger,
-    type ContextMenuTriggerDetails
-  } from '$lib/ui/contextMenuTrigger.svelte';
   import { markNavigationRoomAsRead } from '$lib/navigation/readActions';
   import { toast } from '$lib/ui/toast';
-  import { createAdminRoomLayoutAPI } from '$lib/api-client/adminRoomLayout';
-  import { createRoomCommandAPI } from '$lib/api-client/rooms';
+  import { createAdminRoomLayoutAPI } from '$lib/api/adminRoomLayout';
+  import { createRoomCommandAPI } from '@chatto/client/api/rooms';
   import { fromAction, type Attachment } from 'svelte/attachments';
-  import { SvelteMap } from 'svelte/reactivity';
+  import { MediaQuery, SvelteMap } from 'svelte/reactivity';
+  import { TOUCH_ONLY_QUERY } from '$lib/utils/inputMediaQueries';
+  import { notificationPath } from '$lib/notificationPath';
   import {
     dragHandle,
     dragHandleZone,
@@ -59,7 +70,7 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
     SHADOW_PLACEHOLDER_ITEM_ID,
     type DndEvent
   } from 'svelte-dnd-action';
-  import type { AdminRoomLayoutItemMutationInput } from '$lib/api-client/adminRoomLayout';
+  import type { AdminRoomLayoutItemMutationInput } from '$lib/api/adminRoomLayout';
 
   let { canReorderGroups = false }: { canReorderGroups?: boolean } = $props();
 
@@ -70,22 +81,30 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
   // against the new server's state automatically.
 
   const serverScope = useServerScope();
-  const activeServerId = $derived(serverScope.serverId);
+  const activeServerId = serverScope.serverId;
   const serverSegment = $derived(serverIdToSegment(activeServerId));
   const activeServer = $derived(serverRegistry.getServer(activeServerId));
   const activeServerBaseURL = $derived(activeServer?.url ?? null);
-  const stores = $derived(serverScope.store);
-  const notificationStore = $derived(stores.notifications);
-  const activeCallRooms = $derived(stores.activeCallRooms);
+  const stores = serverScope.store;
+  const activeCallRooms = $derived(serverUi(stores).activeCallRooms);
   const appUi = getAppUiState();
   const roomLayoutAPI = serverScope.connection.getAPI(createAdminRoomLayoutAPI);
   const roomCommandAPI = serverScope.connection.getAPI(createRoomCommandAPI);
-  const supportsRelativeSidebarMoves = $derived(
-    stores.serverInfo.supportsFeature('relativeSidebarMoves')
-  );
+  const touchOnly = new MediaQuery(TOUCH_ONLY_QUERY, false);
+  /**
+   * Whether sidebar entries and groups can be reordered by drag and drop.
+   * Touch-only devices get no drag handles: svelte-dnd-action cancels the
+   * default action of every touchstart on a handle, so a handle over each
+   * managed row's leading icon and group disclosure blocks scrolling and taps.
+   * Server-wide room managers can reorder in Server Admin → Rooms instead;
+   * FDR-017 records the gap for group-scoped managers.
+   */
+  const sidebarDragEnabled = $derived(!touchOnly.current);
+  /** Whether the viewer can reorder whole room groups by drag and drop. */
+  const groupDragEnabled = $derived(sidebarDragEnabled && canReorderGroups);
 
-  const navigation = $derived(stores.navigation);
-  const roomUnreadStore = $derived(stores.roomUnread);
+  const navigation = $derived(serverUi(stores).navigation);
+  const roomUnreadStore = $derived(serverUi(stores).roomUnread);
 
   let activeRoomId = $derived(page.params.roomId);
   let roomContextMenu = $state<(ContextMenuTriggerDetails & { room: RoomsListItem }) | null>(null);
@@ -95,6 +114,68 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
   let linkContextMenu = $state<
     (ContextMenuTriggerDetails & { group: RoomsListGroup; item: RoomsListGroupItem }) | null
   >(null);
+
+  let creationMenu = $state<{
+    groupId: string;
+    trigger: HTMLButtonElement;
+    position: { x: number; y: number; alignRight: boolean };
+  } | null>(null);
+
+  const creationGroup = $derived(
+    navigation.roomGroups.find((group) => group.id === creationMenu?.groupId)
+  );
+  const canShowCreationMenu = $derived(
+    !!creationMenu &&
+      !!creationGroup &&
+      (creationGroup.viewerCanCreateRoom || creationGroup.viewerCanManageGroup)
+  );
+
+  function openCreationMenu(event: MouseEvent, group: RoomsListGroup): void {
+    event.stopPropagation();
+    const trigger = event.currentTarget as HTMLButtonElement;
+    const rect = trigger.getBoundingClientRect();
+    roomContextMenu = null;
+    groupContextMenu = null;
+    linkContextMenu = null;
+    creationMenu = {
+      groupId: group.id,
+      trigger,
+      position: { x: rect.right, y: rect.bottom + 4, alignRight: true }
+    };
+  }
+
+  function closeCreationMenu(): void {
+    const trigger = creationMenu?.trigger;
+    creationMenu = null;
+    trigger?.focus({ preventScroll: true });
+  }
+
+  /** Focus the first command on mount and support standard menu navigation. */
+  const creationMenuKeyboard: Attachment<HTMLDivElement> = (node) => {
+    const items = () => Array.from(node.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'));
+    // The parent popover must enter the top layer before a command can receive focus.
+    const frame = requestAnimationFrame(() => items()[0]?.focus({ preventScroll: true }));
+    const keydown = (event: KeyboardEvent) => {
+      if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+      event.preventDefault();
+      const commands = items();
+      const current = commands.indexOf(document.activeElement as HTMLButtonElement);
+      const index =
+        event.key === 'Home'
+          ? 0
+          : event.key === 'End'
+            ? commands.length - 1
+            : (current + (event.key === 'ArrowDown' ? 1 : -1) + commands.length) % commands.length;
+      commands[index]?.focus({ preventScroll: true });
+    };
+    node.addEventListener('keydown', keydown);
+    return () => {
+      cancelAnimationFrame(frame);
+      node.removeEventListener('keydown', keydown);
+      // Permission loss also unmounts this menu; do not reopen it on a later grant.
+      creationMenu = null;
+    };
+  };
 
   let createRoomDialogVisible = $state(false);
   let createRoomGroupId = $state<string | null>(null);
@@ -110,6 +191,8 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
   let archiveRoomDialogVisible = $state(false);
   let archiveRoomTarget = $state<RoomsListItem | null>(null);
   let optimisticGroupSections = $state<ManagedNavigationSection[] | null>(null);
+  // Expansion belongs to this sidebar instance and is scoped to each server and section.
+  const expandedRoomSections = new SvelteMap<string, boolean>();
   const optimisticGroupItems = new SvelteMap<string, RoomsListGroupItem[]>();
   let activeItemDragId = $state<string | null>(null);
   let itemFinalizeScheduled = false;
@@ -130,14 +213,17 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
 
   const dndHandleAttachment = fromAction(dragHandle);
 
+  // The empty style disables the library's solid default. The global classes
+  // keep the frame mounted so its colour can fade in both directions.
+  const sidebarDropTargetOptions = {
+    dropTargetStyle: {},
+    dropTargetClasses: ['sidebar-drop-target-active']
+  };
+
   const groupDragZoneAttachment = fromAction(dragHandleZone, () => ({
     items: renderManagedSections,
     flipDurationMs: 160,
-    dropTargetStyle: {
-      outline: '1px dashed var(--color-action)',
-      'outline-offset': '-1px',
-      'border-radius': '0.375rem'
-    },
+    ...sidebarDropTargetOptions,
     type: 'sidebar-room-groups'
   }));
 
@@ -177,7 +263,7 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
       optimisticGroupSections = null;
       toast.error(
         m('admin.rooms_admin.reorder_groups_failed', {
-          error: error instanceof Error ? error.message : String(error)
+          error: errorMessage(error)
         })
       );
     }
@@ -187,11 +273,7 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
     const zoneAttachment = fromAction(dragHandleZone, () => ({
       items: managedSections.find((section) => section.group.id === groupId)?.items ?? [],
       flipDurationMs: 160,
-      dropTargetStyle: {
-        outline: '2px dashed var(--color-action)',
-        'outline-offset': '-2px',
-        'border-radius': '0.375rem'
-      },
+      ...sidebarDropTargetOptions,
       type: 'sidebar-room-items'
     }));
     const attachment: Attachment<HTMLDivElement> = (node) => {
@@ -279,6 +361,7 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
   }
 
   function openCreateRoom(group: RoomsListGroup): void {
+    closeCreationMenu();
     groupContextMenu = null;
     createRoomGroupId = group.id;
     createRoomDialogVisible = true;
@@ -292,6 +375,7 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
   }
 
   function openCreateLink(group: RoomsListGroup): void {
+    closeCreationMenu();
     groupContextMenu = null;
     editingLinkId = null;
     linkGroupId = group.id;
@@ -327,7 +411,7 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
     } catch (error) {
       toast.error(
         m('admin.rooms_admin.save_link_failed', {
-          error: error instanceof Error ? error.message : String(error)
+          error: errorMessage(error)
         })
       );
     }
@@ -354,7 +438,7 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
     } catch (error) {
       toast.error(
         m('admin.rooms_admin.delete_group_failed', {
-          error: error instanceof Error ? error.message : String(error)
+          error: errorMessage(error)
         })
       );
     }
@@ -377,7 +461,7 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
     } catch (error) {
       toast.error(
         m('admin.rooms_admin.delete_link_failed', {
-          error: error instanceof Error ? error.message : String(error)
+          error: errorMessage(error)
         })
       );
     }
@@ -399,7 +483,7 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
     } catch (error) {
       toast.error(
         m('admin.rooms_admin.archive_room_failed', {
-          error: error instanceof Error ? error.message : String(error)
+          error: errorMessage(error)
         })
       );
     }
@@ -444,7 +528,7 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
 
   async function handleJoinRoom(room: RoomsListItem): Promise<void> {
     roomContextMenu = null;
-    const result = await stores.roomDirectory.joinRoom(room.id);
+    const result = await serverUi(stores).roomDirectory.joinRoom(room.id);
     if (!serverScope.isCurrent()) return;
     if (result.ok) {
       toast.success(m('room.join.success', { room: room.name }));
@@ -481,6 +565,23 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
 
   type ManagedNavigationSection = NavigationSection & { group: RoomsListGroup };
 
+  function isHiddenUnjoinedRoom(item: RoomsListGroupItem): boolean {
+    if (item.type !== 'room' || isDndShadow(item)) return false;
+    const room = roomMap.get(item.roomId);
+    return (
+      !!room &&
+      room.type !== RoomKind.DM &&
+      room.viewerIsMember === false &&
+      room.id !== activeRoomId
+    );
+  }
+
+  function visibleSectionItems(section: NavigationSection): RoomsListGroupItem[] {
+    return expandedRoomSections.get(section.persistKey)
+      ? section.items
+      : section.items.filter((item) => !isHiddenUnjoinedRoom(item));
+  }
+
   function roomItems(rooms: RoomsListItem[]): RoomsListGroupItem[] {
     return rooms.map((room) => ({
       id: `room:${room.id}`,
@@ -512,7 +613,7 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
   let itemDragAttachments = $derived(
     new Map(
       visibleSets
-        .filter((group) => supportsRelativeSidebarMoves && group.viewerCanManageGroup)
+        .filter((group) => sidebarDragEnabled && group.viewerCanManageGroup)
         .map((group) => [group.id, createItemDragAttachment(group.id)] as const)
     )
   );
@@ -562,6 +663,12 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
     return sections;
   });
 
+  /** Reveal the selected row when it renders or the desktop sidebar opens. */
+  const revealCurrentRoom: Attachment<HTMLAnchorElement> = (row) => {
+    if (!sidebarNav.isMobile && !sidebarNav.isOpen) return;
+    row.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  };
+
   let groupByRoomId = $derived.by(() => {
     const groups = new SvelteMap<string, RoomsListGroup>();
     for (const group of navigation.roomGroups) {
@@ -584,13 +691,20 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
     );
     return sections.map((section) => ({
       ...section,
-      items: optimisticGroupItems.get(section.group.id) ?? section.items
+      items: optimisticGroupItems.get(section.group.id) ?? visibleSectionItems(section)
     }));
   });
 
   let renderManagedSections = $derived(optimisticGroupSections ?? managedSections);
 
-  let unmanagedSections = $derived(navigationSections.filter((section) => !section.group));
+  let unmanagedSections = $derived(
+    navigationSections
+      .filter((section) => !section.group)
+      .map((section) => ({
+        ...section,
+        items: visibleSectionItems(section)
+      }))
+  );
 
   // The viewer ID and DM members must come from the same server projection.
   // Reading the viewer ID from a global auth context here is unsafe — the
@@ -599,8 +713,8 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
   function dmPresentation(room: RoomsListItem) {
     return buildDirectMessagePresentation(
       room.members,
-      navigation.currentUserId,
-      m('common.you'),
+      stores.projectionViewerId,
+      directMessageLabels(),
       getLiveDisplayName
     );
   }
@@ -660,11 +774,24 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
     void openRoomCallPanel(room.id);
   }
 
-  async function handleNotificationBadgeClick(event: MouseEvent, roomId: string, isDM: boolean) {
+  /**
+   * Open the newest unread notification that a room badge counts. Each badge
+   * opens its own attention level, so the viewer sees the activity that the
+   * clicked badge announced.
+   */
+  async function handleNotificationBadgeClick(
+    event: MouseEvent,
+    roomId: string,
+    isDM: boolean,
+    attentionLevel: NotificationAttentionLevel
+  ) {
     event.preventDefault();
     event.stopPropagation();
 
-    const lookup = await notificationStore.resolveRoomNotification(roomId, { isDM });
+    const lookup = await serverUi(stores).attention.resolveRoomNotification(roomId, {
+      isDM,
+      attentionLevel
+    });
     if (!serverScope.isCurrent()) return;
     const notification = lookup.notification;
 
@@ -678,7 +805,7 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
     const target = notificationTarget(notification);
     prepareUiForNotificationTarget(appUi, activeServerId, target);
     if (target.eventId && target.roomId) {
-      stores.pendingHighlights.set(
+      serverUi(stores).pendingHighlights.set(
         target.roomId,
         target.threadRootId,
         target.eventId,
@@ -686,11 +813,47 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
       );
     }
 
-    const path = notificationStore.getCleanPath(activeServerId, notification);
-    // eslint-disable-next-line svelte/no-navigation-without-resolve -- getCleanPath returns a resolved app path.
+    const path = notificationPath(activeServerId, notification);
+    // eslint-disable-next-line svelte/no-navigation-without-resolve -- notificationPath returns a resolved app path.
     await goto(path);
   }
 </script>
+
+<!--
+  One room notification badge. Important attention uses notification orange.
+  All other unread notifications use the neutral badge before it.
+-->
+{#snippet notificationBadge(
+  roomId: string,
+  isDM: boolean,
+  attentionLevel: NotificationAttentionLevel,
+  count: number
+)}
+  {@const important = attentionLevel === NotificationAttentionLevel.IMPORTANT}
+  <button
+    type="button"
+    onclick={(e) => handleNotificationBadgeClick(e, roomId, isDM, attentionLevel)}
+    class="flex h-6 min-w-6 cursor-pointer items-center justify-center notification-dot"
+    aria-label={!important
+      ? m('room_list.go_to_other_notifications', { count })
+      : isDM
+        ? m('room_list.go_to_dm_notifications', { count })
+        : m('room_list.go_to_notifications', { count })}
+  >
+    <NotificationBadge
+      {count}
+      color={important ? 'warning' : 'ambient'}
+      testid={`${isDM ? 'dm' : 'room'}-${important ? '' : 'ambient-'}notification-badge`}
+    />
+  </button>
+  <span class="sr-only">
+    {!important
+      ? m('room_list.other_notifications', { count })
+      : isDM
+        ? m('room_list.new_direct_messages', { count })
+        : m('room_list.notifications', { count })}
+  </span>
+{/snippet}
 
 {#snippet activeCallIcon()}
   <span
@@ -752,18 +915,19 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
   {@const showActiveCall = hasActiveCall && (isDM || isJoined)}
   {@const presentation = isDM ? dmPresentation(room) : null}
   {@const owningGroup = groupByRoomId.get(room.id)}
-  {@const showDragHandle = supportsRelativeSidebarMoves && owningGroup?.viewerCanManageGroup}
+  {@const showDragHandle = sidebarDragEnabled && owningGroup?.viewerCanManageGroup}
   <a
     href={resolve('/chat/[serverId]/[roomId]', { serverId: serverSegment, roomId: room.id })}
     class={[
       'group/room group/badges @container sidebar-item',
       showUnread && !isCurrentRoom ? 'sidebar-item-attention' : '',
-      !isDM && !isJoined ? 'opacity-60 hover:opacity-85' : ''
+      !isDM && isJoined === false ? 'opacity-60 hover:opacity-85' : ''
     ]}
     aria-current={isCurrentRoom ? 'page' : undefined}
     onclick={(e) => handleRoomLinkClick(e, room)}
     onkeydown={(e) => handleRoomLinkKeydown(e, room)}
     {@attach roomMenuTrigger(room)}
+    {@attach isCurrentRoom && revealCurrentRoom}
   >
     {#if presentation}
       <div class="flex shrink-0 -space-x-1">
@@ -771,18 +935,22 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
           <UserAvatar user={participant} size="xs" />
         {/each}
       </div>
-      <span class="flex-1 truncate">{presentation.label}</span>
+      <span class="min-w-0 flex-1"
+        ><DirectMessageName
+          participants={room.members}
+          currentUserId={stores.projectionViewerId}
+          getDisplayName={getLiveDisplayName}
+        /></span
+      >
     {:else}
       <span class="relative flex shrink-0">
         {#if isJoined}
           {#if room.isUniversal}
             <span
               class={[
-                'iconify sidebar-icon icon-[uil--globe] transition-opacity',
+                'iconify sidebar-icon icon-[uil--globe] transition-opacity feedback-quick',
                 showUnread ? 'text-text-top' : 'text-muted',
-                showDragHandle
-                  ? 'group-focus-within/room:opacity-0 group-hover/room:opacity-0 [@media(hover:none)]:opacity-0'
-                  : ''
+                showDragHandle ? 'group-focus-within/room:opacity-0 group-hover/room:opacity-0' : ''
               ]}
               role="img"
               aria-label={m('room.directory.universal')}
@@ -791,37 +959,34 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
           {:else}
             <span
               class={[
-                'sidebar-icon transition-opacity',
+                'sidebar-icon transition-opacity feedback-quick',
                 showUnread ? 'text-text-top' : 'text-muted',
-                showDragHandle
-                  ? 'group-focus-within/room:opacity-0 group-hover/room:opacity-0 [@media(hover:none)]:opacity-0'
-                  : ''
+                showDragHandle ? 'group-focus-within/room:opacity-0 group-hover/room:opacity-0' : ''
               ]}>#</span
             >
           {/if}
         {:else if room.viewerCanJoinRoom}
           <span
             class={[
-              'sidebar-icon text-muted transition-opacity',
-              showDragHandle
-                ? 'group-focus-within/room:opacity-0 group-hover/room:opacity-0 [@media(hover:none)]:opacity-0'
-                : ''
+              'sidebar-icon text-muted transition-opacity feedback-quick',
+              showDragHandle ? 'group-focus-within/room:opacity-0 group-hover/room:opacity-0' : ''
             ]}>+</span
           >
         {:else}
           <span
             class={[
-              'iconify sidebar-icon icon-[uil--lock] text-muted transition-opacity',
-              showDragHandle
-                ? 'group-focus-within/room:opacity-0 group-hover/room:opacity-0 [@media(hover:none)]:opacity-0'
-                : ''
+              'iconify sidebar-icon icon-[uil--lock] text-muted transition-opacity feedback-quick',
+              showDragHandle ? 'group-focus-within/room:opacity-0 group-hover/room:opacity-0' : ''
             ]}
+            role="img"
+            aria-label={m('room.directory.restricted')}
+            title={m('room.directory.restricted_title')}
           ></span>
         {/if}
         {#if showDragHandle}
           <button
             type="button"
-            class="pointer-events-none absolute inset-0 mini-icon-action cursor-grab items-center justify-center opacity-0 transition-opacity group-focus-within/room:pointer-events-auto group-focus-within/room:opacity-100 group-hover/room:pointer-events-auto group-hover/room:opacity-100 active:cursor-grabbing [@media(hover:none)]:pointer-events-auto [@media(hover:none)]:opacity-100"
+            class="pointer-events-none absolute inset-0 mini-icon-action cursor-grab items-center justify-center opacity-0 transition-opacity group-focus-within/room:pointer-events-auto group-focus-within/room:opacity-100 group-hover/room:pointer-events-auto group-hover/room:opacity-100 active:cursor-grabbing"
             aria-label={m('admin.rooms_admin.drag_room')}
             onclick={(event) => {
               event.preventDefault();
@@ -838,7 +1003,7 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
       </span>
       <span class="flex-1 truncate">{room.name}</span>
     {/if}
-    <div class="relative ml-auto flex shrink-0 items-center">
+    <div class="relative ms-auto flex shrink-0 items-center">
       <div class="flex shrink-0 items-center gap-2">
         {#if showActiveCall}
           {@render activeCallParticipants(room.id)}
@@ -846,25 +1011,27 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
         {/if}
 
         {#if (isDM || isJoined) && room.viewerNotificationCount > 0}
-          <button
-            type="button"
-            onclick={(e) => handleNotificationBadgeClick(e, room.id, isDM)}
-            class="flex h-6 min-w-6 cursor-pointer items-center justify-center notification-dot"
-            aria-label={isDM
-              ? m('room_list.go_to_dm_notifications', { count: room.viewerNotificationCount })
-              : m('room_list.go_to_notifications', { count: room.viewerNotificationCount })}
-          >
-            <NotificationBadge
-              count={room.viewerNotificationCount}
-              color={room.viewerImportantNotificationCount > 0 ? 'warning' : 'ambient'}
-              testid={isDM ? 'dm-notification-badge' : 'room-notification-badge'}
-            />
-          </button>
-          <span class="sr-only">
-            {isDM
-              ? m('room_list.new_direct_messages', { count: room.viewerNotificationCount })
-              : m('room_list.notifications', { count: room.viewerNotificationCount })}
-          </span>
+          {@const importantCount = room.viewerImportantNotificationCount}
+          {@const otherCount = Math.max(0, room.viewerNotificationCount - importantCount)}
+          <!-- The Important count stays at the row edge, where a single badge sits. -->
+          <div class="flex items-center gap-1">
+            {#if otherCount > 0}
+              {@render notificationBadge(
+                room.id,
+                isDM,
+                NotificationAttentionLevel.AMBIENT,
+                otherCount
+              )}
+            {/if}
+            {#if importantCount > 0}
+              {@render notificationBadge(
+                room.id,
+                isDM,
+                NotificationAttentionLevel.IMPORTANT,
+                importantCount
+              )}
+            {/if}
+          </div>
         {:else if showUnread}
           <UnreadDot color="neutral" testid={isDM ? 'dm-unread-dot' : 'room-unread-dot'} />
           <span class="sr-only">{m('room_list.unread_messages')}</span>
@@ -883,12 +1050,12 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
   {:else}
     {@const target = sidebarLinkTarget(item.link.url, activeServerBaseURL)}
     {@const owningGroup = groupByItemId.get(item.id)}
-    {@const showDragHandle = supportsRelativeSidebarMoves && owningGroup?.viewerCanManageGroup}
+    {@const showDragHandle = sidebarDragEnabled && owningGroup?.viewerCanManageGroup}
     <a
       {...sidebarLinkAnchorAttributes(target)}
       aria-disabled={!target.valid}
       class={[
-        'group/link sidebar-item w-full text-left',
+        'group/link sidebar-item w-full text-start',
         !target.valid && 'cursor-not-allowed opacity-60'
       ]}
       {@attach owningGroup ? linkMenuTrigger(owningGroup, item) : undefined}
@@ -898,17 +1065,16 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
     >
       <span class="relative flex shrink-0" data-testid="sidebar-link-leading-icon">
         <span
+          aria-hidden="true"
           class={[
-            'iconify sidebar-icon icon-[uil--external-link-alt] text-muted transition-opacity',
-            showDragHandle
-              ? 'group-focus-within/link:opacity-0 group-hover/link:opacity-0 [@media(hover:none)]:opacity-0'
-              : ''
+            'iconify sidebar-icon icon-[uil--external-link-alt] text-muted transition-opacity feedback-quick',
+            showDragHandle ? 'group-focus-within/link:opacity-0 group-hover/link:opacity-0' : ''
           ]}
         ></span>
         {#if showDragHandle}
           <button
             type="button"
-            class="pointer-events-none absolute inset-0 mini-icon-action cursor-grab items-center justify-center opacity-0 transition-opacity group-focus-within/link:pointer-events-auto group-focus-within/link:opacity-100 group-hover/link:pointer-events-auto group-hover/link:opacity-100 active:cursor-grabbing [@media(hover:none)]:pointer-events-auto [@media(hover:none)]:opacity-100"
+            class="pointer-events-none absolute inset-0 mini-icon-action cursor-grab items-center justify-center opacity-0 transition-opacity group-focus-within/link:pointer-events-auto group-focus-within/link:opacity-100 group-hover/link:pointer-events-auto group-hover/link:opacity-100 active:cursor-grabbing"
             aria-label={m('admin.rooms_admin.drag_link')}
             onclick={(event) => {
               event.preventDefault();
@@ -928,10 +1094,41 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
   {/if}
 {/snippet}
 
+{#snippet moreRooms(section: NavigationSection)}
+  {@const unjoinedCount =
+    navigationSections.find((entry) => entry.id === section.id)?.items.filter(isHiddenUnjoinedRoom)
+      .length ?? 0}
+  {#if unjoinedCount > 0}
+    {@const expanded = expandedRoomSections.get(section.persistKey) ?? false}
+    <button
+      type="button"
+      class="mini-icon-action w-full items-center gap-2 px-1 py-1 text-start text-xs"
+      aria-expanded={expanded}
+      aria-label={expanded
+        ? m('room_list.hide_rooms_in_group', { group: section.label })
+        : m('room_list.show_rooms_in_group', { count: unjoinedCount, group: section.label })}
+      title={expanded
+        ? m('room_list.show_less')
+        : m('room_list.more_rooms', { count: unjoinedCount })}
+      data-testid="room-group-more"
+      onclick={() => {
+        expandedRoomSections.set(section.persistKey, !expanded);
+      }}
+    >
+      <span class="sidebar-icon" aria-hidden="true">{expanded ? '−' : '+'}</span>
+      <span
+        >{expanded
+          ? m('room_list.show_less')
+          : m('room_list.more_rooms', { count: unjoinedCount })}</span
+      >
+    </button>
+  {/if}
+{/snippet}
+
 {#snippet groupLeadingOverlay()}
   <button
     type="button"
-    class="pointer-events-none absolute inset-0 mini-icon-action cursor-grab items-center justify-center opacity-0 transition-opacity group-focus-within/section-header:pointer-events-auto group-focus-within/section-header:opacity-100 group-hover/section-header:pointer-events-auto group-hover/section-header:opacity-100 active:cursor-grabbing [@media(hover:none)]:pointer-events-auto [@media(hover:none)]:opacity-100"
+    class="pointer-events-none absolute inset-0 mini-icon-action cursor-grab items-center justify-center opacity-0 transition-opacity group-focus-within/section-header:pointer-events-auto group-focus-within/section-header:opacity-100 group-hover/section-header:pointer-events-auto group-hover/section-header:opacity-100 active:cursor-grabbing"
     aria-label={m('admin.rooms_admin.drag_group')}
     onclick={(event) => event.stopPropagation()}
     onpointerdown={(event) => event.stopPropagation()}
@@ -945,20 +1142,36 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
 {/snippet}
 
 {#snippet groupHeaderActions(group: RoomsListGroup)}
-  {#if group.viewerCanCreateRoom}
+  {#if group.viewerCanCreateRoom || group.viewerCanManageGroup}
     <button
       type="button"
-      class="pointer-events-none mini-icon-action h-6 w-6 items-center justify-center opacity-0 transition-opacity group-focus-within/section-header:pointer-events-auto group-focus-within/section-header:opacity-100 group-hover/section-header:pointer-events-auto group-hover/section-header:opacity-100 [@media(hover:none)]:pointer-events-auto [@media(hover:none)]:opacity-100"
-      aria-label={m('admin.rooms_admin.new_room')}
-      onclick={(event) => {
-        event.stopPropagation();
-        openCreateRoom(group);
-      }}
-      data-testid="create-room-button"
+      class="mini-icon-action h-6 w-6 items-center justify-center"
+      aria-label={m('room_list.add_to_group', { group: group.name })}
+      aria-haspopup="menu"
+      aria-expanded={canShowCreationMenu && creationGroup?.id === group.id}
+      onclick={(event) => openCreationMenu(event, group)}
+      onpointerdown={(event) => event.stopPropagation()}
+      data-sidebar-swipe-ignore
+      data-testid="room-group-create-button"
     >
       <span class="iconify icon-[uil--plus]" aria-hidden="true"></span>
     </button>
   {/if}
+{/snippet}
+
+{#snippet creationActions(group: RoomsListGroup)}
+  <MenuSection>
+    {#if group.viewerCanCreateRoom}
+      <MenuItem icon="icon-[uil--plus]" onclick={() => openCreateRoom(group)}>
+        {m('admin.rooms_admin.new_room')}
+      </MenuItem>
+    {/if}
+    {#if group.viewerCanManageGroup}
+      <MenuItem icon="icon-[uil--external-link-alt]" onclick={() => openCreateLink(group)}>
+        {m('admin.rooms_admin.new_link')}
+      </MenuItem>
+    {/if}
+  </MenuSection>
 {/snippet}
 
 {#if channels.length === 0 && dmRooms.length === 0 && visibleSets.length === 0 && !navigation.isInitialLoading}
@@ -972,20 +1185,17 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
 {:else}
   <nav class="room-list md:w-full">
     <div
-      data-testid={supportsRelativeSidebarMoves && canReorderGroups
-        ? 'room-groups-dropzone'
-        : undefined}
-      {@attach supportsRelativeSidebarMoves && canReorderGroups ? groupDragAttachment : undefined}
+      class={groupDragEnabled ? 'sidebar-drop-target' : undefined}
+      data-testid={groupDragEnabled ? 'room-groups-dropzone' : undefined}
+      {@attach groupDragEnabled ? groupDragAttachment : undefined}
     >
       {#each renderManagedSections as section, i (section.id)}
+        {#snippet footer()}
+          {@render moreRooms(section)}
+        {/snippet}
         {#snippet headerActions()}
           {#if !isDndShadow(section)}
             {@render groupHeaderActions(section.group)}
-          {/if}
-        {/snippet}
-        {#snippet leadingOverlay()}
-          {#if !isDndShadow(section) && supportsRelativeSidebarMoves && canReorderGroups}
-            {@render groupLeadingOverlay()}
           {/if}
         {/snippet}
         <RoomGroupSection
@@ -996,10 +1206,13 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
           keepVisibleWhenCollapsed={section.keepVisibleWhenCollapsed}
           contextMenuTrigger={section.contextMenuTrigger}
           itemsAttachment={isDndShadow(section) ? undefined : section.itemsAttachment}
-          containItemDrag
+          containItemDrag={groupDragEnabled}
           isDndShadow={isDndShadow(section)}
           {headerActions}
-          {leadingOverlay}
+          {footer}
+          leadingOverlay={!isDndShadow(section) && groupDragEnabled
+            ? groupLeadingOverlay
+            : undefined}
           separated={i > 0}
         />
       {/each}
@@ -1008,16 +1221,33 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
       <CreateRoomGroupControl />
     {/if}
     {#each unmanagedSections as section, i (section.id)}
+      {#snippet footer()}
+        {@render moreRooms(section)}
+      {/snippet}
       <RoomGroupSection
         label={section.label}
         items={section.items}
         item={sidebarLink}
         persistKey={section.persistKey}
         keepVisibleWhenCollapsed={section.keepVisibleWhenCollapsed}
+        {footer}
         separated={renderManagedSections.length > 0 || i > 0}
       />
     {/each}
   </nav>
+{/if}
+
+{#if canShowCreationMenu && creationMenu && creationGroup}
+  <ContextMenu
+    position={creationMenu.position}
+    presentation="floating"
+    ariaLabel={m('room_list.add_to_group', { group: creationGroup.name })}
+    onclose={closeCreationMenu}
+  >
+    <div {@attach creationMenuKeyboard}>
+      {@render creationActions(creationGroup)}
+    </div>
+  </ContextMenu>
 {/if}
 
 {#if groupContextMenu}
@@ -1029,21 +1259,7 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
     onclose={() => (groupContextMenu = null)}
   >
     {#if contextGroup.viewerCanCreateRoom || contextGroup.viewerCanManageGroup}
-      <MenuSection>
-        {#if contextGroup.viewerCanCreateRoom}
-          <MenuItem icon="icon-[uil--plus]" onclick={() => openCreateRoom(contextGroup)}>
-            {m('admin.rooms_admin.new_room')}
-          </MenuItem>
-        {/if}
-        {#if contextGroup.viewerCanManageGroup}
-          <MenuItem
-            icon="icon-[uil--external-link-alt]"
-            onclick={() => openCreateLink(contextGroup)}
-          >
-            {m('admin.rooms_admin.new_link')}
-          </MenuItem>
-        {/if}
-      </MenuSection>
+      {@render creationActions(contextGroup)}
     {/if}
     {#if contextGroup.viewerCanManageGroup}
       <MenuSection>
@@ -1075,7 +1291,7 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
   >
     <NavigationContextMenu
       kind="room"
-      isRoomMember={contextRoom.viewerIsMember}
+      isRoomMember={contextRoom.viewerIsMember === true}
       canJoin={contextRoom.viewerCanJoinRoom}
       canMarkRead={roomUnreadStore.roomIsUnread(contextRoom.id) ||
         contextRoom.viewerNotificationCount > 0}
@@ -1142,10 +1358,7 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
 {/if}
 
 {#if linkDialogVisible}
-  {#await Promise.all([
-    import('$lib/ui').then(({ FormDialog }) => ({ default: FormDialog })),
-    import('$lib/ui/form').then(({ TextInput }) => ({ default: TextInput }))
-  ]) then [FormDialogModule, TextInputModule]}
+  {#await Promise.all( [import('$lib/ui').then( ({ FormDialog }) => ({ default: FormDialog }) ), import('$lib/ui/form').then( ({ TextInput }) => ({ default: TextInput }) )] ) then [FormDialogModule, TextInputModule]}
     <FormDialogModule.default
       bind:visible={linkDialogVisible}
       title={editingLinkId ? m('admin.rooms_admin.edit_link') : m('admin.rooms_admin.create_link')}
@@ -1172,7 +1385,7 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
 {/if}
 
 {#if deleteGroupDialogVisible && deleteGroupTarget}
-  {#await import('$lib/ui').then(({ ConfirmDialog }) => ({ default: ConfirmDialog })) then ConfirmDialogModule}
+  {#await import('$lib/ui').then( ({ ConfirmDialog }) => ({ default: ConfirmDialog }) ) then ConfirmDialogModule}
     <ConfirmDialogModule.default
       title={m('admin.rooms_admin.delete_group')}
       actionLabel={m('admin.rooms_admin.delete_group')}
@@ -1190,7 +1403,7 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
 {/if}
 
 {#if deleteLinkDialogVisible && deleteLinkTarget?.type === 'link'}
-  {#await import('$lib/ui').then(({ ConfirmDialog }) => ({ default: ConfirmDialog })) then ConfirmDialogModule}
+  {#await import('$lib/ui').then( ({ ConfirmDialog }) => ({ default: ConfirmDialog }) ) then ConfirmDialogModule}
     <ConfirmDialogModule.default
       title={m('admin.rooms_admin.delete_link')}
       actionLabel={m('admin.rooms_admin.delete_link')}
@@ -1208,7 +1421,7 @@ rooms are organized into collapsible sections. Otherwise, rooms display alphabet
 {/if}
 
 {#if archiveRoomDialogVisible && archiveRoomTarget}
-  {#await import('$lib/ui').then(({ ConfirmDialog }) => ({ default: ConfirmDialog })) then ConfirmDialogModule}
+  {#await import('$lib/ui').then( ({ ConfirmDialog }) => ({ default: ConfirmDialog }) ) then ConfirmDialogModule}
     <ConfirmDialogModule.default
       title={m('admin.rooms_admin.archive_room')}
       actionLabel={m('admin.rooms_admin.archive_room')}

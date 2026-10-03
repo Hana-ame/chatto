@@ -1,26 +1,29 @@
 # FDR-039: Message Access & Interactions
 
 **Status:** Experimental
-**Last reviewed:** 2026-08-28
+**Last reviewed:** 2026-09-26
 
 ## Overview
 
 Message access controls which message content Chatto can give to a human or
-bot. Channel rooms use explicit broad or interaction-scoped read permissions.
-DM membership continues to authorize complete DM reads.
+bot. Channel rooms and DMs use explicit broad or interaction-scoped read
+permissions. Room membership remains a separate requirement.
 
 ## Behavior
 
-- Channel-room membership is always necessary for message access. It is not
+- Room membership is always necessary for message access. It is not
   sufficient.
-- `message.read` gives broad access to message content in a channel room and
+- `message.read` gives broad access to message content in a room and
   includes `message.read-interactions`.
-- `message.read-interactions` gives access only to channel-room threads where
+- `message.read-interactions` gives access only to threads where
   the account has an interaction relationship.
 - The same permissions and rules apply to human and bot accounts.
 - A direct mention from another account creates an interaction relationship.
   The mention can be in a root message or a reply.
-- Authoring a channel-room root message creates an interaction relationship
+- Receiving a DM from another account creates the same thread access. Each
+  other participant at the time of the post receives this relationship,
+  including in group DMs and replies. No explicit mention is required.
+- Authoring a room root message creates an interaction relationship
   with that thread.
 - A self-mention, role mention, `@all`, `@here`, or authored reply does not
   create an interaction relationship.
@@ -32,10 +35,21 @@ DM membership continues to authorize complete DM reads.
 - This slice has no action to end a relationship. Permission loss or room
   membership loss closes current access. Permission restoration or room
   re-entry opens an existing relationship again.
-- A DM participant can read the complete DM. `message.read` and
-  `message.read-interactions` decisions do not restrict DM reads.
+- A DM participant with `message.read` can read the complete DM. A participant
+  with only `message.read-interactions` can read its interaction threads,
+  including threads in which it received a DM. Membership alone does not
+  create a relationship with messages posted before the account joined.
 - Message-read authority does not grant write authority. Each post, upload,
   reaction, edit, or moderation action needs its normal permission.
+- `message.post` permits root messages and thread replies. It includes
+  `message.post-in-thread` and `message.post-in-interactions`.
+- `message.post-in-interactions` permits replies only in threads with an existing
+  interaction relationship. It does not permit new roots. Thread replies also
+  need read access, membership, and a room policy that permits threads.
+- Broad read access with interaction posting lets an account read the room
+  but respond only in related threads. The same rule applies to humans and bots.
+- When the account cannot post roots, the client disables the room composer.
+  The client does not show a separate posting-permission notice.
 - A channel-room operation that reads or returns an existing message also
   needs access to that message's thread. Deletion remains independently
   authorized and does not return surrounding message state.
@@ -46,15 +60,19 @@ DM membership continues to authorize complete DM reads.
 - A room timeline for an account with only interaction-scoped access contains
   the roots of threads that the account can read. The account can then read
   each complete thread through the thread API.
+- An empty limited timeline says that there are no conversations the account
+  can read yet. It does not imply that the room is empty or show the normal
+  beginning-of-conversation marker. The client does not show a separate
+  limited-access notice above the timeline.
 - Main-room typing indicators require broad access. A thread typing indicator
   is visible when the account can read that thread.
-- The normal realtime protocol carries authorized updates for retained room
-  timelines. A client that knows a thread root can use the thread API to get
-  complete context.
-- The normal realtime protocol also carries notification occurrence
-  replacements. A bot can use direct-mention, direct-message, reply, and
-  followed-thread occurrences to learn the message and thread IDs that it must
-  load through the normal API.
+- The normal realtime protocol carries authorized semantic message events.
+  Room and thread timelines use the paginated ConnectRPC APIs. A client that
+  knows a thread root can use the thread API to get complete context.
+- The normal realtime protocol also carries authorized semantic events for
+  message edits, reactions, room changes, membership changes, and notification
+  state. A bot can filter these events and use ConnectRPC when it needs more
+  resource context.
 - A delivered direct mention in a channel-room root or reply attempts to
   follow that thread when the recipient has no prior follow state. Notification
   policy Off suppresses the occurrence and this follow, but it does not remove
@@ -92,13 +110,17 @@ An absent broad permission does not cause an implicit privacy mode.
 relationship. The resolver and inspection surfaces must explain the
 explicit catalog inclusion.
 
-### 2. Direct mentions and authored roots create relationships
+### 2. Direct mentions, received DMs, and authored roots create relationships
 
 **Decision:** Create a relationship when another account directly mentions the
 account or when the account authors a channel-room root. Do not use broad,
 role, self, or authored-reply causes.
+In DMs, also create a relationship for each other participant when a message
+is posted. Use membership at the time of the post.
 **Why:** These causes show an intentional interaction with one account or a
 thread that the account started. Broadcast causes do not show the same intent.
+Sending a DM addresses its participants directly, as a direct mention does
+in a channel.
 **Tradeoff:** A bot that authors only a reply does not gain read access from
 that reply.
 
@@ -123,9 +145,8 @@ relationship again. A later explicit end feature will need a durable end fact.
 
 ### 5. All message-derived surfaces use one thread boundary
 
-**Decision:** Apply broad or interaction-scoped access to every surface that
-can expose channel-room message content or message-specific metadata. Keep DM
-versions membership-based.
+**Decision:** Apply broad or interaction-scoped access to every channel-room or
+DM surface that can expose message content or message-specific metadata.
 **Why:** Search, notifications, files, typing, or realtime must not bypass the
 primary timeline boundary.
 **Tradeoff:** List and room-wide surfaces must filter their results instead of
@@ -157,34 +178,48 @@ needs its own broad or narrow grant.
 relationships. A client supplies a known thread root to the normal thread API,
 which applies the current access rules.
 **Why:** A relationship is an authorization input, not a user-managed resource.
-This keeps internal cause metadata out of the public API.
+This keeps authorization inputs out of the public API.
 **Tradeoff:** Clients cannot enumerate related threads. A bot learns the
 relevant message and thread IDs from its normal notification occurrences.
 
 ## Permissions
 
 - `message.read` — read all message content and message-specific metadata in a
-  channel room at the configured scope. It includes
+  room at the configured scope. It includes
   `message.read-interactions`.
 - `message.read-interactions` — read message content and message-specific
-  metadata only in channel-room threads with a current interaction
+  metadata only in threads with a current interaction
   relationship.
-- `message.post` — post root messages and send messages in an existing DM.
-- `message.post-in-thread` — post replies in a channel-room thread.
+- `message.post` — post roots and thread replies in channel rooms and existing
+  DMs. Includes both narrower posting permissions.
+- `message.post-in-thread` — post replies in a channel-room or DM thread.
+- `message.post-in-interactions` — post replies only in related threads. Reuses
+  the read interaction relationship without granting read access.
 
-DM membership, not a message-read permission, authorizes DM reads.
+### Posting compatibility
+
+Existing `message.post` allows now permit thread replies, including when a
+narrow posting permission is denied. Operators must review these grants.
+For reply-only access, remove broad posting and grant `message.post-in-thread`
+or `message.post-in-interactions`. Root-only posting is no longer a separate
+permission. No stored grants or interaction facts are rewritten. Old replicas
+do not support the new permission or posting inclusion; complete the rollout
+before relying on them. Bot grants and the owner's authority each use the
+same explicit inclusion rules.
 
 ## Related
 
 - **ADRs:** ADR-031 (room-group permission scopes), ADR-037 (DM access through
   membership), ADR-040 (permission-only RBAC with owner override), ADR-045
-  (public API stability), ADR-051 (resumable client projection), ADR-080
-  (`message.read`), ADR-082 (derived interaction relationships)
+  (public API stability), ADR-080 (`message.read`), ADR-082 (derived
+  interaction relationships), ADR-091 (semantic realtime events), ADR-095 (DM
+  permission scope and threads)
 - **FDRs:** FDR-001 (Roles & Permissions), FDR-002 (Replies & Threads), FDR-004
   (Message Editing & Deletion), FDR-005 (Reactions), FDR-006 (@Mentions),
   FDR-007 (Direct Messages), FDR-008 (File Attachments & Video Processing),
   FDR-010 (Typing Indicators), FDR-012 (Notifications), FDR-033 (Message
-  Search), FDR-037 (Pinned Messages), FDR-038 (Bot Accounts)
+  Search), FDR-037 (Pinned Messages), FDR-038 (Bot Accounts), FDR-045 (Realtime
+  Event Stream)
 
 ## Open Questions
 

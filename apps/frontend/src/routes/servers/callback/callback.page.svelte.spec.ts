@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { page as browserPage } from 'vitest/browser';
 import { render } from 'vitest-browser-svelte';
 import CallbackPage from './+page.svelte';
 
@@ -10,6 +11,9 @@ const { completeServerOAuthFlowMock, gotoMock, pageState } = vi.hoisted(() => ({
   }
 }));
 
+// Page titles are tested separately from this page's partial route/server fixtures.
+vi.mock('$lib/render/pageTitle', () => ({ formatPageTitle: () => 'Chatto' }));
+
 vi.mock('$app/state', () => ({
   page: {
     get url() {
@@ -17,7 +21,10 @@ vi.mock('$app/state', () => ({
     }
   }
 }));
-vi.mock('$app/navigation', () => ({ goto: gotoMock }));
+vi.mock('$app/navigation', () => ({
+  pushState: vi.fn(),
+  goto: gotoMock
+}));
 vi.mock('$app/paths', () => ({ resolve: (path: string) => path }));
 vi.mock('$lib/auth/reauth', () => ({
   completeServerOAuthFlow: completeServerOAuthFlowMock
@@ -51,6 +58,34 @@ describe('server OAuth callback page', () => {
     await vi.waitFor(() => expect(closeSpy).toHaveBeenCalledOnce());
     expect(completeServerOAuthFlowMock).not.toHaveBeenCalled();
     expect(gotoMock).not.toHaveBeenCalled();
+    channel.close();
+  });
+
+  it('asks the user to close a window that the browser keeps open', async () => {
+    pageState.url =
+      'https://app.example/servers/callback?mode=popup&code=cht_ACcode&state=state-open';
+    vi.spyOn(window, 'close').mockImplementation(() => {});
+
+    render(CallbackPage);
+
+    await expect.element(browserPage.getByText('You can close this window now.')).toBeVisible();
+  });
+
+  it('returns cookie sign-in completion without exchanging an OAuth code', async () => {
+    pageState.url = 'https://app.example/servers/callback?mode=provider&state=cookie-state';
+    const channel = new BroadcastChannel('chatto:oauth-popup:cookie-state');
+    const closeSpy = vi.spyOn(window, 'close').mockImplementation(() => {});
+    const response = new Promise<unknown>((resolve) => {
+      channel.onmessage = (event) => resolve(event.data);
+    });
+    render(CallbackPage);
+    await expect(response).resolves.toEqual({
+      type: 'chatto:oauth-popup-response',
+      state: 'cookie-state',
+      completed: true
+    });
+    await vi.waitFor(() => expect(closeSpy).toHaveBeenCalledOnce());
+    expect(completeServerOAuthFlowMock).not.toHaveBeenCalled();
     channel.close();
   });
 });

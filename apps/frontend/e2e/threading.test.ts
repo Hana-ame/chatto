@@ -8,6 +8,7 @@ import {
   postMessagesViaConnect,
   postReplyViaConnect
 } from './fixtures/connectHelpers';
+import { seedData, loginSeededUser } from './fixtures/seed';
 import { test } from './setup';
 import { TIMEOUTS } from './constants';
 import * as routes from './routes';
@@ -84,7 +85,7 @@ async function postMessagesForSetupViaConnect(
 }
 
 test.describe('Message Threading', () => {
-  test('root author can post an empty thread without leaving the room', async ({
+  test('root author stays in the room after posting an empty thread', async ({
     page,
     chatPage,
     roomPage
@@ -99,12 +100,16 @@ test.describe('Message Threading', () => {
     await roomPage.messageInput.fill(rootMessage);
     await roomPage.messageInput.press('Control+Enter');
 
-    await roomPage.expectThreadPaneVisible();
-    await roomPage.expectThreadRouteActive();
+    await roomPage.expectThreadRouteClosed();
+    await expect(roomPage.threadPane).not.toBeVisible();
     const root = roomPage.getMessage(rootMessage);
-    await expect(root.locator.getByRole('link', { name: 'Thread' })).toBeVisible();
+    const threadLink = root.locator.getByRole('link', { name: 'Thread' });
+    await expect(threadLink).toBeVisible();
     await root.expectFollowingThread();
 
+    await threadLink.click();
+    await roomPage.expectThreadRouteActive();
+    await roomPage.expectThreadPaneVisible();
     await roomPage.expectTextInThreadPane(rootMessage);
     await roomPage.expectThreadPaneFollowing();
   });
@@ -123,10 +128,11 @@ test.describe('Message Threading', () => {
     await page.getByRole('button', { name: 'Post as thread' }).click();
     await roomPage.messageInput.fill(rootMessage);
     await roomPage.messageInput.press('Control+Enter');
-    await roomPage.expectThreadPaneVisible();
-    await roomPage.expectTextInThreadPane(rootMessage);
-    await roomPage.closeThread();
     await roomPage.expectThreadRouteClosed();
+    await expect(roomPage.threadPane).not.toBeVisible();
+    await expect(
+      roomPage.getMessage(rootMessage).locator.getByRole('link', { name: 'Thread' })
+    ).toBeVisible();
 
     const followup = `Recent follow-up ${Date.now()}`;
     await roomPage.messageInput.fill(followup);
@@ -218,10 +224,9 @@ test.describe('Message Threading', () => {
       const generalRow = adminPage.locator('.cursor-grab', { hasText: 'general' });
       await generalRow.getByTitle('Edit room').click();
 
-      const threadingModes = adminPage.getByRole('radiogroup', { name: 'Threading mode' });
+      const threadingModes = adminPage.getByRole('radiogroup', { name: 'Threading Mode' });
       const setThreadingMode = async (mode: 'Encouraged' | 'Required' | 'Disabled') => {
         await threadingModes.getByRole('radio', { name: new RegExp(`^${mode}`) }).click();
-        await adminPage.getByRole('button', { name: 'Save changes' }).click();
       };
 
       await setThreadingMode('Encouraged');
@@ -1004,12 +1009,14 @@ test.describe('Message Threading', () => {
     chatPage,
     roomPage
   }) => {
-    // Keep enough room for the default sidebar to split the conversation panes,
+    // Keep enough room for the server sidebar to split the conversation panes,
     // while letting either surrounding sidebar reduce their container below 768px.
     await page.setViewportSize({ width: 1250, height: 900 });
     await createAndLoginTestUser(page);
     await chatPage.goto();
     await chatPage.enterRoom('general');
+    await page.getByRole('button', { name: 'Members', exact: true, pressed: true }).click();
+    await expect(roomPage.memberList).not.toBeVisible();
     await page.evaluate(() => {
       const stored = JSON.parse(localStorage.getItem('chatto:preferences') ?? '{}');
       stored.threadPanePresentation = 'split';
@@ -1077,10 +1084,7 @@ test.describe('Message Threading', () => {
     await serverResizeTarget.dblclick();
     await expect(roomRegion).toHaveAttribute('data-thread-presentation', 'split');
 
-    await page
-      .locator('[data-testid="room-sidebar-toggle"]:visible')
-      .getByLabel('Show members')
-      .click();
+    await roomPage.openMembersPanel();
     await expect(roomRegion).toHaveAttribute('data-thread-presentation', 'overlay');
     await expect(page.getByTestId('room-sidebar-desktop-pane')).toBeVisible();
     await expect(page).toHaveURL(/\/chat\/-\/[^/]+\/[^/]+$/);
@@ -1279,7 +1283,7 @@ test.describe('Message Threading', () => {
     );
   });
 
-  test('thread unread separator is deferred until the hidden tab returns', async ({
+  test('thread unread separator appears while the tab is hidden and stays when it returns', async ({
     page,
     chatPage,
     roomPage,
@@ -1316,9 +1320,7 @@ test.describe('Message Threading', () => {
           await roomPage2.expectNoUnreadSeparatorInThreadPane();
         }).toPass({ timeout: TIMEOUTS.UI_STANDARD, intervals: [100, 250, 500, 1000] });
 
-        // User B's tab goes to the background. They stay in the thread; the
-        // missed reply is collected as pending state, but the rendered
-        // separator must not move until the user returns.
+        // User B's tab goes to the background. They stay in the thread.
         await page2.evaluate(() => {
           Object.defineProperty(document, 'visibilityState', {
             value: 'hidden',
@@ -1328,17 +1330,26 @@ test.describe('Message Threading', () => {
           document.dispatchEvent(new Event('visibilitychange'));
         });
 
-        // User A posts a reply while User B's tab is still hidden.
+        // User A posts two replies while User B's tab is still hidden.
         const replyMessage = `Reply while hidden ${Date.now()}`;
+        const secondReply = `Second reply while hidden ${Date.now()}`;
         await roomPage.postThreadReply(replyMessage);
+        await roomPage.postThreadReply(secondReply);
 
-        // The reply streams in over the live subscription, but while hidden
-        // it should not render a separator yet.
-        await roomPage2.expectTextInThreadPane(replyMessage);
-        await expect(async () => {
-          await roomPage2.expectNoUnreadSeparatorInThreadPane();
-        }).toPass({ timeout: TIMEOUTS.UI_STANDARD, intervals: [100, 250, 500, 1000] });
+        // The replies stream in over the live subscription. The separator
+        // appears above the first one at once, before User B returns.
+        await roomPage2.expectTextInThreadPane(secondReply);
+        await roomPage2.expectUnreadSeparatorBetween(rootMessage, replyMessage, {
+          timeline: 'thread'
+        });
 
+        // The read on return resolves the separator from the server read
+        // state. It stays above the first reply.
+        const readOnReturn = page2.waitForResponse(
+          (response) =>
+            response.url().endsWith('/chatto.api.v1.ThreadService/MarkThreadAsRead') &&
+            response.ok()
+        );
         await page2.evaluate(() => {
           Object.defineProperty(document, 'visibilityState', {
             value: 'visible',
@@ -1347,8 +1358,11 @@ test.describe('Message Threading', () => {
           });
           document.dispatchEvent(new Event('visibilitychange'));
         });
+        await readOnReturn;
 
-        await roomPage2.expectUnreadSeparatorInThreadPane();
+        await roomPage2.expectUnreadSeparatorBetween(rootMessage, replyMessage, {
+          timeline: 'thread'
+        });
       }
     );
   });
@@ -1543,26 +1557,17 @@ test.describe('Message Threading', () => {
     // Use smaller viewport to ensure content is scrollable
     await page.setViewportSize({ width: 1280, height: 500 });
 
-    await createAndLoginTestUser(page);
+    const scene = await seedData(page.request, { seed: 42, users: 1, rooms: 1, messages: 20 });
+    await loginSeededUser(page.request, scene.users[0]);
     await chatPage.goto();
-    await chatPage.enterRoom('general');
-
-    // Extract roomId from URL
-    const url = page.url();
-    const match = url.match(/\/chat\/-\/([^/]+)/);
-    const roomId = match![1];
-
-    // Post enough messages to make the container scrollable
-    const timestamp = Date.now();
-    const messages = Array.from({ length: 20 }, (_, i) => `Scroll test ${i + 1} - ${timestamp}`);
-    await postMessagesForSetupViaConnect(page, roomId, messages);
+    await chatPage.enterRoom(scene.rooms[0].name);
 
     // Reload so messages are loaded via initial query instead of waiting for
     // 20 subscription events to arrive and render through virtua
     await page.reload();
 
     // Wait for messages to appear and scroll to stabilize at bottom
-    await expect(page.getByText(`Scroll test 20 - ${timestamp}`)).toBeVisible({
+    await expect(page.getByText(scene.messages[19].body)).toBeVisible({
       timeout: TIMEOUTS.REALTIME_EVENT
     });
 
@@ -1603,7 +1608,7 @@ test.describe('Message Threading', () => {
     }).toPass({ timeout: TIMEOUTS.UI_STANDARD, intervals: [100, 250, 500] });
 
     // Open a thread on the first visible message and post a reply
-    const rootMessage = roomPage.getMessage(`Scroll test 1 - ${timestamp}`);
+    const rootMessage = roomPage.getMessage(scene.messages[0].body);
     await rootMessage.openThread();
     await roomPage.expectThreadPaneVisible();
 

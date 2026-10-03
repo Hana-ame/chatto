@@ -3,12 +3,11 @@ package core
 import (
 	"context"
 	"fmt"
-	"hmans.de/chatto/internal/pb/chatto/core/live/v1"
 	"time"
 
-	"hmans.de/chatto/internal/core/subjects"
 	"hmans.de/chatto/internal/jetstreamutil"
-	evtv1 "hmans.de/chatto/internal/pb/chatto/core/evt/v1"
+	pubsubv1 "hmans.de/chatto/internal/pb/chatto/core/pubsub/v1"
+	realtimev1 "hmans.de/chatto/internal/pb/chatto/realtime/v1"
 )
 
 // ============================================================================
@@ -42,17 +41,15 @@ type LastReadEventIDAdvance struct {
 // a room as read. This enables real-time updates to space unread indicators.
 // This is best-effort - failures are logged but don't affect the mark-as-read operation.
 func (c *ChattoCore) NotifyRoomMarkedAsRead(ctx context.Context, userID string, kind RoomKind, roomID string) {
-	event := newLiveEvent(userID, &livev1.LiveEvent{
-		Event: &livev1.LiveEvent_RoomMarkedAsRead{
-			RoomMarkedAsRead: &livev1.RoomMarkedAsReadEvent{
+	event := newPubSubEvent(userID, &pubsubv1.PubSubEvent{
+		Event: &pubsubv1.PubSubEvent_RoomReadStateChanged{
+			RoomReadStateChanged: &realtimev1.RoomReadStateChangedEvent{
 				RoomId: roomID,
 			},
 		},
 	})
 
-	// Publish to user's server event stream (only they need to know)
-	subject := subjects.LiveSyncUserEvent(userID, "room_read")
-	if err := c.publishLiveEvent(ctx, subject, event); err != nil {
+	if err := c.publishUserPubSubEvent(ctx, userID, event); err != nil {
 		c.logger.Warn("Failed to publish room marked as read event",
 			"user_id", userID,
 			"kind", kind,
@@ -64,21 +61,17 @@ func (c *ChattoCore) NotifyRoomMarkedAsRead(ctx context.Context, userID string, 
 // GetRoomLastEvent returns the last root message's event ID and proto-level
 // `created_at` timestamp for a room. Excludes thread replies — only root
 // messages affect room-level unread tracking. exists is false if the room
-// has no root messages.
+// has no ordinary root messages. Historical imports do not advance this marker.
 //
 // Uses the proto's `created_at` rather than JetStream's stored time so the
 // value stays correct after #354 phase 4d (which re-publishes messages
 // with fresh JetStream timestamps but leaves the proto payloads intact).
 func (c *ChattoCore) GetRoomLastEvent(ctx context.Context, kind RoomKind, roomID string) (eventID string, ts time.Time, exists bool, err error) {
-	ev := c.getRoomLastRootEvent(roomID)
-	if ev == nil {
+	entry := c.getRoomLastRootEntry(roomID)
+	if entry == nil {
 		return "", time.Time{}, false, nil
 	}
-	var createdAt time.Time
-	if ts := ev.GetCreatedAt(); ts != nil {
-		createdAt = ts.AsTime()
-	}
-	return ev.GetId(), createdAt, true, nil
+	return entry.EventID, entry.CreatedAt, true, nil
 }
 
 // GetRoomLastReadableEvent returns the most recent room-visible message that
@@ -90,32 +83,26 @@ func (c *ChattoCore) GetRoomLastReadableEvent(ctx context.Context, kind RoomKind
 		return "", time.Time{}, false, err
 	}
 	interactions := false
-	if !broad && kind != KindDM {
+	if !broad {
 		interactions, err = c.CanReadMessageInteractions(ctx, userID, kind, roomID)
 		if err != nil {
 			return "", time.Time{}, false, err
 		}
 	}
-	visible := func(event *evtv1.Event) bool {
-		message := event.GetMessagePosted()
-		if message == nil || message.GetInThread() != "" {
+	visible := func(entry *TimelineEntry) bool {
+		if entry == nil || !entry.IsMessagePost() || entry.InThreadEventID != "" || entry.HistoricalImport {
 			return false
 		}
-		if broad || kind == KindDM {
+		if broad {
 			return true
 		}
-		rootID, ok := c.roomModel.threadRootForMessage(roomID, event.GetId())
-		return ok && interactions && c.roomModel.hasThreadInteraction(userID, roomID, rootID)
+		return interactions && c.roomModel.hasThreadInteraction(userID, roomID, entry.ThreadRootEventID)
 	}
 	entry, ok := c.roomModel.lastVisibleRoomEntry(roomID, visible)
-	if !ok || entry == nil || entry.Event == nil {
+	if !ok || entry == nil {
 		return "", time.Time{}, false, nil
 	}
-	createdAt := time.Time{}
-	if entry.Event.GetCreatedAt() != nil {
-		createdAt = entry.Event.GetCreatedAt().AsTime()
-	}
-	return entry.Event.GetId(), createdAt, true, nil
+	return entry.EventID, entry.CreatedAt, true, nil
 }
 
 // roomReadEventKey returns the RUNTIME_STATE key for tracking the user's
@@ -360,17 +347,14 @@ func (c *ChattoCore) GetEventTimestamp(ctx context.Context, kind RoomKind, roomI
 		return time.Time{}, nil
 	}
 	// Honour roomID scope — same as GetRoomEventByEventID.
-	if roomIDOfEvent(entry.Event) != roomID {
+	if entry.RoomID != roomID {
 		return time.Time{}, nil
 	}
-	if ts := entry.Event.GetCreatedAt(); ts != nil {
-		return ts.AsTime(), nil
-	}
-	return time.Time{}, nil
+	return entry.CreatedAt, nil
 }
 
 // HasUnread reports whether a room has active Badge attention for a user.
-// Thread Badge markers roll up into the parent room. The result is independent
+// Thread Badge attention rolls up into the parent room. The result is independent
 // of the user's last-read cursor and false when the user cannot see the room.
 func (c *ChattoCore) HasUnread(ctx context.Context, kind RoomKind, userID, roomID string) (bool, error) {
 	isMember, err := c.RoomMembershipExists(ctx, kind, userID, roomID)

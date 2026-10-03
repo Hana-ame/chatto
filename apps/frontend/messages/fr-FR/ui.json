@@ -16,7 +16,6 @@
       "remote_title": "{server} nécessite une connexion",
       "remote_message": "Ce serveur a rejeté la connexion stockée. Reconnectez-le pour reprendre les mises à jour et les actions en direct.",
       "remote_action": "Reconnecter",
-      "remote_failed": "Échec du démarrage de la reconnexion",
       "sidebar_reauth": "{server} nécessite une connexion"
     },
     "access_denied": {
@@ -48,7 +47,8 @@
       "complete": "Chatto a été reconstruit. Score final : {count} points"
     },
     "pane_header": {
-      "back": "Retour"
+      "back": "Retour",
+      "actions": "Actions du panneau"
     },
     "sidebar_nav": {
       "back_to_chat": "Retour au chat"
@@ -67,7 +67,12 @@
     "image_modal": {
       "previous": "Image précédente",
       "next": "Image suivante",
-      "fallback_alt": "Image"
+      "fallback_alt": "Image",
+      "zoom_in": "Agrandir",
+      "zoom_out": "Réduire",
+      "fit": "Ajuster",
+      "details": "Détails",
+      "file_type": "Type de fichier"
     },
     "toast": {
       "dismiss": "Rejeter la notification"
@@ -78,11 +83,9 @@
       "clear": "Effacer"
     },
     "expiry": {
-      "label": "Expire",
       "24h": "24 heures",
       "7d": "7 jours",
       "30d": "30 jours",
-      "indefinite": "Pas d'expiration",
       "custom": "Personnalisé",
       "custom_label": "Expiration personnalisée",
       "error_required": "Choisissez une date d'expiration.",

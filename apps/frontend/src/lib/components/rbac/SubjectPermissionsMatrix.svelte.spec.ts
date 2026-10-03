@@ -1,5 +1,6 @@
 import '../../../app.css';
 import { beforeEach, expect, it, vi } from 'vitest';
+import { page } from 'vitest/browser';
 import { render } from 'vitest-browser-svelte';
 import { flushSync } from 'svelte';
 import { loadLocaleMessages } from '$lib/i18n/messages';
@@ -7,6 +8,7 @@ import { setReactiveLocale } from '$lib/i18n/state.svelte';
 import SubjectPermissionsMatrix, { type MatrixData } from './SubjectPermissionsMatrix.svelte';
 
 beforeEach(async () => {
+  await page.viewport(1280, 900);
   await loadLocaleMessages('en-GB');
   setReactiveLocale('en-GB');
 });
@@ -338,15 +340,134 @@ it('localizes binary cell labels, state details, and owner ceilings', async () =
       decisionMode: 'binary'
     }
   });
-  const button = container.querySelector(
-    'button[aria-label^="message.post"]'
-  ) as HTMLButtonElement;
-  const permissionName = container.querySelector(
-    '[data-testid="permission-name"]'
-  ) as HTMLElement;
+  const button = container.querySelector('button[aria-label^="message.post"]') as HTMLButtonElement;
+  const helpButton = container.querySelector('button[aria-label$="message.post"]') as HTMLElement;
 
-  expect(permissionName.title).toBe('Root-Nachrichten in Räumen posten und DMs starten');
+  expect(helpButton.ariaLabel).toBe('Über message.post');
   expect(button.ariaLabel).toBe('message.post ist für Bot in Server aktiviert');
   expect(button.title).toContain('Derzeit nicht verfügbar');
   expect(button.title).toContain('Du kannst message.post in Server nicht vergeben');
+});
+
+it('puts bot membership first and keeps it separate from filtered permission rows', async () => {
+  const onMembershipChange = vi.fn();
+  const onCycle = vi.fn();
+  const room = {
+    id: 'room:work',
+    label: 'work',
+    kind: 'ROOM' as const,
+    parentGroupId: 'general',
+    membership: { joined: false, automatic: false, canJoin: true, canLeave: false }
+  };
+  const { container } = render(SubjectPermissionsMatrix, {
+    props: {
+      data: {
+        ...data,
+        scopes: [...data.scopes, room],
+        cells: [
+          ...data.cells,
+          { permission: 'message.post', scopeId: room.id, override: 'NONE', effective: 'NONE' }
+        ]
+      },
+      onCycle,
+      onMembershipChange,
+      decisionMode: 'binary'
+    }
+  });
+  expect(container.querySelector('[data-testid="permission-name"]')?.textContent).toBe('Joined');
+  expect(
+    container.querySelector('td[data-scope="server"][data-permission="$membership"] button')
+  ).toBeNull();
+  const button = container.querySelector(
+    'button[aria-label="Add account to #work"]'
+  ) as HTMLButtonElement;
+  expect(button.disabled).toBe(false);
+  button.click();
+  expect(onMembershipChange).toHaveBeenCalledWith(room, true);
+  expect(onCycle).not.toHaveBeenCalled();
+  const filter = container.querySelector('input')!;
+  filter.value = 'no permission matches';
+  filter.dispatchEvent(new Event('input', { bubbles: true }));
+  flushSync();
+  expect(container.querySelectorAll('[data-testid="permission-name"]')).toHaveLength(1);
+  expect(container.querySelector('button[aria-label="Add account to #work"]')).not.toBeNull();
+
+  (container.querySelector('button[aria-label="About Joined"]') as HTMLButtonElement).click();
+  await expect
+    .element(page.getByRole('dialog', { name: 'Joined' }))
+    .toHaveTextContent('Room membership does not grant message permissions.');
+});
+
+it.each([
+  { joined: false, automatic: false, canJoin: false, canLeave: false, disabled: true },
+  { joined: true, automatic: false, canJoin: false, canLeave: true, disabled: false },
+  { joined: true, automatic: true, canJoin: false, canLeave: false, disabled: true }
+])('respects bot membership action availability: %j', (membership) => {
+  const onMembershipChange = vi.fn();
+  const room = {
+    id: 'room:work',
+    label: 'work',
+    kind: 'ROOM' as const,
+    parentGroupId: '',
+    membership: membership
+  };
+  const { container } = render(SubjectPermissionsMatrix, {
+    props: {
+      data: {
+        ...data,
+        scopes: [room],
+        cells: [
+          { permission: 'message.post', scopeId: room.id, override: 'NONE', effective: 'NONE' }
+        ]
+      },
+      onCycle: vi.fn(),
+      onMembershipChange,
+      decisionMode: 'binary'
+    }
+  });
+  const button = container.querySelector(
+    'td[data-permission="$membership"] button'
+  ) as HTMLButtonElement;
+  expect(button.disabled).toBe(membership.disabled);
+  expect(button.getAttribute('aria-pressed')).toBe(String(membership.joined));
+  button.click();
+  expect(onMembershipChange).toHaveBeenCalledTimes(membership.disabled ? 0 : 1);
+});
+
+it('localizes tri-state cell labels, titles, and scope headings', async () => {
+  await loadLocaleMessages('de-DE');
+  setReactiveLocale('de-DE');
+  const { container } = render(SubjectPermissionsMatrix, {
+    props: {
+      data: {
+        ...data,
+        scopes: [...data.scopes, { id: 'dm', label: 'DMs', kind: 'DM', parentGroupId: '' }],
+        cells: [
+          ...data.cells,
+          { permission: 'message.post', scopeId: 'dm', override: 'NONE', effective: 'ALLOW' }
+        ]
+      },
+      onCycle: vi.fn(),
+      subjectKind: 'Rolle'
+    }
+  });
+  const cellButton = (permission: string, scopeId: string) =>
+    container.querySelector(
+      `td[data-scope="${scopeId}"][data-permission="${permission}"] button`
+    ) as HTMLButtonElement;
+
+  const override = cellButton('message.post', 'server');
+  expect(override.ariaLabel).toBe('Überschreibung für message.post in Server: erlauben');
+  expect(override.title).toBe('Erlauben (Überschreibung für Rolle in Server)');
+
+  const inherited = cellButton('message.post', 'group:general');
+  expect(inherited.ariaLabel).toBe(
+    'Keine Überschreibung für message.post in General, wirksam: erlauben'
+  );
+  expect(inherited.title).toBe('Wirksam: Erlauben (geerbt)');
+
+  expect(cellButton('message.delete', 'server').title).toBe('Keine Entscheidung');
+  expect(container.querySelector('span[title="General (Gruppe)"]')).not.toBeNull();
+  expect(container.querySelector('span[title="DMs (DM)"]')).not.toBeNull();
+  expect(container.textContent).toContain('Berechtigung');
 });

@@ -28,6 +28,8 @@
   let withDescription = $state('');
   let search = $state('');
   let port = $state('8080');
+  let status = $state('In focus mode');
+  let expiresAt = $state('2026-10-01T17:30');
 </script>
 
 <Story
@@ -37,7 +39,7 @@
     docs: {
       description: {
         story:
-          'The default field includes a persistent label and inherits the shared input surface.'
+          'The default field includes a persistent label and the shared rounded, subtly recessed input frame.'
       }
     }
   }}
@@ -104,6 +106,53 @@
       bind:value={withError}
       type="email"
       error="Please enter a valid email address."
+    />
+  </div>
+</Story>
+
+<Story
+  name="Field actions"
+  asChild
+  parameters={{
+    docs: {
+      description: {
+        story:
+          'Use the leading and trailing snippets for one field-action button each, such as an emoji trigger and a clear button.'
+      }
+    }
+  }}
+>
+  <div class="max-w-md">
+    <TextInput id="status" label="Status" labelHidden bind:value={status} maxlength={100}>
+      {#snippet leading()}
+        <button type="button" class="field-action" aria-label="Choose emoji" title="Choose emoji">
+          <span aria-hidden="true">🌿</span>
+        </button>
+      {/snippet}
+      {#snippet trailing()}
+        {#if status}
+          <button
+            type="button"
+            class="field-action"
+            aria-label="Clear"
+            title="Clear"
+            onclick={() => (status = '')}
+          >
+            <span class="iconify icon-[uil--times]" aria-hidden="true"></span>
+          </button>
+        {/if}
+      {/snippet}
+    </TextInput>
+  </div>
+</Story>
+
+<Story name="Date and time" asChild>
+  <div class="max-w-md">
+    <TextInput
+      id="expires-at"
+      type="datetime-local"
+      label="Clear status at"
+      bind:value={expiresAt}
     />
   </div>
 </Story>

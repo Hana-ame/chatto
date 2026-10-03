@@ -1,8 +1,14 @@
 {
   "chat": {
+    "privileged_mode": {
+      "enable": "Ayrıcalıklı modu etkinleştir",
+      "disable": "Ayrıcalıklı modu devre dışı bırak",
+      "confirmation": "Bu işlem, bu sunucuda sana atanmış ek izinleri 15 dakika boyunca etkinleştirir."
+    },
     "notifications": {
       "title": "Bildirimler",
       "subtitle": "İşte yenilikler",
+      "list_title": "Son etkinlik",
       "clear_read": "Okunanları temizle",
       "empty_title": "Bildirim yok",
       "empty_body": "Hepiniz yakalandınız!",
@@ -42,40 +48,96 @@
       "send_message": "Mesaj Gönder",
       "view_profile": "Profili görüntüle",
       "profile_requires_direct_message": "Bu profili görüntülemek için doğrudan mesaj gerekir.",
+      "manage_bot": "Botu yönet",
       "view_in_admin": "Sunucu yönetiminde görüntüle",
       "copy_user_id": "Kullanıcı kimliğini kopyala"
     },
     "server_gutter": {
       "add_server": "Sunucu Ekle",
+      "log_in": "Bu sunucuda oturum aç",
+      "sign_out": "Bu sunucudaki oturumu kapat",
       "version": "Sürüm {version}",
-      "version_unknown": "Sürüm bilinmiyor",
       "unreachable": "Sunucuya ulaşılamıyor",
+      "connection_unavailable": "Bağlantı kullanılamıyor",
       "compatibility_server_too_old": "Bu uygulamanın bağlanabilmesi için bu sunucunun Chatto 0,5 veya daha yeni bir sürüme yükseltilmesi gerekir.",
-      "compatibility_unknown": "Bu uygulama, sunucu sürümünden uyumluluğu belirleyemez."
+      "compatibility_unknown": "Bu uygulama, sunucu sürümünden uyumluluğu belirleyemez.",
+      "go_to_notifications_count": {
+        "one": "{count} bildirime git",
+        "other": "{count} bildirime git"
+      },
+      "go_to_notification": "Bildirime git",
+      "go_to_first_unread": "İlk okunmamış odaya git",
+      "notifications_count": {
+        "one": "{count} bildirim",
+        "other": "{count} bildirim"
+      }
+    },
+    "server_unavailable": {
+      "too_old_title": "Sunucu yükseltmesi gerekli",
+      "too_old_body": "Bu sunucu, bu uygulamanın artık desteklemediği bir Chatto sürümünü çalıştırıyor. Sunucu yöneticisinden Chatto’yu yükseltmesini isteyin.",
+      "unknown_title": "Bilinmeyen sunucu sürümü",
+      "unknown_body": "Bu uygulama bu sunucunun Chatto sürümünü belirleyemediği için bağlanamıyor.",
+      "unreachable_body": "Bu uygulama bu sunucuya bağlanamıyor. Ağ bağlantınızı kontrol edin veya daha sonra tekrar deneyin.",
+      "server_version": "Sunucu sürümü",
+      "required_version": "Gerekli sürüm",
+      "required_version_value": "{version} veya daha yeni",
+      "check_again": "Tekrar Kontrol Edin"
+    },
+    "server_signed_out": {
+      "title": "Bu sunucudaki oturumunuz kapalı",
+      "body": "Bu sunucuda mesaj okumak ve göndermek için oturum açın."
     },
     "threads": {
       "title": "Konularım",
       "subtitle": "Takip ettiğiniz konular",
+      "list_title": "Takip edilen konular",
       "filter_label": "Konuları filtrele",
       "filter_all": "Hepsi",
       "filter_unread": "Okunmamış",
       "empty_title": "Takip edilen konu yok",
       "empty_body": "Takip ettiğiniz konular burada görünecek. Katıldığınız konuları otomatik olarak takip edersiniz.",
-      "no_unread_loaded": "Okunmamış konu yüklenmedi",
       "all_caught_up": "Hepsi yakalandı",
-      "loaded_summary": "{total}/takip edilen ileti dizilerinden {loaded} yüklendi.",
       "load_more": "Daha fazlasını yükle",
       "no_unread": "Şu anda okunmamış konu yok.",
       "message_missing": "Mesaj artık kullanılamıyor",
       "in_room": "içinde",
-      "in_room_capitalized": "içinde"
+      "in_room_capitalized": "içinde",
+      "load_failed": "Konular yüklenemedi",
+      "notifications_count": {
+        "one": "{count} bildirim",
+        "other": "{count} bildirim"
+      }
     },
     "profile": {
       "title": "Profil",
       "fallback_title": "Profil",
       "not_found": "Kullanıcı bulunamadı",
       "bot": "Bot",
-      "local_time": "{time} yerel saat ({zone})"
+      "local_time": "{time} yerel saat ({zone})",
+      "permissions": {
+        "title": "Yapabilecekleri",
+        "empty": "Görebildiğin etkin bir izin yok.",
+        "error": "Bu botun izinleri yüklenemedi.",
+        "inactive_title": "Etkin olmayan izinler",
+        "inactive_note": "Bu izinler kayıtlı, ancak sahibinin mevcut izinleri bunlara izin vermiyor.",
+        "read": "Tüm mesajları okuma",
+        "interactions": "Oluşturduğu veya doğrudan bahsedildiği konuları okuma",
+        "post": "Yeni mesajlar gönderme",
+        "room": "#{name}",
+        "group": "Grup: {name}",
+        "dm": "Kendi doğrudan mesajları",
+        "joined_rooms": "Katıldığı odalar",
+        "all_rooms": "Odalar",
+        "server": "Bu sunucu",
+        "list_rooms": "Odaları keşfet",
+        "echo": "Konu yanıtlarını oda zaman akışında gösterme",
+        "start_calls": "Arama başlatma",
+        "browse_join": "Odaları keşfet ve katıl",
+        "reply": "Konularda yanıt ver",
+        "manage_messages": "Mesajları yönet"
+      },
+      "owned_by": "Sahibi",
+      "open_card": "{name} profil kartını aç"
     }
   }
 }

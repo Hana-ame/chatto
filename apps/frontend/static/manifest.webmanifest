@@ -5,12 +5,11 @@
   "description": "A real-time chat app for teams and communities.",
   "lang": "en",
   "dir": "ltr",
-  "start_url": "/",
+  "start_url": "/chat/-",
   "scope": "/",
   "display": "standalone",
   "display_override": ["standalone", "browser"],
   "background_color": "#f3f4f6",
-  "theme_color": "#e5e7eb",
   "categories": ["communication", "social", "productivity"],
   "prefer_related_applications": false,
   "icons": [
@@ -42,7 +41,7 @@
       "name": "Open Chatto",
       "short_name": "Chatto",
       "description": "Open Chatto.",
-      "url": "/",
+      "url": "/chat/-",
       "icons": [
         {
           "src": "/icons/icon-192.png",

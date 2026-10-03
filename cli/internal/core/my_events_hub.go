@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"hmans.de/chatto/internal/pb/chatto/core/live/v1"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,6 +15,7 @@ import (
 	"hmans.de/chatto/internal/core/subjects"
 	"hmans.de/chatto/internal/evtstream"
 	evtv1 "hmans.de/chatto/internal/pb/chatto/core/evt/v1"
+	pubsubv1 "hmans.de/chatto/internal/pb/chatto/core/pubsub/v1"
 	"hmans.de/chatto/pkg/events"
 )
 
@@ -32,13 +32,33 @@ type myEventsDelivery struct {
 	bytes int64
 }
 
+// myEventsPrincipal identifies the sessions that share one room-visibility
+// state. Privileged mode changes an owner's effective room access, so sessions
+// of one user with different privileged-mode states never share state.
+type myEventsPrincipal struct {
+	userID     string
+	privileged bool
+}
+
+// myEventsPrincipalForContext derives the principal from the subscribing
+// request. Contexts without a human credential keep entitlement semantics.
+func myEventsPrincipalForContext(ctx context.Context, userID string) myEventsPrincipal {
+	return myEventsPrincipal{userID: userID, privileged: privilegedModeAllows(ctx, userID, time.Now())}
+}
+
+// authorizationContext evaluates decisions for the principal's sessions with
+// their privileged-mode state instead of the caller's credential.
+func (p myEventsPrincipal) authorizationContext(ctx context.Context) context.Context {
+	return withPrivilegedModeEvaluation(ctx, p.userID, p.privileged)
+}
+
 type myEventsSubscription struct {
-	C      <-chan myEventsDelivery
-	ch     chan myEventsDelivery
-	Done   <-chan struct{}
-	done   chan struct{}
-	id     uint64
-	userID string
+	C         <-chan myEventsDelivery
+	ch        chan myEventsDelivery
+	Done      <-chan struct{}
+	done      chan struct{}
+	id        uint64
+	principal myEventsPrincipal
 
 	queuedBytes atomic.Int64
 }
@@ -56,7 +76,7 @@ type myEventsRegistration struct {
 	generation        uint64
 	visibilityVersion uint64
 	roomSnapshotSeq   uint64
-	userID            string
+	principal         myEventsPrincipal
 	memberRooms       map[string]struct{}
 	visibleRooms      map[string]struct{}
 	sub               *myEventsSubscription
@@ -67,12 +87,13 @@ type myEventsRegistration struct {
 // MyEventsHub owns the process-wide NATS ingress for realtime events. It
 // classifies and decodes each message once, waits for local projections once,
 // and then fans immutable event envelopes out through per-session queues.
-// Room visibility is shared by all sessions belonging to the same user.
+// Room visibility is shared by all sessions of one principal: the same user
+// with the same privileged-mode state.
 type MyEventsHub struct {
 	model *MyEventsModel
 
 	mu          sync.Mutex
-	users       map[string]*myEventsUserState
+	users       map[myEventsPrincipal]*myEventsUserState
 	subscribers map[uint64]*myEventsSubscription
 	nextID      uint64
 	ready       chan struct{}
@@ -90,7 +111,7 @@ type MyEventsHub struct {
 func NewMyEventsHub(model *MyEventsModel) *MyEventsHub {
 	return &MyEventsHub{
 		model:         model,
-		users:         make(map[string]*myEventsUserState),
+		users:         make(map[myEventsPrincipal]*myEventsUserState),
 		subscribers:   make(map[uint64]*myEventsSubscription),
 		ready:         make(chan struct{}),
 		stateChanged:  make(chan struct{}),
@@ -198,22 +219,24 @@ func (h *MyEventsHub) Subscribe(ctx context.Context, userID string) (*myEventsSu
 		return nil, ctx.Err()
 	}
 
+	principal := myEventsPrincipalForContext(ctx, userID)
+	authCtx := principal.authorizationContext(ctx)
 	for {
 		h.mu.Lock()
 		visibilityVersion := h.visibilityVersion
-		state, existingUser := h.users[userID]
+		state, existingUser := h.users[principal]
 		needsVisibleRooms := state == nil || state.visibleRooms == nil
 		h.mu.Unlock()
 		if existingUser {
 			var visibleRooms map[string]struct{}
 			if needsVisibleRooms {
 				var err error
-				visibleRooms, err = h.captureVisibleRooms(ctx, userID)
+				visibleRooms, err = h.captureVisibleRooms(authCtx, userID)
 				if err != nil {
 					return nil, err
 				}
 			}
-			sub := newMyEventsSubscription(userID)
+			sub := newMyEventsSubscription(principal)
 			if err := h.registerAtIngressBoundary(ctx, sub, nil, visibleRooms, 0, visibilityVersion); err != nil {
 				if errors.Is(err, errMyEventsIngressChanged) {
 					continue
@@ -222,15 +245,15 @@ func (h *MyEventsHub) Subscribe(ctx context.Context, userID string) (*myEventsSu
 			}
 			return sub, nil
 		}
-		memberRooms, roomSnapshotSeq, err := h.captureVisibilitySnapshot(ctx, userID)
+		memberRooms, roomSnapshotSeq, err := h.captureVisibilitySnapshot(authCtx, userID)
 		if err != nil {
 			return nil, err
 		}
-		visibleRooms, err := h.captureVisibleRooms(ctx, userID)
+		visibleRooms, err := h.captureVisibleRooms(authCtx, userID)
 		if err != nil {
 			return nil, err
 		}
-		sub := newMyEventsSubscription(userID)
+		sub := newMyEventsSubscription(principal)
 		if err := h.registerAtIngressBoundary(ctx, sub, memberRooms, visibleRooms, roomSnapshotSeq, visibilityVersion); err != nil {
 			if errors.Is(err, errMyEventsIngressChanged) {
 				continue
@@ -241,10 +264,10 @@ func (h *MyEventsHub) Subscribe(ctx context.Context, userID string) (*myEventsSu
 	}
 }
 
-func newMyEventsSubscription(userID string) *myEventsSubscription {
+func newMyEventsSubscription(principal myEventsPrincipal) *myEventsSubscription {
 	ch := make(chan myEventsDelivery, myEventsSubscriberBuffer)
 	done := make(chan struct{})
-	return &myEventsSubscription{C: ch, ch: ch, Done: done, done: done, userID: userID}
+	return &myEventsSubscription{C: ch, ch: ch, Done: done, done: done, principal: principal}
 }
 
 func (h *MyEventsHub) registerAtIngressBoundary(ctx context.Context, sub *myEventsSubscription, memberRooms, visibleRooms map[string]struct{}, roomSnapshotSeq, visibilityVersion uint64) error {
@@ -264,7 +287,7 @@ func (h *MyEventsHub) registerAtIngressBoundary(ctx context.Context, sub *myEven
 			generation:        h.generation,
 			visibilityVersion: visibilityVersion,
 			roomSnapshotSeq:   roomSnapshotSeq,
-			userID:            sub.userID,
+			principal:         sub.principal,
 			memberRooms:       memberRooms,
 			visibleRooms:      visibleRooms,
 			sub:               sub,
@@ -318,7 +341,7 @@ func (h *MyEventsHub) handleRegistration(request *myEventsRegistration) {
 		request.result <- errMyEventsIngressChanged
 		return
 	}
-	state := h.users[request.userID]
+	state := h.users[request.principal]
 	if state == nil {
 		if request.memberRooms == nil {
 			h.mu.Unlock()
@@ -331,7 +354,7 @@ func (h *MyEventsHub) handleRegistration(request *myEventsRegistration) {
 			roomSnapshotSeq: request.roomSnapshotSeq,
 			subscribers:     make(map[uint64]*myEventsSubscription),
 		}
-		h.users[request.userID] = state
+		h.users[request.principal] = state
 	} else if request.visibleRooms != nil {
 		state.visibleRooms = request.visibleRooms
 	}
@@ -353,7 +376,7 @@ func (h *MyEventsHub) consume(sub *myEventsSubscription, delivery myEventsDelive
 // established and every current subscriber must reconnect and catch up.
 func (h *MyEventsHub) handleMessage(ctx context.Context, msg *nats.Msg) bool {
 	if strings.HasPrefix(msg.Subject, "live.sync.") {
-		return h.handleLiveSync(msg)
+		return h.handlePubSub(ctx, msg)
 	}
 	if strings.HasPrefix(msg.Subject, evtstream.LiveSubjectRoot) {
 		return h.handleLiveEVT(ctx, msg)
@@ -362,25 +385,47 @@ func (h *MyEventsHub) handleMessage(ctx context.Context, msg *nats.Msg) bool {
 	return false
 }
 
-func (h *MyEventsHub) handleLiveSync(msg *nats.Msg) bool {
+func (h *MyEventsHub) handlePubSub(ctx context.Context, msg *nats.Msg) bool {
 	h.decoded.Add(1)
-	var event livev1.LiveEvent
-	if err := proto.Unmarshal(msg.Data, &event); err != nil {
+	event := new(pubsubv1.PubSubEvent)
+	if err := proto.Unmarshal(msg.Data, event); err != nil {
 		h.model.core.logger.Warn("Failed to unmarshal live sync event", "subject", msg.Subject, "error", err)
 		return false
 	}
-	if event.Event == nil {
-		h.model.core.logger.Warn("Dropping live sync event without payload", "subject", msg.Subject)
+	delivery, ok := h.model.preparePubSubEvent(msg, event)
+	if !ok {
 		return false
+	}
+	// The privacy check reads the authoritative NATS record. Run it once per
+	// event, only when a local member other than the sender exists, and
+	// without holding h.mu, so that Unsubscribe and other h.mu callers do not
+	// wait for the read.
+	if delivery.roomID != "" {
+		if !h.hasTypingAudience(delivery.roomID, event.ActorId) || !h.model.typingSenderVisible(ctx, event.ActorId) {
+			return false
+		}
 	}
 
 	bytes := int64(len(msg.Data))
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	for userID, state := range h.users {
-		authorized, ok := h.model.filterLiveSyncEvent(context.Background(), userID, state.memberRooms, msg, &event)
+	for principal, state := range h.users {
+		authorized, ok := h.model.filterPreparedPubSubEvent(principal.authorizationContext(ctx), principal.userID, state.memberRooms, delivery)
 		if ok {
 			h.enqueueUserLocked(state, authorized, bytes)
+		}
+	}
+	return false
+}
+
+// hasTypingAudience reports whether a local user other than the sender is a
+// member of roomID. The fan-out checks membership again for each recipient.
+func (h *MyEventsHub) hasTypingAudience(roomID, senderID string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for principal, state := range h.users {
+		if _, ok := state.memberRooms[roomID]; ok && principal.userID != senderID {
+			return true
 		}
 	}
 	return false
@@ -391,24 +436,43 @@ func (h *MyEventsHub) handleLiveEVT(ctx context.Context, msg *nats.Msg) bool {
 	isRBACSubject := strings.HasPrefix(evtSubject, strings.TrimSuffix(evtstream.RBACSubjectFilter(), ">"))
 	if !isRBACSubject {
 		eventType := liveEventType(msg.Subject)
+		if realtimeEVTRequiresSnapshot(evtSubject, eventType) {
+			// These content facts do not yet have a safe public event projection.
+			// Reconnect projection clients so the next exact snapshot includes the
+			// fact instead of relying only on a racy transient invalidation.
+			return true
+		}
 		_, roomSubject := evtstream.ParseRoomSubject(msg.Subject)
 		_, assetSubject := evtstream.ParseAssetSubject(msg.Subject)
 		_, userSubject := evtstream.ParseUserSubject(msg.Subject)
-		if roomSubject && !isDeliverableLiveEVTRoomEventType(eventType) {
+		_, groupSubject := evtstream.ParseGroupSubject(msg.Subject)
+		layoutSubject := strings.HasPrefix(evtSubject, strings.TrimSuffix(evtstream.LayoutSubjectFilter(), ">"))
+		configSubjectID, configSubject := liveEVTConfigSubjectID(evtSubject)
+		serverConfigSubject := configSubject && configSubjectID == evtstream.ConfigSingletonID
+		if roomSubject && isKnownPrivateLiveEVTRoomEventType(eventType) {
 			h.prefiltered.Add(1)
 			return false
 		}
-		if assetSubject && !isDeliverableLiveEVTAssetEventType(eventType) {
+		if assetSubject && isKnownPrivateLiveEVTAssetEventType(eventType) {
 			h.prefiltered.Add(1)
 			return false
 		}
-		if userSubject && !isDeliverableLiveEVTUserEventType(eventType) {
+		if serverConfigSubject && !isDeliverableLiveEVTServerConfigEventType(eventType) {
 			h.prefiltered.Add(1)
 			return false
 		}
-		if !roomSubject && !assetSubject && !userSubject {
+		if configSubject && !serverConfigSubject && !isDeliverableLiveEVTUserConfigEventType(eventType) {
 			h.prefiltered.Add(1)
 			return false
+		}
+		if !roomSubject && !assetSubject && !userSubject && !groupSubject && !layoutSubject && !configSubject {
+			if isKnownNonRealtimeEVTSubject(evtSubject) {
+				h.prefiltered.Add(1)
+				return false
+			}
+			// A newer server can introduce an aggregate that contributes to the
+			// exact snapshot. An older replica cannot classify that fact safely.
+			return true
 		}
 	}
 
@@ -434,8 +498,8 @@ func (h *MyEventsHub) handleLiveEVT(ctx context.Context, msg *nats.Msg) bool {
 			h.model.core.logger.Warn("Failed to unmarshal live RBAC event", "subject", msg.Subject, "error", err)
 			return true
 		}
-		// Protocol v2 turns this durable fact into a projection reset while
-		// legacy clients ignore the unsupported internal payload and stay live.
+		// The protocol mapper emits public role events and viewer-only permission
+		// events without exposing private permission scopes or decisions.
 		h.fanoutAll(NewEVTEventEnvelopeWithDeliverySeq(&event, seq), int64(len(msg.Data)))
 		return false
 	}
@@ -443,6 +507,11 @@ func (h *MyEventsHub) handleLiveEVT(ctx context.Context, msg *nats.Msg) bool {
 	eventType := liveEventType(msg.Subject)
 	roomID, roomSubject := evtstream.ParseRoomSubject(msg.Subject)
 	_, assetSubject := evtstream.ParseAssetSubject(msg.Subject)
+	userID, userSubject := evtstream.ParseUserSubject(msg.Subject)
+	configSubjectID, configSubject := liveEVTConfigSubjectID(evtSubject)
+	serverConfigSubject := configSubject && configSubjectID == evtstream.ConfigSingletonID
+	_, groupSubject := evtstream.ParseGroupSubject(msg.Subject)
+	layoutSubject := strings.HasPrefix(evtSubject, strings.TrimSuffix(evtstream.LayoutSubjectFilter(), ">"))
 
 	h.decoded.Add(1)
 	var event evtv1.Event
@@ -455,10 +524,37 @@ func (h *MyEventsHub) handleLiveEVT(ctx context.Context, msg *nats.Msg) bool {
 		return true
 	}
 	bytes := int64(len(msg.Data))
+	if groupSubject || layoutSubject {
+		waitCtx, cancel := context.WithTimeout(ctx, liveEVTProjectionWaitTimeout)
+		defer cancel()
+		if err := h.model.core.roomModel.waitForGroupLayout(waitCtx, events.SubjectPosition(evtSubject, seq)); err != nil {
+			h.model.core.logger.Warn("Live EVT room-group projection readiness failed", "subject", msg.Subject, "sequence", seq, "error", err)
+			return true
+		}
+		h.fanoutAll(NewEVTEventEnvelopeWithDeliverySeq(&event, seq), bytes)
+		return false
+	}
+	if configSubject {
+		if serverConfigSubject {
+			if !isDeliverableLiveEVTServerConfigEvent(&event) {
+				return true
+			}
+		} else if !isDeliverableLiveEVTUserConfigEvent(&event) || userIDOfUserConfigEvent(&event) != configSubjectID {
+			return true
+		}
+		waitCtx, cancel := context.WithTimeout(ctx, liveEVTProjectionWaitTimeout)
+		defer cancel()
+		if err := h.model.core.configModel.waitFor(waitCtx, events.SubjectPosition(evtSubject, seq)); err != nil {
+			h.model.core.logger.Warn("Live EVT config projection readiness failed", "subject", msg.Subject, "sequence", seq, "error", err)
+			return true
+		}
+		h.fanoutAll(NewEVTEventEnvelopeWithDeliverySeq(&event, seq), bytes)
+		return false
+	}
 
 	if roomSubject {
 		if !isDeliverableLiveEVTRoomEvent(&event) {
-			return true
+			return false
 		}
 		waitCtx, cancel := context.WithTimeout(ctx, liveEVTProjectionWaitTimeout)
 		defer cancel()
@@ -472,7 +568,7 @@ func (h *MyEventsHub) handleLiveEVT(ctx context.Context, msg *nats.Msg) bool {
 
 	if assetSubject {
 		if !isDeliverableLiveEVTAssetEvent(&event) {
-			return true
+			return false
 		}
 		waitCtx, cancel := context.WithTimeout(ctx, liveEVTProjectionWaitTimeout)
 		defer cancel()
@@ -489,6 +585,10 @@ func (h *MyEventsHub) handleLiveEVT(ctx context.Context, msg *nats.Msg) bool {
 	}
 
 	if !isDeliverableLiveEVTUserEvent(&event) {
+		return false
+	}
+	if !userSubject || userIDOfUserEvent(&event) != userID {
+		h.model.core.logger.Warn("Live EVT user subject and payload IDs disagree", "subject", msg.Subject)
 		return true
 	}
 	waitCtx, cancel := context.WithTimeout(ctx, liveEVTProjectionWaitTimeout)
@@ -497,17 +597,113 @@ func (h *MyEventsHub) handleLiveEVT(ctx context.Context, msg *nats.Msg) bool {
 		h.model.core.logger.Warn("Live EVT user projection readiness failed", "subject", msg.Subject, "sequence", seq, "error", err)
 		return true
 	}
+	if event.GetUserServerPreferencesChanged() != nil {
+		if err := h.model.core.configModel.waitFor(waitCtx, events.SubjectPosition(evtSubject, seq)); err != nil {
+			h.model.core.logger.Warn("Live EVT legacy preference projection readiness failed", "subject", msg.Subject, "sequence", seq, "error", err)
+			return true
+		}
+	}
 	if event.GetUserKeyShreddingRequested() != nil || event.GetUserKeyShredded() != nil {
 		// One shredded author can invalidate plaintext in many room windows.
-		// Reconnect all clients so protocol v2 compacts current tombstones.
+		// Reconnect all clients so protocol 4 snapshots current tombstones.
 		return true
 	}
 	h.fanoutAll(NewEVTEventEnvelopeWithDeliverySeq(&event, seq), bytes)
 	return false
 }
 
+func realtimeEVTRequiresSnapshot(subject, eventType string) bool {
+	parts := strings.Split(subject, ".")
+	if len(parts) < 2 || parts[0] != strings.TrimSuffix(evtstream.SubjectRoot, ".") {
+		return false
+	}
+	switch parts[1] {
+	case evtstream.AggregateGroup, evtstream.AggregateLayout:
+		return false
+	case evtstream.AggregateConfig:
+		return len(parts) == 4 && parts[2] == evtstream.ConfigSingletonID &&
+			!isDeliverableLiveEVTServerConfigEventType(eventType) &&
+			!isKnownNonSnapshotServerConfigEventType(eventType)
+	default:
+		return false
+	}
+}
+
+// isKnownNonSnapshotServerConfigEventType reports server configuration facts
+// that do not contribute to the realtime snapshot resource families. These
+// facts do not disconnect a new stream if their live republish arrives
+// after the originating mutation returns.
+func isKnownNonSnapshotServerConfigEventType(eventType string) bool {
+	switch eventType {
+	case evtstream.EventServerBlockedUsernamesChanged,
+		evtstream.EventServerNeighborCreated,
+		evtstream.EventServerNeighborOriginChanged,
+		evtstream.EventServerNeighborTestimonialChanged,
+		evtstream.EventServerNeighborDeleted:
+		return true
+	default:
+		return false
+	}
+}
+
+func liveEVTConfigSubjectID(subject string) (string, bool) {
+	parts := strings.Split(subject, ".")
+	if len(parts) != 4 || parts[0] != "evt" || parts[1] != evtstream.AggregateConfig || parts[2] == "" || parts[3] == "" {
+		return "", false
+	}
+	return parts[2], true
+}
+
+// isKnownPrivateLiveEVTRoomEventType reports room facts that this server
+// understands but intentionally excludes from the public realtime catalogue.
+// The live hub can skip these facts before it decodes potentially large stored
+// payloads. An unrecognized type is decoded and fails closed to a snapshot.
+func isKnownPrivateLiveEVTRoomEventType(eventType string) bool {
+	switch eventType {
+	case evtstream.EventMessageBody,
+		evtstream.EventRoomMemberAdded,
+		evtstream.EventRoomMemberRemoved,
+		evtstream.EventRoomMemberBanned,
+		evtstream.EventAssetCreated,
+		evtstream.EventAssetAttached:
+		return true
+	default:
+		return false
+	}
+}
+
+func isKnownPrivateLiveEVTAssetEventType(eventType string) bool {
+	switch eventType {
+	case evtstream.EventAssetCreated, evtstream.EventAssetAttached:
+		return true
+	default:
+		return false
+	}
+}
+
+// isKnownNonRealtimeEVTSubject reports durable namespaces that do not
+// contribute to the public snapshot or event projection. Unknown namespaces
+// fail closed because a mixed-version replica cannot know their state impact.
+func isKnownNonRealtimeEVTSubject(subject string) bool {
+	parts := strings.Split(subject, ".")
+	if len(parts) != 4 || parts[0] != strings.TrimSuffix(evtstream.SubjectRoot, ".") {
+		return false
+	}
+	switch parts[1] {
+	case evtstream.AggregateAuthorization,
+		evtstream.AggregateAuth,
+		evtstream.AggregateInvitation,
+		evtstream.AggregateOAuthClient:
+		return true
+	case evtstream.AggregateConfig:
+		return parts[2] != evtstream.ConfigSingletonID
+	default:
+		return false
+	}
+}
+
 type roomProjectionFanoutCandidate struct {
-	userID     string
+	principal  myEventsPrincipal
 	state      *myEventsUserState
 	envelope   EventEnvelope
 	wasVisible bool
@@ -521,12 +717,12 @@ func (h *MyEventsHub) fanoutReadyRoomEvent(ctx context.Context, roomID string, e
 		h.visibilityVersion++
 	}
 	candidates := make([]roomProjectionFanoutCandidate, 0, len(h.users))
-	for userID, state := range h.users {
+	for principal, state := range h.users {
 		if seq <= state.roomSnapshotSeq {
 			continue
 		}
-		envelope, ok := h.model.filterReadyEVTRoomSubjectEvent(userID, state.memberRooms, roomID, event, seq)
-		projectionVisibilityChange := eventChangesUserRoomVisibility(event, userID)
+		envelope, ok := h.model.filterReadyEVTRoomSubjectEvent(principal.authorizationContext(context.Background()), principal.userID, state.memberRooms, roomID, event, seq)
+		projectionVisibilityChange := eventChangesUserRoomVisibility(event, principal.userID)
 		if !isRoomDirectoryProjectionEvent(event) && !projectionVisibilityChange {
 			if ok {
 				h.enqueueUserLocked(state, envelope, bytes)
@@ -539,7 +735,7 @@ func (h *MyEventsHub) fanoutReadyRoomEvent(ctx context.Context, roomID string, e
 		}
 		_, wasVisible := state.visibleRooms[roomID]
 		candidates = append(candidates, roomProjectionFanoutCandidate{
-			userID: userID, state: state, envelope: envelope, wasVisible: wasVisible,
+			principal: principal, state: state, envelope: envelope, wasVisible: wasVisible,
 		})
 	}
 	h.mu.Unlock()
@@ -551,7 +747,8 @@ func (h *MyEventsHub) fanoutReadyRoomEvent(ctx context.Context, roomID string, e
 	for i := range candidates {
 		i := i
 		g.Go(func() error {
-			candidates[i].visible, candidates[i].err = h.canSeeProjectionRoom(visibilityCtx, candidates[i].userID, roomID, event)
+			principal := candidates[i].principal
+			candidates[i].visible, candidates[i].err = h.canSeeProjectionRoom(principal.authorizationContext(visibilityCtx), principal.userID, roomID, event)
 			return nil
 		})
 	}
@@ -560,7 +757,7 @@ func (h *MyEventsHub) fanoutReadyRoomEvent(ctx context.Context, roomID string, e
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for _, candidate := range candidates {
-		state := h.users[candidate.userID]
+		state := h.users[candidate.principal]
 		if state == nil || state != candidate.state || state.visibleRooms == nil {
 			continue
 		}
@@ -612,8 +809,8 @@ func (h *MyEventsHub) canSeeProjectionRoom(ctx context.Context, userID, roomID s
 func (h *MyEventsHub) fanoutReadyAssetEvent(roomID string, event *evtv1.Event, seq uint64, bytes int64) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	for userID, state := range h.users {
-		envelope, ok := h.model.filterReadyEVTAssetSubjectEvent(userID, state.memberRooms, roomID, event, seq)
+	for principal, state := range h.users {
+		envelope, ok := h.model.filterReadyEVTAssetSubjectEvent(principal.authorizationContext(context.Background()), principal.userID, state.memberRooms, roomID, event, seq)
 		if ok {
 			h.enqueueUserLocked(state, envelope, bytes)
 		}
@@ -638,7 +835,7 @@ func (h *MyEventsHub) enqueueSubscriberLocked(sub *myEventsSubscription, event E
 	queuedBytes := sub.queuedBytes.Load()
 	if queuedBytes+bytes > myEventsSubscriberByteLimit {
 		h.model.slowDisconnects.Add(1)
-		h.model.core.logger.Warn("Slow myEvents subscriber exceeded byte limit - tearing down", "user_id", sub.userID, "queued_bytes", queuedBytes, "event_bytes", bytes)
+		h.model.core.logger.Warn("Slow myEvents subscriber exceeded byte limit - tearing down", "user_id", sub.principal.userID, "queued_bytes", queuedBytes, "event_bytes", bytes)
 		h.removeSubscriberLocked(sub)
 		return
 	}
@@ -649,27 +846,27 @@ func (h *MyEventsHub) enqueueSubscriberLocked(sub *myEventsSubscription, event E
 	default:
 		sub.queuedBytes.Add(-bytes)
 		h.model.slowDisconnects.Add(1)
-		h.model.core.logger.Warn("Slow myEvents subscriber filled event queue - tearing down", "user_id", sub.userID, "queued_bytes", sub.queuedBytes.Load())
+		h.model.core.logger.Warn("Slow myEvents subscriber filled event queue - tearing down", "user_id", sub.principal.userID, "queued_bytes", sub.queuedBytes.Load())
 		h.removeSubscriberLocked(sub)
 	}
 }
 
 func (h *MyEventsHub) refreshMemberRooms(ctx context.Context) error {
 	h.mu.Lock()
-	userIDs := make([]string, 0, len(h.users))
-	for userID := range h.users {
-		userIDs = append(userIDs, userID)
+	principals := make([]myEventsPrincipal, 0, len(h.users))
+	for principal := range h.users {
+		principals = append(principals, principal)
 	}
 	h.mu.Unlock()
 
-	refreshed := make([]map[string]struct{}, len(userIDs))
+	refreshed := make([]map[string]struct{}, len(principals))
 	g, gctx := errgroup.WithContext(ctx)
 	g.SetLimit(myEventsVisibilityWorkers)
-	for i, userID := range userIDs {
-		i, userID := i, userID
+	for i, principal := range principals {
+		i, principal := i, principal
 		g.Go(func() error {
 			rooms := make(map[string]struct{})
-			if err := h.model.populateMemberRoomsCache(gctx, userID, rooms); err != nil {
+			if err := h.model.populateMemberRoomsCache(principal.authorizationContext(gctx), principal.userID, rooms); err != nil {
 				return err
 			}
 			refreshed[i] = rooms
@@ -681,8 +878,8 @@ func (h *MyEventsHub) refreshMemberRooms(ctx context.Context) error {
 	}
 
 	h.mu.Lock()
-	for i, userID := range userIDs {
-		if state := h.users[userID]; state != nil {
+	for i, principal := range principals {
+		if state := h.users[principal]; state != nil {
 			state.memberRooms = refreshed[i]
 		}
 	}
@@ -752,7 +949,7 @@ func (h *MyEventsHub) captureVisibleRooms(ctx context.Context, userID string) (m
 	return visibleRooms, nil
 }
 
-type roomVisibilitySeqs [5]uint64
+type roomVisibilitySeqs [9]uint64
 
 func (h *MyEventsHub) roomVisibilityTails(ctx context.Context) (roomVisibilitySeqs, uint64, error) {
 	filters := [...]string{
@@ -761,6 +958,10 @@ func (h *MyEventsHub) roomVisibilityTails(ctx context.Context) (roomVisibilitySe
 		evtstream.RoomEventTypeFilter(evtstream.EventRoomUniversalChanged),
 		evtstream.RoomEventTypeFilter(evtstream.EventUserJoinedRoom),
 		evtstream.RoomEventTypeFilter(evtstream.EventUserLeftRoom),
+		evtstream.RoomEventTypeFilter(evtstream.EventRoomMemberAdded),
+		evtstream.RoomEventTypeFilter(evtstream.EventRoomMemberRemoved),
+		evtstream.RoomEventTypeFilter(evtstream.EventRoomMemberBanned),
+		evtstream.RoomEventTypeFilter(evtstream.EventRoomMemberUnbanned),
 	}
 	var seqs roomVisibilitySeqs
 	var tail uint64
@@ -798,7 +999,7 @@ func (h *MyEventsHub) quarantine(reason string) {
 		close(sub.ch)
 	}
 	h.subscribers = make(map[uint64]*myEventsSubscription)
-	h.users = make(map[string]*myEventsUserState)
+	h.users = make(map[myEventsPrincipal]*myEventsUserState)
 }
 
 func (h *MyEventsHub) signalStateChangedLocked() {
@@ -821,10 +1022,10 @@ func (h *MyEventsHub) removeSubscriberLocked(sub *myEventsSubscription) {
 		return
 	}
 	delete(h.subscribers, sub.id)
-	if state := h.users[sub.userID]; state != nil {
+	if state := h.users[sub.principal]; state != nil {
 		delete(state.subscribers, sub.id)
 		if len(state.subscribers) == 0 {
-			delete(h.users, sub.userID)
+			delete(h.users, sub.principal)
 		}
 	}
 	close(sub.done)
@@ -852,7 +1053,8 @@ func eventChangesRoomVisibility(event *evtv1.Event) bool {
 		*evtv1.Event_UserLeftRoom,
 		*evtv1.Event_RoomMemberAdded,
 		*evtv1.Event_RoomMemberRemoved,
-		*evtv1.Event_RoomMemberBanned:
+		*evtv1.Event_RoomMemberBanned,
+		*evtv1.Event_RoomMemberUnbanned:
 		return true
 	default:
 		return false
@@ -878,6 +1080,8 @@ func eventChangesUserRoomVisibility(event *evtv1.Event, userID string) bool {
 		return payload.RoomMemberRemoved.GetUserId() == userID
 	case *evtv1.Event_RoomMemberBanned:
 		return payload.RoomMemberBanned.GetUserId() == userID
+	case *evtv1.Event_RoomMemberUnbanned:
+		return payload.RoomMemberUnbanned.GetUserId() == userID
 	default:
 		return false
 	}

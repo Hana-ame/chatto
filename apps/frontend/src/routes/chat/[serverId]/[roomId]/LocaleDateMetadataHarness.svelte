@@ -4,7 +4,7 @@
   import {
     TimelineEventKind,
     type TimelineEventView
-  } from '$lib/render/timelineEvents';
+  } from '@chatto/client/timeline/timelineEvents';
   import type { TimeFormatSettings } from '$lib/utils/formatTime';
   import { computeEventMetadata } from './messageGrouping';
 

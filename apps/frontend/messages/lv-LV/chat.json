@@ -1,8 +1,14 @@
 {
   "chat": {
+    "privileged_mode": {
+      "enable": "Ieslēgt privileģēto režīmu",
+      "disable": "Izslēgt privileģēto režīmu",
+      "confirmation": "Tas uz 15 minūtēm aktivizē tev šajā serverī piešķirtās papildu atļaujas."
+    },
     "notifications": {
       "title": "Paziņojumi",
       "subtitle": "Lūk, kas jauns",
+      "list_title": "Nesenās aktivitātes",
       "clear_read": "Dzēst izlasītos",
       "empty_title": "Nav paziņojumu",
       "empty_body": "Jūs visi esat nokļuvuši!",
@@ -42,40 +48,99 @@
       "send_message": "Nosūtīt ziņu",
       "view_profile": "Skatīt profilu",
       "profile_requires_direct_message": "Lai skatītu šo profilu, ir nepieciešams tiešais ziņojums.",
+      "manage_bot": "Pārvaldīt robotu",
       "view_in_admin": "Skatīt servera administrēšanā",
       "copy_user_id": "Kopēt lietotāja ID"
     },
     "server_gutter": {
       "add_server": "Pievienot serveri",
+      "log_in": "Pieteikties šajā serverī",
+      "sign_out": "Izrakstīties no šī servera",
       "version": "Versija {version}",
-      "version_unknown": "Versija nav zināma",
       "unreachable": "Serveris nav sasniedzams",
+      "connection_unavailable": "Savienojums nav pieejams",
       "compatibility_server_too_old": "Šis serveris ir jājaunina uz Chatto 0.5 vai jaunāku versiju, lai šī lietotne varētu izveidot savienojumu.",
-      "compatibility_unknown": "Šī lietotne nevar noteikt saderību no servera versijas."
+      "compatibility_unknown": "Šī lietotne nevar noteikt saderību no servera versijas.",
+      "go_to_notifications_count": {
+        "zero": "Pāriet uz {count} paziņojumiem",
+        "one": "Pāriet uz {count} paziņojumu",
+        "other": "Pāriet uz {count} paziņojumiem"
+      },
+      "go_to_notification": "Pāriet uz paziņojumu",
+      "go_to_first_unread": "Pāriet uz pirmo nelasīto telpu",
+      "notifications_count": {
+        "zero": "{count} paziņojumu",
+        "one": "{count} paziņojums",
+        "other": "{count} paziņojumi"
+      }
+    },
+    "server_unavailable": {
+      "too_old_title": "Nepieciešams servera jauninājums",
+      "too_old_body": "Šajā serverī darbojas Chatto versija, ko šī lietotne vairs neatbalsta. Lūdziet servera administratoram jaunināt Chatto.",
+      "unknown_title": "Nezināma servera versija",
+      "unknown_body": "Lietotne nevar noteikt šī servera Chatto versiju, tāpēc nevar izveidot savienojumu.",
+      "unreachable_body": "Lietotne nevar izveidot savienojumu ar šo serveri. Pārbaudiet tīkla savienojumu vai mēģiniet vēlreiz vēlāk.",
+      "server_version": "Servera versija",
+      "required_version": "Nepieciešamā versija",
+      "required_version_value": "{version} vai jaunāka",
+      "check_again": "Pārbaudīt vēlreiz"
+    },
+    "server_signed_out": {
+      "title": "Jūs esat izrakstījies no šī servera",
+      "body": "Piesakieties, lai šajā serverī lasītu un sūtītu ziņojumus."
     },
     "threads": {
       "title": "Mani pavedieni",
       "subtitle": "Pavedieni, kuriem sekojat",
+      "list_title": "Sekotie pavedieni",
       "filter_label": "Filtru pavedieni",
       "filter_all": "Visi",
       "filter_unread": "Nelasīts",
       "empty_title": "Nav sekoto pavedienu",
       "empty_body": "Šeit tiks parādīti pavedieni, kuriem sekojat. Jūs automātiski sekojat pavedieniem, kuros piedalāties.",
-      "no_unread_loaded": "Nav ielādēts neviens nelasīts pavediens",
       "all_caught_up": "Visi panāca",
-      "loaded_summary": "Ielādēti {loaded} no {total} sekotajiem pavedieniem.",
       "load_more": "Ielādēt vairāk",
       "no_unread": "Pašlaik nav nelasītu pavedienu.",
       "message_missing": "Ziņa vairs nav pieejama",
       "in_room": "iekšā",
-      "in_room_capitalized": "In"
+      "in_room_capitalized": "In",
+      "load_failed": "Neizdevās ielādēt pavedienus",
+      "notifications_count": {
+        "zero": "{count} paziņojumu",
+        "one": "{count} paziņojums",
+        "other": "{count} paziņojumi"
+      }
     },
     "profile": {
       "title": "Profils",
       "fallback_title": "Profils",
       "not_found": "Lietotājs nav atrasts",
       "bot": "Bots",
-      "local_time": "{time} vietējais laiks ({zone})"
+      "local_time": "{time} vietējais laiks ({zone})",
+      "permissions": {
+        "title": "Ko tas var darīt",
+        "empty": "Tev nav redzamu aktīvu atļauju.",
+        "error": "Neizdevās ielādēt šī bota atļaujas.",
+        "inactive_title": "Neaktīvas atļaujas",
+        "inactive_note": "Šīs atļaujas ir saglabātas, bet īpašnieka pašreizējās atļaujas tās nepieļauj.",
+        "read": "Lasīt visus ziņojumus",
+        "interactions": "Lasīt pavedienus, kurus tas izveidojis vai kuros tas tieši pieminēts",
+        "post": "Sūtīt jaunus ziņojumus",
+        "room": "#{name}",
+        "group": "Grupa: {name}",
+        "dm": "Tā tiešie ziņojumi",
+        "joined_rooms": "Istabas, kurām tas pievienojies",
+        "all_rooms": "Telpas",
+        "server": "Šis serveris",
+        "list_rooms": "Pārlūkot telpas",
+        "echo": "Rādīt pavedienu atbildes istabas laika skalā",
+        "start_calls": "Sākt zvanus",
+        "browse_join": "Pārlūkot telpas un pievienoties tām",
+        "reply": "Atbildēt pavedienos",
+        "manage_messages": "Pārvaldīt ziņojumus"
+      },
+      "owned_by": "Īpašnieks",
+      "open_card": "Atvērt lietotāja {name} profila karti"
     }
   }
 }

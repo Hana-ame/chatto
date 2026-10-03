@@ -7,34 +7,44 @@ Room sidebar panel for voice/video calls.
 - **Observer mode**: Call is active but user hasn't joined. Shows participants
   from server state and a Join button.
 - **Participant mode**: User is connected to LiveKit. Shows live audio levels,
-  mute toggle, camera/screen-share controls, audio device selector, and hang-up button.
+  mute toggle, camera/screen-share controls, preferences shortcut, and hang-up button.
 
 **Props:**
 - `roomId` - The room ID
 - `livekitUrl` - The LiveKit server WebSocket URL (needed for joining)
 -->
 <script lang="ts">
+  import { Button } from '$lib/ui/form';
+  import { serverUi } from '$lib/state/server/serverUi';
+  import AccountName from '$lib/components/users/AccountName.svelte';
+  import { formatAccountName } from '@chatto/client/timeline/accountName';
+  import { UserCard, WipeReveal, CompactActionButton, PillButtonGroup } from '$lib/ui';
   import { PresenceStatus } from '@chatto/api-types/api/v1/presence_pb';
   import { useServerScope } from '$lib/state/server/scope.svelte';
   import { m } from '$lib/i18n/messages';
 
   const serverScope = useServerScope();
-  const activeServerId = $derived(serverScope.serverId);
-  const stores = $derived(serverScope.store);
-  const voiceCallState = $derived(stores.voiceCall);
-  const activeCallRooms = $derived(stores.activeCallRooms);
+  const activeServerId = serverScope.serverId;
+  const stores = serverScope.store;
+  const voiceCallState = $derived(serverUi(stores).voiceCall);
+  const activeCallRooms = $derived(serverUi(stores).activeCallRooms);
 
   import UserAvatar from '$lib/components/UserAvatar.svelte';
   import VideoThumbnail from './VideoThumbnail.svelte';
-  import AudioDeviceMenu from './AudioDeviceMenu.svelte';
+  import CallPictureInPictureButton from './CallPictureInPictureButton.svelte';
+  import ConnectionQualityHint from './ConnectionQualityHint.svelte';
+  import { goto } from '$app/navigation';
+  import { resolve } from '$app/paths';
+  import { serverIdToSegment } from '$lib/navigation';
   import VoiceCallControlButton from './VoiceCallControlButton.svelte';
   import ScreenShareControlButton from './ScreenShareControlButton.svelte';
-  import CallTileActionButton from './CallTileActionButton.svelte';
-  import CallTileActionToolbar from './CallTileActionToolbar.svelte';
-  import UserContextMenu from '$lib/components/menus/UserContextMenu.svelte';
-  import { getVoiceCallJoinErrorMessage } from '$lib/state/server/voiceCall.svelte';
+  import UserMenu from '$lib/components/users/UserMenu.svelte';
+  import { UserMenuState } from '$lib/components/users/UserMenuState.svelte';
+  import {
+    getVoiceCallJoinErrorMessage,
+    type CallParticipantInfo
+  } from '$lib/state/server/voiceCall.svelte';
   import type { Track } from 'livekit-client';
-  import type { Attachment } from 'svelte/attachments';
   import { startDMWith } from '$lib/dm/startDM';
   import { toast } from '$lib/ui/toast';
 
@@ -54,8 +64,9 @@ Room sidebar panel for voice/video calls.
   let isInAnotherCall = $derived(voiceCallState.isInAnyCall && !isInThisCall);
   let isConnecting = $derived(voiceCallState.connecting && voiceCallState.roomId === roomId);
   let hasActiveCall = $derived(activeCallRooms.has(roomId));
+  let callPermissions = $derived(voiceCallState.permissionsFor(roomId));
+  let canEnterCall = $derived(callPermissions.join && (hasActiveCall || callPermissions.start));
   let isStageLayout = $derived(layout === 'stage');
-  let deviceMenuAnchor = $state<{ top: number; bottom: number; left: number } | null>(null);
 
   /** Unified participant shape for rendering (structural data only). */
   type DisplayParticipant = {
@@ -72,7 +83,7 @@ Room sidebar panel for voice/video calls.
     isMuted: boolean;
     isLocal: boolean;
     isLocallyMuted: boolean;
-    connectionQuality: string;
+    connectionQuality: CallParticipantInfo['connectionQuality'];
     isCameraEnabled: boolean;
     videoTrack: Track | null;
     isScreenShareEnabled: boolean;
@@ -172,16 +183,13 @@ Room sidebar panel for voice/video calls.
     if (isConnecting) return hasActiveCall ? m('voice.joining') : m('voice.starting');
     return hasActiveCall ? m('voice.join_call') : m('voice.start_call');
   });
-  const controlButtonClass = 'btn-secondary btn-sm h-9 w-full !px-0';
-  const activeControlButtonClass = 'btn-success btn-sm h-9 w-full !px-0';
-  const dangerControlButtonClass = 'btn-danger btn-sm h-9 w-full !px-0';
+  const controlButtonClass = 'pill-button';
+  const activeControlButtonClass = 'pill-button-success';
+  const dangerControlButtonClass = 'pill-button-danger';
   const callTileCardClass =
-    'call-speaking-card participant-card group/media relative flex w-full flex-col gap-2 overflow-hidden rounded-lg border border-text/10 bg-surface p-1.5 text-left text-text shadow-sm transition-colors hover:bg-surface-emphasized/70';
-  const callTileHeaderClass = 'flex min-w-0 items-center gap-2';
-  const callTileIdentityButtonClass =
-    'flex min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md text-left text-text outline-none transition-colors hover:text-text focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-neutral-action';
+    'participant-card group/media relative flex w-full min-w-0 flex-col overflow-hidden shell-surface text-start text-text';
   const callTileMediaButtonClass =
-    'flex w-full flex-1 cursor-pointer flex-col overflow-hidden rounded-sm text-left text-text outline-none focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-neutral-action';
+    'flex w-full flex-1 cursor-pointer flex-col overflow-hidden rounded-sm text-start text-text outline-none focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-neutral-action';
 
   function hasVideo(participant: DisplayParticipant) {
     return participant.isCameraEnabled && participant.videoTrack;
@@ -191,88 +199,24 @@ Room sidebar panel for voice/video calls.
     return participant.isScreenShareEnabled && participant.screenShareTrack;
   }
 
-  function hasConnectionWarning(participant: DisplayParticipant) {
-    return participant.connectionQuality === 'poor' || participant.connectionQuality === 'lost';
-  }
-
-  function participantTitle(participant: DisplayParticipant) {
-    if (isInThisCall && hasConnectionWarning(participant)) {
-      return `${participant.displayName} — poor connection`;
-    }
-
-    return participant.displayName;
-  }
-
-  const speakingCards: Array<{ identity: string; node: HTMLElement }> = [];
-  let speakingIndicatorInterval: ReturnType<typeof setInterval> | null = null;
-
-  function updateSpeakingIndicators() {
-    for (const { identity, node } of speakingCards) {
-      const { isSpeaking, audioLevel } = voiceCallState.getAudioLevel(identity);
-      const opacity = audioLevel > 0.01 ? 0.35 + Math.pow(audioLevel, 0.35) * 0.65 : 0;
-      const visible = isSpeaking || opacity > 0;
-
-      node.style.setProperty(
-        '--call-speaking-ring-opacity',
-        visible ? String(opacity || 0.85) : '0'
-      );
-      node.style.setProperty('--call-speaking-ring-strength', visible ? String(audioLevel) : '0');
-      node.dataset.callSpeaking = visible ? 'true' : 'false';
-    }
-  }
-
-  function startSpeakingIndicatorLoop() {
-    if (speakingIndicatorInterval) return;
-
-    speakingIndicatorInterval = setInterval(updateSpeakingIndicators, 60);
-  }
-
-  function stopSpeakingIndicatorLoopIfIdle() {
-    if (speakingCards.length > 0 || !speakingIndicatorInterval) return;
-
-    clearInterval(speakingIndicatorInterval);
-    speakingIndicatorInterval = null;
-  }
-
-  function speakingCard(identity: string): Attachment<HTMLElement> {
-    return (node) => {
-      const entry = { identity, node };
-      speakingCards.push(entry);
-      updateSpeakingIndicators();
-      startSpeakingIndicatorLoop();
-
-      return () => {
-        const index = speakingCards.indexOf(entry);
-        if (index !== -1) speakingCards.splice(index, 1);
-        stopSpeakingIndicatorLoopIfIdle();
-      };
-    };
+  function participantVoiceLevel(participant: DisplayParticipant) {
+    if (participant.isMuted || (participant.isLocal && voiceCallState.isMuted)) return 0;
+    const { audioLevel, isSpeaking } = voiceCallState.getAudioLevel(participant.key);
+    return audioLevel > 0 ? audioLevel : isSpeaking ? 0.06 : 0;
   }
 
   const canStartDMs = $derived(stores.permissions.canStartDMs);
 
-  // User context menu popover
-  let popoverParticipant = $state<DisplayParticipant | null>(null);
-  let popoverAnchorRect = $state<{ top: number; bottom: number; left: number } | null>(null);
+  const userMenu = new UserMenuState<{ participant: DisplayParticipant; screen: boolean }>();
 
-  function showUserMenu(participant: DisplayParticipant, e: MouseEvent) {
-    const button = (e.target as HTMLElement).closest('button');
-    const rect = button?.getBoundingClientRect();
-    if (!rect) return;
-    popoverParticipant = participant;
-    popoverAnchorRect = { top: rect.top, bottom: rect.bottom, left: rect.left };
+  function showUserMenu(participant: DisplayParticipant, e: MouseEvent, screen = false) {
+    userMenu.open({ participant, screen }, e);
   }
 
-  function closeUserMenu() {
-    popoverParticipant = null;
-    popoverAnchorRect = null;
-  }
-
-  function openDeviceMenu(e: MouseEvent) {
-    const button = e.currentTarget as HTMLElement;
-    const rect = button.getBoundingClientRect();
-    voiceCallState.refreshDevices();
-    deviceMenuAnchor = { top: rect.top, bottom: rect.bottom, left: rect.left };
+  function openVoicePreferences() {
+    void goto(
+      resolve('/chat/[serverId]/settings/voice', { serverId: serverIdToSegment(activeServerId) })
+    );
   }
 
   async function handleJoin() {
@@ -315,187 +259,176 @@ Room sidebar panel for voice/video calls.
       voiceCallState.toggleParticipantLocalMute(participant.key);
     }
   }
+
+  function canShowMuteButton(participant: DisplayParticipant): boolean {
+    return !participant.isLocal || !voiceCallState.isMuted || voiceCallState.canUseVoice;
+  }
 </script>
 
 {#snippet localMuteButton(participant: DisplayParticipant)}
   {@const isMutedForViewer = participant.isLocal
     ? voiceCallState.isMuted
     : participant.isLocallyMuted}
-  <CallTileActionButton
-    icon={isMutedForViewer ? 'icon-[uil--volume-mute]' : 'icon-[uil--volume-up]'}
-    active={isMutedForViewer}
-    label={participant.isLocal
-      ? isMutedForViewer
-        ? m('voice.unmute')
-        : m('voice.mute')
-      : isMutedForViewer
-        ? m('voice.locally_unmute_participant')
-        : m('voice.locally_mute_participant')}
-    testId="call-feed-local-mute-button"
-    onclick={(event) => toggleFeedMute(participant, event)}
-  />
-{/snippet}
-
-{#snippet mediaTileActions(participant: DisplayParticipant)}
-  <CallTileActionToolbar testId="call-media-actions">
-    <CallTileActionButton
-      icon="icon-[mdi--fullscreen]"
-      label={m('voice.fullscreen_feed')}
-      testId="call-feed-fullscreen-button"
-      onclick={toggleClosestMediaFullscreen}
-    />
-    {#if isInThisCall}
-      {@render localMuteButton(participant)}
-    {/if}
-  </CallTileActionToolbar>
-{/snippet}
-
-{#snippet voiceTileActions(participant: DisplayParticipant)}
-  {#if isInThisCall}
-    <CallTileActionToolbar testId="call-voice-actions">
-      {@render localMuteButton(participant)}
-    </CallTileActionToolbar>
+  {#if canShowMuteButton(participant)}
+    <CompactActionButton
+      aria-pressed={isMutedForViewer}
+      label={participant.isLocal ? m('voice.mute') : m('voice.locally_mute_participant')}
+      data-testid="call-feed-local-mute-button"
+      onclick={(event) => toggleFeedMute(participant, event)}
+    >
+      <span
+        class={[
+          'iconify',
+          participant.isLocal
+            ? isMutedForViewer
+              ? 'icon-[uil--microphone-slash] text-danger'
+              : 'icon-[uil--microphone]'
+            : isMutedForViewer
+              ? 'icon-[uil--volume-mute]'
+              : 'icon-[uil--volume-up]'
+        ]}
+        aria-hidden="true"
+      ></span>
+    </CompactActionButton>
   {/if}
 {/snippet}
 
+{#snippet mediaTileActions(track: Track | null)}
+  {#key track}
+    <CallPictureInPictureButton />
+  {/key}
+  <CompactActionButton
+    label={m('voice.fullscreen_feed')}
+    data-testid="call-feed-fullscreen-button"
+    onclick={toggleClosestMediaFullscreen}
+  >
+    <span class="iconify icon-[mdi--monitor-share]" aria-hidden="true"></span>
+  </CompactActionButton>
+{/snippet}
+
 {#snippet participantIndicators(participant: DisplayParticipant)}
-  <span class="inline-flex h-5 min-w-5 shrink-0 items-center justify-end gap-1.5 text-sm">
-    {#if participant.isMuted}
+  {@const isMuted = participant.isLocal ? voiceCallState.isMuted : participant.isMuted}
+  {#if isMuted && !(participant.isLocal && isInThisCall && canShowMuteButton(participant))}
+    <span class="inline-flex h-5 min-w-5 shrink-0 items-center justify-end gap-1.5 text-sm">
       <span
         class="iconify icon-[uil--microphone-slash] text-danger"
+        role="img"
         aria-label={m('voice.muted')}
         data-testid="call-muted-indicator"
       ></span>
-    {/if}
-    {#if participant.isLocallyMuted}
-      <span
-        class="iconify icon-[uil--volume-mute] text-muted"
-        aria-label={m('voice.locally_muted')}
-        data-testid="call-locally-muted-indicator"
-      ></span>
-    {/if}
-    {#if hasConnectionWarning(participant)}
-      <span
-        class={[
-          'iconify icon-[uil--exclamation-triangle]',
-          participant.connectionQuality === 'lost' && 'text-danger',
-          participant.connectionQuality === 'poor' && 'text-warning'
-        ]}
-        aria-label={m('voice.poor_connection')}
-      ></span>
-    {/if}
-  </span>
+    </span>
+  {/if}
 {/snippet}
 
 {#snippet participantHeader(
   participant: DisplayParticipant,
   label: string,
-  actions: 'media' | 'voice' | 'none',
-  showIndicators = true
+  headerActions: 'media' | 'none',
+  showIndicators = true,
+  screen = false
 )}
-  <div class={callTileHeaderClass}>
-    <button
-      type="button"
-      class={callTileIdentityButtonClass}
-      onclick={(e) => showUserMenu(participant, e)}
-    >
+  <UserCard
+    name={label}
+    identity={participant.avatarUser}
+    username={participant.avatarUser.login}
+    voiceLevel={isInThisCall
+      ? () =>
+          screen
+            ? voiceCallState.getScreenShareAudioLevel(participant.key)
+            : participantVoiceLevel(participant)
+      : undefined}
+    class="shrink-0"
+    identityAttributes={{ onclick: (e) => showUserMenu(participant, e, screen) }}
+    menu={{
+      label: m('room.sidebar.view_profile', {
+        name: formatAccountName(participant.displayName, participant.avatarUser)
+      }),
+      onclick: (event) => showUserMenu(participant, event, screen),
+      expanded:
+        userMenu.target?.participant.key === participant.key && userMenu.target.screen === screen,
+      testId: 'call-participant-menu-button'
+    }}
+  >
+    {#snippet avatar()}
       <UserAvatar user={participant.avatarUser} size="sm" />
-      <span class="min-w-0 flex-1 truncate text-sm font-medium">{label}</span>
+    {/snippet}
+    {#snippet indicators()}
       {#if showIndicators}
         {@render participantIndicators(participant)}
       {/if}
-    </button>
-
-    {#if actions === 'media'}
-      {@render mediaTileActions(participant)}
-    {:else if actions === 'voice'}
-      {@render voiceTileActions(participant)}
-    {/if}
-  </div>
+    {/snippet}
+    {#snippet actions()}
+      {#if isInThisCall && !screen}
+        <ConnectionQualityHint quality={participant.connectionQuality} />
+      {/if}
+      {#if headerActions === 'media'}
+        {@render mediaTileActions(screen ? participant.screenShareTrack : participant.videoTrack)}
+      {/if}
+      {#if isInThisCall}
+        {@render localMuteButton(participant)}
+      {/if}
+    {/snippet}
+  </UserCard>
 {/snippet}
 
 {#snippet participantCard(participant: DisplayParticipant, mode: 'compact' | 'video')}
   {@const showVideo = mode === 'video' && hasVideo(participant)}
-  {@const showVoiceActions = isInThisCall && !showVideo}
-  {@const actions = showVideo ? 'media' : showVoiceActions ? 'voice' : 'none'}
-  {#if isInThisCall}
-    <div
-      class={[
-        callTileCardClass,
-        mode === 'video' ? 'participant-card-video' : 'participant-card-compact'
-      ]}
-      {@attach speakingCard(participant.key)}
-      title={participantTitle(participant)}
-      data-testid="call-participant-card"
-      data-speaking-ring
-      data-call-media-card={showVideo ? true : undefined}
-    >
-      {@render participantHeader(participant, participant.displayName, actions)}
+  {@const actions = showVideo ? 'media' : 'none'}
+  <div
+    class={[
+      callTileCardClass,
+      mode === 'video' ? 'participant-card-video' : 'participant-card-compact'
+    ]}
+    title={formatAccountName(participant.displayName, participant.avatarUser)}
+    data-testid="call-participant-card"
+    {@attach userMenu.trigger(() => ({ participant, screen: false }))}
+    data-call-media-card={showVideo ? true : undefined}
+  >
+    {@render participantHeader(
+      participant,
+      participant.displayName,
+      isInThisCall ? actions : 'none',
+      isInThisCall
+    )}
 
-      {#if showVideo}
-        <button
-          type="button"
-          class={callTileMediaButtonClass}
-          onclick={(e) => showUserMenu(participant, e)}
-        >
-          <VideoThumbnail
-            track={participant.videoTrack!}
-            name={participant.displayName}
-            user={participant.avatarUser}
-            showIdentityOverlay={false}
-          />
-        </button>
-      {/if}
-    </div>
-  {:else}
-    <div
-      class={[
-        callTileCardClass,
-        mode === 'video' ? 'participant-card-video' : 'participant-card-compact'
-      ]}
-      title={participantTitle(participant)}
-      data-testid="call-participant-card"
-      data-call-media-card={showVideo ? true : undefined}
-    >
-      {@render participantHeader(participant, participant.displayName, 'none', false)}
-
-      {#if showVideo}
-        <button
-          type="button"
-          class={callTileMediaButtonClass}
-          onclick={(e) => showUserMenu(participant, e)}
-        >
-          <VideoThumbnail
-            track={participant.videoTrack!}
-            name={participant.displayName}
-            user={participant.avatarUser}
-            showIdentityOverlay={false}
-          />
-        </button>
-      {/if}
-    </div>
-  {/if}
+    {#if showVideo}
+      <button
+        type="button"
+        class={callTileMediaButtonClass}
+        onclick={(e) => showUserMenu(participant, e)}
+      >
+        <VideoThumbnail
+          track={participant.videoTrack!}
+          name={participant.displayName}
+          user={participant.avatarUser}
+          showIdentityOverlay={false}
+        />
+      </button>
+    {/if}
+  </div>
 {/snippet}
 
 {#snippet screenShareCard(participant: DisplayParticipant)}
   <div
-    class={[callTileCardClass, 'participant-card-video @min-[368px]:col-span-2']}
-    {@attach isInThisCall && speakingCard(participant.key)}
-    title={m('voice.screen_title', { name: participant.displayName })}
+    class={[callTileCardClass, 'participant-card-video col-span-full']}
+    title={m('voice.screen_title', {
+      name: formatAccountName(participant.displayName, participant.avatarUser)
+    })}
     data-testid="call-screen-share-card"
-    data-speaking-ring={isInThisCall ? true : undefined}
+    {@attach userMenu.trigger(() => ({ participant, screen: true }))}
     data-call-media-card
   >
     {@render participantHeader(
       participant,
       m('voice.screen_title', { name: participant.displayName }),
       'media',
-      false
+      false,
+      true
     )}
     <button
       type="button"
       class={callTileMediaButtonClass}
-      onclick={(e) => showUserMenu(participant, e)}
+      onclick={(e) => showUserMenu(participant, e, true)}
     >
       <VideoThumbnail
         track={participant.screenShareTrack!}
@@ -514,12 +447,13 @@ Room sidebar panel for voice/video calls.
   {@const isVideo = tile.kind === 'video'}
   <div
     class={[callTileCardClass, 'participant-card-video h-full min-h-0']}
-    {@attach isInThisCall && speakingCard(participant.key)}
     title={isScreen
-      ? m('voice.screen_title', { name: participant.displayName })
-      : participantTitle(participant)}
+      ? m('voice.screen_title', {
+          name: formatAccountName(participant.displayName, participant.avatarUser)
+        })
+      : formatAccountName(participant.displayName, participant.avatarUser)}
     data-testid="call-featured-stage-card"
-    data-speaking-ring={isInThisCall ? true : undefined}
+    {@attach userMenu.trigger(() => ({ participant, screen: isScreen }))}
     data-call-media-card={isScreen || isVideo ? true : undefined}
   >
     {@render participantHeader(
@@ -527,8 +461,9 @@ Room sidebar panel for voice/video calls.
       isScreen
         ? m('voice.screen_title', { name: participant.displayName })
         : participant.displayName,
-      isScreen || isVideo ? 'media' : 'voice',
-      true
+      isScreen || isVideo ? 'media' : 'none',
+      !isScreen,
+      isScreen
     )}
     <button
       type="button"
@@ -537,7 +472,7 @@ Room sidebar panel for voice/video calls.
         'min-h-0 items-center justify-center',
         !isScreen && !isVideo && 'p-6'
       ]}
-      onclick={(e) => showUserMenu(participant, e)}
+      onclick={(e) => showUserMenu(participant, e, isScreen)}
     >
       {#if isScreen}
         <VideoThumbnail
@@ -559,7 +494,11 @@ Room sidebar panel for voice/video calls.
       {:else}
         <div class="flex min-w-0 flex-col items-center gap-4">
           <UserAvatar user={participant.avatarUser} size="xl" showPresence={false} />
-          <span class="max-w-full truncate text-lg font-semibold">{participant.displayName}</span>
+          <AccountName
+            name={participant.displayName}
+            identity={participant.avatarUser}
+            class="text-lg font-semibold"
+          />
         </div>
       {/if}
     </button>
@@ -575,89 +514,105 @@ Room sidebar panel for voice/video calls.
 {/snippet}
 
 {#snippet callControls()}
-  {#if isInThisCall}
-    <div class={isStageLayout ? 'mx-auto max-w-2xl' : ''}>
-      <div class="grid grid-cols-5 gap-2">
-        <VoiceCallControlButton
-          class={controlButtonClass}
-          label={m('voice.devices')}
-          testId="call-device-menu-button"
-          icon="icon-[uil--setting]"
-          iconClass="text-lg"
-          onclick={openDeviceMenu}
-        />
-
-        <VoiceCallControlButton
-          class={voiceCallState.isCameraEnabled ? activeControlButtonClass : controlButtonClass}
-          label={voiceCallState.isCameraEnabled
-            ? m('voice.turn_off_camera')
-            : m('voice.turn_on_camera')}
-          testId="call-camera-toggle"
-          icon={voiceCallState.isCameraEnabled ? 'icon-[uil--video]' : 'icon-[uil--video-slash]'}
-          iconClass="text-lg"
-          onclick={() => voiceCallState.toggleCamera()}
-          pending={voiceCallState.isCameraPending}
-        />
-
-        <VoiceCallControlButton
-          class={voiceCallState.isMuted ? controlButtonClass : activeControlButtonClass}
-          label={voiceCallState.isMuted ? m('voice.unmute') : m('voice.mute')}
-          testId="call-mute-toggle"
-          icon={voiceCallState.isMuted ? 'icon-[uil--microphone-slash]' : 'icon-[uil--microphone]'}
-          iconClass="text-lg"
-          onclick={() => voiceCallState.toggleMute()}
-          pending={voiceCallState.isMicrophonePending}
-        />
-
-        <ScreenShareControlButton
-          {voiceCallState}
-          class={voiceCallState.isScreenShareEnabled
-            ? activeControlButtonClass
-            : controlButtonClass}
-          testId="call-screen-share-toggle"
-          iconClass="text-lg"
-        />
-
-        <VoiceCallControlButton
-          class={dangerControlButtonClass}
-          onclick={() => voiceCallState.leave()}
-          label={m('voice.leave')}
-          testId="call-leave-button"
-          icon="icon-[uil--phone-slash]"
-          iconClass="text-lg"
-        />
-      </div>
-    </div>
-  {:else}
-    <div class={isStageLayout ? 'mx-auto max-w-sm' : ''}>
-      <button
-        type="button"
-        class="btn-action w-full btn-sm"
-        data-testid="call-join-button"
-        onclick={handleJoin}
-        disabled={isInAnotherCall || isConnecting}
-        title={isInAnotherCall ? m('voice.already_in_another_call') : joinLabel}
-      >
-        {joinLabel}
-      </button>
+  {#if isInThisCall && voiceCallState.audioPlaybackBlocked}
+    <div class="mb-2">
+      <Button variant="secondary" fullWidth onclick={() => voiceCallState.resumeAudio()}>
+        {m('voice.participant_audio.enable_audio')}
+      </Button>
     </div>
   {/if}
+  <WipeReveal active={isInThisCall}>
+    {#snippet children(joined)}
+      {#if joined}
+        <div class={['col-start-1 row-start-1 w-full', isStageLayout && 'mx-auto max-w-2xl']}>
+          <PillButtonGroup label={m('room.sidebar.call')}>
+            <VoiceCallControlButton
+              class={controlButtonClass}
+              label={m('voice.preferences.title')}
+              testId="call-device-menu-button"
+              icon="icon-[uil--setting]"
+              iconClass="text-lg"
+              onclick={openVoicePreferences}
+            />
+
+            <VoiceCallControlButton
+              class={voiceCallState.isMuted ? controlButtonClass : activeControlButtonClass}
+              label={m('voice.mute')}
+              pressed={voiceCallState.isMuted}
+              testId="call-mute-toggle"
+              icon={voiceCallState.isMuted
+                ? 'icon-[uil--microphone-slash]'
+                : 'icon-[uil--microphone]'}
+              iconClass="text-lg"
+              onclick={() => voiceCallState.toggleMute()}
+              pending={voiceCallState.isMicrophonePending}
+              disabled={!voiceCallState.canUseVoice && voiceCallState.isMuted}
+            />
+
+            <VoiceCallControlButton
+              class={voiceCallState.isCameraEnabled ? activeControlButtonClass : controlButtonClass}
+              label={voiceCallState.isCameraEnabled
+                ? m('voice.turn_off_camera')
+                : m('voice.turn_on_camera')}
+              testId="call-camera-toggle"
+              icon={voiceCallState.isCameraEnabled
+                ? 'icon-[uil--video]'
+                : 'icon-[uil--video-slash]'}
+              iconClass="text-lg"
+              onclick={() => voiceCallState.toggleCamera()}
+              pending={voiceCallState.isCameraPending}
+              disabled={!voiceCallState.canUseCamera && !voiceCallState.isCameraEnabled}
+            />
+
+            <ScreenShareControlButton
+              {voiceCallState}
+              class={voiceCallState.isScreenShareEnabled
+                ? activeControlButtonClass
+                : controlButtonClass}
+              testId="call-screen-share-toggle"
+              iconClass="text-lg"
+            />
+
+            <VoiceCallControlButton
+              class={dangerControlButtonClass}
+              onclick={() => voiceCallState.leave()}
+              label={m('voice.leave')}
+              testId="call-leave-button"
+              icon="icon-[uil--phone-slash]"
+              iconClass="text-lg"
+            />
+          </PillButtonGroup>
+        </div>
+      {:else}
+        <div class={['col-start-1 row-start-1 w-full', isStageLayout && 'mx-auto max-w-sm']}>
+          <button
+            type="button"
+            class="shell-action w-full"
+            data-testid="call-join-button"
+            onclick={handleJoin}
+            disabled={!canEnterCall || isInAnotherCall || isConnecting}
+            title={!canEnterCall
+              ? m('voice.permission_denied')
+              : isInAnotherCall
+                ? m('voice.already_in_another_call')
+                : joinLabel}
+          >
+            {joinLabel}
+          </button>
+        </div>
+      {/if}
+    {/snippet}
+  </WipeReveal>
 {/snippet}
 
 <div
   class="flex min-h-0 flex-1 flex-col"
   data-testid={isInThisCall ? 'call-participant-panel' : 'call-observer-panel'}
 >
-  {#if !isStageLayout}
-    <div class="border-b border-border bg-background p-3" data-testid="call-controls-bar">
-      {@render callControls()}
-    </div>
-  {/if}
-
   <div
     class={[
       'flex min-h-0 flex-1 flex-col gap-5',
-      isStageLayout ? 'p-4' : 'p-3',
+      isStageLayout ? 'p-4' : 'px-2 py-3',
       isStageLayout ? 'overflow-hidden' : 'overflow-y-auto'
     ]}
   >
@@ -690,7 +645,9 @@ Room sidebar panel for voice/video calls.
           <div
             class={[
               'grid grid-cols-1 gap-3',
-              isInThisCall && mediaTileCount > 1 && '@min-[368px]:grid-cols-2'
+              isInThisCall &&
+                (screenShareParticipants.length > 0 || mediaTileCount > 1) &&
+                '@min-[368px]:grid-cols-2'
             ]}
             data-testid="call-participants-list"
           >
@@ -711,56 +668,19 @@ Room sidebar panel for voice/video calls.
     {/if}
   </div>
 
-  {#if isStageLayout}
-    <div class="border-t border-border bg-background p-3" data-testid="call-controls-bar">
-      {@render callControls()}
-    </div>
-  {/if}
+  <div class="shrink-0 p-2" data-testid="call-controls-bar">
+    {@render callControls()}
+  </div>
 </div>
 
-{#if deviceMenuAnchor}
-  <AudioDeviceMenu anchor={deviceMenuAnchor} onclose={() => (deviceMenuAnchor = null)} />
-{/if}
-
-{#if popoverParticipant && popoverAnchorRect}
-  <UserContextMenu
-    user={popoverParticipant.avatarUser}
-    anchorRect={popoverAnchorRect}
+{#if userMenu.target}
+  <UserMenu
+    state={userMenu}
+    audioSource={userMenu.target.screen ? 'streamVolume' : 'voiceVolume'}
+    user={userMenu.target.participant.avatarUser}
     canSendMessage={canStartDMs}
     viewerSettings={serverScope.store.currentUser.user?.settings}
-    onSendMessage={() => startDMWith(activeServerId, popoverParticipant!.avatarUser.id)}
+    onSendMessage={() => startDMWith(activeServerId, userMenu.target!.participant.avatarUser.id)}
     {onOpenProfile}
-    onClose={closeUserMenu}
   />
 {/if}
-
-<style>
-  :global(.call-speaking-card) {
-    --call-speaking-ring-opacity: 0;
-    --call-speaking-ring-strength: 0;
-  }
-
-  :global(.call-speaking-card)::after {
-    position: absolute;
-    inset: 0;
-    border: 2px solid var(--color-action);
-    border-radius: inherit;
-    box-shadow: 0 0 0.75rem color-mix(in srgb, var(--color-action) 30%, transparent);
-    content: '';
-    opacity: var(--call-speaking-ring-opacity);
-    pointer-events: none;
-    transition: opacity 80ms linear;
-    animation: call-speaking-ring-pulse 1.25s ease-in-out infinite;
-  }
-
-  @keyframes call-speaking-ring-pulse {
-    0%,
-    100% {
-      transform: scale(1);
-    }
-
-    50% {
-      transform: scale(1.012);
-    }
-  }
-</style>

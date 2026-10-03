@@ -38,12 +38,103 @@ concurrency:
 
 permissions:
   contents: read
-  # 【本地改动 2026-08-30】上游没有这条 workflow 级权限,它是 publish-main-image 那次改动顺带
-  # 加的。该 job 已自带 job 级 packages: write(见 publish-main-image 的【本地改动】块),
-  # 这条其实是冗余的;保留是为了少一个待办改动点。合回 upstream 时删掉。
+  # 【本地改动】workflow 级 packages: write（fork 部署发布包用；上游无此行）
   packages: write
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: read
+    outputs:
+      chatto: ${{ github.event_name != 'pull_request' || steps.select.outputs.common == 'true' || steps.select.outputs.chatto == 'true' }}
+      desktop: ${{ github.event_name != 'pull_request' || steps.select.outputs.common == 'true' || steps.select.outputs.desktop == 'true' }}
+      authling: ${{ github.event_name != 'pull_request' || steps.select.outputs.common == 'true' || steps.select.outputs.authling == 'true' }}
+      runling: ${{ github.event_name != 'pull_request' || steps.select.outputs.common == 'true' || steps.select.outputs.runling == 'true' }}
+      chattobot: ${{ github.event_name != 'pull_request' || steps.select.outputs.common == 'true' || steps.select.outputs.chattobot == 'true' }}
+      docs: ${{ github.event_name != 'pull_request' || steps.select.outputs.common == 'true' || steps.select.outputs.docs == 'true' }}
+    steps:
+      - name: Select affected products
+        if: github.event_name == 'pull_request'
+        id: select
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4
+        with:
+          predicate-quantifier: some-with-excludes
+          filters: |
+            chatto:
+              # Authling changes must also verify login and profile transfer into Chatto.
+              - 'authling/**'
+              - 'cli/**'
+              - 'pkg/**'
+              - 'apps/frontend/**'
+              - 'packages/**'
+              - 'proto/**'
+              - 'docker/**'
+            authling:
+              # Go workspace dependency selection can change across product modules.
+              - 'cli/go.{mod,sum}'
+              - 'authling/**'
+              - 'pkg/**'
+            runling:
+              - 'packages/runling/**'
+              # The Runling bot example uses the Chatto client.
+              - 'packages/chatto-client/**'
+              - 'packages/api-types/**'
+              - 'examples/runling-bot/**'
+            chattobot:
+              - 'packages/chattobot/**'
+              - 'packages/runling/**'
+              - 'packages/chatto-client/**'
+              - 'packages/api-types/**'
+              - 'proto/**'
+            docs:
+              - 'apps/docs-website/**'
+            desktop:
+              - 'apps/desktop/**'
+              - 'apps/frontend/**'
+              - 'packages/**'
+              - '!packages/runling/**'
+              - 'proto/**'
+              - 'tools/test-desktop-*'
+            # Files outside product roots and repository documentation run all products.
+            common:
+              - '**'
+              - '!{cli,pkg,authling,packages,proto,docker}/**'
+              - '!apps/{frontend,desktop,docs-website}/**'
+              - '!tools/test-desktop-*'
+              - '!{docs,.agents,.claude,.conductor}/**'
+              - '!*.md'
+
+  test-runling:
+    needs: changes
+    if: ${{ needs.changes.outputs.runling == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup
+        with:
+          install-cli-deps: 'false'
+      - run: mise check-runling
+      - run: mise test-runling
+      - run: mise test-runling-bot
+      - run: mise test-runling-package
+
+  test-chattobot:
+    needs: changes
+    if: ${{ needs.changes.outputs.chattobot == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup
+        with:
+          install-cli-deps: 'false'
+      - run: mise check-chattobot
+      - run: mise test-chatto-client
+      - run: mise test-chattobot
+
   build-main-image-contexts:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
@@ -56,6 +147,8 @@ jobs:
 
       - name: Setup environment
         uses: ./.github/actions/setup
+        with:
+          save-go-build-cache: 'true'
 
       - name: Derive main image version
         id: image-version
@@ -74,7 +167,7 @@ jobs:
       - name: Build frontend for production image
         env:
           CHATTO_BUILD_VERSION: ${{ steps.image-version.outputs.version }}
-          CHATTO_FRONTEND_PRECOMPRESS: "1"
+          CHATTO_FRONTEND_PRECOMPRESS: '1'
         run: mise build-frontend
 
       - name: Verify frontend build version
@@ -150,6 +243,8 @@ jobs:
         run: mise lint-actions
 
   desktop:
+    needs: changes
+    if: ${{ needs.changes.outputs.desktop == 'true' }}
     name: desktop (${{ matrix.platform }})
     timeout-minutes: 45
     strategy:
@@ -173,7 +268,7 @@ jobs:
       - name: Setup environment
         uses: ./.github/actions/setup
         with:
-          install-cli-deps: "false"
+          install-cli-deps: 'false'
 
       - name: Check and test desktop shell
         run: mise test-desktop
@@ -209,6 +304,8 @@ jobs:
           retention-days: 7
 
   desktop-macos-capture:
+    needs: changes
+    if: ${{ needs.changes.outputs.desktop == 'true' }}
     runs-on: macos-15
     timeout-minutes: 15
     steps:
@@ -219,24 +316,40 @@ jobs:
         run: tools/test-desktop-macos-capture.sh
 
   codegen-proto-drift:
+    needs: changes
+    if: ${{ !cancelled() }}
     # runs-on: ubicloud-standard-4
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      - name: Verify job selection
+        env:
+          SELECTION_RESULT: ${{ needs.changes.result }}
+        run: test "$SELECTION_RESULT" = success
+
       - name: Checkout code
         uses: actions/checkout@v6
 
       - name: Setup environment
         uses: ./.github/actions/setup
 
+      # Breaking checks compare a pull request with its target branch. A push
+      # has already passed them as a pull request, and labels that acknowledge
+      # public API breaks exist only on pull requests. The target branch can
+      # also move during a push run, so a shallow fetch of it is not stable.
       - name: Fetch protobuf breaking base
+        if: github.event_name == 'pull_request'
         run: |
-          base_ref="${GITHUB_BASE_REF:-${GITHUB_REF_NAME}}"
+          base_ref="${GITHUB_BASE_REF}"
           git fetch --no-tags --depth=1 origin "${base_ref}:refs/remotes/origin/${base_ref}"
 
+      - name: Lint Chatto protobufs
+        run: mise lint-proto
+
       - name: Check storage, internal, and Operator protobuf breaking changes
+        if: github.event_name == 'pull_request'
         run: |
-          base_ref="${GITHUB_BASE_REF:-${GITHUB_REF_NAME}}"
+          base_ref="${GITHUB_BASE_REF}"
           mise x -- node tools/check-storage-proto-breaking.mjs \
             "../.git#branch=origin/${base_ref},subdir=proto"
 
@@ -244,22 +357,26 @@ jobs:
         working-directory: cli
         run: mise x -- go test ./internal/core -run TestProjectionSnapshotContractsIncludeCurrentSchema -count=1
 
-      - name: Check public API protobuf breaking changes
-        if: ${{ github.event_name != 'pull_request' || !contains(github.event.pull_request.labels.*.name, 'api-breaking-change') }}
+      - name: Check public protobuf packages without acknowledged breaks
+        if: github.event_name == 'pull_request'
         run: |
-          base_ref="${GITHUB_BASE_REF:-${GITHUB_REF_NAME}}"
+          base_ref="${GITHUB_BASE_REF}"
           cd proto
-          mise x -- buf breaking . --against "../.git#branch=origin/${base_ref},subdir=proto" \
-            --path chatto/auth/v1 \
-            --path chatto/discovery/v1 \
-            --path chatto/api/v1 \
-            --path chatto/admin/v1 \
-            --path chatto/realtime/v1 \
-            --path chatto/core/live/v1/live_events.proto
+          labels='${{ github.event_name == 'pull_request' && join(github.event.pull_request.labels.*.name, ',') || '' }}'
+          # Check each package once; imported packages have their own checks and labels.
+          for package in auth discovery api admin realtime; do
+            if [[ ",${labels}," == *",api-breaking-change:${package},"* ]]; then
+              echo "::notice::Skipping acknowledged ${package} protobuf break."
+              continue
+            fi
+            path="chatto/${package}/v1"
+            mise x -- buf breaking . --against "../.git#branch=origin/${base_ref},subdir=proto" --path "$path" --exclude-imports
+          done
 
       - name: Check Authling persisted protobuf breaking changes
+        if: github.event_name == 'pull_request'
         run: |
-          base_ref="${GITHUB_BASE_REF:-${GITHUB_REF_NAME}}"
+          base_ref="${GITHUB_BASE_REF}"
           if git cat-file -e "origin/${base_ref}:authling/buf.yaml" 2>/dev/null; then
             cd authling
             mise x -- buf breaking . \
@@ -268,11 +385,6 @@ jobs:
           else
             echo "::notice::Authling protobufs are new; no base schema exists yet."
           fi
-
-      - name: Acknowledge intentional public API protobuf breaking changes
-        if: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'api-breaking-change') }}
-        run: |
-          echo "::notice::Skipping public and transient-wire Buf breaking checks because this PR has the api-breaking-change label. Storage, internal, Operator, and codegen drift checks still run."
 
       - name: Lint Authling protobufs
         working-directory: authling
@@ -292,6 +404,8 @@ jobs:
           fi
 
   check-workspace:
+    needs: changes
+    if: ${{ needs.changes.outputs.chatto == 'true' || needs.changes.outputs.desktop == 'true' }}
     # runs-on: ubicloud-standard-4
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -302,7 +416,7 @@ jobs:
       - name: Setup environment
         uses: ./.github/actions/setup
         with:
-          install-cli-deps: "false"
+          install-cli-deps: 'false'
 
       - name: Run workspace typechecks
         run: pnpm run check
@@ -314,6 +428,8 @@ jobs:
         run: pnpm run build:storybook
 
   test-workspace:
+    needs: changes
+    if: ${{ needs.changes.outputs.chatto == 'true' }}
     # Keep this job name stable because it can be a required branch check.
     # runs-on: ubicloud-standard-4
     runs-on: ubuntu-latest
@@ -325,18 +441,20 @@ jobs:
       - name: Setup environment
         uses: ./.github/actions/setup
         with:
-          install-cli-deps: "false"
+          install-cli-deps: 'false'
 
       - name: Setup Playwright
         uses: ./.github/actions/setup-playwright
         timeout-minutes: 15
         with:
-          save-cache: "true"
+          save-cache: 'true'
 
       - name: Run workspace unit tests
         run: pnpm test
 
-  test-cli:
+  test-cli-shared:
+    needs: changes
+    if: ${{ needs.changes.outputs.chatto == 'true' || needs.changes.outputs.authling == 'true' }}
     # runs-on: ubicloud-standard-4
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -347,15 +465,12 @@ jobs:
       - name: Setup environment
         uses: ./.github/actions/setup
         with:
-          # 【本地改动 32e1f566】test-cli job 需要 ffmpeg：本地 AVIF 附件重编码
-          # 改动让 cli/internal/assets 与 cli/internal/http_server 的图片测试走
-          # ffmpeg 编码分支。上游只在 media E2E job 装 ffmpeg，Chatto 的 Go 测试
-          # 在无 ffmpeg 环境会跳过/失败，因此在 test-cli 也装上。
-          install-ffmpeg: "true"
+          go-build-cache-scope: test-cli-shared
           # PR caches are isolated from main and cannot accelerate a merge run.
           save-go-build-cache: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       - name: Run Authling tests
+        if: needs.changes.outputs.authling == 'true'
         working-directory: authling
         run: mise test
 
@@ -371,13 +486,80 @@ jobs:
       - name: Run embedded NATS runtime tests
         run: mise test-natsruntime
 
+  test-cli-chatto:
+    needs: changes
+    if: ${{ needs.changes.outputs.chatto == 'true' }}
+    # runs-on: ubicloud-standard-4
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup environment
+        uses: ./.github/actions/setup
+        with:
+          go-build-cache-scope: test-cli-chatto
+          # PR caches are isolated from main and cannot accelerate a merge run.
+          save-go-build-cache: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+
       - name: Build frontend
         run: mise build-frontend
+
+      - name: Vet and check for unused Go code
+        run: mise lint-cli
+
+      - name: Verify development data seeding
+        run: mise x -- node tools/dev-seed-smoke.mjs
 
       - name: Run Go tests
         run: cd cli && go test -trimpath -p 1 -tags test_endpoints ./...
 
+  test-oidc-conformance:
+    needs: changes
+    if: ${{ needs.changes.outputs.chatto == 'true' || needs.changes.outputs.authling == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup
+      - name: Install Authling toolchain and browser dependencies
+        working-directory: authling
+        run: |
+          mise install
+          mise deps-web
+      - uses: ./.github/actions/setup-playwright
+        with:
+          working-directory: authling
+      - name: Run official provider and client checks
+        run: mise test-oidc-conformance
+      - name: Upload outcome summary only
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: oidc-conformance-results
+          path: authling/conformance-results.json
+          retention-days: 14
+
+  test-cli:
+    needs: [changes, test-cli-shared, test-cli-chatto]
+    if: ${{ always() && (needs.changes.outputs.chatto == 'true' || needs.changes.outputs.authling == 'true') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify CLI test jobs
+        env:
+          CHATTO_CHANGED: ${{ needs.changes.outputs.chatto }}
+          SHARED_RESULT: ${{ needs.test-cli-shared.result }}
+          CHATTO_RESULT: ${{ needs.test-cli-chatto.result }}
+        run: |
+          test "$SHARED_RESULT" = success
+          if [[ "$CHATTO_CHANGED" == true ]]; then
+            test "$CHATTO_RESULT" = success
+          fi
+
   test-authling-e2e:
+    needs: changes
+    if: ${{ needs.changes.outputs.authling == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -414,6 +596,10 @@ jobs:
           retention-days: 14
 
   test-e2e:
+    needs: changes
+    # Expand the matrix even when no E2E work is needed. A skipped matrix job
+    # has no per-shard check names and would leave required checks pending.
+    if: ${{ !cancelled() }}
     # runs-on: ubicloud-standard-4
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -424,20 +610,46 @@ jobs:
         shard: [1, 2, 3, 4]
     steps:
       - name: Checkout code
+        if: needs.changes.outputs.chatto == 'true'
         uses: actions/checkout@v6
 
       - name: Setup environment
+        if: needs.changes.outputs.chatto == 'true'
         uses: ./.github/actions/setup
+        with:
+          go-build-cache-scope: test-e2e
+          # Only one matrix job writes the cache. All E2E jobs can restore it
+          # on the next run without concurrent cache-save attempts.
+          save-go-build-cache: ${{ matrix.shard == 1 && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       - name: Setup Playwright
+        if: needs.changes.outputs.chatto == 'true'
         uses: ./.github/actions/setup-playwright
         timeout-minutes: 15
 
-      - name: Build E2E server
-        run: mise build-e2e-server
+      - name: Build E2E dependencies
+        if: needs.changes.outputs.chatto == 'true'
+        run: |
+          mise build-e2e-server
+          mise build-runling-bot
 
       - name: Run E2E tests
-        run: cd apps/frontend && pnpm exec playwright test --grep-invert @ffmpeg --shard=${{ matrix.shard }}/4
+        if: needs.changes.outputs.chatto == 'true'
+        env:
+          E2E_SHARD: ${{ matrix.shard }}
+          PLAYWRIGHT_JSON_OUTPUT_FILE: e2e-results.json
+        run: |
+          cd apps/frontend
+          node --test scripts/run-e2e-shard.test.mjs
+          node scripts/run-e2e-shard.mjs "$E2E_SHARD/4" --grep-invert @ffmpeg
+
+      - name: Upload E2E timings
+        uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() && needs.changes.outputs.chatto == 'true' }}
+        with:
+          name: e2e-timings-${{ matrix.shard }}-of-4
+          path: apps/frontend/e2e-results.json
+          retention-days: 14
 
       - name: Upload Playwright report
         uses: actions/upload-artifact@v7
@@ -448,6 +660,8 @@ jobs:
           retention-days: 14
 
   test-e2e-media:
+    needs: changes
+    if: ${{ needs.changes.outputs.chatto == 'true' }}
     # runs-on: ubicloud-standard-4
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -459,7 +673,8 @@ jobs:
         uses: ./.github/actions/setup
         timeout-minutes: 15
         with:
-          install-ffmpeg: "true"
+          go-build-cache-scope: test-e2e
+          install-ffmpeg: 'true'
 
       - name: Setup Playwright
         uses: ./.github/actions/setup-playwright
@@ -480,6 +695,8 @@ jobs:
           retention-days: 14
 
   test-e2e-performance:
+    needs: changes
+    if: ${{ needs.changes.outputs.chatto == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
@@ -490,6 +707,8 @@ jobs:
 
       - name: Setup environment
         uses: ./.github/actions/setup
+        with:
+          go-build-cache-scope: test-e2e
 
       - name: Setup Playwright
         uses: ./.github/actions/setup-playwright
@@ -512,6 +731,8 @@ jobs:
             exit 0
           fi
           git worktree add --detach "$baseline_dir" "$PERFORMANCE_BASE_SHA"
+          cp apps/frontend/e2e-performance/large-server.performance.test.ts \
+            "$baseline_dir/apps/frontend/e2e-performance/large-server.performance.test.ts"
           echo "available=true" >> "$GITHUB_OUTPUT"
 
       - name: Run base-revision performance test
@@ -519,6 +740,8 @@ jobs:
         if: steps.performance-baseline.outputs.available == 'true'
         working-directory: ${{ runner.temp }}/chatto-performance-base
         continue-on-error: true
+        env:
+          CHATTO_E2E_PERF_ALLOW_MISSING_REALTIME_SNAPSHOT_METRIC: true
         run: mise test-e2e-performance
 
       - name: Preserve base-revision results
@@ -609,9 +832,6 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: read
-      # 【本地改动 2026-08-30】上游没有这条权限。见下方【本地改动】块:镜像推送目前被
-      # 知情关闭,fork 的 token 也无 chattocorp org 的 package 写权限。留着是为了拿到
-      # 权限后重开时不用改回这里。
       packages: write
     steps:
       - name: Download production image contexts
@@ -623,23 +843,6 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # 【本地改动 2026-08-30】上游把 commit 镜像推送到 ghcr.io/chattocorp/chatto(上游 org
-      # 的 package)。2026-08-30 把 build-release 触发分支从 ci/deploy 改到 main 后,ci.yml
-      # 第一次在本仓库 main 上跑完整矩阵,publish-main-image 立刻红:
-      #   failed to push ghcr.io/chattocorp/chatto:<sha>-amd64: denied:
-      #   permission_denied: The requested installation does not exist
-      # 这是 fork 基建缺口,不是回归:fork 的 GITHUB_TOKEN 对上游 org 的 package 没有写权限,
-      # 该镜像历史上从未从本 fork 成功推送过;上游自己的 main 同时段持续绿。
-      # 【目的】把三个推送动作知情关闭,让 ci.yml 在本 fork 上能到全绿,而不是把这条红灯
-      # 当常态。关掉的是「推送」不是「构建」——amd64/arm64 两个 build 仍保留(push: false),
-      # 继续充当 Dockerfile 的冒烟测试,能提前发现上游改 Dockerfile 导致的构建破坏;
-      # 而 Publish 那一步因为没有构建价值,整步删除(见下方【本地改动】块)。
-      # 【边界】ghcr.io/chattocorp/chatto 从此不会从本 fork 更新,只影响直接拉该镜像的下游。
-      # 本仓库部署链路不依赖它:cloudcone 拉的是 releases 的 chatto_Linux_x86_64.tar.gz。
-      # 【重开方式】拿到 chattocorp org 的 package 写权限后:两个 build 的 push: false 改回
-      # true,并从 upstream 的 ci.yml 取回 Publish multi-platform commit image 那一步。
-      # 【合并提醒】合回 upstream 时整段删除:两个 build 恢复 push: true、Publish 步骤整步
-      # 恢复、job 级 permissions 删掉 packages: write。
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
         with:
@@ -652,13 +855,12 @@ jobs:
         shell: bash
         run: echo "tag=main-$(date -u +%Y%m%dT%H%M%SZ)-${GITHUB_SHA:0:12}" >> "$GITHUB_OUTPUT"
 
-      - name: Build amd64 image
+      - name: Build and push amd64 image
         uses: docker/build-push-action@v6
         with:
           context: docker-contexts/linux-amd64
           file: docker-contexts/linux-amd64/Dockerfile
-          # 【本地改动 2026-08-30】上游是 push: true;改为只构建不推送,理由见上方【本地改动】块。
-          push: false
+          push: true
           platforms: linux/amd64
           tags: ghcr.io/chattocorp/chatto:${{ github.sha }}-amd64
           cache-from: type=gha,scope=chatto-main-amd64
@@ -669,13 +871,12 @@ jobs:
             org.opencontainers.image.version=${{ needs.build-main-image-contexts.outputs.image-version }}
             org.opencontainers.image.licenses=AGPL-3.0-or-later
 
-      - name: Build arm64 image
+      - name: Build and push arm64 image
         uses: docker/build-push-action@v6
         with:
           context: docker-contexts/linux-arm64
           file: docker-contexts/linux-arm64/Dockerfile
-          # 【本地改动 2026-08-30】上游是 push: true;改为只构建不推送,理由见上方【本地改动】块。
-          push: false
+          push: true
           platforms: linux/arm64
           tags: ghcr.io/chattocorp/chatto:${{ github.sha }}-arm64
           cache-from: type=gha,scope=chatto-main-arm64
@@ -686,16 +887,33 @@ jobs:
             org.opencontainers.image.version=${{ needs.build-main-image-contexts.outputs.image-version }}
             org.opencontainers.image.licenses=AGPL-3.0-or-later
 
-      # 【本地改动 2026-08-30】上游有 Publish multi-platform commit image 这个步骤,用
-      # docker buildx imagetools create 把上面两个平台镜像打成多平台 manifest 推送到
-      # ghcr.io/chattocorp/chatto:${GITHUB_SHA}(及 main-<UTC>-<sha12>),然后往
-      # GITHUB_STEP_SUMMARY 写镜像标签。
-      # 【本地改动】本 fork 已删除该步骤。fork 的 GITHUB_TOKEN 没有上游 org 的 package 写权限,
-      # 它在本 fork 上必然失败。不要改成 if: false:actionlint 的 [if-cond] 规则禁止常量条件
-      # (2026-08-30 workflow-lint 报
-      #   .github/workflows/ci.yml:692:13: constant expression "false" in condition
-      #   [if-cond]),死步骤也是噪音。
-      # 【恢复方式】拿到 chattocorp org 的 package 写权限后,从 upstream 的 ci.yml 取回该步骤
-      # 原文(步骤名「Publish multi-platform commit image」),并把上面两个 build 的
-      # push: false 改回 push: true。
-      # 【合并提醒】合回 upstream 时整段删除。
+      - name: Publish multi-platform commit image
+        shell: bash
+        run: |
+          docker buildx imagetools create \
+            --tag "ghcr.io/chattocorp/chatto:${GITHUB_SHA}" \
+            --tag "ghcr.io/chattocorp/chatto:${{ steps.main-image.outputs.tag }}" \
+            "ghcr.io/chattocorp/chatto:${GITHUB_SHA}-amd64" \
+            "ghcr.io/chattocorp/chatto:${GITHUB_SHA}-arm64"
+
+          {
+            echo "### Main commit image"
+            echo
+            echo "\`ghcr.io/chattocorp/chatto:${GITHUB_SHA}\`"
+            echo "\`ghcr.io/chattocorp/chatto:${{ steps.main-image.outputs.tag }}\`"
+            echo
+            echo "Version: \`${{ needs.build-main-image-contexts.outputs.image-version }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  check-docs:
+    needs: changes
+    if: needs.changes.outputs.docs == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup
+        with:
+          install-cli-deps: 'false'
+      - run: pnpm turbo run check --filter=docs-website
+      - run: pnpm run build:docs

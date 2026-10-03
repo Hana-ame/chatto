@@ -3,6 +3,7 @@
   import type { ClassValue } from 'svelte/elements';
   import { m } from '$lib/i18n/messages';
   import FloatingPopover from '$lib/ui/FloatingPopover.svelte';
+  import LoadingFog from '$lib/ui/LoadingFog.svelte';
   import FormField from './FormField.svelte';
 
   let {
@@ -25,6 +26,8 @@
     clearLabel = m('ui.combobox.clear'),
     class: className,
     item,
+    selectionAdornment,
+    selectionDescription,
     ontextchange,
     onselect,
     onclear
@@ -48,6 +51,10 @@
     clearLabel?: string;
     class?: ClassValue;
     item?: Snippet<[{ item: T; selected: boolean }]>;
+    /** Passive content beside a selected value, such as an account badge. */
+    selectionAdornment?: Snippet;
+    /** Text announced with the selected value when the adornment is visual. */
+    selectionDescription?: string;
     ontextchange?: (text: string) => void;
     onselect?: (item: T) => void;
     onclear?: () => void;
@@ -150,13 +157,21 @@
       aria-autocomplete="list"
       aria-controls={`${id}-listbox`}
       aria-invalid={error ? 'true' : undefined}
-      aria-describedby={error ? `${id}-error` : description ? `${id}-description` : undefined}
-      class={['input pe-16', loading && 'pe-20']}
+      aria-describedby={[
+        error ? `${id}-error` : description ? `${id}-description` : undefined,
+        value && selectionDescription ? `${id}-selection-description` : undefined
+      ]
+        .filter(Boolean)
+        .join(' ') || undefined}
+      class={['input pe-16', loading && 'pe-20', selectionAdornment && value && 'pe-28']}
       onfocus={openMenu}
       oninput={handleInput}
       onkeydown={handleKeydown}
     />
     <div class="absolute end-2 top-1/2 flex -translate-y-1/2 items-center gap-1">
+      {#if selectionAdornment && value}
+        <span class="pointer-events-none">{@render selectionAdornment()}</span>
+      {/if}
       {#if loading}
         <span
           class="iconify icon-[uil--spinner] animate-spin text-base text-muted"
@@ -176,6 +191,9 @@
         </button>
       {/if}
     </div>
+    {#if value && selectionDescription}
+      <span id={`${id}-selection-description`} class="sr-only">{selectionDescription}</span>
+    {/if}
   </div>
 </FormField>
 
@@ -184,10 +202,11 @@
   {anchor}
   role="listbox"
   id={`${id}-listbox`}
-  class="max-h-72 w-80 overflow-y-auto menu"
+  class="w-80 menu"
   onclose={() => (open = false)}
 >
-  <div class="menu-section">
+  <!-- Scroll inside the section so the frame's inset and border stay visible. -->
+  <div class="max-h-72 overflow-y-auto menu-section">
     {#if items.length > 0}
       {#each items as option, index (getValue(option))}
         <button
@@ -206,7 +225,7 @@
         </button>
       {/each}
     {:else if loading}
-      <div class="px-3 py-2 text-sm text-muted">{m('ui.combobox.loading')}</div>
+      <LoadingFog class="m-2 h-10" label={m('ui.combobox.loading')} />
     {:else}
       <div class="px-3 py-2 text-sm text-muted">{emptyMessage}</div>
     {/if}

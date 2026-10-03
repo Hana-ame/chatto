@@ -2,579 +2,705 @@
 
 Key files:
 
-- [`proto/chatto/realtime/v1/realtime.proto`](../../proto/chatto/realtime/v1/realtime.proto)
-- [`proto/chatto/core/live/v1/live_events.proto`](../../proto/chatto/core/live/v1/live_events.proto)
-- [`cli/internal/http_server/realtime.go`](../../cli/internal/http_server/realtime.go)
-- [`cli/internal/http_server/realtime_projection.go`](../../cli/internal/http_server/realtime_projection.go)
-- [`apps/frontend/src/lib/state/server/projection.svelte.ts`](../../apps/frontend/src/lib/state/server/projection.svelte.ts)
-- [`apps/frontend/src/lib/state/server/realtimeSync.svelte.ts`](../../apps/frontend/src/lib/state/server/realtimeSync.svelte.ts)
+- [`realtime.proto`](../../proto/chatto/realtime/v1/realtime.proto)
+- [`events.proto`](../../proto/chatto/realtime/v1/events.proto)
+- [`realtime.go`](../../cli/internal/http_server/realtime.go)
+- [`realtime_consistency.go`](../../cli/internal/connectapi/realtime_consistency.go)
+- [`realtimeTransport.ts`](../../packages/chatto-client/src/server/realtimeTransport.ts)
+- [`realtimeResources.ts`](../../packages/chatto-client/src/api/realtimeResources.ts)
+- [`runtime.ts`](../../packages/chatto-client/src/server/runtime.ts)
 
 Related decisions: [ADR-049](../adr/ADR-049-process-wide-realtime-event-hub.md),
-[ADR-051](../adr/ADR-051-server-scoped-resumable-client-projection.md),
-[ADR-079](../adr/ADR-079-renewable-bearer-sessions.md), and
-[ADR-084](../adr/ADR-084-separate-internal-protobufs-by-storage-contract.md).
+[ADR-079](../adr/ADR-079-renewable-bearer-sessions.md),
+[ADR-091](../adr/ADR-091-semantic-realtime-events-with-bounded-resume.md),
+[ADR-093](../adr/ADR-093-use-a-public-realtime-event-union.md),
+[ADR-094](../adr/ADR-094-separate-durable-and-pubsub-event-envelopes.md),
+[ADR-095](../adr/ADR-095-direct-message-permission-scope-and-threads.md), and
+[ADR-111](../adr/ADR-111-move-client-state-into-chatto-client.md).
 
-The protobuf realtime API is mounted at `GET /api/realtime` and upgrades to a
-binary WebSocket. The first client frame must be `hello`; the server accepts
-only protocol version 2 and authenticates either the hello bearer token or an
-existing cookie session. The second client frame must be `subscribe_events`.
-It may name room timelines already retained with the projection. After
-subscription, `hydrate_room` materialises another joined room over the same
-ordered stream.
+## Public protocol
 
-OAuth access-token connections retain their validated client identity after the
-hello. Each connection registers a process-local watcher with the durable
-OAuth-client projection before continuing. When any replica commits a blocked
-or unsupported policy, every replica's projection closes only the watchers for
-that client; the handler first cancels authorized work, then best-effort sends
-the established terminal `authentication_required` close and tears down the socket.
-Registration and the projected-state check are atomic with projection
-application, so a block racing connection setup cannot leave an authorized
-socket behind. Cookie sessions, first-party bearer sessions, and OAuth sessions
-issued to other clients are unaffected.
+The client in [`@chatto/client`](../../packages/chatto-client/README.md)
+consumes this protocol for the bundled frontend and for headless hosts. Bots
+connect with `createClient().connect()` and a bearer API key. They use the
+same realtime transport, projection, and recovery as the frontend, through the
+same `Server` object. A bot client keeps every connected server live. A server
+handles events in order, reports a gap when a later snapshot replaces the
+stream, and supplies addressing recognition and process-local
+accepted-delivery tracking. The
+[ChattoBot package](../../packages/chattobot/README.md) routes message events
+into new or active Runling conversations. It accepts a delivery after inbox
+insertion or successful run registration. Runling itself has no Chatto runtime
+dependency.
 
-Human bearer connections also retain the fixed expiry of the access token
-accepted during hello. At that instant the handler cancels authorized work,
-best-effort sends a reconnecting `authentication_required` close, and tears
-down the socket. The bundled frontend serializes refresh for that server,
-installs the rotated pair without replacing its per-server state, and reconnects
-the same event bus with its RAM-only opaque resume cursor and retained-room set.
+The public API is a binary protobuf WebSocket at `GET /api/realtime`. The
+server accepts behavioral protocol version 4. The `chatto.realtime.v1` suffix
+is the protobuf package name. It is not the behavioral protocol version.
 
-Cookie connections retain the cookie record expiry accepted during the HTTP
-upgrade. Their timer ends at the start of the final renewal quarter. The
-handler cancels authorized work, sends a reconnecting
-`session_renewal_required` close when possible, and closes the socket. The
-frontend calls the CSRF-protected browser renewal route. That route advances
-the same cookie-session record with KV OCC and writes the same SCS handle in a
-fresh browser cookie slot with the new lifetime. The frontend then opens the
-replacement socket. The upgrade does not update the record or set a cookie.
+The client sends `RealtimeSubscribe` as its first binary WebSocket message. It
+contains protocol version 4, an optional bearer credential, an optional opaque
+resume cursor, and a required `SNAPSHOT` or `LIVE_ONLY` fallback choice. A
+same-origin browser can use its cookie session. The client sends no more
+application messages on the socket.
 
-The frontend keeps its route, projection, opaque cursor, and retained-room set
-during this automatic reconnect. The route also returns the next renewal time.
-An HTTP timer uses that value when realtime transport is blocked or
-disconnected. Bot API keys have no expiry timer.
+The server selects one recovery path:
 
-After the hello, the server revalidates the exact human credential before it
-starts the subscription. It repeats that check once per minute. A definitive
-revocation closes the socket even if a process-local termination signal was
-lost. A temporary storage error leaves the connection open until the next
-check.
+- `SNAPSHOT`: send an exact authorized content snapshot;
+- `LIVE_ONLY`: start at the current boundary without current state or old
+  events; or
+- `RESUME`: send authorized durable events after the supplied cursor.
 
-Bot API-key connections similarly retain only the non-secret HMAC verifier
-accepted during the hello. Each connection registers atomically with the
-durable user-auth projection. When an individual revocation or a historical
-replace-all fact reaches a replica, that projection closes watchers for each
-removed verifier.
-Connections that use other API keys stay open. The handler cancels authorized
-work, sends a terminal `authentication_required` close when possible, and
-tears down the selected sockets. The raw API key is not retained in request or
-connection context.
+The received frames show the selected path. The server then sends `caught_up`
+with the handoff cursor. The client can consider the subscription current only
+after it applies all earlier frames and this marker. The other server frames
+are `event`, `heartbeat`, and `close`. All terminal protocol results use
+`close`. WebSocket control frames provide ping and pong behavior.
 
-The `chatto.realtime.v1` package name is the protobuf namespace, not the
-behavioural protocol version. Protocol 2 is the server-scoped projection
-stream. It uses `RealtimeProjectionEvent`, an optional resume cursor on
-`subscribe_events`, and `caught_up` at the replay-to-live boundary. Application
-heartbeats and client `ping`/server `pong` share the same connection.
+## Public events
 
-The bundled client creates its event-bus reducer before discovery completes so
-consumers can register synchronously, but it opens the WebSocket only after the
-discovered server version satisfies the 0.5 realtime-projection baseline.
-Older servers are reported as unsupported rather than receiving the former
-ConnectRPC bootstrap plus protocol-v1 live feed. An `unsupported_protocol`
-error is terminal for the current bus and does not enter the reconnect loop.
+`chatto.core.evt.v1.Event` contains durable EVT facts.
+`chatto.core.pubsub.v1.PubSubEvent` contains a restricted set of NATS Core
+pubsub events. Client-facing variants reference the public payload messages
+directly. Private controls, such as session termination, keep private payloads.
+`chatto.realtime.v1.RealtimeEvent` is the authorized public event shape for
+both sources. It contains common metadata, one public payload variant, and an
+optional opaque resume cursor. It does not contain resource state.
 
-The browser keeps the event bus, projection, readiness phase, and opaque cursor
-for every authenticated server in memory for the tab session. Transport is
-separate: the URL-active server is `live`, inactive servers are normally
-`dormant`, and one inactive server at a time may be `polling`. A poll opens the
-same `/api/realtime` stream with that projection's cursor and closes as soon as
-`caught_up` arrives. Initial inactive hydration runs immediately; later polls
-run about once a minute with jitter and a 30-second client timeout.
+A public event has a stable event ID, source time, visible actor ID, and one
+event variant. Variants cover messages, reactions, pins, assets, rooms,
+membership, threads, users, calls, and public invalidations. Typing and
+presence changes use the same public union but have no resume cursor. Session
+termination uses a `close` frame instead of an event.
 
-Switching servers closes the previous persistent socket without discarding its
-state and promotes the selected server to the sole persistent connection.
+`ViewerPresencePreferenceChanged` is delivered only to the account itself and
+requests a private preference read. This transient signal has no cursor and is
+not stored in EVT. Other viewers receive no frame for it. Public presence
+transitions come from the effective-status hub. Invisible
+heartbeats and expiry do not produce repeated Offline transitions. Typing is
+checked against the private choice at publication and delivery. At delivery,
+each process reads the sender's choice once per typing event, and only when it
+has a local member of the room other than the sender. The hub does not hold its
+lock during this read.
 
-The application-root `ServerRuntimeCoordinator` owns authenticated-server
-transport reconciliation before notification synchronization and routed
-content. It remains mounted on public and login routes, seeds the origin viewer
-before its first reconciliation, and reacts to restored sessions and late
-compatibility discovery. Consequently, a cold welcome-screen load hydrates
-inactive registered servers without selecting one or mounting chat-only
-presence, profile-cache, prompt, or notice coordination.
-Each registration carries its server store's stable projection reducer; the
-event-bus manager installs that reducer before opening a transport, so an
-initial reset or viewer snapshot cannot arrive before its canonical owner.
+Common metadata and the cursor are outside the event `oneof`. A client can
+ignore a new event variant and still retain its cursor after it accepts the
+complete frame.
 
-The frontend keeps an authenticated server's realtime stream connected
-independently of the local presence mode. "Look offline" stops presence
-refreshes and lets the live presence record expire; it does not pause event
-delivery. Realtime connection establishment itself does not touch presence.
+The `RealtimeEvent.event` union and `events.proto` are the public catalogue.
+Public names and compact field numbers do not expose whether the internal
+source is EVT or pubsub. Public payload field numbers are independent from EVT
+and from both envelope unions. A missing union member keeps an internal variant
+out of the public API. A missing public payload field keeps an internal field
+out of the generated client types.
 
-Returning to a tab after at least 30 seconds hidden replaces the active
-transport even when the browser still reports its old WebSocket as open. The
-replacement supplies the retained projection cursor and room set. Browser
-visibility, `pageshow`, online, socket-close, and heartbeat signals do not
-start parallel ConnectRPC refreshes for canonical projection data. They only
-restore transport liveness; replay or a compacted reset performs convergence.
+After event authorization, an exhaustive typed mapper copies approved durable
+values into a new dedicated public payload. For pubsub, the restricted private
+union already contains the public payload type. The mapper selects the public
+union arm and deep-copies the complete event before caller-specific filtering.
+It adds trusted decrypted values to public-only `_plaintext` fields for durable
+events. Public events do not
+expose raw EVT bytes, ciphertext, nonces, storage pointers, private moderation
+data, subjects, stream identities, or sequence numbers.
 
-## Compacted projection prefix
+Event authorization must make every delivered field safe for that viewer. A
+future field with narrower visibility needs an explicit viewer-aware mapping
+rule or a separate authorized shape.
 
-A subscription without a usable cursor emits one ordered stream of
-idempotent operations:
+Message mentions contain one entry per direct user, role, here, or all target.
+The mapper folds stored recipient rows into these targets and sets
+`includes_viewer` from the stored decision. It does not resolve recipients
+from current membership or presence during replay. EVT mention rows stay
+unchanged.
 
-- `reset`;
-- current public server profile, authenticated server presentation/runtime
-  state, and authenticated viewer state;
-- every public server directory user;
-- lightweight state for every room visible to the viewer and the complete
-  visible room-group layout; DM participant references remain eager;
-- complete channel membership and the latest 50 renderable timeline events for
-  retained DMs. For a retained channel room, it includes all roots with
-  `message.read`, or only related roots with `message.read-interactions`;
-- the newest finite Notifications 2.0 occurrences, exact total and Important
-  unread-occurrence counts, and complete per-room counterparts;
-- every active call visible to the viewer; and
-- a complete latest-value presence map for the projected user directory.
+Public asset processing and deletion events include the owning room and
+message IDs. The mapper uses the same retained ownership lookup as event
+authorization, including deleted derivatives. Events without a message target
+are omitted. The frontend uses these IDs to read each affected message once
+and update its loaded timeline, file, and pin rows.
 
-The snapshot builder uses the same ConnectRPC assemblers as public reads. It
-decrypts PII only at the authenticated response boundary and resolves messages
-through current deletion and key-shredding projections. Deleted or
-crypto-erased bodies therefore appear only as normal tombstones. Requested
-timeline windows are assembled concurrently with bounded concurrency.
-Never-viewed room bodies are not decrypted during bootstrap.
+An authorized message-post event carries `body_plaintext` for immediate
+display. EVT does not store this field. The frontend inserts a temporary
+timeline row from the event ID, actor, time, reply references, and plaintext
+body. Values that belong only to the complete message resource start empty.
+These values include attachments, link previews, reactions, pin state, thread
+counts, thread participants, and the timeline cursor. The server-scoped
+[`TimelineSync`](../../packages/chatto-client/src/server/timelineSync.ts)
+keeps the loaded timelines, files, and pins current. Its
+[`MessageReconciler`](../../packages/chatto-client/src/server/messageReconciler.ts)
+collects affected message IDs for 10 milliseconds, then reads at most 100 IDs
+per room with `BatchGetMessages`. It uses the latest received event cursor as
+the minimum read boundary. Opaque cursor strings are never sorted.
 
-The projection's room set is exhaustive rather than message-read-filtered. It
-includes joined DMs that do not yet contain a message. Each DM summary says
-whether it has root-message history. DM membership authorizes the read. The
-bundled client retains empty DMs for routing and authorization but omits them
-from the sidebar and quick switcher.
-The first `room_activity` operation promotes the room into navigation, while an
-absent history field from an older server preserves the previous visible
-fallback. This lets a `StartDM` response navigate immediately without exposing
-an unsolicited empty conversation to another participant.
+Each result supplies the same authoritative message to room timelines, open
+threads, Files, and pins. Loaded thread roots and echo rows join the same
+batch. Related IDs first found in a response use a follow-up batch. Closed
+threads do not need a mounted timeline for their files to update. Text-only
+posts leave file rows unchanged. File and pin updates preserve loaded pages;
+they do not restart the lists. Initial loads, pagination, system-event rows,
+and snapshot recovery still use their collection APIs. Message updates do not
+replace pagination cursors or imply that a gap in a loaded window is complete.
+After a successful thread-read acknowledgement, the root message also uses
+this queue. Acknowledgements that arrive during an active read can require a
+follow-up batch; they do not refresh the timeline window.
 
-The frontend applies this prefix and every later event through the same
-`ServerProjectionStore` reducer. Server profile, MOTD, and runtime capability
-changes replace canonical projection state instead of causing a ConnectRPC
-refresh. Canonical timeline pages evict rows beyond their newest 50. Heavier
-message stores are created lazily, and selecting a cold room sends
-`hydrate_room`. The response atomically replaces its full room membership and
-current timeline through the normal projection reducer; it is not a ConnectRPC
-bootstrap.
+The temporary row uses the connection-scoped user store to resolve its author.
+If that store has no profile, the row keeps
+its body visible and shows a neutral avatar and a name skeleton. A failed
+message read fails reconciliation. An omitted message is removed or tombstoned
+through the existing message-deletion rules. Neither case marks the account
+as deleted. The shared response replaces a temporary row only if no newer row
+change occurred during the read. Account deletion clears
+copied author data and the loading state. Deletion fences also apply to late
+responses and cached-author fallback.
 
-Timeline replacements carry an opaque cursor for every retained row, and later
-row upserts carry that row's cursor. The reducer can therefore advance its
-pagination boundary using only the projection stream. Each timeline cursor is
-encrypted, authenticated, and bound to its viewer plus exact room or
-room/thread-root resource, so it cannot be reused as another timeline's
-boundary.
+Message command responses and shared message reads use the same user store as
+room directories and the realtime projection. They fetch only missing users and share concurrent reads
+for the same user. A profile-change event invalidates that user's summary;
+account deletion, projection reset, and store disposal fence pending cache
+loads. A missing result from a shared read at a different cursor is retried at
+the caller's cursor. Each user request contains at most 100 IDs.
 
-On `reset`, the frontend immediately clears content-bearing projection state
-and its derived mirrors, including directory profiles, notifications, calls,
-preferences, and authenticated runtime settings. It retains the last confirmed
-viewer authorization while the replacement prefix hydrates. Mounted admin
-queries refetch without discarding their rendered data, so dense tables keep
-their geometry. A replacement viewer with a different identity or fewer grants
-immediately purges those queries before the management gate removes
-inaccessible content.
+## Exact snapshot and targeted resource reads
 
-Changing the route selects retained state immediately after a room's first
-hydration. A cold route briefly renders its timeline loading state while the
-same WebSocket materialises it. DM labels resolve eager participant references,
-while selected channel-member lists resolve hydrated membership through the
-already-warm user projection. Server chrome and gutter entries likewise select
-projected branding, viewer capabilities, notification preferences, and unread
-state instead of independently fetching server/viewer/room snapshots.
+`ServerContentView` supplies one exact EVT boundary `E`. The server captures
+the complete visible room directory, room-group layout, active calls, public
+server profile, and users that these resources reference while the view is at
+that boundary. User captures contain encrypted PII, avatar references,
+preferences, and roles from the same generation. The server releases the read
+barrier before it resolves data-encryption keys, assembles user resources,
+encodes protobuf messages, or writes to the WebSocket. Slow key storage or a
+KMS cannot stop content-view event application. The server resolves the keys
+for at most 16 referenced users at the same time.
 
-The room Files sidebar remains a separate, server-scoped lazy cache rather than
-part of the compacted realtime prefix. Each room starts with an empty cache and
-performs its attachment-list read only when Files is first opened. Later
-attachment-relevant timeline message upserts reconcile attachment rows in
-hydrated caches. Updates racing the first read are queued and applied to its
-result, while updates racing pagination fence the stale page response.
-Projection-only timeline-row removals do not remove the underlying message's
-files. Reset and room-access loss clear the cache with the other
-content-bearing mirrors; a reset rehydrates it when Files remains visible.
+One atomic `snapshot` frame contains these canonical `chatto.api.v1` resource
+shapes:
 
-Projection readiness distinguishes cold data from transport freshness. Known
-rooms in `ready` or `stale` projections render immediately, including after a
-server switch. Absence in a stale projection is not authoritative until the
-activation catch-up reaches `caught_up`. Loading placeholders remain for a cold
-projection, a room's first timeline hydration, and separately lazy history,
-threads, previews, and media.
+| Resource       | Protobuf value                 | Client meaning                                                     |
+| -------------- | ------------------------------ | ------------------------------------------------------------------ |
+| Server profile | `ServerPublicProfile`          | Public server profile at `E`                                       |
+| Rooms          | Repeated `RoomWithViewerState` | Complete visible room directory at `E`                             |
+| Room groups    | Repeated `RoomGroup`           | Complete visible room-group layout at `E`                          |
+| Users          | Repeated `DirectoryMember`     | Only the viewer and users referenced by visible snapshot resources |
+| Active calls   | Repeated `ActiveCall`          | Complete visible active-call state at `E`                          |
 
-## Resume and live handoff
+The snapshot does not contain the complete user directory. It also excludes
+message and thread timelines, search results, files, pins, and other large or
+paginated resources. The client reads those resources through ConnectRPC when
+it needs them.
 
-The sealed cursor contains an EVT stream incarnation, global sequence, and
-viewer binding. XChaCha20-Poly1305 protects it with a purpose-separated key
-derived from `core.secret_key`; random nonces prevent equal payloads producing
-equal tokens. NATS and JetStream coordinates are never public API facts.
+The room family includes joined DMs that do not yet contain a message. Each DM
+summary says whether it has root-message history. Current `message.read`
+authority protects this message-derived value. The bundled client retains an
+empty DM for routing but omits it from navigation until it contains a root
+message.
 
-Tampering, cross-user reuse, secret rotation, or foreign stream incarnation
-selects a compacted reset. Every cursor also carries a sealed issue time and
-expires after 24 hours; expiry selects the same safe reset, limiting captured
-cursor reuse while still allowing ordinary reconnect gaps.
+Notifications, presence, read markers, account-security state, and process
+runtime configuration do not use the EVT boundary owned by
+`ServerContentView`. After every `caught_up`, the bundled frontend reads its
+required auxiliary state through ConnectRPC before it saves the cursor. These
+reads do not redefine the EVT snapshot boundary.
 
-The browser retains a cursor only with its corresponding in-memory projection. Socket
-reconnects can resume; page reloads and recreated stores omit it and receive a
-new compacted prefix. A tab waking after more than 24 hours still presents its
-expired cursor, and the server responds with the same compacted reset used for
-any other unusable cursor. The client clears and rebuilds the retained
-projection through normal operations, then marks it ready only at `caught_up`.
+After a durable event, a targeted ConnectRPC request can set
+`Chatto-Realtime-Minimum-Cursor` to that event's resume cursor. The common API
+interceptor validates the viewer-bound token and waits until the serving
+replica includes at least that content boundary. The handler then returns its
+normal canonical response. The wait targets exactly the requested EVT sequence
+in `ServerContentView`, not the current tails of all projectors. The view
+consumes every `evt.>` sequence, including facts that do not change its resources.
+A lagging replica waits for at most 10 seconds or the caller's earlier deadline.
+A timeout returns `DEADLINE_EXCEEDED` before the handler runs. This is a lower
+bound, not a historical read, and does not cover asynchronous effects.
+
+DM threads use the same semantic realtime events and ConnectRPC thread
+resources as channel threads. The stream includes DM thread replies, echoes,
+root-summary changes, and viewer-state changes without a separate protocol
+capability.
+
+Room and thread timelines are not unconditional bootstrap families. The
+frontend reloads each mounted timeline at `E` through `RoomService` or
+`ThreadService`. A read caused by a later durable event uses that event's cursor
+as its minimum boundary. Files and pins retain independent paginated reads
+for their collection membership. Changes to their message content use the
+shared message queue, whose completion is part of cursor reconciliation.
+Search and other lazy data retain their own reads. Canonical events update
+resources that the client already uses; they do not open lazy collections.
+
+The bundled frontend gives each cursor-bounded ConnectRPC call a 10-second
+deadline. A timeout fails reconciliation and closes the socket without cursor
+advance. A new resource reset also starts a new local projection generation.
+Late bootstrap, user, resource, and timeline responses from an older generation
+cannot change the newer projection.
+
+## Bounded resume
+
+The cursor uses the shared `publiccursor` authenticated-encryption helper.
+Its encrypted payload is a 33-byte binary record: a version byte, an 8-byte EVT
+sequence, an 8-byte issue time, and a 16-byte SHA-256 prefix of the opaque
+stream incarnation. Integers use big-endian order. The version fixes the
+15-minute lifetime, so no separate expiry field is needed. The sealed token
+is 99 base64url characters. Its encoding is not a public contract.
+The purpose and viewer/scope form the authenticated
+context. The token expires after 15 minutes. No claim or broker coordinate is
+public. Opening the token recovers its sequence directly, without a search.
+The 10,000-sequence replay cap does not limit a valid RPC minimum cursor.
+
+Snapshot and resume use this handoff:
+
+1. Subscribe the connection to the process-wide live hub.
+2. Validate the optional cursor and capture a stable EVT boundary `E`.
+3. Send either an exact snapshot at `E` or authorized durable events through
+   `E`.
+4. Apply current authorization and map each replayed canonical event to the
+   public union.
+5. Send `caught_up(E)`, discard buffered durable duplicates through `E`, and
+   continue with live delivery.
+
+The direct-read path creates no JetStream consumer. It scans at most 10,000 EVT
+sequences and emits at most 2,000 durable events. The complete catch-up has a
+30-second deadline. These are independent safety caps. The sequence cap bounds
+work even when most events are not visible to the viewer. The emitted-event cap
+bounds reducer and transport fanout after authorization. The time limit bounds
+the complete operation. The current values are conservative defaults, not
+capacity claims. Production measurements can change them without changing the
+protocol or cursor shape.
+
+A missing, invalid, expired, foreign-stream, oversized, or
+authorization-unsafe cursor selects the requested fallback. A `SNAPSHOT`
+client receives a new current-state snapshot. A `LIVE_ONLY` client starts at
+`E` and receives no old events. The
+server never sends a partial replay and then silently skips to live delivery.
+The `caught_up.recovery` field reports `RESUMED`, `SNAPSHOT`, or `LIVE_ONLY`.
+A valid zero-event replay reports `RESUMED`. Outbound events and heartbeats
+use `cursor`; only the subscribe request uses `resume_cursor`.
+
+Incremental replay and fallback share one process-local admission guard. Each
+replica admits at most eight catch-ups at once and one at a time for each user.
+Stale-cursor replay has a per-user burst of three and restores one token every
+20 seconds. Cursorless and current-boundary catch-ups use the general burst of
+20 and restore one token each second. Metrics expose active, started,
+timed-out, and rejected catch-ups.
+
+## Authorization and projection readiness
+
+Privileged-mode changes keep the mounted client state and resume cursor. The
+client reconnects and reads current viewer, room, and room-group resources
+before it marks catch-up complete. The server cancels authorized work at the session's privilege
+deadline and sends a reconnecting `PRIVILEGED_MODE_EXPIRED` close. It does not
+write a live event after that deadline. The periodic credential check sends
+the same close when another connection of the session ends privileged mode. The client then reads effective
+permissions and rooms with privileged mode inactive. See
+[ADR-096](../adr/ADR-096-session-scoped-privileged-mode.md) and
+[ADR-105](../adr/ADR-105-privileged-mode-gates-owner-override.md).
 
 For a valid short gap, the handler subscribes to the process-wide live hub,
 captures an EVT cutoff, waits until `ServerContentView` reaches that cutoff
 before it reads membership, applicable message-read permissions, interaction
 relationships, or compacted state, and performs bounded JetStream point reads
-for the sequences after the cursor. It
-does not create a JetStream consumer. Each
+for the sequences after the cursor. It does not create a JetStream consumer. Each
 deliverable room, asset, or user fact uses that same content-view readiness
-boundary and is converted to current public resource operations. The handler
+boundary and is converted to a fresh authorized public event. The handler
 sends `caught_up` at the cutoff, discards buffered live duplicates through
 that sequence, and continues with the hub stream.
 
-The connection retains only a set of hydrated room IDs. Projection mapping
-omits room-timeline assembly for every other room, avoiding message-body
-decryption and transfer. Recognized durable facts that have no remaining
-operation are still emitted as empty projection envelopes with their sealed
-cursor, so one global resume position can advance without making unhydrated
-timeline history part of client state. On reconnect the client resends retained
-IDs; a compacted reset includes only those room windows.
+Message and asset events require room membership. A viewer also needs
+`message.read`, or `message.read-interactions` with a relationship to the
+canonical thread root. This rule applies to channel rooms and DMs. Typing
+follows the same message-read boundary.
 
-When Search is enabled, message edits and retractions in an unretained room
-reuse the content-free `server_state_upsert` operation as a search refresh fence.
-This lets new browsers refetch transient hydrated search plaintext without
-materialising room timelines, while older projection-v1 clients safely reapply
-the familiar state and advance their cursor.
+Room visibility and administrative membership facts update the process-wide
+visibility cache. Its stable admission boundary includes room creation,
+deletion, Universal changes, joins, leaves, member additions, member removals,
+suspensions and lifted suspensions. Facts for a room that a caller never saw are suppressed.
 
-Effective membership and channel-room message-read permission changes are
-authoritative timeline boundaries. DM membership is the complete DM read
-boundary. An interaction-scoped timeline contains only related roots, and each
-durable message-derived operation is authorized against its canonical thread
-root. A direct-mention post waits for the Threads projection before delivery,
-so the source operation can establish and use the relationship in order.
+RBAC facts use normal public events in both live delivery and replay. Role
+creation, metadata changes, and ordering changes refresh role data without a
+full reload. Role catalogue, individual role, and role-member reads wait for
+the committed RBAC boundary before reading their local projection. Thus a
+follow-up read can use a different replica from the realtime connection.
+Assignment and removal events name the user and role so member
+lists can update. Role permission events name only the role; direct user
+permission events go only to that viewer and contain no private decisions or
+scope IDs. Bots also receive a viewer permission event for changes to their
+owner's direct decisions or assignments. Role permission changes and deletion
+conservatively notify bots because deleted roles no longer retain their former
+owner assignments. Cosmetic changes do not reset bots. The client checks
+effective authority when its own assignments, a
+retained role's permissions, the `everyone` role, or its direct permissions
+change. Cursor-bounded resource reads refresh authority in place for every
+viewer. Active snapshot queries reauthorize their own scopes; inactive private
+snapshots are discarded. The page remains visible and interactive during
+the check. Denied or failed reads clear the affected resource, not the server
+projection. Permission events do not clear the resume cursor or request a new
+WebSocket snapshot.
+A replay can
+send a viewer's own leave, removal, or suspension fact even when current membership
+is false. This closing fact removes state that the client could have retained.
+Effective membership and message-read permission changes are authorization
+boundaries for channel rooms and DMs. An interaction-scoped timeline contains
+only related roots. Each message-derived event is authorized against its
+canonical thread root. A direct-mention post waits for the Threads projection
+before delivery, so that post can establish and use the relationship in order.
 
-Reactions, pins, and asset lifecycle facts also wait for the Threads projection
-at their source message. This prevents an authorized event from being omitted
-when the relationship projection has processing delay. When a viewer gains
-room access through a join, Universal membership, or unarchive, live mapping
-pairs the current room and any retained timeline with authoritative active-call
-and notification replacements. Newly visible calls therefore appear without a
-compacted reset or page reload.
+A durable mapping or resource-reconciliation failure closes the connection
+before the cursor advances. Reconnect retries the fact or uses a safe fallback.
+Unknown public event variants are additive and can be ignored while the
+transport cursor advances.
 
-When a Universal room stops granting membership, live mapping pairs its
-current room state with an empty replacement for any retained timeline plus
-the same viewer-sensitive replacements; loss of room visibility uses
-`room_remove`, which has the same eviction effect. The browser scrubs
-canonical rows, mounted room stores, open thread stores, optimistic state,
-call and notification mirrors, and in-flight reads as soon as projected
-membership becomes false. It also disconnects local call media for that room
-without issuing a redundant leave command. The privacy fence stays closed.
-
-It opens only after an explicit positive membership operation arrives, so
-delayed pagination, previews, read-your-writes responses, and timeline
-replacements cannot restore plaintext.
-
-The browser keeps only the non-plaintext retained-room intent. If membership
-later returns, the server rematerialises the current window only for that
-retained room; never-requested rooms remain lazy. A disconnected client whose
-gap contains an authorization-sensitive revocation receives a compacted reset
-instead of incremental replay.
-
-The browser advertises a room as retained only after applying its timeline
-replacement. Desired rooms with lost or unavailable hydration responses remain
-pending and are requested again on the next socket. The browser sends one lazy
-hydration at a time; a non-fatal capacity or rate rejection identifies the room
-and supplies a retry delay, after which the browser resends it on the same
-socket. Both client and server cap retention at 64 room IDs, and the server
-ignores duplicate hydration work.
-
-At the bound, the browser evicts its least-recent inactive timeline and replaces
-the socket before materialising the newly selected room.
-
-Post-catch-up room hydration shares the process-wide catch-up semaphore and is
-serialized per authenticated user across all of that user's sockets. Its token
-bucket permits a burst of 20 hydrations and restores one token per second. A
-compacted reset emits frames incrementally and materialises at most 64 retained
-windows (3,200 recent rows), bounding decryption and transient response memory.
-
-Every subscription emits one finite latest-value reconciliation before
-`caught_up`. It replaces the viewer resource; the complete followed-thread
-viewer-state set, including RUNTIME_STATE reply-read markers; notification
-occurrences and room counts; and the server directory's current presence. Missing
-followed-thread entries authoritatively clear follow/unread state on retained
-thread roots.
-
-For incremental replay, reconciliation also replaces every visible room's
-latest read and permission state because an EVT gap cannot reconstruct
-RUNTIME_STATE read markers. A compacted reset instead owns those rows in its
-incremental `room_upsert` snapshot frames, so its reconciliation neither
-rebuilds nor repeats the complete room viewer-state collection.
-
-The bounded snapshot phase owns server and directory resources, room summaries,
-membership, permissions, room read state, room groups, active calls, and
-retained timelines.
-It also seeds viewer data and notifications.
-
-Reconciliation authoritatively
-refreshes viewer data, followed-thread/read state, notifications and counts, and
-presence after either replay-plan branch. A reset captures the read-state
-index's bounded room-change fence before snapshot assembly and reconciles only
-room markers changed after that fence. This delta repairs concurrent or lost
-best-effort room-read invalidations with work proportional to concurrent
-changes; catch-up retries if the bounded change history is exceeded.
-
-Room Slow Mode configuration is embedded in every projected room. A
-`RoomSlowModeChangedEvent` produces an incremental `room_upsert`, immediately
-replacing the interval and the viewer's recalculated next-post timestamp.
-Every `MessagePostedEvent` already produces a `room_viewer_state_replace`; for
-the author this carries the new deadline to all sessions. The same fields are
-present in compacted room snapshots and finite reconciliation, so reconnects
-do not require a client-side timer record.
-
-Room Threading Mode is likewise embedded in each projected channel. A
-`RoomThreadingModeChangedEvent` produces an incremental `room_upsert` and, for
-connections retaining that room, a `room_timeline_event_upsert` for the visible
-actor-attributed change. Every session therefore changes its composer and
-reply actions immediately while the room timeline records why the behavior
-changed. Reconnect and finite reconciliation carry the same normalized value;
-historical channels whose creation fact omitted it project as Enabled, while
-DMs remain Unspecified. An unknown future channel value fails closed to
-Disabled on an older binary, while the projection snapshot preserves the raw
-value so a rollback does not erase newer semantics.
-
-Buffered live signals cover mutations concurrent with this reconciliation. Thread
-follow/unfollow and read-marker advances publish the same user-scoped
-viewer-state invalidation; after the finite replacement, a buffered signal is
-mapped to the current root timeline row. The complete followed-thread reader
-returns an error for uncertain membership, room metadata, follow, or read-marker
-state, so catch-up retries rather than converging to a lossy replacement.
-
-Room/thread marker hydration reads the process-wide `ReadStateModel` index,
-which is initialized and maintained by one filtered `RUNTIME_STATE` watcher;
-realtime subscriptions do not create their own marker watchers.
-
-Notification invalidations carry no transition state. A creation hint can name
-one opaque sound candidate. Before it assembles a finite replacement, the
-serving replica waits for its `NOTIFICATIONS` projection to become current and
-revalidates that candidate. It sends only the authoritative replacement and a
-positive `play_notification_sound` instruction when the occurrence is unread,
-allowed by current policy and DND state, currently visible, and present in that
-same replacement. Notification and Push notification modes permit local sound;
-only Push notification creates durable push-delivery work.
-
-A newer read, removal, policy/access change, or lifecycle mutation prevents
-sound. The client deduplicates this one-shot effect by the stable enclosing
-projection-event ID.
-
-This operation set closes the parts of client state that an EVT gap alone
-cannot reconstruct, without a ConnectRPC side read or a second bootstrap
-mechanism. Presence and later room/thread read transitions use buffered live
-signals on this same stream; durable config changes that affect viewer permissions or
-preferences select a compacted reset through their EVT subjects.
-
-Replay scans at most 10,000 EVT sequences and emits at most 2,000 durable
-facts. Missing, malformed, expired, foreign-incarnation, oversized, or
-authorization-sensitive gaps select the compacted prefix instead of failing
-the subscription.
-
-Incremental replay and compacted bootstrap share one process-local catch-up
-admission guard. Each replica admits at most eight catch-ups at once and one at
-a time per authenticated user. Explicit stale-cursor replay attempts use a
-per-user token bucket with a burst of three and one token restored every 20
-seconds. Cursorless compacted bootstraps cannot request historical events, and
-current-boundary reconnects have no gap, so both use a separate general catch-up
-bucket with a burst of 20 and one token restored each second.
-
-If EVT advances between boundary classification and replay planning, the server
-charges a replay token before emitting any replay frames, in addition to its
-general token. Every admitted catch-up
-has a 30-second whole-operation deadline. Capacity rejection sends
-`catch_up_in_progress`, `catch_up_rate_limited`, or `catch_up_server_busy` with
-reconnect guidance; deadline exhaustion sends `catch_up_timeout`. These limits
-bound work and protect availability only. They are deliberately process-local,
-and no correctness or authorization decision depends on them.
-
-The metrics endpoint exposes active and total admitted catch-ups, timeouts, and
-capacity rejections through `chatto_realtime_catch_ups`,
-`chatto_realtime_catch_ups_started_total`,
-`chatto_realtime_catch_ups_timed_out_total`, and
-`chatto_realtime_catch_ups_rejected_total`.
-
-Reaction facts produce a timeline-event upsert containing the current
-aggregate reaction state and a `reaction_change` describing the exact actor,
-emoji, and add/remove transition. Message edits, retractions, and reactions
-hydrate the canonical current message row rather than exposing internal EVT.
-When a thread reply has a visible channel echo, reaction facts upsert both the
-canonical reply and its echo row. A direct retraction that disables only the
-echo emits `room_timeline_event_remove`; ordinary deleted messages remain
-renderable tombstone upserts.
-
-Pinned-message facts use the existing `server_state_upsert` operation with an
-additive `pinned_message_change` containing the action, room ID, and canonical
-message event ID. Retractions that remove a projected pin emit the same
-idempotent deletion as explicit unpins so clients converge even without
-retaining the room timeline. Retained clients refresh the room's canonical pin
-page in event order. Older protocol-2 clients ignore the unknown nested field
-while continuing to process the known top-level operation.
-
-RBAC facts are fanned through the shared hub. The mapper normally responds with
-a reconnecting `projection_reset_required` close so the next subscription
-starts from current authorization and removes channel-room message state after
-a `message.read` loss. A `message.read` decision does not remove DM state from
-a participant. An effective owner's self-authored RBAC mutation cannot change
-that owner's authorization. A human viewer's own direct permission mutation
-targeting a bot also cannot change that viewer's authorization. In both cases,
-the writer's connection receives an empty projection envelope and advances its
-cursor without rebuilding the page. Other viewers, including a target bot,
-still receive the reset.
+An EVT fact with an unknown aggregate namespace requires a reset because the
+replica cannot determine its effect on snapshot state. A user fact also
+requires a reset when its subject aggregate ID and payload user ID do not
+match. Live delivery closes the connection, and replay selects the requested
+safe fallback. Neither path advances the cursor past the fact.
 
 ## Process-wide live ingress
 
 `MyEventsHub` owns one NATS Core subscription to `live.sync.>` and one to
 `live.evt.>` per Chatto process. It classifies subjects before decoding, waits
 for `ServerContentView` once for content facts, and fans immutable decoded
-events into count- and byte-bounded session queues. Sessions for one user share room-visibility state.
+events into count- and byte-bounded session queues. Sessions of one user with
+the same privileged-mode state share room-visibility state. The hub makes each
+membership, read, and visibility decision with that fixed state (ADR-105).
 There are no per-client NATS or JetStream consumers.
 
-Transient `live.sync.>` payloads use `chatto.core.live.v1.LiveEvent`. Durable
-`live.evt.>` payloads use `chatto.core.evt.v1.Event`. The hub maps both internal
-packages to the separate public `chatto.realtime.v1` protocol.
+Historical message-post facts remain in EVT and reach the internal
+`live.evt.>` feed. The hub and resume replay omit them from public live
+delivery. Clients load these messages through normal timeline reads.
 
-A NATS connection continuity gap quarantines the hub and closes every current
-session, even when the client reconnects quickly to another cluster member.
-The Chatto replica remains unready after transport reconnection until its
-JetStream resources are accessible, its volatile `MEMORY_CACHE` bucket has
-been recreated when necessary, all registered projections are current, and the
-read-state and presence watchers have completed fresh snapshots. The hub then
-admits a fresh generation; clients reconnect with their retained cursor and
-recover through normal replay or compacted reset.
+`live.sync.>` messages use `chatto.core.pubsub.v1.PubSubEvent`. Durable
+`live.evt.>` messages use `chatto.core.evt.v1.Event`. The hub decodes each
+subject root with its matching envelope. Publishers derive the NATS subject
+from a typed user or room scope. Consumers verify that the subject and payload
+have the same scope before authorization. Pubsub events have no replay
+contract. Durable facts continue through `live.evt.>`, and catch-up resource
+reads restore current latest-value state.
 
-Directory metadata facts for visible nonmember rooms are additionally fanned
-to sessions. The hub maintains a per-user cache of
-currently authorized directory rooms: facts for a room never seen by that user
-are suppressed, while loss of visibility emits removal only when the room was
-previously visible.
-Directory visibility reads use bounded concurrency outside the hub mutex and
-hydrate only room existence, archive state, and visibility permissions.
-Administrative membership facts replace the complete current member-reference
-list for existing viewers.
+A NATS continuity gap or projection-readiness failure quarantines the hub and
+closes current sessions. The replica admits a new hub generation only after
+NATS resources, projections, and volatile watchers are current. A slow session
+that exceeds its queue count or byte limit closes independently.
+
+Known durable room-group, room-layout, and public server-configuration facts
+map to dedicated public events. An unknown content-affecting server fact still
+quarantines the hub. Key-shredding changes force sessions to rebuild from
+current authorized state. Role and permission events leave the connection open;
+the client decides when to rebuild its local data. These paths prevent a
+client from continuing with state that the server can no longer validate.
 
 Message and asset facts are delivered only when the viewer is a member. A
-channel-room viewer also needs broad `message.read`, or
+viewer also needs broad `message.read`, or
 `message.read-interactions` with a relationship to the canonical thread root.
-DM membership authorizes DM delivery. The hub and public projection mapper
-both check this boundary.
+The hub and public event mapper both check this boundary.
 
-Message facts do not carry room summaries or room viewer state. Root messages
-carry a content-free `room_activity` operation for room order and first-message
-visibility. Notification counts converge through notification signals and the
-finite resume replacement. Message delivery does not reassemble or retransmit
-room permissions or complete channel membership. Echo tombstone upserts
-distinguish canonical-reply deletion from direct echo removal.
+## Bundled frontend
 
-Typing is transient rather than durable, but it follows the same read boundary.
-The hub and public projection mapper suppress typing events unless the viewer
-is a member. Main-room typing needs broad `message.read`. Thread typing also
-permits `message.read-interactions` with a relationship to that thread.
+Each server has one [`EventBus`](../../packages/chatto-client/src/realtime/eventBus.ts).
+The bus sends every update to the `ServerStateStore` reducer first. Then it sends
+the same update to the listeners, in the order that they subscribed. The store
+reports its privacy and authorization boundaries through
+[Store boundary events](../../packages/chatto-client/src/server/storeEvents.ts).
+The frontend's per-server UI state
+([`serverUi`](../../apps/frontend/src/lib/state/server/serverUi.ts)) and query
+cache ([`cacheRegistry`](../../apps/frontend/src/lib/query/cacheRegistry.ts))
+clear their copies of server data at these events. A semantic
+event, such as a typing or presence change, is the update's `event` field.
+Components subscribe through `useProjectionEvent` or `useTypingEvent`. An error
+in a listener is logged. It does not stop the other
+listeners or the transport, and the update is not delivered again. A reducer
+error closes the transport, and the client connects again, because the projection
+is then not current. A reset still reaches every listener first.
 
-Room-read signals emit a focused room viewer activity replacement and a finite
-notification replacement. The focused operation contains only unread and Slow
-Mode state. It does not contain membership or permission decisions.
-Root-message activity operations advance the affected room even when its
-timeline is not retained. A later viewer activity replacement therefore cannot
-undo DM sorting.
+When this client deletes or changes a message, `ServerStateStore` updates every
+loaded timeline of that room, including closed threads. It does this before the
+realtime event arrives.
 
-A durable projection hydration or mapping failure closes the session
-without advancing its cursor. Reconnect retries that EVT sequence or selects a
-compacted reset, so a later cursor cannot make a dropped mutation permanent.
-Historical message creation for an echo that is hidden in current projection
-state maps to an idempotent timeline removal. Asset processing and deletion
-facts map to authoritative upserts of their owning message and any visible
-channel echo, so replay never advances beyond a durable attachment mutation
-without applying its current render state.
+`ServerStateStore` owns retained `RoomMembersStore` instances for the session.
+Each instance has a reactive owner that lasts until the server store is
+disposed. Room navigation selects an existing store. Public join and leave
+events update its membership. Canonical user reads update the shared profile
+owner directly.
+These updates also apply while the room is not mounted.
+Each join event also starts a profile read at the event cursor, even if no room
+store exists. A retained room records the new member ID and resolves its name
+from the shared user store. It does not start a second profile read. Member-list
+reads at that cursor use the same boundary when they load profiles. An unknown
+typing user starts one shared profile read during a typing burst. Room and
+thread labels can use that profile before member-list loading finishes.
+Each server store keeps one presence map, `ServerStateStore.presence`, for the
+whole server. The store writes it from presence events and user resources,
+also while the server is not on screen. A partial user read without a presence
+value does not change a known value. A complete replacement, such as the
+snapshot, which never carries presence, removes all values until catch-up reads
+the users again. Presence dots and the member list read this map. Catch-up
+refreshes profiles and presence for retained members. A user read that this
+client starts does not replace a presence change that arrived during the read.
+An event during offset pagination restarts
+the membership read with the event's minimum cursor. Recovery resets and room
+access loss clear retained membership. Universal-room eligibility changes require
+a new authoritative read rather than client-side permission calculations.
 
-The browser applies the same fail-closed rule. An undecodable frame or unknown
-projection operation closes the socket, leaves the preceding cursor intact,
-and retries from that position. A projection event is validated in full before
-either reducer mutates state, preventing partial application of an atomic
-event. A completed inactive poll becomes `stale` as soon as its socket closes:
-known resources remain renderable, but absence is not authoritative while the
-transport is dormant.
+[UserStore](../../packages/chatto-client/src/server/users.ts) stores
+public profiles by server, connection scope, and user ID. Directory and timeline
+hydration share reads in batches of at most 100 IDs. Realtime updates supersede
+pending reads; per-user revisions fence list/detail responses. Deletion markers
+prevent old responses from restoring a removed user. Reset rejects pending reads,
+and disposal permanently fences the retired owner. Profile expiry timers have
+the same lifetime. See [ADR-101](../adr/ADR-101-shared-client-user-profiles.md).
+Snapshot user lists contain only referenced users. The client merges them into
+the shared store. At `caught_up`, it requests cached user IDs at that cursor.
+Only an omitted ID from this requested set confirms account removal. A reset
+generation and per-user revisions fence late reads and changes during the check.
+A room's first page and full background load remain separate so
+mention completion can use names early and search while loading continues.
+Room member state retains membership IDs and resolves profiles from the shared
+owner. Complete DM projections pass their member IDs directly to room member
+state. Search results retain IDs too. Pending profiles do not create empty member
+rows; the rows appear when the shared owner receives those profiles. Deleted
+accounts retain a deleted-user row through the shared owner's tombstone. Connected
+rooms do not keep another profile copy. Typing labels prefer that owner when a
+member row also has profile fields. The quick finder
+reads that owner directly without starting profile requests. Server-scoped name
+and avatar views read the same current profiles. The current-user bar also reads
+custom status from this owner for its badge, menu actions, and initial editor
+value. Its viewer snapshot is only a fallback when the profile is not loaded.
+This lets status changes from another session update the bar without a viewer
+reload.
+Three independent presence-filtered scans publish connected members while the
+full directory loads. Each status filter also supplies presence for cached
+profiles to the server's presence map. Per-user change versions prevent these
+previews from replacing newer realtime presence. The full scan owns completion
+and final membership; failed
+or late previews cannot block it or restore state after a reset.
 
-Mounted room stores may retain deliberately paginated history. Thread stores
-are reference-counted by mounted thread panes and disposed after their final
-consumer unmounts, so inactive threads receive no later fanout and are not
-reloaded during reset.
+The per-server store checks permission events before it changes retained role
+assignments. Relevant changes refresh viewer, room, room-group, server-state,
+notification, and active-call resources. Unknown viewer role membership also
+uses this refresh. The existing projection and cursor remain usable. Unrelated
+users' assignments and cosmetic role changes keep the current projection.
 
-Typing, presence transitions, and session termination continue as
-`RealtimeEventEnvelope` frames on the same WebSocket. Mention and new-DM
-attention do not use separate transient hint frames. Notification occurrence
-create, update, and delete signals assemble an authoritative
-`notification_occurrences_replace` that contains occurrences plus exact total
-and Important counts. Human connections and bot API-key connections receive
-this same viewer-scoped replacement. The browser can decorate followed-thread
-rows directly from matching unread occurrences in this replacement.
-A live replacement can carry transition metadata for one-shot presentation
-effects, while replay and finite reconciliation omit it.
+Snapshot queries retain their observers and current data while they cancel
+older reads. TanStack invalidates the server's snapshot queries before it
+refetches active queries, so dependent reads cannot reuse stale snapshots.
+Queries that share a dependency also share its replacement request. Failed
+permission checks remove cached data; inactive snapshots are discarded without
+refetching them. Checks paused while offline hide their cached data and resume
+when the client reconnects. Query invalidation also fences late matrix
+mutations independently of component disposal. Room membership or message-read
+changes clear only the affected plaintext stores and fence their older reads.
+Searches keep their input and refresh their results. Fresh route authorization
+removes pages whose access was revoked. The shell and other pages remain mounted
+and visible. Search and member checks run even when another resource read fails.
+Role changes apply before asynchronous checks, so overlapping checks cannot
+discard an earlier role change.
+Authentication loss and `RESYNC_REQUIRED` still use full privacy cleanup.
 
-The internal signal carries no stream coordinate. Before emitting the
-replacement at that live cursor, the serving replica waits until the
-notification projection is current, preventing a cross-replica invalidation
-from advancing the cursor with stale state. Replacements contain at most 50 exact occurrences plus
-complete aggregate totals and the next list expiry boundary. Clients refresh
-at that boundary and use the separately paginated ConnectRPC read for older
-occurrences. They also quietly reconcile the first page once per minute, which
-bounds count staleness if a best-effort Core NATS invalidation is lost while a
-tab remains connected.
+An active local call stays connected while private data reloads. Fresh room
+permissions then stop only revoked media, or disconnect the call if membership
+or `call.join` access was removed. The server independently enforces LiveKit
+participant permissions, including when the client cannot finish its reload.
+New media actions remain disabled while their permission data is absent.
+Catch-up always
+loads the viewer's own member record so later role checks have current explicit
+assignments, even when no visible room references that viewer.
 
-Badge marker changes use a separate content-free user invalidation. The server
-maps a new or previously inactive marker to an authoritative room viewer
-activity replacement. A later source can advance the same active Badge marker
-without another public invalidation because the visible unread value did not
-change. The public thread projection reports follow and reply-unread state
-only. The Message Read Cursor determines `has_unread_replies`. Clients do not
-receive either internal storage coordinate. A thread Badge rolls up into the
-parent room, and notification orange takes visual priority over the neutral
-room dot.
+Each connection has a private-data generation. The ConnectRPC interceptor
+rejects older responses before API helpers can publish their data. Reset
+handlers run independently; a failed required store cleanup prevents catch-up
+from marking the projection ready. The server route hides private children
+while the projection is unusable.
 
-A reply post, edit, or retraction also emits a
-`thread_viewer_states_replace` for a viewer who follows the affected thread.
-This operation lets a mounted My Threads view refresh its query-backed message
-summary when the source room timeline is not retained.
+Role create/delete completion runs inside the request operation, outside the
+route's mutation observer. The application layout owns page-visit tracking.
+A reset does not end a visit, but navigation does, including leave and return
+to the same URL. A successful obsolete mutation can navigate using submitted
+IDs while its response data stays discarded. Connection or session replacement
+also prevents old navigation. See ADR-062.
 
-Viewer preferences, thread follow/read state, profile changes, server layout,
-and member removal likewise mutate the client only through projection
-operations. Active calls converge through `active_calls_replace` in the
-compacted prefix, after every durable call transition, and when room access
-changes the set visible to the viewer. Call-started and call-ended facts pair
-that replacement with a timeline-event upsert for clients retaining the room,
-so the call state and lifecycle row advance under one projection cursor.
+Notification creation hints carry `created_notification_id`, including during
+Do Not Disturb and for initially read occurrences. Updates and removals omit it.
+The frontend waits for the coalesced notification resource reads, then checks
+the retained unread row and its attention level, local read views, Do Not Disturb status,
+and per-server sound preferences. This wait adds no RPC and does not consume
+cursor-owner failures.
+Only newly created unread Important occurrences can trigger sound; Ambient
+occurrences remain silent. It groups eligible concurrent creations into one
+sound and remembers 256 IDs per server
+subscription. Failed reads, missing rows, reset state, and disposed subscriptions
+do not play a sound. Periodic reconciliation is silent. Web Push keeps its
+server-side policy checks.
 
-Transient frames have no durable cursor. Finite notification-list and
-presence state are reconciled explicitly on every subscription. The
-process-wide PresenceHub retains current presence and fans out later
-transitions.
+The app-icon badge uses Important unread attention across authenticated servers.
+It is an unnumbered flag; the window title shows the Important count. Ambient
+attention contributes to neither. Push payloads carry `attentionLevel` at the
+root and in declarative notification data. The worker sets a flag only for
+explicit `important` attention, then asks visible windows to reconcile current
+state. Ambient, unknown, and legacy unclassified pushes do not set a badge.
+Outgoing push payloads omit numeric app badge values.
 
-A `user_remove` operation purges copied profile fields from room membership,
-timeline includes, notification actors, active-call participants, retained
-message/thread render stores, and the shared profile cache. Historical rows may
-retain the stable user ID, but not a renderable user object.
+The frontend keeps a RAM-only
+[`ReadViewRegistry`](../../apps/frontend/src/lib/state/server/readViews.ts)
+for each server store.
+Mounted thread panes register independently and remove their own registration
+when they unmount. Exact room and thread targets permit concurrent views;
+a room view does not cover its threads. App focus and visibility gate the shared
+attention rule. Notification badges and sound use this rule without changing
+server rows or counts. Presentation counts subtract only loaded unread
+occurrences covered by a view. Each successful thread read also refreshes its
+parent message and followed-thread queries. It refreshes notifications and room
+state when the affected room has unread attention, the state is unknown, or an
+outstanding read can replace it. These recovery reads use the existing refresh
+scheduler without requiring a realtime invalidation.
+This read does not replace the open thread's loaded message window.
 
-Process-wide ingress loss or projection-readiness failure quarantines the hub
-and closes every session. A slow session that exceeds its queue limits is
-closed independently. Both cases reconnect through resume or a compacted reset
-rather than continuing a healthy-looking stream across an unobservable gap.
+The bundled frontend selects `SNAPSHOT`. A cold snapshot resets its server
+projection. A warm replacement keeps the prior room and timeline view while
+it applies the resource families from the new snapshot frame.
+After every `caught_up`, including a successful resume, it replaces the server
+runtime state, viewer, visible rooms, room groups, notifications, and displayed user
+presence with cursor-bounded ConnectRPC results. It replaces mounted timelines
+only after snapshot fallback because durable replay already repairs timeline
+changes. It saves the `caught_up` cursor only after this reconciliation and all
+earlier event-triggered resource reads succeed.
+Event and heartbeat cursors wait for pending reads without starting this
+auxiliary refresh. Thus a replay runs one auxiliary refresh at `caught_up`,
+not one refresh per event.
+If the socket closes during a snapshot, the client has no resume cursor and
+requests a new snapshot.
 
-WebSocket connections use small read/write buffers and share a write-buffer
-pool. When compression is enabled, the server uses Huffman-only DEFLATE and
-compresses frames of at least 1 KiB.
+A warm replacement keeps the normal route visible. Fresh room permissions
+remove access to affected rooms; cursor-bounded timeline reads replace retained
+message windows when they complete. An interrupted replacement leaves the
+prior view visible while the client requests another snapshot. The client
+keeps each projection and its resume cursor in memory only. A page load starts
+without a cursor and requests a snapshot. See
+[ADR-107](../adr/ADR-107-keep-chat-data-out-of-device-storage.md).
+The runtime coordinator starts realtime and notification sync when viewer
+verification succeeds. Room and DM selectors keep retained data displayable
+during warm snapshot hydration and retry. Actions stay gated by verified
+authority. Verified origin authentication also starts browser-session renewal.
+The chat root installs origin-session termination handling from the registry's
+verified viewer, even when the route still has no loaded viewer. When the
+origin rejects its viewer and no loaded data remains, the chat root starts
+origin sign-in and keeps the current page as the return path.
 
-| Endpoint        | Frame schema                                          | Authorization                                                                                                               | Description                                                       |
-| --------------- | ----------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
-| `/api/realtime` | `chatto.realtime.v1.Realtime*` binary protobuf frames | Bearer token in hello or cookie auth; current per-resource and room visibility is applied before public projection mapping. | Protocol 2 server-scoped compacted/resumable projection delivery. |
+`CurrentUserState` owns the complete account and one pending account request for
+each server. Route loading and recovery use that owner. Cookie migration and
+transient retries are request policy, with no separate account cache. The
+registry checks identity changes before it publishes the response. Account
+reset, newer live viewer data, and store disposal reject older responses.
+HTTP commands proceed independently of realtime catch-up. The composer
+does not use WebSocket status to disable input or sending; request errors retain
+the draft through the existing submission path.
+Snapshot catch-up replaces retained rows through the normal timeline read;
+member refreshes publish their complete replacement without a partial-page gap.
+Settings wait for complete account data; the transport coordinator does not
+populate or clear it. See
+[ADR-101](../adr/ADR-101-shared-client-user-profiles.md).
 
-The realtime client projection does not supersede `chatto.api.v1`. Public
-ConnectRPC resources remain the integrations surface for explicit reads,
-pagination, mutations, and read-your-writes responses; realtime protocol 2 is
-an optional ordered convergence feed for clients maintaining local state.
+The projection stores canonical public resources. It does not store
+realtime-specific resource copies. Resource invalidation events collect for
+10 milliseconds before a ConnectRPC read starts. Adjacent events for the same
+family share one read at the latest received cursor. If another event reaches
+the same resource family during a read, the frontend runs one follow-up read
+at the newest event cursor. Both the collection delay and follow-up reads are
+part of cursor reconciliation. Notification invalidations still require an
+authoritative notification-list read because their events carry no replacement
+notification data. Only occurrence-change hints request that list. Badge hints
+request room state, not notifications. A message post requests room state only
+when the room is missing from the retained directory; known DM activity is
+applied locally. The user-scoped post-commit hint reconciles the poster's read
+state and Slow Mode deadline after those updates finish on the server.
+
+A self-authored Badge hint can skip the room read when the room is already
+read and Slow Mode is disabled. A room-read hint can also skip an already-read
+room. These checks use raw server state, not the attention hidden by an active
+view. Unknown state, failed reconciliation, and outstanding reads retain the
+refresh. Other actors' Badge hints always refresh rooms because they can either
+create or remove attention. Posting can clear older notification occurrences;
+their occurrence-change hints still refresh the list. Reconnect reconciliation
+is unchanged and repairs missed transient hints. No resources are added to
+event payloads, and no new external system receives user data.
+The message queue deduplicates pending IDs and serializes batches within each
+room. An event that arrives during a read queues another read for its ID and
+prevents the older result from being applied. Reset, room-access loss, and
+disposal fence outstanding responses. Required author reads are also bounded
+to 100 IDs. Both message and author failures prevent cursor advancement.
+Remaining timeline-window reads retain each distinct pending anchor, direction,
+and minimum cursor. One bounded page cannot replace a read for another anchor.
+Identical pending window reads share one request. Cursor
+advancement waits for active and queued reads, including reads that started
+without a cursor. A failed refresh closes the socket without saving that event
+cursor.
+
+After account deletion, the frontend rejects that user's profile in later
+user-resource responses before it updates local state or notifies other consumers.
+This applies to profile refreshes, DM user reads, and catch-up user batches.
+The deletion record stays in memory until the next exact snapshot resets the
+projection. Reads from an earlier reset generation cannot update that snapshot.
+
+The DM destination `/chat/[serverId]/dm/[userId]` calls `StartDM` after
+navigation. Before it replaces the URL with the canonical room URL, it uses
+`ServerStateStore.ensureRoomAvailable` to refresh a missing room through the
+same resource pipeline and wait for DM participant hydration. This prevents
+the room view from treating a delayed creation event as an unavailable room.
+Route cleanup suppresses late navigation. Store disposal and projection resets
+invalidate pending reads. Empty DMs remain excluded from sidebar navigation.
+
+The browser keeps one in-memory resource view and cursor for each
+authenticated server. Only the active server keeps a persistent socket.
+Inactive servers use bounded periodic catch-up sockets. An inactive server
+without usable data gets a catch-up immediately. This includes a server that
+became inactive before its first catch-up completed. Tab wake and network
+recovery start a new catch-up for each inactive server at once. They discard a
+catch-up that started before the wake and clear its failure status. A page
+reload restores a compatible complete snapshot set and its cursor when
+available. Without that set, it starts without a cursor and performs new
+resource reads.
+
+The frontend keeps its resource view during access-token rotation, cookie-session
+renewal, server switches, network reconnects, and tab wake. It replaces the
+socket and sends the same cursor. Human bearer credentials close at
+access-token expiry. Cookie connections close at the renewal boundary. The
+server revalidates the accepted credential before subscription and once per
+minute.
+
+The browser resets its liveness timer on every server frame. A heartbeat can
+carry a fresh cursor for the last durable sequence that this socket has
+delivered. The client retains it only after earlier reconciliation succeeds. It replaces a
+socket after a heartbeat stall. An undecodable or unknown top-level frame
+causes a reconnect without cursor advancement. WebSocket connections use small
+buffers and a shared write-buffer pool. When compression is enabled, the
+server uses Huffman-only DEFLATE for frames of at least 1 KiB.
+
+## Interface boundary
+
+| Endpoint        | Frame schema                                                                                   | Authorization                                                                                                               | Description                                                                        |
+| --------------- | ---------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `/api/realtime` | One binary `RealtimeSubscribe` message, then `chatto.realtime.v1.RealtimeServerFrame` messages | Bearer credential in `RealtimeSubscribe` or a same-origin cookie; current resource and room visibility apply before mapping | Protocol 4 exact snapshots, authorized public events, and 15-minute bounded resume |
+
+Realtime does not replace `chatto.api.v1`. ConnectRPC remains the public API
+for commands, explicit resource reads, pagination, history, search, and
+read-your-writes responses.
+
+## Browser push notification cleanup
+
+[`PushNotificationSync`](../../apps/frontend/src/lib/components/PushNotificationSync.svelte)
+exists once per authenticated server account. It serializes checks after
+notification-store revisions, focus, visibility, network recovery, and the
+service worker's visible-app refresh message. Unmount and identity/revision
+checks discard stale asynchronous results.
+
+The browser adapter enumerates notifications across service-worker registrations
+before a fresh server read. Optional `serverOrigin` and `recipientId` push data
+scope each occurrence ID to its owner. The notification store keeps at most
+1,024 confirmed local read/delete IDs as a memory-only fast path. Otherwise it
+reads the first server page: explicit read rows can close, but absence proves
+handling only for a complete page or an exact zero unread count. Optimistic
+state and reset placeholders cannot close notifications. Unknown older rows
+remain displayed when the response is partial. Checks with no matching browser
+notifications make no server request. This path adds no persisted state or
+background control push.
+
+Echo post frames resolve body, mentions, and reply attribution from the original
+reply after projection readiness. Canonical edit and reaction events refresh
+loaded echo rows through their original-message links. No extra durable echo
+edit is required.

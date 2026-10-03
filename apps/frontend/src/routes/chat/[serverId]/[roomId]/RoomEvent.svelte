@@ -1,11 +1,12 @@
 <script lang="ts">
-  import type { TimelineEventView } from '$lib/render/timelineEvents';
-  import type { MessagesStore } from '$lib/state/room';
-  import { isMessagePostedEvent } from '$lib/render/timelineEvents';
+  import type { TimelineEventView } from '@chatto/client/timeline/timelineEvents';
+  import type { MessagesStore, RoomMember } from '$lib/state/room';
+  import type { UserAvatarUserView } from '@chatto/client/timeline/users';
+  import { isMessagePostedEvent } from '@chatto/client/timeline/timelineEvents';
   import MessageEvent from './MessageEvent.svelte';
   import SystemEvent from './SystemEvent.svelte';
   import type { OpenThreadHandler } from './threadOpenOptions';
-  import { RoomThreadingMode } from '$lib/roomThreading';
+  import { RoomThreadingMode } from '@chatto/client/util/roomThreading';
 
   let {
     event,
@@ -16,7 +17,7 @@
     onOpenThread,
     activeCallId = null,
     onOpenCall,
-    onOpenProfile,
+    onOpenUser,
     threadingMode = RoomThreadingMode.ENABLED
   }: {
     event: TimelineEventView;
@@ -27,20 +28,13 @@
     onOpenThread?: OpenThreadHandler;
     activeCallId?: string | null;
     onOpenCall?: () => void;
-    onOpenProfile?: (userId: string) => void;
+    onOpenUser?: (user: UserAvatarUserView | RoomMember, anchorRect: DOMRect | null) => void;
     threadingMode?: RoomThreadingMode;
   } = $props();
-
-  // Join/leave events are confusing in DM 1:1 conversations. Post-PR(b) we
-  // can no longer derive "is this a DM room" from a spaceId — the backend
-  // routes both kinds through the same surface. We always render join/leave
-  // for now; a future iteration can teach Room.svelte to pass `isDM` down
-  // and we can revive the suppression here.
-  const isDMJoinLeave = $derived(false);
 </script>
 
-{#if !event?.event || isDMJoinLeave}
-  <!-- Skip unknown event types, stale virtualizer items, and join/leave events in DM rooms -->
+{#if !event?.event}
+  <!-- Skip unknown event types and stale virtualizer items -->
 {:else if isMessagePostedEvent(event.event)}
   <MessageEvent
     {event}
@@ -49,7 +43,7 @@
     {permalinkThreadRootEventId}
     {messageStore}
     {onOpenThread}
-    {onOpenProfile}
+    {onOpenUser}
     {threadingMode}
   />
 {:else}

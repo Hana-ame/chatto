@@ -18,6 +18,7 @@ import (
 // projections. Its registration slice is the single source used by runtime
 // lifecycle, readiness, and operator diagnostics.
 type coreProjections struct {
+	botWebhooks   events.ProjectionHandle[*botWebhookProjection]
 	registrations []projectionRegistration
 	snapshotJobs  []projectionSnapshotJob
 	contentView   *ServerContentView
@@ -67,7 +68,10 @@ func registerProjectionHandle[P events.SubjectProjection](
 	identityResolver events.StreamIdentityResolver,
 	estimate func() (int64, int64, []ProjectionAdminMetric),
 	snapshotPolicy projectionSnapshotPolicy,
-) events.ProjectionHandle[P] {
+) (events.ProjectionHandle[P], error) {
+	if err := handle.Projector().ConfigureConsumerIdentity(key, name); err != nil {
+		return events.ProjectionHandle[P]{}, fmt.Errorf("configure %s consumer identity: %w", key, err)
+	}
 	r.registrations = append(r.registrations, projectionRegistration{
 		key:              key,
 		name:             name,
@@ -78,7 +82,7 @@ func registerProjectionHandle[P events.SubjectProjection](
 		identityResolver: identityResolver,
 		estimate:         estimate,
 	})
-	return handle
+	return handle, nil
 }
 
 func registerProjection[T any, P evtstream.ProjectionPointer[T]](
@@ -111,7 +115,7 @@ func registerProjection[T any, P evtstream.ProjectionPointer[T]](
 		evtstream.IdentityFromInfo,
 		estimate,
 		snapshotPolicy,
-	), nil
+	)
 }
 
 func registerPreparedProjection[T any, P evtstream.PreparedProjectionPointer[T]](
@@ -144,7 +148,7 @@ func registerPreparedProjection[T any, P evtstream.PreparedProjectionPointer[T]]
 		evtstream.IdentityFromInfo,
 		estimate,
 		snapshotPolicy,
-	), nil
+	)
 }
 
 func bindContentProjection[T any, P evtstream.ProjectionPointer[T]](
@@ -170,11 +174,15 @@ func initializeCoreProjections(
 	roomDirectory := NewRoomDirectoryProjection()
 	serverConfig := NewConfigProjection()
 	roomGroupLayout := NewRoomGroupLayoutProjection()
-	roomTimeline := NewRoomTimelineProjection()
+	// The room timeline, thread, and reaction components and the Notification
+	// Decisions projection index the same message IDs. One shared table holds
+	// each ID once for all of them.
+	eventIDs := newEventIDTable()
+	roomTimeline := newRoomTimelineProjection(eventIDs)
 	callState := NewCallStateProjection()
 	assets := NewAssetProjection()
-	threads := NewThreadProjection()
-	reactions := NewReactionProjection()
+	threads := newThreadProjection(eventIDs)
+	reactions := newReactionProjection(eventIDs)
 	users := newUserProjectionWithDEKResolver(infra.dekResolver)
 	userAuth := users.AuthProjection()
 	contentKeys := NewContentKeyProjection()
@@ -202,7 +210,7 @@ func initializeCoreProjections(
 		registrar, contentView, projectionsnapshot.ProjectionServerContentViewKey,
 		"Server Content View",
 		func() (int64, int64, []ProjectionAdminMetric) {
-			return contentView.adminProjectionEstimate(contentComponents...)
+			return contentView.adminProjectionEstimate(eventIDs, contentComponents...)
 		},
 		sharedSnapshots,
 	)
@@ -249,7 +257,9 @@ func initializeCoreProjections(
 		return nil, err
 	}
 
-	notificationDecisions := NewNotificationDecisionProjection()
+	// Notification Decisions indexes the same message IDs as the content view,
+	// so it interns them in the same process-wide table.
+	notificationDecisions := newNotificationDecisionProjection(eventIDs)
 	projections.notificationDecisions, err = registerProjection(
 		registrar, notificationDecisions, projectionsnapshot.ProjectionNotificationDecisionsKey,
 		"Notification Decisions", notificationDecisions.adminProjectionEstimate, sharedSnapshots,
@@ -268,11 +278,14 @@ func initializeCoreProjections(
 		infra.js, notificationProjectionStream, notifications,
 		logger.WithPrefix("core.NotificationsProjector"),
 	)
-	projections.notifications = registerProjectionHandle(
+	projections.notifications, err = registerProjectionHandle(
 		registrar, notificationHandle, notifications, projectionsnapshot.ProjectionNotificationsKey,
 		"Notifications", notificationStreamName,
 		notificationstream.IdentityFromInfo, notifications.adminProjectionEstimate, sharedSnapshots,
 	)
+	if err != nil {
+		return nil, err
+	}
 
 	projections.userAuth, err = registerProjection(
 		registrar, userAuth, "user_auth", "User Auth", userAuth.adminProjectionEstimate, coldReplayOnly,
@@ -307,6 +320,11 @@ func initializeCoreProjections(
 		return nil, err
 	}
 
+	webhooks := newBotWebhookProjection()
+	projections.botWebhooks, err = registerProjection(registrar, webhooks, "bot_webhooks", "Bot Webhooks", webhooks.estimate, coldReplayOnly)
+	if err != nil {
+		return nil, err
+	}
 	projections.registrations = registrar.registrations
 	if err := configureProjectionSnapshots(infra, projections); err != nil {
 		return nil, err

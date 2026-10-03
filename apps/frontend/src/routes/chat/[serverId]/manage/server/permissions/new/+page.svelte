@@ -1,98 +1,67 @@
 <script lang="ts">
+  import { errorMessage } from '$lib/utils/errorMessage';
   import { goto } from '$app/navigation';
+  import { captureMutationCompletion, completeMutation } from '$lib/navigation/mutationCompletion';
   import { resolve } from '$app/paths';
-  import { createMutation, createQuery } from '@tanstack/svelte-query';
-  import { onDestroy } from 'svelte';
   import { serverIdToSegment } from '$lib/navigation';
   import { useServerScope } from '$lib/state/server/scope.svelte';
-  import { createRoleAPI, type CreateRoleInput } from '$lib/api-client/roles';
-  import type { ServerConnection } from '$lib/state/server/serverConnection.svelte';
-  import Panel from '$lib/ui/Panel.svelte';
-  import { PaneContent } from '$lib/ui';
-  import PaneHeader from '$lib/ui/PaneHeader.svelte';
-  import PageTitle from '$lib/ui/PageTitle.svelte';
+  import { createRoleAPI, type CreateRoleInput } from '@chatto/client/api/roles';
+  import { createSessionGuard, type SessionSnapshot } from '$lib/state/server/sessionGuard.svelte';
+  import { Panel, Hint, PaneContent, LoadingFog, PaneHeader, PageTitle } from '$lib/ui';
   import { FormError } from '$lib/ui/form';
   import { RoleForm } from '$lib/components/rbac';
   import { invalidatePermissionTiers } from '$lib/query/adminInvalidation';
   import { adminQueryKeys } from '$lib/query/admin';
-  import { queryClient } from '$lib/query/client';
-  import { registerQueryCacheRemovalListener } from '$lib/query/cacheRegistry';
+  import { createMutation, createQuery } from '$lib/query/client';
   import { m } from '$lib/i18n/messages';
 
   const serverScope = useServerScope();
-  let privacyGeneration = 0;
-  const removeCacheRemovalListener = registerQueryCacheRemovalListener((serverId) => {
-    if (serverId === serverScope.serverId) privacyGeneration += 1;
-  });
-
-  onDestroy(() => {
-    privacyGeneration += 1;
-    removeCacheRemovalListener();
-  });
+  const session = createSessionGuard(serverScope);
 
   let name = $state('');
   let displayName = $state('');
   let description = $state('');
   let pingable = $state(false);
 
-  type CreateRoleVariables = {
-    serverId: string;
-    connection: ServerConnection;
+  type CreateRoleVariables = SessionSnapshot & {
     api: ReturnType<typeof createRoleAPI>;
     input: CreateRoleInput;
-    privacyGeneration: number;
+    canComplete: () => boolean;
   };
 
-  const roleCatalogQuery = createQuery(
-    () => {
-      const serverId = serverScope.serverId;
-      const connection = serverScope.connection;
-      return {
-        queryKey: adminQueryKeys.roleCatalog(serverId, connection),
-        queryFn: ({ signal }) => connection.getAPI(createRoleAPI).listAdminRoles({ signal })
-      };
-    },
-    () => queryClient
-  );
+  const roleCatalogQuery = createQuery(() => {
+    const serverId = serverScope.serverId;
+    const connection = serverScope.connection;
+    return {
+      queryKey: adminQueryKeys.roleCatalog(serverId, connection),
+      queryFn: ({ signal }) => connection.getAPI(createRoleAPI).listAdminRoles({ signal })
+    };
+  });
 
-  function isCurrentSession(
-    variables: CreateRoleVariables | undefined
-  ): variables is CreateRoleVariables {
-    return (
-      variables !== undefined &&
-      serverScope.isCurrent() &&
-      variables.serverId === serverScope.serverId &&
-      variables.connection.queryScope === serverScope.connection.queryScope &&
-      variables.privacyGeneration === privacyGeneration
-    );
-  }
-
-  const createRoleMutation = createMutation(
-    () => ({
-      mutationFn: ({ api, input }: CreateRoleVariables) => api.createRole(input),
-      onSuccess: (createdRole, variables) => {
-        if (!isCurrentSession(variables)) return;
-        invalidatePermissionTiers(variables.serverId, variables.connection);
-        goto(
-          resolve('/chat/[serverId]/manage/server/permissions/[name]', {
-            serverId: serverIdToSegment(variables.serverId),
-            name: createdRole.name
-          })
-        );
-      }
-    }),
-    () => queryClient
-  );
+  const createRoleMutation = createMutation(() => ({
+    mutationFn: (variables: CreateRoleVariables) =>
+      completeMutation(
+        () => variables.api.createRole(variables.input),
+        variables.canComplete,
+        () => {
+          invalidatePermissionTiers(variables.serverId, variables.connection);
+          void goto(
+            resolve('/chat/[serverId]/manage/server/permissions/[name]', {
+              serverId: serverIdToSegment(variables.serverId),
+              name: variables.input.name
+            })
+          );
+        }
+      )
+  }));
 
   function createRole() {
-    const targetServerId = serverScope.serverId;
     const targetName = name.trim();
-    const connection = serverScope.connection;
+    const snapshot = session.snapshot();
     createRoleMutation.mutate({
-      serverId: targetServerId,
-      connection,
-      api: connection.getAPI(createRoleAPI),
-      privacyGeneration,
+      ...snapshot,
+      api: snapshot.connection.getAPI(createRoleAPI),
+      canComplete: captureMutationCompletion(serverScope),
       input: {
         name: targetName,
         displayName: displayName.trim(),
@@ -105,15 +74,13 @@
   const canManageRoles = $derived(roleCatalogQuery.data?.viewerCanManageRoles ?? false);
   const loading = $derived(roleCatalogQuery.isPending);
   const creating = $derived(
-    createRoleMutation.isPending && isCurrentSession(createRoleMutation.variables)
+    createRoleMutation.isPending && session.isCurrent(createRoleMutation.variables)
   );
   const error = $derived(
     roleCatalogQuery.isError
       ? m('admin.permissions.load_instance_failed')
-      : createRoleMutation.isError && isCurrentSession(createRoleMutation.variables)
-        ? createRoleMutation.error instanceof Error
-          ? createRoleMutation.error.message
-          : m('admin.permissions.load_instance_failed')
+      : createRoleMutation.isError && session.isCurrent(createRoleMutation.variables)
+        ? errorMessage(createRoleMutation.error, m('admin.permissions.load_instance_failed'))
         : null
   );
 </script>
@@ -132,17 +99,14 @@
       serverId: serverIdToSegment(serverScope.serverId)
     })}
     backLabel={m('admin.permissions.back_to_permissions')}
-    showMobileNav
   />
 
   <PaneContent>
     <div class="flex flex-col gap-6">
       {#if loading}
-        <div class="text-muted">{m('admin.common.loading')}</div>
+        <LoadingFog class="h-32 w-full" />
       {:else if !canManageRoles}
-        <div class="text-danger">
-          {m('admin.permissions.need_manage_create')}
-        </div>
+        <Hint tone="danger">{m('admin.permissions.need_manage_create')}</Hint>
       {:else}
         {#if error}
           <FormError {error} />

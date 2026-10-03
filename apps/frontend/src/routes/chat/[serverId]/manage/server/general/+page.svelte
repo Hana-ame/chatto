@@ -1,8 +1,6 @@
 <script lang="ts">
   import ServerSettings from '$lib/ServerSettings.svelte';
-  import { PaneContent } from '$lib/ui';
-  import PaneHeader from '$lib/ui/PaneHeader.svelte';
-  import PageTitle from '$lib/ui/PageTitle.svelte';
+  import { PaneContent, PaneHeader, PageTitle } from '$lib/ui';
   import { m } from '$lib/i18n/messages';
 </script>
 
@@ -10,12 +8,10 @@
   title={m('admin.common.server_admin_page_title', { title: m('server_settings.general') })}
 />
 
-<PaneHeader
-  title={m('server_settings.general')}
-  subtitle={m('admin.general.subtitle')}
-  showMobileNav
-/>
+<div class="pane-page">
+  <PaneHeader title={m('server_settings.general')} subtitle={m('admin.general.subtitle')} />
 
-<PaneContent>
-  <ServerSettings />
-</PaneContent>
+  <PaneContent>
+    <ServerSettings />
+  </PaneContent>
+</div>

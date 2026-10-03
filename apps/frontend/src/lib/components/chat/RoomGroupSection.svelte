@@ -3,26 +3,10 @@
 
 A persistent, collapsible section for Chatto sidebars. It provides the shared
 heading, full-width divider, item spacing, and disclosure behaviour used by room
-navigation, member presence groups, and attachment date groups.
+navigation, member presence groups, and attachment date groups. Collection
+transitions belong to the outer conditional block so an empty collapsed group
+can slide out before its rows are removed.
 -->
-<script module lang="ts">
-  import { SvelteMap } from 'svelte/reactivity';
-  import { Codecs, StorageSlot } from '$lib/storage/slot';
-
-  const collapsedByKey = new SvelteMap<string, boolean>();
-
-  function loadCollapsed(key: string, fallback: boolean): boolean {
-    const cached = collapsedByKey.get(key);
-    if (cached !== undefined) return cached;
-    return new StorageSlot(key, fallback, Codecs.boolean).get();
-  }
-
-  function saveCollapsed(key: string, value: boolean): void {
-    collapsedByKey.set(key, value);
-    new StorageSlot(key, value, Codecs.boolean).set(value);
-  }
-</script>
-
 <script lang="ts" generics="T extends { id: string }">
   import type { Snippet } from 'svelte';
   import type { Attachment } from 'svelte/attachments';
@@ -30,13 +14,19 @@ navigation, member presence groups, and attachment date groups.
   import { SHADOW_ITEM_MARKER_PROPERTY_NAME, SHADOW_PLACEHOLDER_ITEM_ID } from 'svelte-dnd-action';
   import { slide } from 'svelte/transition';
   import { COMPACT_MOTION_DURATION_MS, expoOutTransition } from '$lib/ui/motion';
+  import RoomGroupSectionHeader from './RoomGroupSectionHeader.svelte';
+  import { loadCollapsed, saveCollapsed } from './roomGroupCollapse';
 
   interface Props {
     label: string;
     items: T[];
-    item: Snippet<[T]>;
+    item?: Snippet<[T]>;
+    /** Free-form content stays mounted while collapsed so async rendering cannot interrupt expansion. */
+    content?: Snippet;
     /** Optional controls aligned to the end of the section heading. */
     headerActions?: Snippet;
+    /** Optional content below the items, visible only while expanded. */
+    footer?: Snippet;
     /** Optional action that replaces the disclosure icon on hover or focus. */
     leadingOverlay?: Snippet;
     /** Whether to draw the full-width divider preceding this section. */
@@ -62,7 +52,9 @@ navigation, member presence groups, and attachment date groups.
     label,
     items,
     item,
+    content,
     headerActions,
+    footer,
     leadingOverlay,
     separated = false,
     contextMenuTrigger,
@@ -115,66 +107,62 @@ navigation, member presence groups, and attachment date groups.
   {@attach containNestedDragAttachment}
 >
   <div class="px-2 py-1.5">
-    <div
-      class="group/section-header relative flex min-h-8 w-full min-w-0 items-center rounded-md transition-colors hover:text-text"
-      {@attach contextMenuTrigger}
-    >
-      <button
-        type="button"
-        onclick={toggle}
-        aria-expanded={!collapsed}
-        data-testid={testid}
-        class="flex min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md px-1 py-1 text-start text-xs font-semibold tracking-wider text-muted uppercase focus-visible:outline-2 focus-visible:outline-action"
+    <RoomGroupSectionHeader
+      {label}
+      {collapsed}
+      ontoggle={toggle}
+      {headerActions}
+      {leadingOverlay}
+      {contextMenuTrigger}
+      {testid}
+    />
+
+    {#if content}
+      <div
+        class={[
+          'grid transition-[grid-template-rows] duration-180 ease-out motion-reduce:transition-none',
+          collapsed ? 'grid-rows-[0fr]' : 'grid-rows-[1fr]'
+        ]}
+        inert={collapsed}
       >
-        <span class="relative sidebar-icon">
-          <span
-            class={[
-              'iconify icon-[uil--angle-right-b] transition-[transform,opacity]',
-              leadingOverlay
-                ? 'group-focus-within/section-header:opacity-0 group-hover/section-header:opacity-0 [@media(hover:none)]:opacity-0'
-                : '',
-              collapsed ? 'rtl:-scale-x-100' : 'rotate-90'
-            ]}
-            aria-hidden="true"
-            data-testid="room-group-disclosure-icon"
-          ></span>
-        </span>
-        <span class="min-w-0 flex-1 truncate">{label}</span>
-      </button>
-      {#if leadingOverlay}
-        <span class="pointer-events-none absolute start-0.5 top-1 h-6 w-6">
-          {@render leadingOverlay()}
-        </span>
-      {/if}
-      {#if headerActions}
-        <div class="flex shrink-0 items-center gap-0.5">
-          {@render headerActions()}
+        <div class="min-h-0 overflow-hidden">
+          {@render content()}
         </div>
-      {/if}
-    </div>
+      </div>
+    {/if}
 
     {#if visibleItems.length > 0 || (itemsAttachment && !collapsed)}
+      <!-- Update individual classes so the drag attachment keeps its active highlight. -->
       <div
-        class={['flex flex-col gap-0.5', visibleItems.length === 0 ? 'min-h-8' : '']}
+        class="flex flex-col gap-0.5"
+        class:min-h-8={visibleItems.length === 0}
+        class:sidebar-drop-target={!!itemsAttachment}
         data-testid={itemsAttachment ? 'room-group-items-dropzone' : undefined}
         {@attach itemsAttachment}
+        transition:slide={expoOutTransition(COMPACT_MOTION_DURATION_MS)}
       >
         {#if itemsAttachment}
           {#each visibleItems as entry (entry.id)}
             <div
-              animate:flip={{ duration: COMPACT_MOTION_DURATION_MS }}
+              animate:flip={expoOutTransition(COMPACT_MOTION_DURATION_MS)}
+              transition:slide={expoOutTransition(COMPACT_MOTION_DURATION_MS)}
               data-is-dnd-shadow-item-hint={isDndShadowItem(entry) || undefined}
             >
-              {@render item(entry)}
+              {@render item?.(entry)}
             </div>
           {/each}
         {:else}
           {#each visibleItems as entry (entry.id)}
             <div transition:slide={expoOutTransition(COMPACT_MOTION_DURATION_MS)}>
-              {@render item(entry)}
+              {@render item?.(entry)}
             </div>
           {/each}
         {/if}
+      </div>
+    {/if}
+    {#if !collapsed && footer}
+      <div transition:slide={expoOutTransition(COMPACT_MOTION_DURATION_MS)}>
+        {@render footer()}
       </div>
     {/if}
   </div>

@@ -31,10 +31,14 @@ type Client struct {
 	NameValue   string
 	DisplayHost string
 	Redirects   []string
+	// Method selects the library authentication profile. Configured secret clients
+	// use Basic as their default profile and also accept POST credentials.
 	Method      liboidc.AuthMethod
 	Secret      string
 	Source      ClientSource
 	Development bool
+	// AllowWithoutPKCE is an operator exception for configured confidential clients only.
+	AllowWithoutPKCE bool
 }
 
 func (c *Client) GetID() string                     { return c.IDValue }
@@ -45,11 +49,14 @@ func (c *Client) AuthMethod() liboidc.AuthMethod    { return c.Method }
 func (*Client) ResponseTypes() []liboidc.ResponseType {
 	return []liboidc.ResponseType{liboidc.ResponseTypeCode}
 }
-func (*Client) GrantTypes() []liboidc.GrantType      { return []liboidc.GrantType{liboidc.GrantTypeCode} }
-func (*Client) AccessTokenType() op.AccessTokenType  { return op.AccessTokenTypeBearer }
-func (*Client) IDTokenLifetime() time.Duration       { return 5 * time.Minute }
-func (c *Client) DevMode() bool                      { return c.Development }
-func (*Client) IDTokenUserinfoClaimsAssertion() bool { return false }
+func (*Client) GrantTypes() []liboidc.GrantType     { return []liboidc.GrantType{liboidc.GrantTypeCode} }
+func (*Client) AccessTokenType() op.AccessTokenType { return op.AccessTokenTypeBearer }
+func (*Client) IDTokenLifetime() time.Duration      { return 5 * time.Minute }
+func (c *Client) DevMode() bool                     { return c.Development }
+
+// IDTokenUserinfoClaimsAssertion retains authorized profile and email scopes
+// when the library constructs an ID token alongside an access token.
+func (*Client) IDTokenUserinfoClaimsAssertion() bool { return true }
 func (*Client) ClockSkew() time.Duration             { return 0 }
 func (*Client) IsScopeAllowed(string) bool           { return false }
 func (*Client) RestrictAdditionalIdTokenScopes() func([]string) []string {
@@ -79,10 +86,14 @@ func NewResolver(cfg config.Config, cimd *CIMDResolver) *Resolver {
 			method = liboidc.AuthMethodBasic
 		}
 		configured[declared.ID] = &Client{
-			IDValue: declared.ID, NameValue: strings.TrimSpace(declared.Name), DisplayHost: "configured by this Authling operator",
+			IDValue: declared.ID, NameValue: strings.TrimSpace(declared.Name), DisplayHost: "configured by this site’s operator",
 			Redirects: append([]string(nil), declared.RedirectURIs...), Method: method,
-			Secret: declared.Secret, Source: ClientSourceConfigured, Development: development,
+			AllowWithoutPKCE: declared.RequirePKCE != nil && !*declared.RequirePKCE,
+			Secret:           declared.Secret, Source: ClientSourceConfigured, Development: development,
 		}
+	}
+	if !cfg.OIDC.AllowUnregisteredClients {
+		cimd = nil
 	}
 	return &Resolver{configured: configured, cimd: cimd}
 }
@@ -118,3 +129,9 @@ type clientNotFoundError struct{ clientID string }
 
 func (e clientNotFoundError) Error() string { return "OIDC client not found" }
 func (clientNotFoundError) IsNotFound()     {}
+
+// requiresPKCE fails closed for public and CIMD clients, even if constructed
+// without configuration validation. A client secret alone does not opt out.
+func (c *Client) requiresPKCE() bool {
+	return !(c.AllowWithoutPKCE && c.Source == ClientSourceConfigured && c.Method == liboidc.AuthMethodBasic && c.Secret != "")
+}

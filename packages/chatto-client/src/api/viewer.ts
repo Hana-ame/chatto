@@ -1,0 +1,228 @@
+import { PresenceStatus } from '@chatto/api-types/api/v1/presence_pb';
+import {
+  createChattoClient,
+  type ConnectAPIConfig,
+  skipAuthenticationRequired
+} from './connect.js';
+import { ViewerService } from '@chatto/api-types/api/v1/viewer_connect';
+import {
+  TimeFormat,
+  type GetViewerResponse,
+  type PrivilegedModeState,
+  type ServerViewerPermissions,
+  type ViewerCapabilities as APIViewerCapabilities
+} from '@chatto/api-types/api/v1/viewer_pb';
+import { presenceStatusOrOffline } from './enumDefaults.js';
+import type { CustomUserStatus } from './userSummary.js';
+import { timeFormatOrAuto } from './timeFormat.js';
+
+export type CurrentUser = {
+  id: string;
+  login: string;
+  displayName: string;
+  /** Public account identity used by shared name renderers. */
+  isBot?: boolean;
+  deleted?: boolean;
+  avatarUrl?: string | null;
+  bio?: string | null;
+  /** Time zone currently exposed on this user's public profile. */
+  publicTimezone?: string | null;
+  customStatus?: CustomUserStatus | null;
+  presenceStatus: PresenceStatus;
+  hasVerifiedEmail: boolean;
+  hasPassword: boolean;
+  viewerCanDeleteAccount: boolean;
+  lastLoginChange?: string | null;
+  settings?: {
+    timezone?: string | null;
+    timeFormat: TimeFormat;
+    /** Present when the server supports private time-zone preferences. */
+    shareTimezone?: boolean;
+  } | null;
+};
+
+export type ViewerCapabilities = {
+  canViewAdmin: boolean;
+  canStartDMs: boolean;
+  canAdminViewUsers: boolean;
+  canAdminManageAccounts: boolean;
+  canAssignRoles: boolean;
+  canAdminViewRoles: boolean;
+  canAdminManageRoles: boolean;
+  canAdminViewSystem: boolean;
+  canAdminViewAudit: boolean;
+  canManageUserPermissions: boolean;
+  canManageInvites: boolean;
+};
+
+export type ViewerState = ViewerCapabilities & {
+  user: CurrentUser;
+  viewerPermissions: Record<string, boolean>;
+  viewerHasUnreadRooms: boolean;
+  privilegedMode: {
+    available: boolean;
+    active: boolean;
+    expiresAt: string | null;
+  };
+};
+
+export type PrivilegedModeAPI = {
+  activate(): Promise<PrivilegedModeUpdate>;
+  deactivate(): Promise<PrivilegedModeUpdate>;
+  refresh(): Promise<GetViewerResponse>;
+};
+
+export type PrivilegedModeUpdate = {
+  privilegedMode: PrivilegedModeState;
+  capabilities: APIViewerCapabilities;
+  viewerPermissions: ServerViewerPermissions;
+};
+
+export function createPrivilegedModeAPI(config: ConnectAPIConfig): PrivilegedModeAPI {
+  const client = createChattoClient(ViewerService, config);
+  return {
+    async activate() {
+      const response = await client.activatePrivilegedMode({});
+      if (!response.privilegedMode)
+        throw new Error('privileged-mode response did not include state');
+      if (!response.capabilities || !response.viewerPermissions)
+        throw new Error('privileged-mode response did not include effective permissions');
+      return {
+        privilegedMode: response.privilegedMode,
+        capabilities: response.capabilities,
+        viewerPermissions: response.viewerPermissions
+      };
+    },
+    async deactivate() {
+      const response = await client.deactivatePrivilegedMode({});
+      if (!response.privilegedMode)
+        throw new Error('privileged-mode response did not include state');
+      if (!response.capabilities || !response.viewerPermissions)
+        throw new Error('privileged-mode response did not include effective permissions');
+      return {
+        privilegedMode: response.privilegedMode,
+        capabilities: response.capabilities,
+        viewerPermissions: response.viewerPermissions
+      };
+    },
+    refresh() {
+      return client.getViewer({});
+    }
+  };
+}
+
+const capabilityKeys = {
+  adminView: 'admin.view',
+  dmStart: 'dm.start',
+  adminViewUsers: 'admin.view-users',
+  adminManageAccounts: 'user.manage-accounts',
+  assignRoles: 'role.assign',
+  adminViewRoles: 'role.view',
+  adminManageRoles: 'role.manage',
+  adminViewSystem: 'admin.view-system',
+  adminViewAudit: 'admin.view-audit',
+  manageUserPermissions: 'user.manage-permissions',
+  manageInvites: 'user.invite'
+} as const;
+
+/**
+ * Read the viewer for a caller that owns its own reaction to authentication loss.
+ *
+ * An `Unauthenticated` result does not request a new sign-in, because
+ * `CurrentUserState` makes that decision and ignores superseded loads. Other
+ * viewer reads must use a client that keeps the transport's default handling.
+ */
+export async function getViewerStateViaConnect(
+  config: ConnectAPIConfig,
+  options: { signal?: AbortSignal; timeoutMs?: number } = {}
+): Promise<ViewerState> {
+  const client = createChattoClient(ViewerService, config);
+  const response = await client.getViewer(
+    {},
+    {
+      ...skipAuthenticationRequired(),
+      timeoutMs: options.timeoutMs,
+      signal: options.signal
+    }
+  );
+  return viewerResponseToState(response);
+}
+
+export function viewerResponseToState(response: GetViewerResponse): ViewerState {
+  if (!response.user) {
+    throw new Error('viewer response did not include a user');
+  }
+  if (!response.user.profile) {
+    throw new Error('viewer response did not include a user profile');
+  }
+  const user = response.user.profile;
+  const grants = mapCapabilityGrants(response.capabilities?.grants);
+  const viewerPermissions = mapPermissionGrants(response.viewerPermissions?.permissions);
+  const can = (capability: string) => grants[capability] ?? false;
+  return {
+    user: {
+      id: user.id,
+      login: user.login,
+      displayName: user.displayName,
+      isBot: !!user.bot,
+      deleted: user.deleted ?? false,
+      avatarUrl: user.avatarUrl ?? null,
+      bio: user.bio ?? null,
+      publicTimezone: user.timezone ?? null,
+      customStatus: user.customStatus
+        ? {
+            emoji: user.customStatus.emoji,
+            text: user.customStatus.text,
+            expiresAt: user.customStatus.expiresAt?.toDate().toISOString() ?? null
+          }
+        : null,
+      presenceStatus: presenceStatusOrOffline(user.presenceStatus),
+      hasVerifiedEmail: response.user.hasVerifiedEmail,
+      hasPassword: response.user.hasPassword ?? false,
+      viewerCanDeleteAccount: response.user.viewerCanDeleteAccount ?? false,
+      lastLoginChange: response.user.lastLoginChange?.toDate().toISOString() ?? null,
+      settings: response.user.settings
+        ? {
+            timezone: response.user.settings.timezone ?? null,
+            timeFormat: timeFormatOrAuto(response.user.settings.timeFormat),
+            shareTimezone: response.user.settings.shareTimezone
+          }
+        : null
+    },
+    canViewAdmin: can(capabilityKeys.adminView),
+    canStartDMs: can(capabilityKeys.dmStart),
+    canAdminViewUsers: can(capabilityKeys.adminViewUsers),
+    canAdminManageAccounts: can(capabilityKeys.adminManageAccounts),
+    canAssignRoles: can(capabilityKeys.assignRoles),
+    canAdminViewRoles: can(capabilityKeys.adminViewRoles),
+    canAdminManageRoles: can(capabilityKeys.adminManageRoles),
+    canAdminViewSystem: can(capabilityKeys.adminViewSystem),
+    canAdminViewAudit: can(capabilityKeys.adminViewAudit),
+    canManageUserPermissions: can(capabilityKeys.manageUserPermissions),
+    canManageInvites: can(capabilityKeys.manageInvites),
+    viewerPermissions,
+    viewerHasUnreadRooms: response.viewerState?.hasUnreadRooms ?? false,
+    privilegedMode: {
+      available: response.privilegedMode?.available ?? false,
+      active: response.privilegedMode?.active ?? false,
+      expiresAt: response.privilegedMode?.expiresAt?.toDate().toISOString() ?? null
+    }
+  };
+}
+
+function mapPermissionGrants(
+  grants: Array<{ permission: string; granted: boolean }> | undefined
+): Record<string, boolean> {
+  return Object.fromEntries((grants ?? []).map((grant) => [grant.permission, grant.granted]));
+}
+
+function mapCapabilityGrants(
+  grants: Array<{ capability: string; granted: boolean }> | undefined
+): Record<string, boolean> {
+  return Object.fromEntries((grants ?? []).map((grant) => [grant.capability, grant.granted]));
+}
+
+export async function getCurrentUserViaConnect(config: ConnectAPIConfig): Promise<CurrentUser> {
+  // Bound session restoration independently of the connection's retry timer.
+  return (await getViewerStateViaConnect(config, { timeoutMs: 10_000 })).user;
+}

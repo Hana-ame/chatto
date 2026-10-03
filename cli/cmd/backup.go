@@ -419,6 +419,8 @@ func backupStream(ctx context.Context, mgr *jsm.Manager, streamName, streamsDir 
 // KV_ENCRYPTION_KEYS is backed up; the archive must then be treated as sensitive.
 func skipReason(name string, includeKeys bool) string {
 	switch name {
+	case "LOG":
+		return "retained diagnostics (not recovery state)"
 	case "KV_MEMORY_CACHE":
 		return "ephemeral (memory storage)"
 	case "KV_USER_PRESENCE":
@@ -435,7 +437,7 @@ func skipReason(name string, includeKeys bool) string {
 	case "KV_AUTH_TOKENS":
 		return "security (prevents token leakage)"
 	}
-	if strings.HasPrefix(name, "OBJ_ASSET_CACHE") {
+	if strings.HasPrefix(name, "OBJ_ASSET_CACHE") || name == "OBJ_NEIGHBORHOOD_IMAGES" {
 		return "cache (regeneratable)"
 	}
 	return ""

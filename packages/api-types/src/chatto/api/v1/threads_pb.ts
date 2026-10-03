@@ -123,13 +123,6 @@ export class FollowThreadRequest extends Message<FollowThreadRequest> {
  */
 export class FollowThreadResponse extends Message<FollowThreadResponse> {
   /**
-   * True when the current user follows the thread after the operation.
-   *
-   * @generated from field: bool following = 1;
-   */
-  following = false;
-
-  /**
    * Current follow state after the operation.
    *
    * @generated from field: chatto.api.v1.ThreadFollowState state = 2;
@@ -144,7 +137,6 @@ export class FollowThreadResponse extends Message<FollowThreadResponse> {
   static readonly runtime: typeof proto3 = proto3;
   static readonly typeName = "chatto.api.v1.FollowThreadResponse";
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
-    { no: 1, name: "following", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
     { no: 2, name: "state", kind: "message", T: ThreadFollowState },
   ]);
 
@@ -221,13 +213,6 @@ export class UnfollowThreadRequest extends Message<UnfollowThreadRequest> {
  */
 export class UnfollowThreadResponse extends Message<UnfollowThreadResponse> {
   /**
-   * True when the current user follows the thread after the operation.
-   *
-   * @generated from field: bool following = 1;
-   */
-  following = false;
-
-  /**
    * Current follow state after the operation.
    *
    * @generated from field: chatto.api.v1.ThreadFollowState state = 2;
@@ -242,7 +227,6 @@ export class UnfollowThreadResponse extends Message<UnfollowThreadResponse> {
   static readonly runtime: typeof proto3 = proto3;
   static readonly typeName = "chatto.api.v1.UnfollowThreadResponse";
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
-    { no: 1, name: "following", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
     { no: 2, name: "state", kind: "message", T: ThreadFollowState },
   ]);
 
@@ -297,6 +281,14 @@ export class FollowedThread extends Message<FollowedThread> {
    */
   latestReply?: Message$1;
 
+  /**
+   * User IDs used to derive a direct-message conversation label. Empty for
+   * channel rooms.
+   *
+   * @generated from field: repeated string direct_message_participant_user_ids = 11;
+   */
+  directMessageParticipantUserIds: string[] = [];
+
   constructor(data?: PartialMessage<FollowedThread>) {
     super();
     proto3.util.initPartial(data, this);
@@ -309,6 +301,7 @@ export class FollowedThread extends Message<FollowedThread> {
     { no: 8, name: "room", kind: "message", T: RoomSummary },
     { no: 9, name: "thread", kind: "message", T: ThreadSummary },
     { no: 10, name: "latest_reply", kind: "message", T: Message$1 },
+    { no: 11, name: "direct_message_participant_user_ids", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): FollowedThread {
@@ -335,11 +328,28 @@ export class FollowedThread extends Message<FollowedThread> {
  */
 export class ListFollowedThreadsRequest extends Message<ListFollowedThreadsRequest> {
   /**
-   * Page request. Defaults to 20 results when absent or limit is zero.
+   * Defaults to 20 results when absent or limit is zero. Maximum: 100.
    *
    * @generated from field: chatto.api.v1.PageRequest page = 3;
    */
   page?: PageRequest;
+
+  /**
+   * Include followed direct-message threads. Defaults to false so older
+   * clients retain the channel-only result shape.
+   *
+   * @generated from field: bool include_direct_message_threads = 4;
+   */
+  includeDirectMessageThreads = false;
+
+  /**
+   * Return only threads with replies that the viewer has not read. The page
+   * total then counts only these threads. Older servers ignore this field and
+   * return all followed threads.
+   *
+   * @generated from field: bool unread_only = 5;
+   */
+  unreadOnly = false;
 
   constructor(data?: PartialMessage<ListFollowedThreadsRequest>) {
     super();
@@ -350,6 +360,8 @@ export class ListFollowedThreadsRequest extends Message<ListFollowedThreadsReque
   static readonly typeName = "chatto.api.v1.ListFollowedThreadsRequest";
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
     { no: 3, name: "page", kind: "message", T: PageRequest },
+    { no: 4, name: "include_direct_message_threads", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+    { no: 5, name: "unread_only", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListFollowedThreadsRequest {
@@ -424,5 +436,111 @@ export class ListFollowedThreadsResponse extends Message<ListFollowedThreadsResp
 
   static equals(a: ListFollowedThreadsResponse | PlainMessage<ListFollowedThreadsResponse> | undefined, b: ListFollowedThreadsResponse | PlainMessage<ListFollowedThreadsResponse> | undefined): boolean {
     return proto3.util.equals(ListFollowedThreadsResponse, a, b);
+  }
+}
+
+/**
+ * Request a complete thread participant collection, ordered by user ID ascending.
+ *
+ * @generated from message chatto.api.v1.ListThreadParticipantsRequest
+ */
+export class ListThreadParticipantsRequest extends Message<ListThreadParticipantsRequest> {
+  /**
+   * Room containing the thread.
+   *
+   * @generated from field: string room_id = 1;
+   */
+  roomId = "";
+
+  /**
+   * Root message ID.
+   *
+   * @generated from field: string thread_root_event_id = 2;
+   */
+  threadRootEventId = "";
+
+  /**
+   * Defaults to 50 results. Maximum: 100. Zero uses the default.
+   *
+   * @generated from field: chatto.api.v1.PageRequest page = 3;
+   */
+  page?: PageRequest;
+
+  constructor(data?: PartialMessage<ListThreadParticipantsRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "chatto.api.v1.ListThreadParticipantsRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "room_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "thread_root_event_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "page", kind: "message", T: PageRequest },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListThreadParticipantsRequest {
+    return new ListThreadParticipantsRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ListThreadParticipantsRequest {
+    return new ListThreadParticipantsRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ListThreadParticipantsRequest {
+    return new ListThreadParticipantsRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ListThreadParticipantsRequest | PlainMessage<ListThreadParticipantsRequest> | undefined, b: ListThreadParticipantsRequest | PlainMessage<ListThreadParticipantsRequest> | undefined): boolean {
+    return proto3.util.equals(ListThreadParticipantsRequest, a, b);
+  }
+}
+
+/**
+ * A page of distinct reply authors. An empty thread returns an empty page.
+ *
+ * @generated from message chatto.api.v1.ListThreadParticipantsResponse
+ */
+export class ListThreadParticipantsResponse extends Message<ListThreadParticipantsResponse> {
+  /**
+   * User IDs in this page. Use UserService.BatchGetUsers for profiles.
+   *
+   * @generated from field: repeated string user_ids = 1;
+   */
+  userIds: string[] = [];
+
+  /**
+   * Count and continuation for all current participants.
+   *
+   * @generated from field: chatto.api.v1.PageInfo page = 2;
+   */
+  page?: PageInfo;
+
+  constructor(data?: PartialMessage<ListThreadParticipantsResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "chatto.api.v1.ListThreadParticipantsResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "user_ids", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+    { no: 2, name: "page", kind: "message", T: PageInfo },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListThreadParticipantsResponse {
+    return new ListThreadParticipantsResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ListThreadParticipantsResponse {
+    return new ListThreadParticipantsResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ListThreadParticipantsResponse {
+    return new ListThreadParticipantsResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ListThreadParticipantsResponse | PlainMessage<ListThreadParticipantsResponse> | undefined, b: ListThreadParticipantsResponse | PlainMessage<ListThreadParticipantsResponse> | undefined): boolean {
+    return proto3.util.equals(ListThreadParticipantsResponse, a, b);
   }
 }

@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import { RoomKind } from '$lib/api-client/roomDirectory';
+import { RoomKind } from '@chatto/client/api/roomDirectory';
 import type { DMData, RoomData } from '$lib/hooks/useRoomData.svelte';
-import { RoomThreadingMode } from '$lib/roomThreading';
+import { RoomThreadingMode } from '@chatto/client/util/roomThreading';
 import { buildRoomPresentation } from './roomPresentation';
+import { deletedDirectMessageParticipant } from '@chatto/client/timeline/users';
 
 function roomData(overrides: Partial<RoomData> = {}): RoomData {
   return {
@@ -17,6 +18,7 @@ function roomData(overrides: Partial<RoomData> = {}): RoomData {
     },
     spaceName: 'Test Space',
     canReadMessages: true,
+    hasLimitedMessageAccess: false,
     canPostMessage: true,
     canPostInThread: true,
     canAttach: true,
@@ -36,7 +38,7 @@ function build(room: RoomData | null | undefined, isDM = false, dmData: DMData |
     isDM,
     dmData,
     directMessageLabel: 'Direct message',
-    currentUserLabel: 'You',
+    participantLabels: { currentUser: 'You', deletedUser: '[deleted user]' },
     getDisplayName: (_userId, fallback) => `Live ${fallback}`
   });
 }
@@ -46,7 +48,7 @@ describe('buildRoomPresentation', () => {
     expect(build(roomData())).toEqual({
       title: '# general',
       description: 'Room description',
-      pageTitle: '#general - Test Space'
+      pageTitle: '#general'
     });
   });
 
@@ -67,7 +69,7 @@ describe('buildRoomPresentation', () => {
     expect(build(room)).toEqual({
       title: '# general',
       description: undefined,
-      pageTitle: '# general'
+      pageTitle: '#general'
     });
   });
 
@@ -95,7 +97,7 @@ describe('buildRoomPresentation', () => {
         ]
       },
       directMessageLabel: 'Direct message',
-      currentUserLabel: 'You',
+      participantLabels: { currentUser: 'You', deletedUser: '[deleted user]' },
       getDisplayName
     });
 
@@ -107,7 +109,7 @@ describe('buildRoomPresentation', () => {
     expect(getDisplayName).toHaveBeenCalledWith('other', 'Friend');
   });
 
-  it('uses the localized current-user label for a self direct message', () => {
+  it('uses the live name and localized current-user suffix for a self direct message', () => {
     expect(
       build(roomData(), true, {
         currentUserId: 'self',
@@ -122,15 +124,36 @@ describe('buildRoomPresentation', () => {
         ]
       })
     ).toEqual({
-      title: 'You',
+      title: 'Live Me (You)',
       description: undefined,
-      pageTitle: 'You'
+      pageTitle: 'Live Me (You)'
+    });
+  });
+
+  it('names a deleted partner instead of presenting a self direct message', () => {
+    expect(
+      build(roomData(), true, {
+        currentUserId: 'self',
+        participantIds: ['self', 'gone'],
+        participants: [
+          { id: 'self', login: 'me', displayName: 'Me', presenceStatus: 0 },
+          deletedDirectMessageParticipant('gone')
+        ]
+      })
+    ).toEqual({
+      title: '[deleted user]',
+      description: undefined,
+      pageTitle: '[deleted user]'
     });
   });
 
   it('uses the direct-message label while participant data is empty', () => {
     expect(
-      build(roomData(), true, { currentUserId: 'self', participantIds: [], participants: [] })
+      build(roomData(), true, {
+        currentUserId: 'self',
+        participantIds: [],
+        participants: []
+      })
     ).toEqual({
       title: 'Direct message',
       description: undefined,

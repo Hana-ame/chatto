@@ -1,6 +1,10 @@
 # Projection Inventory
 
-Key files: [`cli/internal/core/projection_wiring.go`](../../cli/internal/core/projection_wiring.go), [`cli/internal/core/server_content_view.go`](../../cli/internal/core/server_content_view.go), [`pkg/events/projector.go`](../../pkg/events/projector.go), [`pkg/events/component_projection.go`](../../pkg/events/component_projection.go), [`pkg/events/projection_checkpoint.go`](../../pkg/events/projection_checkpoint.go), [`cli/internal/projectionsnapshot/cohort.go`](../../cli/internal/projectionsnapshot/cohort.go), [`cli/internal/search/bleve/projection.go`](../../cli/internal/search/bleve/projection.go), [`cli/internal/core/asset_processing_runtime.go`](../../cli/internal/core/asset_processing_runtime.go), [`cli/internal/core/projection_subjects_test.go`](../../cli/internal/core/projection_subjects_test.go), and [`proto/chatto/core/projection/v1`](../../proto/chatto/core/projection/v1)
+The config component uses snapshot contract `v3`. Timezone-clear events retain
+an empty optional value for an explicit browser-default choice. Older snapshots
+are rebuilt from EVT because they represented that choice as an absent value.
+
+Key files: [`cli/internal/core/projection_wiring.go`](../../cli/internal/core/projection_wiring.go), [`cli/internal/core/server_content_view.go`](../../cli/internal/core/server_content_view.go), [`cli/internal/core/room_timeline_projection.go`](../../cli/internal/core/room_timeline_projection.go), [`cli/internal/core/room_timeline_hydrator.go`](../../cli/internal/core/room_timeline_hydrator.go), [`cli/internal/evtstream/reader.go`](../../cli/internal/evtstream/reader.go), [`pkg/events/projector.go`](../../pkg/events/projector.go), [`pkg/events/component_projection.go`](../../pkg/events/component_projection.go), [`pkg/events/projection_checkpoint.go`](../../pkg/events/projection_checkpoint.go), [`cli/internal/projectionsnapshot/cohort.go`](../../cli/internal/projectionsnapshot/cohort.go), [`cli/internal/search/bleve/projection.go`](../../cli/internal/search/bleve/projection.go), [`cli/internal/core/asset_processing_runtime.go`](../../cli/internal/core/asset_processing_runtime.go), [`cli/internal/core/projection_subjects_test.go`](../../cli/internal/core/projection_subjects_test.go), and [`proto/chatto/core/projection/v1`](../../proto/chatto/core/projection/v1)
 
 Projections are derived read models rebuilt from an event log. Most live in
 memory. Optional providers can own disposable locally checkpointed indexes.
@@ -11,9 +15,9 @@ separate components behind that barrier.
 
 `initializeCoreProjections` registers each top-level projector once with a
 stable machine-readable key and a human display name. `NewChattoCore` installs
-that registry into the core runtime. The registry contains six projectors:
+that registry into the core runtime. The registry contains seven projectors:
 `server_content_view`, `notification_decisions`, `notifications`, `user_auth`,
-`invitations`, and `oauth_clients`. Each registration also declares whether
+`invitations`, `oauth_clients`, and `bot_webhooks`. Each registration also declares whether
 that key is eligible for shared snapshots.
 
 Core couples each projection pointer to its exact projector as one typed
@@ -25,10 +29,10 @@ diagnostics, and snapshot policy remain in the core registration layer. This
 boundary follows [ADR-056](../adr/ADR-056-extractable-nats-event-sourcing-framework.md).
 
 `ChattoCore.Run` starts one process-local ordered consumer for each registered
-projector. `ServerContentView` and the four independent EVT projectors read
+projector. `ServerContentView` and the five independent EVT projectors read
 `EVT`. Notifications reads `NOTIFICATIONS`. Each projector owns its physical
 filters, replay progress, failure state, and readiness. Chatto waits for all
-six registered projectors before it completes boot.
+seven registered projectors before it completes boot.
 
 Writers wait for the relevant projector sequence before returning
 read-your-writes. Projection-aware domain models keep the projector references
@@ -47,17 +51,45 @@ cold-replayed projection. Call token access material binds the call ID and E2EE
 key to one revalidated content-view generation. Active-call and asset API
 mapping use detached component snapshots.
 
-Room timeline message hydration obtains deletion and channel-echo metadata as
-one detached snapshot through `RoomTimelineReadModel`; ConnectAPI does not read
-that component directly. `RoomModel` is the sole production owner of the Room
-Directory, Room Group Layout, Room Timeline, Threads, and Reactions component
-APIs. These components use the shared content-view projector. Threads also
-derives channel message-to-root
+Room Timeline stores compact EVT references and small derived indexes. It does
+not store complete timeline events or message bodies. `RoomTimelineReadModel`
+authorizes and selects references against `ServerContentView`. It then uses
+`RoomTimelineHydrator` to read the selected records from EVT outside the apply
+barrier. The hydrator validates the stored identity and routing metadata before
+it returns a payload. Mutable body references are checked again after the read.
+
+The shared `events.StreamMessageReader` keeps copied opaque records in a
+process-local cache with sliding idle expiry and byte-costed LRU eviction. The
+default idle lifetime is 15 minutes and the default approximate byte limit is
+256 MiB per server process. `core.evt_read_cache_idle_ttl` and
+`core.evt_read_cache_max_bytes` change these values. A maximum of `-1` disables
+the byte limit. Cache misses use bounded exact stream reads. Secure deletion
+removes the affected local cache entries. An info log reports both effective
+settings at startup. Debug logs report direct misses, batch hits and misses,
+read durations, LRU evictions, expired entry counts, and cache clears. They do
+not report subjects or payloads.
+
+ConnectAPI does not read the component directly. `RoomModel` is the sole
+production owner of the Room Directory, Room Group Layout, Room Timeline,
+Threads, and Reactions component APIs. These components use the shared
+content-view projector. Threads also derives channel-room and DM message-to-root
 mappings and account-to-thread interaction relationships from message-post
-facts. Membership, message, thread, reaction, asset, realtime, room-group OCC,
+facts. It also consumes room join, leave, and stored suspension facts to derive DM-received
+relationships for the other participants at the time of each post. Threads
+keeps only the existence of each relationship, not the facts that caused it,
+because reads only ask whether a relationship exists. Its v3 snapshot contract
+records DM membership; the schema fingerprint selects a new cache namespace
+when this shape changes. The
+RBAC component snapshot contract is v2 and retains decisions from the
+`evt.rbac.dm` singleton lane. Membership, message, thread, reaction, asset, realtime, room-group OCC,
 and sidebar-ordering paths use focused `RoomModel` operations instead of
 projection fields on `ChattoCore`. Raw membership reads are named as explicit
 membership so they remain distinct from policy-derived Universal-room access.
+DM membership is fixed at creation: the Room Directory component ignores
+`UserLeftRoom` for DM rooms. Account deletion still records DM leave facts,
+which end the account's DM call participation, so deleted accounts stay DM
+members in current and replayed state. Snapshot semantics v2 records this rule,
+so v1 snapshots are rebuilt.
 
 Any non-cancellation error from checkpoint or snapshot restore, consumer setup,
 or event application moves the projector into its failed state before its run
@@ -67,8 +99,16 @@ healthy-looking after an incomplete startup.
 Projection consumers use a five-minute inactivity cleanup threshold. Because
 event application is synchronous and disk-backed commits can temporarily stop
 the pull loop, a shorter broker threshold could delete a live consumer while
-its projection is still applying a batch. Projector shutdown still stops the
-pull subscription; NATS later removes its ephemeral consumer.
+its projection is still applying a batch. On shutdown or failure, the projector
+stops the pull subscription and attempts to delete its current ephemeral
+consumer. The deletion request has an independent two-second timeout. If the
+request fails or the process crashes, inactivity expiry remains the fallback.
+
+Chatto configures names as `projection-<key>-<random>_<generation>` for core,
+asset-processing, and search projectors. Each projector has a unique random
+suffix; the SDK increments the generation when it replaces a consumer.
+Consumer metadata fields `projection_name` and `projection_description` identify
+the owner. These labels do not change snapshot keys or durable worker names.
 
 The projector framework owns JetStream message handling and passes stable
 stream sequence numbers into `Projection.Apply`. Projection implementations do
@@ -94,11 +134,12 @@ Related decisions: [ADR-007](../adr/ADR-007-per-user-encryption-with-crypto-shre
 [ADR-033](../adr/ADR-033-event-sourced-state-with-projections.md),
 [ADR-050](../adr/ADR-050-ephemeral-encrypted-projection-snapshots.md),
 [ADR-054](../adr/ADR-054-optional-projection-persistence.md),
-[ADR-055](../adr/ADR-055-pluggable-message-search-over-nats.md), and
-[ADR-066](../adr/ADR-066-durable-asset-processing-runtime-unit.md), and
+[ADR-055](../adr/ADR-055-pluggable-message-search-over-nats.md),
+[ADR-066](../adr/ADR-066-durable-asset-processing-runtime-unit.md),
 [ADR-084](../adr/ADR-084-separate-internal-protobufs-by-storage-contract.md),
 [ADR-088](../adr/ADR-088-componentized-projections-behind-one-apply-barrier.md),
-and [ADR-089](../adr/ADR-089-server-content-view.md).
+[ADR-089](../adr/ADR-089-server-content-view.md), and
+[ADR-110](../adr/ADR-110-share-process-local-event-id-interning.md).
 
 The asset-processing runtime unit owns a private, non-snapshotted
 `AssetProjection`. It uses the same canonical and legacy replay subjects as the
@@ -136,15 +177,21 @@ generation, and user key shredding event families, and uses projector key
 During captured startup replay it commits up to 256 ordered events and the
 final checkpoint in one Bleve transaction, including a smaller final batch;
 once current, each relevant live event is committed immediately.
-Its checkpoint contract starts with `bleve-message-index-v9-` and includes a
+Its checkpoint contract starts with `bleve-message-index-v12-` and includes a
 stable fingerprint of the configured language analyzer set, so changing that
 set forces a cold EVT replay.
 
 The index stores current decrypted message text plus its body-event revision and
-message/room/author/filter metadata. The state needed to apply a later edit or
+message/room/author/filter metadata. Each message also indexes its thread root
+ID; a root uses its own message ID. The state needed to apply a later edit or
 posting event is a stored, non-indexed field in that same Bleve document; it is
 not duplicated as one internal Bolt key per message. Candidate revisions must
 match current core state before hydration, fencing provider catch-up races.
+Attachment descriptions are not indexed or copied into this projection.
+The index also derives unstored fields for complete HTTP(S) URLs, email
+addresses, hostname suffixes, and address parts from each current body. These
+fields are absent from the stored projection state and are replaced with the
+body after an edit. Extraction makes no network request.
 
 Message bodies use BM25 scoring over a language-neutral field plus the
 operator-selected subset of all 22 complete language analyzers available in
@@ -158,10 +205,15 @@ manual `ForceMerge` operation as part of projection correctness or startup
 readiness.
 
 The directory is a privileged, disposable local cache excluded from Chatto
-backups. Chatto creates it only when the configured path does not exist and
-never recursively deletes an unreadable or incompatible disk index. Those
-conditions fail provider startup; an operator must move or delete the dedicated
-directory explicitly before restarting it for a cold EVT replay.
+backups. A recognized Chatto checkpoint contract change for the same EVT
+incarnation triggers automatic index replacement and cold replay. Unknown
+contracts, corrupt checkpoints, invalid replay bounds, and unrelated directory
+entries fail startup with an operator recovery link. The provider holds an
+OS-backed Bolt lock in `.chatto-search.lock` across open, replacement, and close.
+It syncs a `.chatto-search-rebuild` intent marker before deleting only Bleve's
+`index_meta.json` and `store` entries. The next startup retries interrupted
+replacement before opening the index. The configured directory and mount stay
+in place. Unreadable indexes without a rebuild marker are never deleted.
 
 ## Snapshot support
 
@@ -172,7 +224,12 @@ consumed event families, and cutoff meaning. Each ID combines a manual semantic
 token with a fingerprint of the codec's reachable protobuf schema, so a schema
 change automatically starts a new contract namespace. Most contracts use
 semantic token `v1`; Assets uses `v3`, user profile uses `v4`, and Room Timeline
-uses `v7`.
+uses `v9`.
+
+Room Timeline `v9` retains a historical-import bit on each message reference.
+Unread and room-activity reads omit these messages, while timeline reads keep
+them visible. Slow Mode, thread interaction, notification, webhook, and live
+delivery consumers also omit historical posting effects when they replay EVT.
 
 The 0.5 internal protobuf package split changes full protobuf names and selects
 new snapshot contract IDs. A server ignores older snapshots, cold-replays EVT,
@@ -193,7 +250,74 @@ edits and retractions do not erase the original successful-post timestamp.
 older snapshots omitted those rows and therefore cold-replay under the new
 contract. Its current schema also stores active pinned-message associations by room.
 Those associations reference canonical timeline messages instead of copying
-message content; retraction removes the association during projection.
+message content; retraction removes the association during projection. The
+current Room Timeline schema stores only compact timeline and body references.
+Its schema fingerprint rejects the earlier `v7` payload-bearing schema.
+
+The Room Timeline, Threads, and Reactions components of the Server Content
+View and the Notification Decisions projection intern event IDs in one
+process-wide event ID table (ADR-110). The table holds each event ID once for all of
+them. They store `uint32` handles instead of ID strings. The table contains
+no projection state, so projections with independent replay frontiers can
+share it. The table keeps ID bytes in an append-only arena and
+indexes them with pointer-free hash keys, so the garbage collector does not
+scan them. Handles are process-local; snapshots store ID strings, and a
+restore interns them again. The table has its own locks, because the components
+apply and read under different locks. Its hash index has 64 shards with
+separate locks, so concurrent lookups of different IDs rarely contend. A read
+of an ID from a handle does not lock. The components and projections keep separate models, and only the
+table is shared. A component or projection that is created outside the
+production wiring, for example in a test, owns a private table.
+
+The Notification Decisions Badge source index keeps one pointer-free record
+per message post in a dense slice indexed by event ID handle. The records stay
+after their sources expire, because later replies and reactions address them.
+The index also holds explicit thread follow states, thread followers, and
+thread reply counts with handle keys. User, room, and emoji IDs use a small
+private table of the index.
+
+The Room Timeline component shares room and user IDs between compact event
+rows. Each row keeps a small event-kind value and its creation time in Unix
+nanoseconds. Rows contain no Go pointers. Each row stores event ID handles for
+its event, thread root, and echo source, and a flag marks thread replies. A
+reply's containing thread is its thread root. A handle can name
+an event that has not arrived or that is outside the timeline. A dense slice
+indexed by event ID handle locates the row of an event, and the row locates
+the message's current body state in a dense array. Body authors use the
+shared user table. Only messages with multiple body events retain a separate
+index of superseded body sequences. A small map holds body facts and body
+history that arrive before their message post. The projection moves these
+values into the dense and sparse indexes when the post arrives.
+
+Threads interns user and room IDs in one small table. Its indexes store
+`uint32` handles instead of ID strings. Each thread keeps its replies in one
+pointer-free slice with the reply's author, time, and retraction state, and a
+small map locates the thread of a reply. The cached thread summary counts
+visible replies per author in first-reply order; the first authors form the
+display preview. Follow state, thread followers, and followed threads use
+handle keys. Reads of followers and followed threads sort them by ID, because
+a restore does not keep the follow order. Room deletion removes the room's
+message references and relationships. The message IDs of that room stay in
+the shared event ID table.
+
+Content Keys keeps each DEK epoch in one flat map keyed by user handle,
+purpose, and epoch, with only the key references, the interned wrapping
+algorithm, and the wrapping metadata. Reads return a new
+`UserDEKGeneratedEvent`.
+
+Reactions interns emoji, user, and room IDs in one table and message IDs in
+the shared event ID table. It keeps the source event ID of each active
+reaction as a string, because each source ID occurs only once. Each message
+has a short slice of active reactions, sorted by emoji and user handles.
+
+Timeline, Threads, and Reactions construct detached read results.
+
+Compact records store times as Unix nanoseconds, where zero means "no time".
+Room Timeline, Threads, Reactions, and Content Keys each keep their
+restorable state in one value. A restore builds a new value and replaces the
+complete state at once, so a failed restore leaves the state unchanged. An
+empty snapshot restores an empty component; a cold replay of the content view
+depends on this reset.
 
 Snapshot loads and replay frontiers are projector-local. A successful restore
 starts that projector's ordered consumer at one greater than its cutoff. A
@@ -211,10 +335,13 @@ and shared cutoff. The repository publishes one pointer only after all objects
 are durable. It retains current and previous complete cohorts and uses KV
 revision OCC for publication.
 
-Room Timeline retains one body-state entry per message: the current encrypted
-envelope and EVT sequence are inline, while a sequence slice is allocated only
-after an edit. Its component codec preserves the complete body-event sequence
-history.
+Room Timeline retains one body-state entry per message. It stores the current
+body-event ID and EVT sequence, the author ID, the current attachment count,
+and an active flag. The active flag and the attachment count share one
+32-bit field. The body-event ID is in an append-only arena of the
+component, so the entry contains no Go pointers. A sequence slice is allocated only after an edit. Its
+component codec preserves the complete body-event sequence history. Complete
+encrypted body payloads remain in EVT and are not part of the snapshot cohort.
 
 Mentionables retains encrypted login source events and wrapped DEK records
 rather than plaintext handles or lookup digests. The Users codec retains
@@ -265,26 +392,34 @@ expected snapshot content type, and private object-purpose marker. Snapshot and
 expiry failures are logged and never affect core readiness or EVT-backed
 reconstruction. Legacy cohort paths remain outside application S3 expiry.
 
-| Projection | Contract | Payload store | Pointer store | Publication |
-| ---------- | -------- | ------------- | ------------- | ----------- |
-| Server Content View | `v1` componentized-projection contract plus component contracts | `PROJECTION_SNAPSHOTS` or configured S3; one manifest and one object for each initial component | One encrypted `server_content_view` pointer in `RUNTIME_STATE` with KV revision OCC | Elected publisher checks hourly; cold/delta replay publishes immediately and unchanged state refreshes at 23 hours |
-| Notification Decisions | `v2` | `PROJECTION_SNAPSHOTS` or configured S3 | Encrypted per-projection `RUNTIME_STATE` pointer with KV revision OCC | Elected publisher checks hourly; cold/delta replay publishes immediately and unchanged state refreshes at 23 hours |
-| Notifications | `v2` | `PROJECTION_SNAPSHOTS` or configured S3 | Encrypted per-projection `RUNTIME_STATE` pointer with KV revision OCC | Binds snapshots to the independent `NOTIFICATIONS` stream identity and sequence |
+| Projection             | Contract                                                        | Payload store                                                                                   | Pointer store                                                                       | Publication                                                                                                        |
+| ---------------------- | --------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| Server Content View    | `v1` componentized-projection contract plus component contracts | `PROJECTION_SNAPSHOTS` or configured S3; one manifest and one object for each initial component | One encrypted `server_content_view` pointer in `RUNTIME_STATE` with KV revision OCC | Elected publisher checks hourly; cold/delta replay publishes immediately and unchanged state refreshes at 23 hours |
+| Notification Decisions | `v2`                                                            | `PROJECTION_SNAPSHOTS` or configured S3                                                         | Encrypted per-projection `RUNTIME_STATE` pointer with KV revision OCC               | Elected publisher checks hourly; cold/delta replay publishes immediately and unchanged state refreshes at 23 hours |
+| Notifications          | `v2`                                                            | `PROJECTION_SNAPSHOTS` or configured S3                                                         | Encrypted per-projection `RUNTIME_STATE` pointer with KV revision OCC               | Binds snapshots to the independent `NOTIFICATIONS` stream identity and sequence                                    |
 
 ## Registered projections
 
-| Runtime area       | Registered projector | Consumes                                                   | Read models / primary readers                                                             |
-| ------------------ | -------------------- | ---------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| Client-readable EVT state | Server Content View | `evt.>` | Room directory, server configuration, room-group layout, room timeline, calls, assets, threads, reactions, user profiles, content keys, RBAC, and mentionable identities. Each focused component declares the event subjects that it reduces. |
-| Notification derivation and privacy | Notification Decisions | Focused message/reaction sources plus account, room membership/kind, room-group placement, RBAC, server/room-group/room notification-policy, and thread-follow facts | Compact current decision state. The materializer waits until this projection includes its source fact, then uses all state that is current on that replica. Snapshots follow the standard projection lifecycle without a durable-worker cutoff |
-| Notification list | Notifications | `notifications.signalled`, `notifications.read`, `notifications.removed`, `notifications.alert_resolved` | Current exact occurrence state, minimal anti-recreation tombstones, source-signal stream sequences for secure deletion, semantic expiry, list/count reads, realtime replacement, and push-delivery idempotency |
-| User authentication | User Auth            | Focused account, password, external-identity, consent, deletion, and key-shredding user facts | `UserModel`; password verifiers, auth generations, external identity links, and OAuth consent keyed by stable client ID (legacy facts by redirect origin); always cold-replayed |
-| OAuth clients        | OAuth Clients        | `evt.oauth_client.>`                                       | `OAuthClientModel`; validated metadata and callback origins for successfully authorized clients, distinct authorized-user counts, and administrative default/trusted/blocked policy; always cold-replayed |
-| Invitations         | Invitations          | `evt.invitation.>`                                       | `InvitationModel`; immutable constraints, redemption count, revocation state, and administrator listings; always cold-replayed |
+| Runtime area                        | Registered projector   | Consumes                                                                                                                                                                                                                                         | Read models / primary readers                                                                                                                                                                                                                                                                                                              |
+| ----------------------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Client-readable EVT state           | Server Content View    | `evt.>`                                                                                                                                                                                                                                          | Room directory, server configuration, room-group layout, room timeline, calls, assets, threads, reactions, user profiles, content keys, RBAC, and mentionable identities. Each focused component declares the event subjects that it reduces.                                                                                              |
+| Notification derivation and privacy | Notification Decisions | Focused message/reaction sources plus account, room membership/kind, room-group placement, RBAC, server/room-group/room notification-policy, and thread-follow facts                                                                             | Compact current decision state and the Badge source index (ADR-109). The materializer waits until this projection includes its source fact, then uses all state that is current on that replica. `has_unread` evaluates Badge attention from the index. Snapshots follow the standard projection lifecycle without a durable-worker cutoff |
+| Notification list                   | Notifications          | `notifications.signalled`, `notifications.read`, `notifications.removed`, `notifications.alert_resolved`                                                                                                                                         | Current exact occurrence state, minimal anti-recreation tombstones, source-signal stream sequences for secure deletion, semantic expiry, list/count reads, realtime replacement, and push-delivery idempotency                                                                                                                             |
+| User authentication                 | User Auth              | Focused account, password, external-identity, consent, deletion, and key-shredding user facts. Identity unlink events preserve auth generation when `preserve_existing_credentials` is set; historical events without it advance the generation. | `UserModel`; password verifiers, auth generations, external identity links, and OAuth consent keyed by stable client ID (legacy facts by redirect origin); always cold-replayed                                                                                                                                                            |
+| OAuth clients                       | OAuth Clients          | `evt.oauth_client.>`                                                                                                                                                                                                                             | `OAuthClientModel`; validated metadata and callback origins for successfully authorized clients, distinct authorized-user counts, and administrative default/trusted/blocked policy; always cold-replayed                                                                                                                                  |
+| Invitations                         | Invitations            | `evt.invitation.>`                                                                                                                                                                                                                               | `InvitationModel`; immutable constraints, redemption count, revocation state, and administrator listings; always cold-replayed                                                                                                                                                                                                             |
 
 Registered projector keys are used by metrics and automation. Registered names
 match the admin projection diagnostics. Composite projections expose nested
 read models, but only their parent projector is started by `ChattoCore.Run`.
+`chatto_projection_component_estimated_bytes` reports separate room-timeline,
+threads, reactions, and shared event ID table (`event_ids`) estimates inside
+the Server Content View. The component estimates and the Notification
+Decisions estimate do not include the shared table. These estimates are
+diagnostic approximations; retained-heap benchmarks measure their actual Go
+heap cost. `BenchmarkProjectionRetainedHeapFromStore` replays the `EVT` stream
+of a copied NATS data directory from `CHATTO_BENCH_EVT_STORE_DIR` to measure
+the cost with real event mixes.
 
 Independent projectors isolate snapshot availability, replay cost, status,
 lag, failure, and read-your-writes waiters for state outside the content view.
@@ -295,7 +430,7 @@ the shared sequence after all matching component mutations commit.
 
 Permission resolution and permission explanation run inside one
 `ServerContentView` read transaction. Account state, bot ownership, room
-metadata, membership, bans, Room Group placement, and RBAC state therefore
+metadata, membership, suspensions, Room Group placement, and RBAC state therefore
 come from one applied EVT generation. Request-time authorization still uses
 the subject-tail validation and aggregate OCC procedure from ADR-087.
 
@@ -306,9 +441,9 @@ one projection generation. Explicit asset attachments establish immutable
 message, room, and author ownership; message-body facts supply an uploader-
 matched first-reference fallback for older histories plus public link-preview
 references. Room Timeline retains only timeline rendering, body lifecycle,
-tombstone, echo, and current
-room-file indexes; it does not duplicate asset lifecycle state. Message-body
-writers use the one content-view wait before they return.
+tombstone, echo, and current room-file indexes; it does not duplicate asset
+lifecycle state or complete message-body payloads. Message-body writers use the
+one content-view wait before they return.
 
 `UserProjection` retains encrypted user fields and their AAD metadata. The user
 and mentionable components decrypt login and email values during mutation
@@ -317,6 +452,14 @@ components prepare successfully. Neither plaintext nor the digests are
 persisted in `EVT`. Read hydration decrypts profile PII with
 request-scoped DEK reuse. KMS and decryption failures remain operational errors
 rather than appearing as missing or deleted users.
+Admin list reads use detached lifecycle and creation metadata before row
+hydration. Timestamp-ordered accounts do not require profile decryption for an
+empty search. Legacy accounts without timestamps still read their login to
+preserve sort order. This read view adds no persisted projection state.
+The projection also retains the event ID of the primary verified email. The
+first verified-email event supplies the default. A later primary-email event
+changes the selection by referencing an existing verified-email event, without
+copying the email address.
 `UserAuthProjection` is independently locked, registered, and replay-guarded.
 `UserModel` reads profile state from `UserProjection` and credential,
 external-identity, consent, and auth-generation state from
@@ -343,3 +486,31 @@ A webhook fact from the first unreleased implementation has no ID and projects
 to the synthetic `legacy` ID.
 The raw API key and incoming webhook credential are never projection values,
 snapshot fields, or retrievable resources.
+
+## Bot webhook projection
+
+[`botWebhookProjection`](../../cli/internal/core/bot_webhook_projection.go)
+uses cold EVT replay. It retains encrypted endpoint configuration and activation
+sequences. It consumes configuration, updates, revocations, and account deletion.
+Pause/resume advances the cutoff without changing the credential encryption
+context. A configuration edit replaces the encrypted settings for the same
+endpoint ID and advances the cutoff, but preserves the first creation time.
+Failure history and latest-failure summaries are read directly from LOG; they
+are not projection values and disappear when their records expire.
+
+### Echo content references
+
+Room Timeline resolves each visible echo to an original thread reply in the
+same room. Body selection and attachment indexes use the original body
+reference. Echo bodies from historical EVT records remain indexed only for
+physical record ownership and secure deletion. Snapshot restore rebuilds
+attachment membership from these links. The Room Timeline snapshot semantics
+token is `v9`. Timeline pages batch original metadata reads and reuse metadata
+and canonical bodies within the response. Missing or invalid original metadata
+is omitted for the affected echo; storage errors still fail the read. Historical
+echo metadata is never used as a fallback. Projections do not retain decrypted
+content.
+
+The Bleve search checkpoint contract is `bleve-message-index-v12`. Echo posts
+are not searchable contributions. Historical echo bodies cannot replace the
+original search document or create a second result.

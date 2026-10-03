@@ -71,7 +71,9 @@
     },
     "timeline": {
       "beginning": "ここから会話が始まります。",
-      "read_denied": "このルームのメッセージを読む権限がありません。"
+      "read_denied": "このルームのメッセージを読む権限がありません。",
+      "limited_empty": "読める会話はまだありません。",
+      "loading": "メッセージを読み込んでいます..."
     },
     "message": {
       "empty": "まだメッセージはありません",
@@ -87,6 +89,7 @@
         "remove_reaction": "{emoji} を削除します",
         "add_reaction": "リアクションを追加",
         "more_reactions": "その他のリアクション",
+        "reactions": "リアクション",
         "reply": "返信",
         "reply_room": "ルームで返信",
         "reply_thread": "スレッド内で返信",
@@ -96,9 +99,18 @@
         "edit_short": "編集",
         "copy_text": "テキストをコピー",
         "copy_text_failed": "テキストをコピーできませんでした",
-        "copy_link": "リンクをコピー"
+        "copy_link": "リンクをコピー",
+        "copy_message_link": "メッセージのリンクをコピー",
+        "copy_image": "画像をコピー",
+        "link_copied": "リンクをコピーしました",
+        "message_link_copied": "メッセージのリンクをコピーしました",
+        "copy_link_failed": "リンクをコピーできませんでした",
+        "image_copied": "画像をコピーしました",
+        "copy_image_failed": "画像をコピーできませんでした"
       },
       "meta": {
+        "echo": "エコー",
+        "edited_short": "編集済み",
         "pinned": "ピン留めされたメッセージ",
         "thread": "スレッド",
         "edited": "編集済みメッセージ",
@@ -142,6 +154,14 @@
       },
       "show_less": "一部を表示"
     },
+    "typing": {
+      "one": "{name} が入力しています",
+      "two": "{first} と {second} が入力しています",
+      "many_count": {
+        "other": "{names} と他 {count} 人が入力しています",
+        "one": "{names} と他 {count} 人が入力しています"
+      }
+    },
     "attachment": {
       "delete_title": "添付ファイルを削除",
       "delete_prompt": "この添付ファイルを削除してもよろしいですか?これを元に戻すことはできません。",
@@ -150,7 +170,27 @@
       "view_label": "{filename}を表示",
       "download_label": "{filename}をダウンロード",
       "image_refresh_failed": "画像リンクを更新できませんでした",
-      "download_refresh_failed": "ダウンロードリンクを更新できませんでした"
+      "download_refresh_failed": "ダウンロードリンクを更新できませんでした",
+      "add_description": "説明を追加",
+      "edit_description": "説明を編集",
+      "description_title": "添付ファイルの説明",
+      "description_label": "説明（任意）",
+      "description_help": "添付ファイルを見たり聞いたりできない人のために説明してください。",
+      "description_too_long": "説明は最大{max}文字まで入力できます。",
+      "description_update_failed": "添付ファイルの説明を更新できませんでした",
+      "html_viewer": {
+        "download": "ダウンロード",
+        "show_preview": "プレビューを表示",
+        "warning": "このドキュメントは外部のウェブサイトからコンテンツを読み込む場合があります。これらのウェブサイトにはあなたのIPアドレスが伝わります。",
+        "preview_title": "{filename} のプレビュー",
+        "preview_failed": "プレビューを読み込めませんでした。もう一度お試しください。",
+        "document_type": "ドキュメントの種類",
+        "html_document": "HTMLドキュメント",
+        "xhtml_document": "XHTMLドキュメント",
+        "file_size": "ファイルサイズ",
+        "unavailable": "利用できません",
+        "no_preview": "このファイルのプレビューはありません。保存するにはダウンロードしてください。"
+      }
     },
     "link_preview": {
       "delete_title": "リンクのプレビューを削除",
@@ -158,6 +198,7 @@
       "delete_failed": "リンクのプレビューを削除できませんでした"
     },
     "sidebar": {
+      "go_to_message": "メッセージへ移動",
       "extras": "部屋の特典",
       "resize": "部屋の追加ペインのサイズを変更する",
       "hide": "ルームの追加機能を非表示にする",
@@ -170,24 +211,25 @@
       "clear_member_search": "メンバー検索をクリア",
       "no_members": "メンバーが見つかりませんでした。",
       "online": "オンライン ({count})",
+      "bots": "ボット ({count})",
       "offline": "オフライン ({count})",
       "no_files": "このルームにはまだファイルがありません。",
       "files": "ファイル",
       "pins": "ピン留め",
-      "call": "電話をかける",
+      "call": "通話",
       "jump_to_file": "{filename} にジャンプします",
       "loading_files": "ファイルをロードしています...",
+      "loading_members": "メンバーを読み込み中...",
       "calls_unavailable": "このサーバーでは通話を利用できません。",
       "view_profile": "{name} のプロフィールを見る",
       "in_voice_call": "音声通話中",
       "in_video_call": "ビデオ通話中",
-      "ban_failed": "ルームへのメンバーの参加禁止に失敗しました",
-      "ban_success": "{name} をルームから禁止しました"
+      "remove_failed": "ユーザーをルームから退出させられませんでした",
+      "remove_success": "{name}をルームから退出させました",
+      "search": "検索"
     },
     "pins": {
-      "show": "ピン留めされたメッセージを表示",
       "unseen": "新しいピン留めメッセージ",
-      "hide": "ピン留めされたメッセージを非表示",
       "pin": "メッセージをピン留め",
       "unpin": "メッセージのピン留めを解除",
       "unpin_prompt": "このメッセージのピン留めを解除してもよろしいですか？",

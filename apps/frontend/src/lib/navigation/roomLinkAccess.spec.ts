@@ -1,7 +1,7 @@
 import { RoomKind } from '@chatto/api-types/api/v1/rooms_pb';
 import { describe, expect, it } from 'vitest';
 
-import type { RoomsListItem } from '$lib/state/server/rooms.svelte';
+import type { RoomsListItem } from '$lib/state/server/navigation';
 import { roomRouteAccess } from './roomLinkAccess';
 
 function room(overrides: Partial<RoomsListItem> = {}): RoomsListItem {
@@ -21,6 +21,11 @@ function room(overrides: Partial<RoomsListItem> = {}): RoomsListItem {
 }
 
 describe('roomRouteAccess', () => {
+  it('keeps saved membership unknown until the server answers', () => {
+    expect(roomRouteAccess({ rooms: [room({ viewerIsMember: null })], roomId: 'room-1' })).toEqual({
+      kind: 'unknown'
+    });
+  });
   it('classifies members as allowed room viewers', () => {
     expect(
       roomRouteAccess({

@@ -20,6 +20,45 @@ Shared message and enum definitions are documented in [Shared Types And Enums](/
 
 Creates messages in room and thread timelines.
 
+<a id="chatto-api-v1-MessageService-ListReactionUsers"></a>
+
+### ListReactionUsers
+
+Lists all users with the requested reaction. Requires room membership and
+permission to read the message. A missing reaction returns an empty page;
+a missing or hidden message returns NOT_FOUND or PERMISSION_DENIED.
+
+```http
+POST /api/connect/chatto.api.v1.MessageService/ListReactionUsers
+```
+
+<a id="chatto-api-v1-ListReactionUsersRequest"></a>
+
+#### Input: ListReactionUsersRequest
+
+Request all users with one emoji reaction on a message. Echo IDs resolve to
+the original message. Users are ordered by user ID ascending.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `room_id` | `string` | Room containing the message. |
+| `message_event_id` | `string` | Message or channel echo ID. |
+| `emoji` | `string` | Emoji shortcode, such as "thumbsup". |
+| `page` | [`PageRequest`](/reference/connectrpc-api/types/#chatto-api-v1-PageRequest) | Defaults to 50 results. Maximum: 100. Zero uses the default. |
+
+
+<a id="chatto-api-v1-ListReactionUsersResponse"></a>
+
+#### Result: ListReactionUsersResponse
+
+Complete reaction membership is available by paging this collection.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `user_ids` | `repeated string` | User IDs in this page. Use UserService.BatchGetUsers for profiles. |
+| `page` | [`PageInfo`](/reference/connectrpc-api/types/#chatto-api-v1-PageInfo) | Count and continuation for the matching reaction users. |
+
+
 <a id="chatto-api-v1-MessageService-FetchLinkPreview"></a>
 
 ### FetchLinkPreview
@@ -60,8 +99,10 @@ Result of fetching link preview metadata.
 ### CreateMessage
 
 Creates a message for the current user. The user must be a room member and
-must have message.post for room messages or message.post-in-thread for
-thread replies. Echoing a thread reply also requires message.echo and
+must have message.post for room messages. Thread replies require read
+access and either message.post, message.post-in-thread, or
+message.post-in-interactions with an existing interaction relationship.
+Echoing a thread reply also requires message.echo and
 message.post. The room's Threading Mode may automatically establish a root
 thread or reject a thread placement that the mode does not allow.
 
@@ -84,7 +125,8 @@ Request to create a message in a room or thread.
 | `in_reply_to` | `string` | Event ID this message replies to for attribution. |
 | `also_send_to_channel` | `bool` | True to also echo a thread reply into the main room timeline. |
 | `link_preview_token` | `string` | Short-lived token returned by FetchLinkPreview for the selected URL. The server resolves the token to cached, server-fetched metadata during post. |
-| `create_thread` | `bool` | True to establish the new root message as a thread immediately. Requires both message.post and message.post-in-thread. Channel rooms only; cannot be combined with thread_root_event_id. |
+| `create_thread` | `bool` | True to establish the new root message as a thread immediately. Requires message.post (which includes thread posting). Cannot be combined with thread_root_event_id. |
+| `attachment_descriptions` | repeated [`MessageAttachmentDescriptionInput`](/reference/connectrpc-api/types/#chatto-api-v1-MessageAttachmentDescriptionInput) | Optional descriptions for assets in attachment_asset_ids. Asset IDs must be unique in this list. At most one description can target each asset. |
 
 
 <a id="chatto-api-v1-CreateMessageResponse"></a>
@@ -103,12 +145,14 @@ Result of creating a message.
 ### UpdateMessage
 
 Edits a message body. Authors can edit their own messages within the edit
-window. Effective message.manage permits edits at any time. Only the
-message author can change channel echo state. Disabled rooms reject
+window. Effective message.manage permits edits at any time and removal of
+another author's channel echo. Only the author can enable an echo, which
+also requires message.echo and message.post. Omit unchanged echo state.
+Disabled rooms reject
 creation of a new channel echo while allowing an existing echo to be
 removed. Room membership is also required.
-Channel-room edits require message.read or a matching thread relationship
-with message.read-interactions. DM membership authorizes the DM read.
+Edits require message.read or a matching thread relationship with
+message.read-interactions.
 
 ```http
 POST /api/connect/chatto.api.v1.MessageService/UpdateMessage
@@ -118,14 +162,16 @@ POST /api/connect/chatto.api.v1.MessageService/UpdateMessage
 
 #### Input: UpdateMessageRequest
 
-Request to patch a message.
+Request to patch a message. update_mask selects fields to apply or reset.
+Fields outside the mask stay unchanged.
 
 | Field | Type | Description |
 | --- | --- | --- |
 | `room_id` | `string` | Required. Room containing the message. |
 | `event_id` | `string` | Required. Event ID of the message to edit. |
-| `body` | `optional string` | New message body text. Omit to preserve the current body. |
-| `also_send_to_channel` | `optional bool` | For thread replies, whether a channel echo should exist after saving. Omit to preserve the current echo state. |
+| `body` | `optional string` | New message body text. Select body in update_mask to change it. |
+| `also_send_to_channel` | `optional bool` | For thread replies, whether a channel echo should exist after saving. Select also_send_to_channel in update_mask to change it. |
+| `update_mask` | `google.protobuf.FieldMask` | Editable fields to apply or reset: body, also_send_to_channel. Omit to infer populated fields; * selects all editable fields. An explicit empty mask is invalid. Unselected values are ignored. Selected absent values reset the field to its default, subject to field validation. |
 
 
 <a id="chatto-api-v1-UpdateMessageResponse"></a>
@@ -168,10 +214,6 @@ Request to retract a message.
 
 Result of retracting a message.
 
-| Field | Type | Description |
-| --- | --- | --- |
-| `deleted` | `bool` | True when the delete/retract request was accepted. |
-
 
 <a id="chatto-api-v1-MessageService-DeleteAttachment"></a>
 
@@ -202,9 +244,43 @@ Request to remove one attachment from a message.
 
 Result of removing one attachment from a message.
 
+
+<a id="chatto-api-v1-MessageService-SetAttachmentDescription"></a>
+
+### SetAttachmentDescription
+
+Sets or clears one attachment description. Authors can change descriptions
+within the message edit window. Effective message.manage permits changes
+at any time and to other users' messages. Room membership and message read
+access are required.
+
+```http
+POST /api/connect/chatto.api.v1.MessageService/SetAttachmentDescription
+```
+
+<a id="chatto-api-v1-SetAttachmentDescriptionRequest"></a>
+
+#### Input: SetAttachmentDescriptionRequest
+
+Request to set or clear one attachment description.
+
 | Field | Type | Description |
 | --- | --- | --- |
-| `deleted` | `bool` | True when the attachment removal was accepted. |
+| `room_id` | `string` | Required. Room containing the message. |
+| `event_id` | `string` | Required. Message event containing the attachment, or its channel echo. |
+| `attachment_id` | `string` | Required. Attachment asset ID in the current message body. |
+| `description` | `string` | Replacement description with at most 1,000 Unicode characters. Trim outer whitespace before sending. Chatto also trims outer whitespace and preserves internal line breaks. An empty result clears the description. |
+
+
+<a id="chatto-api-v1-SetAttachmentDescriptionResponse"></a>
+
+#### Result: SetAttachmentDescriptionResponse
+
+Result of setting or clearing an attachment description.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `message` | [`Message`](/reference/connectrpc-api/types/#chatto-api-v1-Message) | Renderable message after the description change. |
 
 
 <a id="chatto-api-v1-MessageService-DeleteLinkPreview"></a>
@@ -236,10 +312,6 @@ Request to remove the accepted link preview from a message.
 
 Result of removing a link preview from a message.
 
-| Field | Type | Description |
-| --- | --- | --- |
-| `deleted` | `bool` | True when the link preview removal was accepted. |
-
 
 <a id="chatto-api-v1-MessageService-GetMessage"></a>
 
@@ -247,9 +319,9 @@ Result of removing a link preview from a message.
 
 Reads one renderable message, including current body, attachment metadata,
 link preview, reactions, thread metadata, and pin state. Authentication
-and room membership are required. Channel-room reads also require
+and room membership are required. Reads also require
 message.read or a matching thread relationship with
-message.read-interactions. DM membership authorizes DM reads. Returns
+message.read-interactions. Returns
 NOT_FOUND when the event does not exist, is not a message, has been
 retracted, or belongs to a different room.
 
@@ -285,9 +357,9 @@ Response containing one renderable message.
 ### BatchGetMessages
 
 Reads many renderable messages and their current pin state in one room.
-Authentication and room membership are required. Channel-room reads also
+Authentication and room membership are required. Reads also
 require message.read or a matching thread relationship with
-message.read-interactions. DM membership authorizes DM reads. Missing,
+message.read-interactions. Missing,
 retracted, non-message, wrong-room, and inaccessible event IDs are omitted.
 Results preserve first-seen request order, and repeated event IDs are
 de-duplicated.
@@ -324,9 +396,8 @@ Response containing renderable messages.
 ### AddReaction
 
 Adds a reaction to a message. The user must be a room member and have
-message.react. Channel-room reactions also require message.read or a
-matching thread relationship with message.read-interactions. DM membership
-authorizes the DM read.
+message.react. Reactions also require message.read or a matching thread
+relationship with message.read-interactions.
 
 ```http
 POST /api/connect/chatto.api.v1.MessageService/AddReaction
@@ -368,9 +439,8 @@ Result of adding a reaction.
 ### RemoveReaction
 
 Removes a reaction from a message. The user must be a room member and have
-message.react. Channel-room reactions also require message.read or a
-matching thread relationship with message.read-interactions. DM membership
-authorizes the DM read.
+message.react. Reactions also require message.read or a matching thread
+relationship with message.read-interactions.
 
 ```http
 POST /api/connect/chatto.api.v1.MessageService/RemoveReaction

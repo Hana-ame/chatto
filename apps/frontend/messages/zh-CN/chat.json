@@ -1,8 +1,14 @@
 {
   "chat": {
+    "privileged_mode": {
+      "enable": "启用特权模式",
+      "disable": "停用特权模式",
+      "confirmation": "这会在 15 分钟内启用你在此服务器上获得的额外权限。"
+    },
     "notifications": {
       "title": "通知",
       "subtitle": "最新动态",
+      "list_title": "最近动态",
       "clear_read": "清除已读",
       "empty_title": "暂无通知",
       "empty_body": "你已查看所有通知！",
@@ -42,40 +48,96 @@
       "send_message": "发送消息",
       "view_profile": "查看个人资料",
       "profile_requires_direct_message": "查看此个人资料需要有私信会话。",
+      "manage_bot": "管理机器人",
       "view_in_admin": "在服务器管理中查看",
       "copy_user_id": "复制用户 ID"
     },
     "server_gutter": {
       "add_server": "添加服务器",
+      "log_in": "登录此服务器",
+      "sign_out": "退出此服务器",
       "version": "版本 {version}",
-      "version_unknown": "版本未知",
       "unreachable": "无法访问服务器",
+      "connection_unavailable": "连接不可用",
       "compatibility_server_too_old": "此应用需要服务器升级到 Chatto 0.5 或更高版本后才能连接。",
-      "compatibility_unknown": "此应用无法根据服务器版本确定兼容性。"
+      "compatibility_unknown": "此应用无法根据服务器版本确定兼容性。",
+      "go_to_notifications_count": {
+        "one": "前往查看 {count} 条通知",
+        "other": "前往查看 {count} 条通知"
+      },
+      "go_to_notification": "前往通知",
+      "go_to_first_unread": "前往第一个未读聊天室",
+      "notifications_count": {
+        "one": "{count} 条通知",
+        "other": "{count} 条通知"
+      }
+    },
+    "server_unavailable": {
+      "too_old_title": "需要升级服务器",
+      "too_old_body": "此服务器运行的 Chatto 版本已不再受此应用支持。请让服务器管理员升级 Chatto。",
+      "unknown_title": "未知的服务器版本",
+      "unknown_body": "此应用无法识别此服务器的 Chatto 版本，因此无法连接。",
+      "unreachable_body": "此应用无法连接到此服务器。请检查你的网络连接，或稍后重试。",
+      "server_version": "服务器版本",
+      "required_version": "所需版本",
+      "required_version_value": "{version} 或更高版本",
+      "check_again": "重新检查"
+    },
+    "server_signed_out": {
+      "title": "你已退出此服务器",
+      "body": "登录后即可在此服务器上阅读和发送消息。"
     },
     "threads": {
       "title": "我的话题串",
       "subtitle": "你关注的话题串",
+      "list_title": "关注的话题串",
       "filter_label": "筛选话题串",
       "filter_all": "全部",
       "filter_unread": "未读",
       "empty_title": "暂无关注的话题串",
       "empty_body": "你关注的话题串会显示在这里。参与话题串后，你会自动关注它。",
-      "no_unread_loaded": "已加载的话题串中没有未读内容",
       "all_caught_up": "已全部读完",
-      "loaded_summary": "已加载 {loaded}/{total} 个关注的话题串。",
       "load_more": "加载更多",
       "no_unread": "目前没有未读话题串。",
       "message_missing": "消息已不可用",
       "in_room": "位于",
-      "in_room_capitalized": "位于"
+      "in_room_capitalized": "位于",
+      "load_failed": "加载话题串失败",
+      "notifications_count": {
+        "one": "{count} 条通知",
+        "other": "{count} 条通知"
+      }
     },
     "profile": {
       "title": "个人资料",
       "fallback_title": "个人资料",
       "not_found": "未找到该用户",
       "bot": "机器人",
-      "local_time": "当地时间 {time}（{zone}）"
+      "local_time": "当地时间 {time}（{zone}）",
+      "permissions": {
+        "title": "它能做什么",
+        "empty": "没有对你可见的有效权限。",
+        "error": "无法加载此机器人的权限。",
+        "inactive_title": "未生效的授权",
+        "inactive_note": "这些授权已保存，但所有者当前的权限不允许使用。",
+        "read": "读取所有消息",
+        "interactions": "读取它创建的或被直接提及的主题",
+        "post": "发布新消息",
+        "room": "#{name}",
+        "group": "分组：{name}",
+        "dm": "它参与的私信",
+        "joined_rooms": "它已加入的房间",
+        "all_rooms": "房间",
+        "server": "此服务器",
+        "list_rooms": "浏览房间",
+        "echo": "在房间时间线中显示主题回复",
+        "start_calls": "发起通话",
+        "browse_join": "浏览并加入房间",
+        "reply": "在线程中回复",
+        "manage_messages": "管理消息"
+      },
+      "owned_by": "所有者",
+      "open_card": "打开 {name} 的个人资料卡"
     }
   }
 }

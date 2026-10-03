@@ -720,10 +720,6 @@ func TestGenericAdminMutationsRejectBotAccounts(t *testing.T) {
 		t.Fatalf("CreateBot: %v", err)
 	}
 
-	newName := "Changed"
-	if _, err := c.AdminUpdateUser(ctx, admin.GetId(), bot.User.GetId(), AdminUpdateUserInput{DisplayName: &newName}); !errors.Is(err, ErrHumanAccountRequired) {
-		t.Fatalf("AdminUpdateUser(bot) err = %v, want ErrHumanAccountRequired", err)
-	}
 	if err := c.AdminSetUserPasswordAuthorized(ctx, admin.GetId(), bot.User.GetId(), "password456"); !errors.Is(err, ErrHumanAccountRequired) {
 		t.Fatalf("AdminSetUserPasswordAuthorized(bot) err = %v, want ErrHumanAccountRequired", err)
 	}
@@ -902,12 +898,19 @@ func TestBotPermissionCeilingResolvesExplicitInclusion(t *testing.T) {
 	}
 }
 
-func TestBotDMReadUsesMembershipInsteadOfDelegatedMessageRead(t *testing.T) {
+func TestBotDMGrantIsScopedAndUsesDynamicOwnerCeiling(t *testing.T) {
 	c, _ := setupTestCore(t)
 	ctx := testContext(t)
 	owner, err := c.CreateUser(ctx, SystemActorID, "dm-bot-owner", "DM Bot Owner", "password123")
 	if err != nil {
 		t.Fatalf("CreateUser owner: %v", err)
+	}
+	admin, err := c.CreateUser(ctx, SystemActorID, "dm-bot-admin", "DM Bot Admin", "password123")
+	if err != nil {
+		t.Fatalf("CreateUser admin: %v", err)
+	}
+	if err := c.AssignAdminRole(ctx, admin.GetId()); err != nil {
+		t.Fatalf("AssignAdminRole: %v", err)
 	}
 	bot, err := c.CreateBot(ctx, owner.GetId(), "dm_reader_bot", "DM Reader Bot")
 	if err != nil {
@@ -921,25 +924,43 @@ func TestBotDMReadUsesMembershipInsteadOfDelegatedMessageRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FindOrCreateDM: %v", err)
 	}
-	message, err := c.PostMessage(ctx, KindDM, dm.GetId(), participant.GetId(), "message for bot participant", nil, "", "", nil, false)
-	if err != nil {
-		t.Fatalf("PostMessage: %v", err)
+	for _, permission := range []Permission{PermMessageRead, PermMessagePost, PermMessagePostInThread} {
+		if err := c.SetUserPermissionState(ctx, owner.GetId(), bot.User.GetId(), PermissionTargetScope{Kind: MatrixScopeDM}, permission, PermissionStateAllow); err != nil {
+			t.Fatalf("grant bot DM %s: %v", permission, err)
+		}
 	}
-	if err := c.DenyServerPermission(ctx, SystemActorID, RoleEveryone, PermMessageRead); err != nil {
-		t.Fatalf("DenyServerPermission message.read: %v", err)
+	for _, check := range []struct {
+		name string
+		fn   func(RoomKind, string) (bool, error)
+	}{
+		{name: "read", fn: func(kind RoomKind, roomID string) (bool, error) {
+			return c.CanReadMessages(ctx, bot.User.GetId(), kind, roomID)
+		}},
+		{name: "post", fn: func(kind RoomKind, roomID string) (bool, error) {
+			return c.CanPostMessage(ctx, bot.User.GetId(), kind, roomID)
+		}},
+		{name: "post in thread", fn: func(kind RoomKind, roomID string) (bool, error) {
+			return c.CanPostInThread(ctx, bot.User.GetId(), kind, roomID)
+		}},
+	} {
+		if allowed, err := check.fn(KindDM, dm.GetId()); err != nil || !allowed {
+			t.Fatalf("bot DM %s = %v, %v; want true", check.name, allowed, err)
+		}
+		if allowed, err := check.fn(KindChannel, ""); err != nil || allowed {
+			t.Fatalf("bot channel %s = %v, %v; want false", check.name, allowed, err)
+		}
 	}
-	if canRead, err := c.CanReadMessages(ctx, bot.User.GetId(), KindChannel, ""); err != nil || canRead {
-		t.Fatalf("unconfigured bot channel CanReadMessages = %v, %v; want false", canRead, err)
+	if err := c.SetUserPermissionState(ctx, admin.GetId(), owner.GetId(), PermissionTargetScope{Kind: MatrixScopeDM}, PermMessageRead, PermissionStateDeny); err != nil {
+		t.Fatalf("deny owner DM message.read: %v", err)
 	}
-	if canRead, err := c.CanReadMessages(ctx, bot.User.GetId(), KindDM, dm.GetId()); err != nil || !canRead {
-		t.Fatalf("bot DM CanReadMessages = %v, %v; want true", canRead, err)
+	if allowed, err := c.CanReadMessages(ctx, bot.User.GetId(), KindDM, dm.GetId()); err != nil || allowed {
+		t.Fatalf("owner-capped bot DM read = %v, %v; want false", allowed, err)
 	}
-	if _, err := c.RoomTimelineReads().GetMessage(ctx, bot.User.GetId(), dm.GetId(), message.GetId()); err != nil {
-		t.Fatalf("GetMessage as bot DM participant: %v", err)
+	if err := c.SetUserPermissionState(ctx, admin.GetId(), owner.GetId(), PermissionTargetScope{Kind: MatrixScopeDM}, PermMessageRead, PermissionStateAllow); err != nil {
+		t.Fatalf("restore owner DM message.read: %v", err)
 	}
-	occurrences := testNotificationOccurrences(t, c, bot.User.GetId())
-	if len(occurrences) != 1 || occurrences[0].GetSourceEventId() != message.GetId() || !testOccurrenceHasKind(occurrences[0], notificationTestSignalDirectMessage) {
-		t.Fatalf("bot DM occurrences = %+v, want the human-authored direct message", occurrences)
+	if allowed, err := c.CanReadMessages(ctx, bot.User.GetId(), KindDM, dm.GetId()); err != nil || !allowed {
+		t.Fatalf("restored owner-capped bot DM read = %v, %v; want true", allowed, err)
 	}
 }
 
@@ -1239,6 +1260,16 @@ func TestCanonicalUserPermissionMatrixForBotFiltersHiddenRoomsAndKeepsDirectoryG
 	if err != nil {
 		t.Fatalf("GetUserPermissionMatrix: %v", err)
 	}
+	filtered, err := c.GetUserPermissionMatrixPage(ctx, owner.GetId(), bot.User.GetId(), false, PermissionScopeQuery{
+		Scope: &PermissionTargetScope{Kind: MatrixScopeRoom, ID: room.GetId()},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(filtered.Scopes) != 0 || len(filtered.Cells) != 0 || filtered.Page.TotalCount != 0 || filtered.Page.HasMore {
+		t.Fatal("hidden bot room leaked through scope filter or counts")
+	}
+
 	groupFound := false
 	for _, scope := range matrix.Scopes {
 		if scope.ID == "group:"+group.GetId() && scope.Label == group.GetName() {
@@ -1384,27 +1415,127 @@ func TestDeletingOwnerCascadesOwnedBots(t *testing.T) {
 	}
 }
 
-func TestHumanAndBotUsernameSuffixRules(t *testing.T) {
+func TestHumanAndBotUsernamesShareValidation(t *testing.T) {
 	c, _ := setupTestCore(t)
 	ctx := testContext(t)
-	if _, err := c.CreateUser(ctx, SystemActorID, "reserved_bot", "Reserved", "password123"); !errors.Is(err, ErrHumanLoginReservedForBot) {
-		t.Fatalf("human _bot suffix err = %v", err)
+	human, err := c.CreateUser(ctx, SystemActorID, "human_bot", "Human", "password123")
+	if err != nil || human.GetIsBot() {
+		t.Fatalf("human with _bot login = %+v, %v", human, err)
 	}
-	owner, err := c.CreateUser(ctx, SystemActorID, "suffix-owner", "Suffix Owner", "password123")
+	owner, err := c.CreateUser(ctx, SystemActorID, "bot-owner", "Bot Owner", "password123")
 	if err != nil {
 		t.Fatalf("CreateUser owner: %v", err)
 	}
-	if _, err := c.UpdateUserLogin(ctx, owner.GetId(), "human_bot"); !errors.Is(err, ErrHumanLoginReservedForBot) {
-		t.Fatalf("human rename to _bot err = %v, want ErrHumanLoginReservedForBot", err)
+	updatedHuman, err := c.UpdateUserLogin(ctx, owner.GetId(), "renamed_bot")
+	if err != nil || updatedHuman.GetIsBot() {
+		t.Fatalf("human rename to _bot = %+v, %v", updatedHuman, err)
 	}
-	if _, err := c.CreateBot(ctx, owner.GetId(), "missing-suffix", "Missing Suffix"); !errors.Is(err, ErrBotLoginSuffixRequired) {
-		t.Fatalf("bot missing suffix err = %v", err)
+	bot, err := c.CreateBot(ctx, owner.GetId(), "helper", "Helper")
+	if err != nil || !bot.User.GetIsBot() {
+		t.Fatalf("bot without suffix = %+v, %v", bot, err)
 	}
-	uppercase, err := c.CreateBot(ctx, owner.GetId(), "uppercase_BOT", "Uppercase Bot")
+	updatedBot, err := c.UpdateUserLogin(ctx, bot.User.GetId(), "renamed-helper")
+	if err != nil || !updatedBot.GetIsBot() {
+		t.Fatalf("bot rename without suffix = %+v, %v", updatedBot, err)
+	}
+	if _, err := c.CreateBot(ctx, owner.GetId(), "HUMAN_BOT", "Collision"); !errors.Is(err, ErrLoginAlreadyTaken) {
+		t.Fatalf("bot login collision with human = %v, want ErrLoginAlreadyTaken", err)
+	}
+	if _, err := c.CreateUser(ctx, SystemActorID, "RENAMED-HELPER", "Collision", "password123"); !errors.Is(err, ErrLoginAlreadyTaken) {
+		t.Fatalf("human login collision with bot = %v, want ErrLoginAlreadyTaken", err)
+	}
+}
+
+func TestBotOwnerUpdatesBotProfile(t *testing.T) {
+	c, _ := setupTestCore(t)
+	ctx := testContext(t)
+	owner, err := c.CreateUser(ctx, SystemActorID, "profile-bot-owner", "Profile Bot Owner", "password123")
 	if err != nil {
-		t.Fatalf("case-insensitive suffix CreateBot: %v", err)
+		t.Fatalf("CreateUser owner: %v", err)
 	}
-	if _, err := c.UpdateUserLogin(ctx, uppercase.User.GetId(), "lost-suffix"); !errors.Is(err, ErrBotLoginSuffixRequired) {
-		t.Fatalf("bot rename without suffix err = %v, want ErrBotLoginSuffixRequired", err)
+	stranger, err := c.CreateUser(ctx, SystemActorID, "profile-bot-stranger", "Profile Bot Stranger", "password123")
+	if err != nil {
+		t.Fatalf("CreateUser stranger: %v", err)
+	}
+	bot, err := c.CreateBot(ctx, owner.GetId(), "profile_bot", "Profile Bot")
+	if err != nil {
+		t.Fatalf("CreateBot: %v", err)
+	}
+	botID := bot.User.GetId()
+
+	login := "renamed_profile_bot"
+	displayName := "Renamed Profile Bot"
+	bio := "Answers questions about the deploy pipeline."
+	updated, err := c.UpdateManagedUserProfile(ctx, owner.GetId(), botID, &login, &displayName, &bio)
+	if err != nil {
+		t.Fatalf("UpdateManagedUserProfile owner: %v", err)
+	}
+	if updated.GetLogin() != login || updated.GetDisplayName() != displayName || updated.GetBio() != bio {
+		t.Fatalf("updated bot = %+v, want login %q display %q bio %q", updated, login, displayName, bio)
+	}
+	bioEvents, _, err := c.EventPublisher.SubjectEvents(ctx, evtstream.UserAggregate(botID).Subject(evtstream.EventUserBioChanged))
+	if err != nil {
+		t.Fatalf("SubjectEvents bot bio: %v", err)
+	}
+	if len(bioEvents) != 1 || bioEvents[0].GetActorId() != owner.GetId() {
+		t.Fatalf("bot bio events = %+v, want one event by the owner", bioEvents)
+	}
+	lastChange, err := c.GetLastLoginChange(ctx, botID)
+	if err != nil {
+		t.Fatalf("GetLastLoginChange: %v", err)
+	}
+	if lastChange.IsZero() {
+		t.Fatal("owner login change did not start the bot cooldown")
+	}
+
+	// The bot's cooldown applies to its owner and to bot managers.
+	secondLogin := "profile_bot_again"
+	if _, err := c.UpdateManagedUserProfile(ctx, owner.GetId(), botID, &secondLogin, nil, nil); !errors.Is(err, ErrLoginChangeCooldown) {
+		t.Fatalf("second owner rename err = %v, want ErrLoginChangeCooldown", err)
+	}
+	botManager, err := c.CreateUser(ctx, SystemActorID, "profile-bot-manager", "Profile Bot Manager", "password123")
+	if err != nil {
+		t.Fatalf("CreateUser bot manager: %v", err)
+	}
+	if err := c.GrantUserPermission(ctx, SystemActorID, botManager.GetId(), PermBotManage); err != nil {
+		t.Fatalf("grant bot.manage: %v", err)
+	}
+	if _, err := c.UpdateManagedUserProfile(ctx, botManager.GetId(), botID, &secondLogin, nil, nil); !errors.Is(err, ErrLoginChangeCooldown) {
+		t.Fatalf("bot manager rename err = %v, want ErrLoginChangeCooldown", err)
+	}
+	// Other profile fields have no cooldown.
+	laterBio := "Still editable during the cooldown."
+	if _, err := c.UpdateManagedUserProfile(ctx, owner.GetId(), botID, nil, nil, &laterBio); err != nil {
+		t.Fatalf("owner bio edit during cooldown: %v", err)
+	}
+
+	// An account manager bypasses the cooldown without advancing it.
+	accountManager, err := c.CreateUser(ctx, SystemActorID, "profile-account-manager", "Profile Account Manager", "password123")
+	if err != nil {
+		t.Fatalf("CreateUser account manager: %v", err)
+	}
+	if err := c.GrantUserPermission(ctx, SystemActorID, accountManager.GetId(), PermUserManageAccounts); err != nil {
+		t.Fatalf("grant user.manage-accounts: %v", err)
+	}
+	if _, err := c.UpdateManagedUserProfile(ctx, accountManager.GetId(), botID, &secondLogin, nil, nil); err != nil {
+		t.Fatalf("account manager rename during cooldown: %v", err)
+	}
+	afterBypass, err := c.GetLastLoginChange(ctx, botID)
+	if err != nil {
+		t.Fatalf("GetLastLoginChange after bypass: %v", err)
+	}
+	if !afterBypass.Equal(lastChange) {
+		t.Fatalf("account manager rename moved the cooldown from %v to %v", lastChange, afterBypass)
+	}
+
+	strangerBio := "Hijacked."
+	if _, err := c.UpdateManagedUserProfile(ctx, stranger.GetId(), botID, nil, nil, &strangerBio); !errors.Is(err, ErrPermissionDenied) {
+		t.Fatalf("stranger update err = %v, want ErrPermissionDenied", err)
+	}
+	if _, err := c.UpdateManagedUserProfile(ctx, botID, owner.GetId(), nil, nil, &strangerBio); !errors.Is(err, ErrPermissionDenied) {
+		t.Fatalf("bot updates owner err = %v, want ErrPermissionDenied", err)
+	}
+	if _, err := c.UpdateManagedUserProfile(ctx, owner.GetId(), botID, nil, nil, nil); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("empty update err = %v, want ErrInvalidArgument", err)
 	}
 }

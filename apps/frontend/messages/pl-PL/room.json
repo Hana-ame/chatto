@@ -71,7 +71,9 @@
     },
     "timeline": {
       "beginning": "To początek tej rozmowy.",
-      "read_denied": "Nie masz uprawnień do odczytywania wiadomości w tym pokoju."
+      "read_denied": "Nie masz uprawnień do odczytywania wiadomości w tym pokoju.",
+      "limited_empty": "Nie ma jeszcze rozmów, które możesz przeczytać.",
+      "loading": "Wczytywanie wiadomości..."
     },
     "message": {
       "empty": "Nie ma jeszcze żadnych wiadomości",
@@ -87,6 +89,7 @@
         "remove_reaction": "Usuń {emoji}",
         "add_reaction": "Dodaj reakcję",
         "more_reactions": "Więcej reakcji",
+        "reactions": "Reakcje",
         "reply": "Odpowiedz",
         "reply_room": "Odpowiedz w pokoju",
         "reply_thread": "Odpowiedz w wątku",
@@ -96,9 +99,18 @@
         "edit_short": "Edytuj",
         "copy_text": "Kopiuj tekst",
         "copy_text_failed": "Nie udało się skopiować tekstu",
-        "copy_link": "Skopiuj link"
+        "copy_link": "Skopiuj link",
+        "copy_message_link": "Skopiuj link do wiadomości",
+        "copy_image": "Skopiuj obraz",
+        "link_copied": "Link skopiowany",
+        "message_link_copied": "Skopiowano link do wiadomości",
+        "copy_link_failed": "Nie udało się skopiować linku",
+        "image_copied": "Obraz skopiowany",
+        "copy_image_failed": "Nie udało się skopiować obrazu"
       },
       "meta": {
+        "echo": "Echo",
+        "edited_short": "Edytowano",
         "pinned": "Przypięta wiadomość",
         "thread": "Wątek",
         "edited": "Edytowana wiadomość",
@@ -148,6 +160,15 @@
       },
       "show_less": "pokazuj mniej"
     },
+    "typing": {
+      "one": "{name} pisze",
+      "two": "{first} i {second} piszą",
+      "many_count": {
+        "other": "{names} i {count} osób pisze",
+        "one": "{names} i {count} osoba piszą",
+        "few": "{names} i {count} osoby piszą"
+      }
+    },
     "attachment": {
       "delete_title": "Usuń załącznik",
       "delete_prompt": "Czy na pewno chcesz usunąć ten załącznik? Tego nie można cofnąć.",
@@ -156,7 +177,27 @@
       "view_label": "Wyświetl {filename}",
       "download_label": "Pobierz {filename}",
       "image_refresh_failed": "Nie można odświeżyć linku do obrazu",
-      "download_refresh_failed": "Nie można odświeżyć linku do pobrania"
+      "download_refresh_failed": "Nie można odświeżyć linku do pobrania",
+      "add_description": "Dodaj opis",
+      "edit_description": "Edytuj opis",
+      "description_title": "Opis załącznika",
+      "description_label": "Opis (opcjonalny)",
+      "description_help": "Opisz załącznik osobom, które nie mogą go zobaczyć ani usłyszeć.",
+      "description_too_long": "Opis może zawierać maksymalnie {max} znaków.",
+      "description_update_failed": "Nie udało się zaktualizować opisu załącznika",
+      "html_viewer": {
+        "download": "Pobierz",
+        "show_preview": "Pokaż podgląd",
+        "warning": "Ten dokument może wczytywać treści z zewnętrznych witryn. Te witryny mogą zobaczyć Twój adres IP.",
+        "preview_title": "Podgląd pliku {filename}",
+        "preview_failed": "Nie udało się wczytać podglądu. Spróbuj ponownie.",
+        "document_type": "Typ dokumentu",
+        "html_document": "Dokument HTML",
+        "xhtml_document": "Dokument XHTML",
+        "file_size": "Rozmiar pliku",
+        "unavailable": "Niedostępny",
+        "no_preview": "Podgląd tego pliku jest niedostępny. Pobierz go, aby go zapisać."
+      }
     },
     "link_preview": {
       "delete_title": "Usuń podgląd linku",
@@ -164,6 +205,7 @@
       "delete_failed": "Nie udało się usunąć podglądu linku"
     },
     "sidebar": {
+      "go_to_message": "Przejdź do wiadomości",
       "extras": "Dodatki do pokoju",
       "resize": "Zmień rozmiar okienka z dodatkami do pokoju",
       "hide": "Ukryj dodatki do pokoju",
@@ -176,24 +218,25 @@
       "clear_member_search": "Wyczyść wyszukiwanie członków",
       "no_members": "Nie znaleziono członków.",
       "online": "Online ({count})",
+      "bots": "Bots ({count})",
       "offline": "Offline ({count})",
       "no_files": "Nie ma jeszcze plików w tym pokoju.",
       "files": "Pliki",
       "pins": "Przypięte wiadomości",
-      "call": "Zadzwoń",
+      "call": "Rozmowa",
       "jump_to_file": "Skocz do {filename}",
       "loading_files": "Ładowanie plików...",
+      "loading_members": "Ładowanie członków...",
       "calls_unavailable": "Połączenia nie są dostępne na tym serwerze.",
       "view_profile": "Zobacz profil {name}",
       "in_voice_call": "Podczas połączenia głosowego",
       "in_video_call": "Podczas rozmowy wideo",
-      "ban_failed": "Nie udało się zablokować członka w pokoju",
-      "ban_success": "Zablokowano {name} w pokoju"
+      "remove_failed": "Nie udało się usunąć użytkownika z pokoju",
+      "remove_success": "Usunięto {name} z pokoju",
+      "search": "Szukaj"
     },
     "pins": {
-      "show": "Pokaż przypięte wiadomości",
       "unseen": "Nowe przypięte wiadomości",
-      "hide": "Ukryj przypięte wiadomości",
       "pin": "Przypnij wiadomość",
       "unpin": "Odepnij wiadomość",
       "unpin_prompt": "Czy na pewno chcesz usunąć przypięcie tej wiadomości?",

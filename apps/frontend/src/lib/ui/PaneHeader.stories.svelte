@@ -1,4 +1,5 @@
 <script module lang="ts">
+  import AccountName from '$lib/components/users/AccountName.svelte';
   import { defineMeta } from '@storybook/addon-svelte-csf';
   import PaneHeader from './PaneHeader.svelte';
   import HeaderIconButton from './HeaderIconButton.svelte';
@@ -21,6 +22,12 @@
   });
 </script>
 
+<Story name="Account title" asChild>
+  <PaneHeader title="Assistant (BOT)">
+    {#snippet titleContent()}<AccountName name="Assistant" identity={{ isBot: true }} />{/snippet}
+  </PaneHeader>
+</Story>
+
 <Story name="Plain" asChild>
   <div class="w-[480px] rounded-md border border-border">
     <PaneHeader title="Members" subtitle="View and manage server members" />
@@ -37,7 +44,7 @@
   <div class="w-[480px] rounded-md border border-border">
     <PaneHeader title="Thread in #pico-8" onBack={() => {}} backLabel="Back to room">
       {#snippet actions()}
-        <HeaderIconButton icon="icon-[uil--bell]" label="Follow thread" tone="active" />
+        <HeaderIconButton icon="icon-[uil--bell]" label="Unfollow thread" />
         <HeaderIconButton icon="icon-[uil--times]" label="Close thread" />
       {/snippet}
     </PaneHeader>
@@ -56,8 +63,26 @@
   </div>
 </Story>
 
-<Story name="Loading" asChild>
-  <div class="w-[480px] rounded-md border border-border">
-    <PaneHeader title="" loading skeletonButtons={2} />
+<Story name="Software keyboard open" asChild>
+  <div data-keyboard-open class="max-w-full rounded-md border border-border">
+    <PaneHeader title="#general" hideOnKeyboard />
+    <p class="p-4">Below the mobile breakpoint, chat content takes the room header's space.</p>
+    <PaneHeader title="Thread" onBack={() => {}} backLabel="Back to room" />
+  </div>
+</Story>
+
+<Story name="Responsive actions" asChild>
+  <div class="w-[390px] max-w-full resize-x overflow-auto rounded-md border border-border">
+    <PaneHeader title="#general-discussion" collapseActions>
+      {#snippet actions()}
+        <HeaderIconButton icon="icon-[uil--users-alt]" label="Hide members" tone="active" />
+        <HeaderIconButton icon="icon-[uil--search]" label="Search" />
+        <HeaderIconButton icon="icon-[uil--phone]" label="Call" />
+        <HeaderIconButton icon="icon-[uil--sign-out-alt]" label="Leave room" />
+      {/snippet}
+      {#snippet collapsedActions()}
+        <HeaderIconButton icon="icon-[uil--phone]" label="Call" />
+      {/snippet}
+    </PaneHeader>
   </div>
 </Story>

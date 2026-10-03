@@ -10,7 +10,9 @@ type ServiceWorkerRegistrationSnapshot = {
   scriptURL: string;
 };
 
-test('service worker leaves frontend and data requests to the network', async ({ page }) => {
+test('service worker caches the shell while leaving private requests on the network', async ({
+  page
+}) => {
   await page.goto('/');
   await expect(page.getByRole('heading', { name: 'Sign In' })).toBeVisible();
 
@@ -25,14 +27,35 @@ test('service worker leaves frontend and data requests to the network', async ({
     .poll(() => page.evaluate(() => Boolean(navigator.serviceWorker.controller)))
     .toBe(true);
 
-  expect((await cacheSnapshot(page)).cacheNames).toEqual([]);
+  expect(
+    (await cacheSnapshot(page)).cacheNames.some((name) => name.startsWith('chatto-shell-'))
+  ).toBe(true);
 
   await requestFrontendResource(page);
   await requestNetworkOnlyPaths(page);
   await page.reload();
   await expect(page.getByRole('heading', { name: 'Sign In' })).toBeVisible();
 
-  expect((await cacheSnapshot(page)).cacheNames).toEqual([]);
+  const cachedRequests = await page.evaluate(async () => {
+    const cache = await caches.open(
+      (await caches.keys()).find((name) => name.startsWith('chatto-shell-'))!
+    );
+    return (await cache.keys()).map((request) => new URL(request.url).pathname);
+  });
+  expect(cachedRequests).toContain('/login');
+  expect(
+    cachedRequests.some((path) => path.startsWith('/api/') || path.startsWith('/assets/'))
+  ).toBe(false);
+
+  await page.context().setOffline(true);
+  try {
+    await page.goto('/login');
+    await expect(
+      page.getByRole('heading', { name: 'Choose a server to get started' })
+    ).toBeVisible();
+  } finally {
+    await page.context().setOffline(false);
+  }
 });
 
 async function ensureServiceWorkerIsActive(page: Page): Promise<ServiceWorkerRegistrationSnapshot> {
@@ -78,8 +101,8 @@ async function ensureServiceWorkerIsActive(page: Page): Promise<ServiceWorkerReg
       return new Promise((resolve, reject) => {
         const timeout = window.setTimeout(() => {
           navigator.serviceWorker.removeEventListener('controllerchange', onControllerChange);
-          reject(new Error('SvelteKit did not register the service worker'));
-        }, 10_000);
+          reject(new Error('Chatto did not register the service worker'));
+        }, 20_000);
 
         async function onControllerChange() {
           const changed = await navigator.serviceWorker.getRegistration('/');

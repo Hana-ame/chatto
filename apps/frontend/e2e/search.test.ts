@@ -59,6 +59,60 @@ async function openQuickSwitcher(page: Page): Promise<Locator> {
 test.describe('message search', () => {
   test.describe.configure({ timeout: 60_000 });
 
+  test('room search takes focus on desktop open but not after reload', async ({
+    page,
+    chatPage
+  }) => {
+    await createAndLoginTestUser(page);
+    await chatPage.goto();
+    await chatPage.enterRoom('general');
+
+    const toggle = page.getByRole('button', { name: 'Search in this room', exact: true });
+    await toggle.click();
+    const input = page.getByTestId('room-search-query');
+    await expect(input).toBeFocused();
+
+    await page
+      .getByRole('button', { name: 'Search in this room', exact: true, pressed: true })
+      .click();
+    await expect(input).toHaveCount(0);
+    await page.keyboard.press(process.platform === 'darwin' ? 'Meta+/' : 'Control+/');
+    await expect(input).toBeFocused();
+
+    await chatPage.enterRoom('announcements');
+    await chatPage.enterRoom('general');
+    await expect(input).toBeVisible();
+    await expect(input).not.toBeFocused();
+
+    await page.reload();
+    await expect(input).toBeVisible();
+    await expect(page.getByTestId('message-input')).toBeFocused();
+    await expect(input).not.toBeFocused();
+  });
+
+  test('room search takes focus on mobile button and shortcut opens', async ({
+    page,
+    chatPage
+  }) => {
+    await createAndLoginTestUser(page);
+    await chatPage.goto();
+    await chatPage.enterRoom('general');
+    await page.setViewportSize({ width: 390, height: 844 });
+
+    await page.getByRole('button', { name: 'Actions for #general' }).click();
+    await page.getByRole('button', { name: 'Search in this room', exact: true }).click();
+    const input = page.getByTestId('room-search-query');
+    await expect(input).toBeFocused();
+
+    await page
+      .getByTestId('room-sidebar-mobile-pane')
+      .getByRole('button', { name: 'Hide room extras' })
+      .click();
+    await expect(input).toHaveCount(0);
+    await page.keyboard.press(process.platform === 'darwin' ? 'Meta+/' : 'Control+/');
+    await expect(input).toBeFocused();
+  });
+
   test('indexes messages, follows results, tracks edits and deletion, and enforces room access', async ({
     page,
     chatPage,
@@ -154,7 +208,9 @@ test.describe('message search', () => {
       await dialog
         .getByPlaceholder('Go somewhere, or type ? to search messages...')
         .fill(`?${term}`);
-      await expect(dialog.locator('button.sidebar-item', { hasText: body })).toBeVisible({
+      await expect(
+        dialog.getByRole('navigation').getByRole('button').filter({ hasText: body })
+      ).toBeVisible({
         timeout: TIMEOUTS.UI_FAST
       });
       await page.keyboard.press('Escape');
@@ -162,7 +218,7 @@ test.describe('message search', () => {
 
     const dialog = await openQuickSwitcher(page);
     await dialog.getByPlaceholder('Go somewhere, or type ? to search messages...').fill(`?${term}`);
-    await dialog.locator('button.sidebar-item', { hasText: body }).click();
+    await dialog.getByRole('navigation').getByRole('button').filter({ hasText: body }).click();
     await chatPage.expectRoomHeaderVisible('general');
     await roomPage.expectMessageVisible(body, { timeout: TIMEOUTS.REALTIME_EVENT });
   });

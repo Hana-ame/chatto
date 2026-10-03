@@ -2,7 +2,6 @@ package core
 
 import (
 	"sort"
-	"strings"
 
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
@@ -357,13 +356,15 @@ func permissionScopeFromProto(scope *evtv1.RbacPermissionScope) (PermissionScope
 		return ScopeGroup, scope.GetId() != ""
 	case evtv1.RbacPermissionScopeKind_RBAC_PERMISSION_SCOPE_KIND_ROOM:
 		return ScopeRoom, scope.GetId() != ""
+	case evtv1.RbacPermissionScopeKind_RBAC_PERMISSION_SCOPE_KIND_DM:
+		return ScopeDM, scope.GetId() == ""
 	default:
 		return "", false
 	}
 }
 
 func rbacDecisionKeyFor(scope PermissionScope, scopeID, subject string, perm Permission) rbacDecisionKey {
-	if scope == ScopeServer {
+	if scope == ScopeServer || scope == ScopeDM {
 		scopeID = ""
 	}
 	return rbacDecisionKey{
@@ -548,6 +549,37 @@ func (p *RBACProjection) DecisionsForRoleServer(roleName string) (grants []Permi
 	return p.DecisionsFor(ScopeServer, "", roleName)
 }
 
+// HasAnyPrivilegedModeAllow reports whether the user, everyone, or one of the
+// user's assigned roles has an explicit allow for an elevation-required
+// permission at any scope. Effective authorization still resolves denies and
+// scope precedence when the user performs an action.
+func (p *RBACProjection) HasAnyPrivilegedModeAllow(userID string) bool {
+	p.RLock()
+	defer p.RUnlock()
+	roles := p.assignments[userID]
+	for key, decision := range p.decisions {
+		if decision != DecisionAllow {
+			continue
+		}
+		metadata, known := GetPermissionMetadata(key.permission)
+		if !known || !metadata.RequiresPrivilegedMode {
+			continue
+		}
+		if key.subjectKind == evtv1.RbacPermissionSubjectKind_RBAC_PERMISSION_SUBJECT_KIND_USER && key.subject == userID {
+			return true
+		}
+		if key.subjectKind == evtv1.RbacPermissionSubjectKind_RBAC_PERMISSION_SUBJECT_KIND_ROLE && (key.subject == RoleEveryone) {
+			return true
+		}
+		if key.subjectKind == evtv1.RbacPermissionSubjectKind_RBAC_PERMISSION_SUBJECT_KIND_ROLE {
+			if _, assigned := roles[key.subject]; assigned {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (p *RBACProjection) NextAvailablePosition() int32 {
 	p.RLock()
 	defer p.RUnlock()
@@ -565,20 +597,6 @@ func (p *RBACProjection) NextAvailablePosition() int32 {
 		next++
 	}
 	return next
-}
-
-func (p *RBACProjection) CountStats() (roles int, assignments int, decisions int) {
-	p.RLock()
-	defer p.RUnlock()
-	for name := range p.roles {
-		if strings.TrimSpace(name) != "" {
-			roles++
-		}
-	}
-	for _, roleSet := range p.assignments {
-		assignments += len(roleSet)
-	}
-	return roles, assignments, len(p.decisions)
 }
 
 func sortPermissions(perms []Permission) {

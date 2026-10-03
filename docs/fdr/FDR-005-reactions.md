@@ -1,7 +1,7 @@
 # FDR-005: Reactions
 
 **Status:** Active
-**Last reviewed:** 2026-08-26
+**Last reviewed:** 2026-10-02
 
 ## Overview
 
@@ -9,8 +9,13 @@ Users can react to a message with emoji. Reactions are aggregated into pills sho
 
 ## Behavior
 
+- Integrations can read all user IDs for a message reaction in bounded pages.
+  The five-user preview does not limit this list. The list requires the same
+  access as the message and accepts channel echoes as aliases.
+
 - Each pill shows: the emoji, how many users reacted with it, and a highlight when the current user has reacted.
 - Hovering a pill shows a tooltip with up to 5 reactor names plus an overflow count.
+- A message with reactions has a Reactions action in its desktop menu and touch action sheet, even when the reader cannot add a reaction. It opens a details view with the count for each emoji. Readers select an emoji to see all accounts that used it. Long lists load in pages.
 - Clicking a pill toggles the current user's reaction.
 - Adding or removing a reaction requires room membership and `message.react`.
   In a channel room, it also requires broad `message.read`, or
@@ -24,8 +29,18 @@ Users can react to a message with emoji. Reactions are aggregated into pills sho
   reacted-to message into one row, while unread badges continue to count the
   exact underlying occurrences.
 - A user can add up to 20 distinct emoji reactions to one message. Reaching the limit rolls back the attempted reaction and shows a specific explanation; removing a reaction frees a slot.
-- On desktop, hovering a message reveals a quick-reaction bar with the user's most recently used emojis (falling back to a default set if none have been used yet).
-- Recent emoji selections persist in localStorage so the quick-bar stays personal across sessions.
+- The quick-reaction bar, desktop menu, and touch action sheet start with
+  thumbs up, wave, laugh, and pray, in that order. They also show up to two
+  distinct non-pinned emojis selected through message reaction pickers,
+  with the most recent choice first. Empty recent slots have no fallback.
+- Reaction-picker choices update quick reactions immediately, including after
+  a room change. Profile-status choices, quick-reaction buttons, and reaction
+  pills do not change this history. A picker choice remains in the history
+  even if its reaction request fails.
+- Reaction history is local to the browser and server and persists across
+  reloads. It starts empty and does not import the general emoji history.
+  The full emoji picker's Recently Used section keeps its separate history,
+  which includes profile-status choices.
 
 ## Design Decisions
 
@@ -51,7 +66,7 @@ Users can react to a message with emoji. Reactions are aggregated into pills sho
 
 **Decision:** `ReactionSummary.count` is the total current count, while bounded reactor previews expose only a small set of reacting users. ConnectRPC room timeline responses expose hydrated reaction summaries with bounded preview semantics. Reaction writes use ConnectRPC `MessageService.AddReaction` and `RemoveReaction` in the web client and call the shared core operation model.
 **Why:** Reaction pills need a quick hover tooltip, not an unbounded user directory embedded in every message event. Keeping the full count separate preserves the main signal while preventing popular reactions from inflating timeline payloads.
-**Tradeoff:** Clients that need a complete reactor list will need a future dedicated paginated query instead of overloading the message timeline shape.
+**Tradeoff:** A complete reactor list needs a separate `MessageService.ListReactionUsers` paged read for each emoji. The web client loads a list only when a reader opens the reaction details view and selects that emoji.
 
 ### 5. Quick-reaction recents are per-device, not per-user
 
@@ -59,19 +74,27 @@ Users can react to a message with emoji. Reactions are aggregated into pills sho
 **Why:** Server-side recents would mean a "your recents" query on every message hover (frequent and small) and a new write per reaction. Local storage is free and fast. The downside — losing recents between devices — is small relative to the cost.
 **Tradeoff:** Recents don't sync across devices.
 
-### 6. Web reconnect catch-up resumes the server projection
+### 6. Realtime sends semantic reaction changes
 
-**Decision:** The web client retains current message windows for rooms after they are first viewed. Realtime reaction changes upsert the current message row, including aggregate reaction state, and carry the exact add/remove transition for retained rooms. A short socket gap resumes from the last in-memory cursor through the same projection reducer; a fresh or unsafe resume resets lightweight server state plus only the room windows the client still retains.
-**Why:** Reactions mutate existing message rows, but eagerly hydrating every historical DM is disproportionate. A retained room still provides exact transition catch-up without a separate reaction-history query, while a never-viewed room starts from authoritative aggregate state when first opened.
-**Tradeoff:** Integrators receive exact add/remove transitions only for room timelines they ask the stream to retain. A compacted reset and first hydration transmit current aggregate state rather than recreating historical transitions. Reactions on older messages remain available through ordinary timeline pagination because the stream is a convergence feed rather than an audit log.
+**Decision:** Authorized reaction additions and removals are semantic public
+events. The web client applies them to its retained message projection. A short
+socket gap resumes from the last in-memory cursor. A fresh or unsafe resume
+uses current snapshot state for retained data.
+**Why:** Bots and alternate clients need the exact reaction transition, while
+the frontend needs current aggregate reaction state. One semantic event can
+provide the transition and the authorized resource context without exposing a
+frontend-only upsert operation. See ADR-091 and FDR-045.
+**Tradeoff:** A snapshot restores current reaction state but does not recreate
+every add and remove transition from a long offline interval. Reactions on
+older messages remain available through normal timeline pagination.
 
-For an echoed thread reply, the server emits authoritative upserts for both the
-canonical reply and the visible channel echo. This keeps both renderings in
-sync without requiring clients to infer echo linkage from a reaction signal.
+For an echoed thread reply, the reaction event identifies the original reply.
+Clients refresh the linked rows they have loaded. Each read resolves the same
+canonical reaction set for the original and its visible echo.
 
 ### 7. Web client reaction clicks are optimistic
 
-**Decision:** The web client applies add/remove reaction clicks to the visible message store immediately, then reconciles the touched emoji from the ConnectRPC response. The server remains authoritative: realtime projection upserts replace the local row with current aggregate state.
+**Decision:** The web client applies add/remove reaction clicks to the visible message store immediately, then reconciles the touched emoji from the ConnectRPC response. The server remains authoritative: semantic realtime reaction events reconcile the local row with current aggregate state.
 **Why:** Reaction clicks should feel instant without changing the durable event model or public API.
 **Tradeoff:** Reactor-name tooltips are best-effort during the optimistic window and become exact after the projected row refresh.
 
@@ -104,14 +127,13 @@ a stronger OCC boundary explicitly.
 
 ## Permissions
 
-- `message.react` — add or remove a reaction on a message. Scoped at server, group, and room.
-- `message.read` — read any target channel-room message and its aggregate
+- `message.react` — add or remove a reaction on a message at the applicable scope.
+- `message.read` — read any target message and its aggregate
   reaction state.
 - `message.read-interactions` — read the target and reaction state when its
-  thread has an interaction relationship. DM membership authorizes DM reads
-  without either permission.
+  thread has an interaction relationship.
 
 ## Related
 
-- **ADRs:** ADR-026 (event identity via NanoID), ADR-033 (event-sourced state with projections), ADR-034 (single event stream), ADR-035 (per-aggregate migration), ADR-042 (protobuf-first public API), ADR-044 (ConnectRPC service conventions), ADR-048 (frontend optimistic UI), ADR-051 (server-scoped resumable client projection), ADR-068 (selectable event mutation consistency boundaries), ADR-076 (deterministic notification occurrences), ADR-077 (persistent notification list), ADR-080 (explicit message-read permissions), ADR-082 (derived thread interactions), ADR-087 (request-time authorization with aggregate OCC)
-- **FDRs:** FDR-003 (Thread Reply Echo), FDR-012 (Notifications), FDR-039 (Message Access & Interactions)
+- **ADRs:** ADR-026 (event identity via NanoID), ADR-033 (event-sourced state with projections), ADR-034 (single event stream), ADR-035 (per-aggregate migration), ADR-042 (protobuf-first public API), ADR-044 (ConnectRPC service conventions), ADR-048 (frontend optimistic UI), ADR-068 (selectable event mutation consistency boundaries), ADR-076 (deterministic notification occurrences), ADR-077 (persistent notification list), ADR-080 (explicit message-read permissions), ADR-082 (derived thread interactions), ADR-087 (request-time authorization with aggregate OCC), ADR-089 (server content view), ADR-091 (semantic realtime events)
+- **FDRs:** FDR-003 (Thread Reply Echo), FDR-012 (Notifications), FDR-039 (Message Access & Interactions), FDR-045 (Realtime Event Stream)

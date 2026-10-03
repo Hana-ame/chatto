@@ -17,28 +17,28 @@ type ThreadFollowModel struct {
 	core *ChattoCore
 }
 
-func (s *ThreadFollowModel) ListFollowedThreads(ctx context.Context, actorID string, limit, offset int) (*FollowedThreadsPage, error) {
+// ListFollowedThreads returns one page of the actor's followed threads. When
+// unreadOnly is set, the page and its total include only threads with unread
+// replies.
+func (s *ThreadFollowModel) ListFollowedThreads(ctx context.Context, actorID string, includeDM, unreadOnly bool, limit, offset int) (*FollowedThreadsPage, error) {
 	if err := requireAuthenticatedActor(actorID); err != nil {
 		return nil, err
 	}
-	return s.core.ListFollowedThreadsPage(ctx, actorID, []string{LegacySpaceIDForRoomKind(KindChannel)}, limit, offset)
+	spaceIDs := []string{LegacySpaceIDForRoomKind(KindChannel)}
+	if includeDM {
+		spaceIDs = append(spaceIDs, LegacySpaceIDForRoomKind(KindDM))
+	}
+	return s.core.ListFollowedThreadsPage(ctx, actorID, spaceIDs, unreadOnly, limit, offset)
 }
 
 func (s *ThreadFollowModel) HasUnreadFollowedThreads(ctx context.Context, actorID string) (bool, error) {
 	if err := requireAuthenticatedActor(actorID); err != nil {
 		return false, err
 	}
-	return s.core.HasUnreadFollowedThreads(ctx, actorID, []string{LegacySpaceIDForRoomKind(KindChannel)})
-}
-
-// ListFollowedThreadViewerStates returns an exhaustive, authoritative set for
-// realtime replacement semantics. Unlike the user-facing directory list, it
-// fails on uncertain rows instead of silently omitting them.
-func (s *ThreadFollowModel) ListFollowedThreadViewerStates(ctx context.Context, actorID string) ([]*FollowedThread, error) {
-	if err := requireAuthenticatedActor(actorID); err != nil {
-		return nil, err
-	}
-	return s.core.listFollowedThreadViewerStates(ctx, actorID)
+	return s.core.HasUnreadFollowedThreads(ctx, actorID, []string{
+		LegacySpaceIDForRoomKind(KindChannel),
+		LegacySpaceIDForRoomKind(KindDM),
+	})
 }
 
 func (s *ThreadFollowModel) FollowThread(ctx context.Context, actorID, roomID, threadRootEventID string) error {

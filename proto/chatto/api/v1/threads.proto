@@ -29,8 +29,8 @@ message FollowThreadRequest {
 
 // Result of following a thread.
 message FollowThreadResponse {
-  // True when the current user follows the thread after the operation.
-  bool following = 1;
+  reserved 1;
+  reserved "following";
   // Current follow state after the operation.
   ThreadFollowState state = 2;
 }
@@ -45,8 +45,8 @@ message UnfollowThreadRequest {
 
 // Result of unfollowing a thread.
 message UnfollowThreadResponse {
-  // True when the current user follows the thread after the operation.
-  bool following = 1;
+  reserved 1;
+  reserved "following";
   // Current follow state after the operation.
   ThreadFollowState state = 2;
 }
@@ -64,6 +64,9 @@ message FollowedThread {
   ThreadSummary thread = 9;
   // Most recent visible reply, when the thread has one.
   Message latest_reply = 10;
+  // User IDs used to derive a direct-message conversation label. Empty for
+  // channel rooms.
+  repeated string direct_message_participant_user_ids = 11;
 }
 
 // Request for a page of followed threads for the current user.
@@ -71,8 +74,15 @@ message ListFollowedThreadsRequest {
   reserved 1, 2;
   reserved "limit", "offset";
 
-  // Page request. Defaults to 20 results when absent or limit is zero.
+  // Defaults to 20 results when absent or limit is zero. Maximum: 100.
   PageRequest page = 3;
+  // Include followed direct-message threads. Defaults to false so older
+  // clients retain the channel-only result shape.
+  bool include_direct_message_threads = 4;
+  // Return only threads with replies that the viewer has not read. The page
+  // total then counts only these threads. Older servers ignore this field and
+  // return all followed threads.
+  bool unread_only = 5;
 }
 
 // Response containing one followed-thread page.
@@ -91,29 +101,41 @@ message ListFollowedThreadsResponse {
 
 // Manages thread follow state for the current user.
 service ThreadService {
+  // Reads the current viewer's stored marker without changing it. Requires the
+  // same membership and read access as MarkThreadAsRead. Missing resources
+  // return NOT_FOUND; inaccessible resources return PERMISSION_DENIED.
+  rpc GetThreadReadState(GetThreadReadStateRequest) returns (GetThreadReadStateResponse);
+  // Reads up to 100 states under the same authorization as GetThreadReadState.
+  // Missing and inaccessible resources are omitted; duplicates use first-seen order.
+  rpc BatchGetThreadReadStates(BatchGetThreadReadStatesRequest) returns (BatchGetThreadReadStatesResponse);
+
+  // Lists distinct authors of non-retracted replies, excluding erased users.
+  // The root author is included only if they also replied. Requires the same
+  // membership and message-read access as GetThreadEvents.
+  rpc ListThreadParticipants(ListThreadParticipantsRequest) returns (ListThreadParticipantsResponse);
+
   // Returns followed threads in rooms where the current user is a member.
-  // Channel-room threads also require message.read or an active relationship
-  // with message.read-interactions. Historical DM threads use DM membership.
+  // All threads also require message.read or an active relationship with
+  // message.read-interactions. Direct-message threads are returned only when
+  // include_direct_message_threads is true.
   // The result includes enough root and latest-reply data for clients to render
   // the list without extra per-thread fetches.
   // Activity can reorder the live result between offset pages. After a thread
   // activity update, clients must restart paging at offset zero.
   rpc ListFollowedThreads(ListFollowedThreadsRequest) returns (ListFollowedThreadsResponse);
   // Follows a thread for the current user. Room membership plus message.read or
-  // an active relationship with message.read-interactions are required. DMs do
-  // not support current thread actions.
+  // an active relationship with message.read-interactions are required.
   // Followed threads can be surfaced in clients and can participate in thread
   // notification behavior.
   rpc FollowThread(FollowThreadRequest) returns (FollowThreadResponse);
   // Stops following a thread for the current user. Room membership plus
   // message.read or an active relationship with message.read-interactions are
-  // required. DMs do not support current thread actions. The response reports
+  // required. The response reports
   // the resulting follow state so clients can update local UI immediately.
   rpc UnfollowThread(UnfollowThreadRequest) returns (UnfollowThreadResponse);
   // Returns one page of events in a message thread. Room membership is
-  // required. Channel-room reads also require message.read or an active
-  // relationship with message.read-interactions. Historical DM threads use DM
-  // membership. Initial pages include the thread root message; cursor pages
+  // required. Reads also require message.read or an active relationship with
+  // message.read-interactions. Initial pages include the thread root message; cursor pages
   // return replies in the requested direction.
   rpc GetThreadEvents(GetThreadEventsRequest) returns (GetThreadEventsResponse);
   // Returns a thread timeline window centered around a specific event. Use this
@@ -121,11 +143,28 @@ service ThreadService {
   // NOT_FOUND when the thread root or anchor event is missing or hidden.
   // Returns PERMISSION_DENIED when room membership is missing, both read modes
   // are missing, or an interaction-scoped account has no relationship with the
-  // thread. Historical DM threads use DM membership.
+  // thread.
   rpc GetThreadEventsAround(GetThreadEventsAroundRequest) returns (GetThreadEventsAroundResponse);
   // Marks a thread timeline as read through the supplied event without changing
   // the room-level read marker. Room membership plus message.read or an active
-  // relationship with message.read-interactions are required. DMs do not
-  // support current thread actions.
+  // relationship with message.read-interactions are required.
   rpc MarkThreadAsRead(MarkThreadAsReadRequest) returns (MarkThreadAsReadResponse);
+}
+
+// Request a complete thread participant collection, ordered by user ID ascending.
+message ListThreadParticipantsRequest {
+  // Room containing the thread.
+  string room_id = 1 [(buf.validate.field).string.min_len = 1];
+  // Root message ID.
+  string thread_root_event_id = 2 [(buf.validate.field).string.min_len = 1];
+  // Defaults to 50 results. Maximum: 100. Zero uses the default.
+  PageRequest page = 3;
+}
+
+// A page of distinct reply authors. An empty thread returns an empty page.
+message ListThreadParticipantsResponse {
+  // User IDs in this page. Use UserService.BatchGetUsers for profiles.
+  repeated string user_ids = 1;
+  // Count and continuation for all current participants.
+  PageInfo page = 2;
 }

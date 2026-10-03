@@ -1,7 +1,7 @@
 # FDR-012: Notifications
 
 **Status:** Experimental
-**Last reviewed:** 2026-08-30
+**Last reviewed:** 2026-09-28
 
 ## Overview
 
@@ -29,6 +29,20 @@ targets, unread counts, read state, or deletion semantics.
   unread dot to the applicable room. A thread-scoped Badge contributes to its
   parent room. An orange notification indicator takes priority when both types
   of attention apply.
+- A room or direct-message row shows two unread notification counts next to
+  each other: an orange count of Important notifications and a neutral count
+  of all other notifications. Each count opens the newest unread notification
+  that it counts. The bell, server, and application indicators show one
+  combined indicator.
+- The application icon shows an unnumbered badge when unread Important
+  notifications need attention on any signed-in server. The window title
+  shows their total count. Ambient notifications do not contribute to either
+  indicator. Reading the last Important notification clears both indicators,
+  even if Ambient notifications remain unread.
+- Page titles use `Page · Server`, with the current route's server name once.
+  App-wide pages and app preferences use `Page · Chatto`, including preferences
+  opened from server settings. Public authentication pages use the origin server
+  name. The Important count is a prefix, for example `(3) #general · Chatto HQ`.
 - The list is divided into Today, Yesterday, This Week, and month sections
   using the preferred time zone of the account on each server.
 - Rows use concise, full localized sentences without message previews.
@@ -37,28 +51,43 @@ targets, unread counts, read state, or deletion semantics.
   event. The occurrence is marked Read only after the target is displayed.
 - Reading a room or thread marks covered occurrences Read. A reaction is
   covered according to the reacted-to message and reaction horizon.
+- The bundled client reads a room or thread only up to the newest message that
+  the viewer can see. While the timeline shows the latest message, the read
+  covers the full conversation. After a jump to an older message, newer
+  messages and their notifications stay unread until the viewer scrolls to
+  them. The client sends such a read when scrolling stops, and only when the
+  viewer sees a message that no earlier read covered.
+- While a thread is visible in a focused app, its loaded unread notifications
+  do not add local badges or play sound. This rule applies before the server
+  confirms the read. It does not change notification history or remote push
+  delivery. If a read fails, remaining unread activity can show again when
+  the user leaves the thread. Other threads keep their attention indicators.
 - Notifications cannot be marked Unread. There is no Done state or Inbox/Done
   split.
 - The Delete action deletes the exact visible occurrences in the current row.
   On devices that support hover, this action appears when the row has hover or
   keyboard focus. It remains visible on touch devices.
-- Dismiss read deletes only the loaded occurrences that were Read when the user
-  selected the action. It does not delete Unread occurrences that arrived
-  before or during the action. Both deletion actions update the UI
+- Dismiss read loads all remaining pages across signed-in servers, then deletes
+  the Read occurrences. It does not delete Unread occurrences that arrived
+  before or during the action. If a page fails to load, the action reports an
+  error and does not start deletion. Both deletion actions update the UI
   optimistically and then reconcile with the server.
 - Every occurrence leaves application-visible state exactly 90 days after its
   source activity. Reading or deleting it does not extend that lifetime.
   Physical cleanup may continue during ADR-076's 24-hour grace period without
   extending user-visible retention.
-- A Badge marker expires 90 days after its latest source activity. A read,
-  visibility loss, target removal, or reaction removal can make it inactive
-  sooner.
+- A Badge source gives attention for 90 days after its source activity. A
+  read, visibility loss, target removal, reaction removal, or a change of the
+  notification policy or thread follow can end the attention sooner.
 - The combined multi-server list preserves healthy results when another server
   fails and exposes the failure as partial.
 - Notification delivery rules and client sound choices are User Preferences.
   The server saves delivery rules. The client saves sound and sound-filter
   choices for each server. Notifications from different registered servers can
   use different sounds.
+- A root message in a direct-message room uses the Direct message cause. A
+  message inside a direct-message thread uses Followed thread activity for its
+  followers. It does not also create a Direct message occurrence.
 
 ## Design Decisions
 
@@ -106,13 +135,13 @@ server value.
 - **Badge** — add only a neutral unread dot. Do not create a notification
   occurrence, play a sound, or send push.
 - **Notification** — create an in-app notification without push delivery. The
-  client can play the configured notification sound.
+  client can play the configured notification sound for Important attention.
 - **Push notification** — create the same in-app notification and make it
   eligible for Web Push or native delivery.
 
 | Cause                          | Default           |
 | ------------------------------ | ----------------- |
-| Direct message                 | Push notification |
+| Root direct message            | Push notification |
 | Root message in a channel room | Badge             |
 | Direct username mention        | Push notification |
 | Reply to the user's message    | Push notification |
@@ -123,15 +152,17 @@ server value.
 | Reaction to the user's message | Notification      |
 
 Attention level controls presentation separately: reactions are Ambient and all
-other current causes are Important. Bell, server, room, and app indicators use
+other current causes are Important. Bell, server, and app indicators use
 notification orange when at least one contributing unread occurrence is
 Important and a neutral treatment when every contributing occurrence is
-Ambient. Attention levels are not user-configurable in this iteration.
+Ambient. Room rows show the Important and the Ambient counts separately.
+Ambient notifications do not play a local sound. Attention levels are not
+user-configurable in this iteration.
 
 **Why:** Whether activity is stored, whether it leaves the app, and how
 strongly it is presented are different choices. The delivery names state where
 the notification goes. Sound remains a client preference for both notification
-modes.
+modes when the notification has Important attention.
 
 **Tradeoff:** More than one policy dimension exists conceptually, although the
 current product exposes only delivery-mode preferences.
@@ -212,17 +243,19 @@ the bounded notification lifecycle. ADR-076 defines that architecture.
 
 **Decision:** An occurrence may be listed, opened, mutated, or delivered only
 while the recipient still exists and can currently see its room and exact
-target. Channel-room message-derived occurrences also require current
+target. Message-derived occurrences also require current
 `message.read`, or `message.read-interactions` with a relationship to the
-target's thread. DM membership authorizes DM occurrences. Without applicable
+target's thread. Without applicable
 access, Chatto hides the occurrence. Removed reactions, retracted targets,
 deleted rooms, and lost room access remove the corresponding occurrence.
 Durable visibility-loss boundaries prevent old queued activity from
 reappearing after a quick regain of room access.
 Actor identity is hydrated from current account data; an unavailable or deleted
 actor does not by itself expose copied profile data or make an otherwise valid
-occurrence invisible. Badge markers use the same current room, target,
-reaction, visibility-loss, and read boundaries.
+occurrence invisible. Badge attention is computed from the current room,
+target, reaction, and read state, the current membership start, and the
+current notification policy (ADR-109). It does not use visibility-loss
+boundaries: an unread message counts again when the user can read it again.
 
 **Why:** Source-time eligibility explains why the notification was created, but
 it cannot override present-day privacy and target existence.
@@ -236,9 +269,10 @@ success.
 **Decision:** Realtime notification updates tell clients to replace their
 finite notification view from authoritative server state. Badge updates tell
 clients to replace only unread and Slow Mode activity for the affected room.
-This update does not repeat room membership or permission decisions. An active
-Badge marker can advance to a newer source in the same scope without another
-realtime update because its public unread value stays true. My Threads can
+This update does not repeat room membership or permission decisions. A new
+source sends an update only when it turns Badge attention on. Another source in
+a scope that is already unread sends no update, because the public unread value
+stays true. My Threads can
 decorate a followed thread from matching unread occurrences in the finite
 notification view. The thread read cursor remains the only source of
 reply-unread state. Unread totals remain exact even when rows are grouped. The
@@ -279,6 +313,9 @@ source whose delivery is still controlled by notification policy. Follow
 controls belong to threads, not to notification rows. Root channel-room
 activity uses the Room messages cause. A room-specific Room messages policy
 supplies the required opt-in control without a separate room-follow state.
+Root direct-message activity uses the Direct messages cause. Thread activity
+uses Followed threads in both channel rooms and direct-message rooms, so one
+thread message does not also create a broad Direct messages occurrence.
 
 **Why:** A subscription describes future interest in a conversation; a
 notification occurrence describes one past activity. Keeping them separate
@@ -292,7 +329,15 @@ follows the thread explicitly.
 
 **Decision:** The client stores notification sound and sound-filter choices for
 each registered server. For a live notification, the client uses the choices
-for the server that produced the notification. During an upgrade, the client
+for the server that produced the notification. The server reports creations,
+not sound instructions, including during Do Not Disturb. The client checks its
+shared account Do Not Disturb choice, current unread state, and attention level before
+playback. Only new unread Important notifications can cause a sound. Ambient
+notifications stay silent so low-attention activity does not interrupt the user.
+The client groups eligible creations received during one refresh into one sound.
+Duplicate hints, failed
+reads, missing rows, and quiet reconciliation do not cause another sound.
+During an upgrade, the client
 copies the old global sound choice when it first creates the slot for a server.
 
 **Why:** The client plays the sound, but all notification behavior is a User
@@ -302,28 +347,47 @@ existing sound choice.
 
 **Tradeoff:** Sound choices do not sync to another browser or device. The
 client keeps a small local-storage entry for each server. Both Notification and
-Push notification can request the configured local sound. Do Not Disturb and
-current notification policy can suppress that request.
+Push notification can cause the configured local sound for Important attention.
+The client can miss a
+sound if its bounded resource page does not contain the created occurrence.
+These hints are not durable delivery. Web Push retains server-side policy and
+Do Not Disturb checks.
 
-### 10. Notification occurrences activate bot integrations
+### 10. Notification occurrences are one bot event family
 
-**Decision:** A bot uses the same notification occurrences and realtime
-notification replacement as a human account. Direct messages, direct mentions,
-replies, and followed-thread activity are the supported activation causes for
-bot integrations. Chatto does not create a separate bot-interaction event or
-realtime subscription. Other notification causes can be present in the shared
-replacement. An integration must filter the replacement by cause.
+**Decision:** A bot receives notification changes through the same semantic
+public event stream as a human account. Direct messages, direct mentions,
+replies, and followed-thread activity can create notification occurrences, but
+they do not define the complete bot event set. A bot can also receive every
+other authorized semantic public event, such as message edits, reactions, room
+changes, and membership changes. Chatto does not create a separate
+interaction-only realtime subscription.
 
-**Why:** The occurrence already contains the source-time cause, stable identity,
-exact message target, current visibility checks, and bounded durable history.
-One semantic source can support realtime now and a durable webhook delivery
-adapter later.
+**Why:** Notification policy describes attention state, not all domain activity
+that can interest an integration. One public event stream gives bots complete
+authorized activity without making the frontend notification model the bot API.
 
-**Tradeoff:** Realtime sends a finite latest-value replacement instead of an
-append-only activation feed. Integrations must checkpoint stable occurrence
-IDs. One message can create more than one cause, so an integration that wants
-one action per message must also deduplicate by the referenced message event
-ID.
+**Tradeoff:** An integration must filter the shared event stream for the event
+types that it uses. An active realtime connection can still miss intermediate
+changes outside the bounded resume window. A future webhook adapter needs its
+own delivery, retry, and acknowledgement rules.
+
+### 11. The client reads up to the visible message
+
+**Decision:** The bundled client reads a room or thread through the newest
+message in the viewport, not through the latest message. Room and
+direct-message rows show separate Important and Ambient counts, and each count
+opens its own newest notification.
+
+**Why:** A room read marks every covered notification Read. If opening one
+notification reads the full room, the other count also disappears, although
+the viewer did not see its activity. With separate counts, the viewer can
+still see the remaining count until they scroll to its message.
+
+**Tradeoff:** A read is a position, not a set of seen messages. A read through
+a message also covers older notifications above it that the viewer did not
+see. A viewer who leaves a room within a second of scrolling can leave newer
+activity unread.
 
 ## Compatibility
 
@@ -336,9 +400,11 @@ to `EVT`. Notification policy changes remain user-configuration facts in
 upgraded server. After the 0.5.0 contract ships, new signal variants are
 additive.
 
-The legacy server and room policy operations remain available, while the new
-policy service adds explicit server, room-group, and room scopes. Deprecated
-delivery names and followed-room slots remain readable so old stored values do
+The policy API uses only `NotificationPolicyService`, with explicit server,
+room-group, and room scopes. Chatto 0.5 removes the redundant policy methods
+from `NotificationService` so each operation has one public service. Stored
+policy state is unchanged by this removal. Deprecated delivery names and
+followed-room slots remain readable so old stored values do
 not acquire a new meaning. Current clients use Room messages at room scope
 instead of the retired followed-room cause.
 
@@ -353,14 +419,14 @@ the public schema and API compatibility guide.
 ## Permissions
 
 Notification policy and triage are user-scoped. Current account, room,
-applicable channel-room message-read authority, message/thread target, and
-exact reaction visibility govern whether an occurrence may be listed, opened,
-mutated, or delivered. DM membership authorizes DM occurrences. There is no
+applicable message-read authority, message/thread target, and exact reaction
+visibility govern whether an occurrence may be listed, opened, mutated, or
+delivered. There is no
 separate permission to manage another user's notification list.
 
 ## Related
 
-- **ADRs:** ADR-012, ADR-028, ADR-036, ADR-038, ADR-051, ADR-069, ADR-076,
-  ADR-077, ADR-080, ADR-082, ADR-087
+- **ADRs:** ADR-012, ADR-028, ADR-036, ADR-038, ADR-069, ADR-076, ADR-077,
+  ADR-080, ADR-082, ADR-087, ADR-089, ADR-091
 - **FDRs:** FDR-001, FDR-002, FDR-004, FDR-005, FDR-006, FDR-007, FDR-011,
-  FDR-013, FDR-018, FDR-019, FDR-027, FDR-038, FDR-039, FDR-044
+  FDR-013, FDR-018, FDR-019, FDR-027, FDR-038, FDR-039, FDR-044, FDR-045

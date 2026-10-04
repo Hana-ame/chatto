@@ -846,17 +846,25 @@ func (c *MediaModel) stableAttachmentPathWithAccess(assetID, userID, path string
 	return path + "?" + values.Encode()
 }
 
-// GetTransformedServerAssetURL returns the URL for accessing a transformed version of an server asset.
+// GetTransformedServerAssetURL returns the URL for accessing a server asset.
+//
 // Server assets include server logos, server banners, and user avatars stored in SERVER_ASSETS.
-// The URL includes HMAC signature to prevent parameter tampering.
-// Format: /assets/server/{key}/t/{params}.{signature}
-// where {params} is base64url-encoded JSON: {"w":width,"h":height,"f":"fit"}
+//
+// 【本地改动 2026-09-13】fork 无服务端资产衍生图。头像/logo/banner/链接预览在上传时
+// 就缩放到上限并压成有损 WebP（assets.processServerAssetImage，77f471f1c），请求期
+// 不会再编码出第二份更小的字节。拼 /t/{w}x{h}/{fit} 只会让客户端去请求一份和原档等价
+// 的资源，所以这里忽略 width/height/fit，直接返回原档 URL（相对路径，由调用方
+// absolutizeMediaURL 绝对化）。
+//
+// 已发出去的旧 /t/ 链接仍由 serveTransformedServerAsset 的 BypassTransform 分支服务：
+// 返回存储的原字节 + X-Cache: BYPASS，不读也不写缩放缓存。
+//
+// merge 上游时这段被冲掉，avatar/logo/banner/link preview 又开始请求签名变换 URL。
 func (c *MediaModel) GetTransformedServerAssetURL(key string, width, height int, fit string) string {
-	// Generate signed transform path component using the server asset resource ID.
-	signedPath := signedurl.SignedTransformPath(c.config.Assets.SigningSecret, ServerAssetSignResource, key, width, height, fit)
-
-	// Return signed transform URL
-	return fmt.Sprintf("/assets/server/%s/t/%s", key, signedPath)
+	_ = width // 【本地改动 2026-09-13】尺寸参数被忽略。
+	_ = height
+	_ = fit
+	return fmt.Sprintf("/assets/server/%s", key)
 }
 
 // GetTransformedServerAssetURLWithFilename is GetTransformedServerAssetURL with a

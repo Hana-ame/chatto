@@ -79,13 +79,15 @@ func legacyTransformURL(t *testing.T, attachmentID, userID, originalURL string) 
 	if err != nil {
 		t.Fatalf("Failed to sign legacy transform ticket: %v", err)
 	}
-	base, query, _ := strings.Cut(originalURL, "?")
-	_ = query
+	// 原图 URL 形如 /assets/files/{assetID}[/{fn.ext}]，在最后一段之前插入变换段。
+	base, _, _ := strings.Cut(originalURL, "?")
 	slash := strings.LastIndex(base, "/")
 	if slash < 0 {
-		return originalURL
+		base += "/image/960x400/contain"
+	} else {
+		base = base[:slash] + "/image/960x400/contain" + base[slash:]
 	}
-	return base[:slash] + "/image/960x400/contain" + base[slash:] + "?access=" + ticket
+	return base + "?access=" + ticket
 }
 
 // setupAssetTestServer creates a test server for asset testing with caching enabled.

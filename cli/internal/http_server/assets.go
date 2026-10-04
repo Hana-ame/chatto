@@ -51,6 +51,13 @@ type transformRequest struct {
 	AssetID string
 	// JPEGQuality overrides the default quality for opaque static derivatives.
 	JPEGQuality int
+	// BypassTransform serves the stored original bytes untouched, skipping the
+	// resize pipeline and the resize cache entirely.
+	//
+	// 【本地改动 2026-09-13】fork 取消请求期缩放后，这个字段只服务于已经发出去的
+	// 旧 /image/ 与 /t/ 链接：URL 生成层不再产出它们，但旧客户端缓存、CDN 与被
+	// 粘贴出去的 URL 仍会打到这里，必须仍然可用（返回原字节 + X-Cache: BYPASS）。
+	BypassTransform bool
 	// FetchAsset returns the asset data and content type.
 	// The reader will be closed if it implements io.Closer.
 	FetchAsset func(ctx context.Context) (io.Reader, string, error)
@@ -310,6 +317,9 @@ func (s *HTTPServer) serveStableTransformedAttachment(c *gin.Context) {
 		CachePrefix: AttachmentStableCachePrefix,
 		AssetID:     assetID,
 		JPEGQuality: AttachmentDerivativeJPEGQuality,
+		// 【本地改动 2026-09-13】fork 取消附件衍生图：URL 生成层不再签发
+		// /image/{w}x{h}/{fit} 链接，此路由只为已发出去的旧链接服务，返回原字节。
+		BypassTransform: true,
 		FetchAsset: func(ctx context.Context) (io.Reader, string, error) {
 			reader, info, err := s.core.GetAttachmentReader(ctx, attachment)
 			if err != nil {
@@ -710,6 +720,20 @@ func (s *HTTPServer) serveTransformedAssetWithParams(c *gin.Context, req transfo
 		return
 	}
 
+	// 【本地改动 2026-09-13】fork 取消请求期缩放：URL 生成层已不再产出
+	// /image/{w}x{h}/{fit} 与 /t/{sig} 链接，这个分支只服务于已经发出去的旧链接
+	// （旧客户端缓存、CDN、被粘贴到别处的 URL）。它们必须仍然可用——返回存储的
+	// 原字节，不读也不写 resize 缓存。
+	if req.BypassTransform {
+		c.Header("Cache-Control", transformedAssetCacheControl(req.Authorize == nil))
+		c.Header("ETag", fmt.Sprintf("\"orig-%s-%s\"", req.AssetID, contentType))
+		c.Header("Vary", transformedAssetVary(req.Authorize == nil))
+		// 与 HIT/MISS 并列的新取值：这个 /image/ 请求没有走任何编码。
+		c.Header("X-Cache", "BYPASS")
+		c.Data(http.StatusOK, contentType, data)
+		return
+	}
+
 	// Transform the image
 	var result *assets.TransformResult
 	if req.JPEGQuality > 0 {
@@ -779,6 +803,11 @@ func (s *HTTPServer) serveTransformedServerAsset(c *gin.Context, key, signedPath
 		SignedPath:  signedPath,
 		CachePrefix: core.ServerAssetSignResource,
 		AssetID:     key,
+		// 【本地改动 2026-09-13】服务端资产也取消请求期缩放：URL 生成层已把
+		// /t/{sig} override 成原档 URL，这个分支只服务于已发出去的旧链接
+		// （旧客户端缓存、CDN、被粘贴到别处的 URL），返回存储的原字节 +
+		// X-Cache: BYPASS，不读也不写 server.* 缩放缓存。
+		BypassTransform: true,
 		FetchAsset: func(ctx context.Context) (io.Reader, string, error) {
 			reader, info, err := s.core.GetPublicServerAsset(ctx, location)
 			if err != nil {

@@ -144,5 +144,18 @@ display_name = 'Bob'
 email = 'bob@example.com'
 password = 'foobar123'
 
+# 【本地改动】合并上游时保留 fork 的本文件，但漏带上上游新增的开发 bot 段，
+# 导致 config_test.go 的 TestLocalDevelopmentConfigUsesSeparateDataDirectories
+# 断言 bootstrap.Bots 非空时失败。此处按上游 cli/chatto.toml 原样补回。
+[[bootstrap.bots]]
+login = 'test_bot'
+display_name = 'TestBot'
+bio = "I'm **TestBot**, Chatto's development assistant. Mention `@test_bot` in a channel or send me a direct message."
+owner_login = 'alice'
+api_key_name = 'Local development'
+credential_file = './data/bootstrap/test_bot.key'
+permissions = ['room.join', 'room.list', 'message.read', 'message.post-in-thread']
+rooms = ['general']
+
 [bootstrap.server]
 name = 'Local Development'

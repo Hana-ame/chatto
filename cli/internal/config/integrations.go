@@ -132,10 +132,30 @@ type AssetProcessingConfig struct {
 	FFprobePath       string `toml:"ffprobe_path,commented" env:"CHATTO_ASSET_PROCESSING_FFPROBE_PATH" comment:"Path to ffprobe binary. Auto-detected from PATH if empty."`
 	MaxConcurrentJobs int    `toml:"max_concurrent_jobs,commented" env:"CHATTO_ASSET_PROCESSING_MAX_CONCURRENT_JOBS" comment:"Maximum number of asset-processing jobs to run simultaneously in this process. Default: 2."`
 	TempDir           string `toml:"temp_dir,commented" env:"CHATTO_ASSET_PROCESSING_TEMP_DIR" comment:"Temporary directory for asset processing. Default: system temp directory."`
+	// 【本地改动，2026-10-03 恢复】AVIFEnabled 控制 room 附件图片上传时是否
+	// 重编码为原尺寸 AVIF（静态与动画都是）。Requires an ffmpeg binary with an
+	// AV1 encoder. 关闭或 ffmpeg 缺失时原样存原始字节。默认 true。
+	AVIFEnabled *bool `toml:"avif_enabled,commented" env:"CHATTO_ASSET_PROCESSING_AVIF_ENABLED" comment:"Re-encode room attachment images to original-size AVIF on upload. Requires an ffmpeg binary with an AV1 encoder (auto-detected from PATH when ffmpeg_path is empty). When disabled, original image bytes are stored unchanged. Affects room attachments only; avatars, server branding, and link previews stay WebP. Default: true."`
+	// 【本地改动，2026-10-03 恢复】WebPEnabled 是 2026-09-02 ~ 2026-09-12
+	// 期间的字段名；存储格式改回 AVIF 后降级为 avif_enabled 的别名。
+	WebPEnabled *bool `toml:"webp_enabled,commented" env:"CHATTO_ASSET_PROCESSING_WEBP_ENABLED" comment:"Deprecated alias for avif_enabled. Prefer avif_enabled / CHATTO_ASSET_PROCESSING_AVIF_ENABLED."`
 }
 
 // DefaultVideoMaxUploadSize is the default maximum size for video uploads (100 MB).
 const DefaultVideoMaxUploadSize datasize.ByteSize = 100 * datasize.MB
+
+// 【本地改动，2026-10-03 恢复】AVIFEnabledOrDefault 报告 room 附件图片上传时
+// 是否重编码为 AVIF，默认 true。故意不参考 worker 的 Enabled：重编码在上传
+// 路径上用普通 ffmpeg 直出，与 durable worker 是否内嵌无关。
+func (c *AssetProcessingConfig) AVIFEnabledOrDefault() bool {
+	if c.AVIFEnabled != nil {
+		return *c.AVIFEnabled
+	}
+	if c.WebPEnabled != nil {
+		return *c.WebPEnabled
+	}
+	return true
+}
 
 // MaxConcurrentJobsOrDefault returns the maximum concurrent jobs for one
 // asset-processing worker process, defaulting to 2.

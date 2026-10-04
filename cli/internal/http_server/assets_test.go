@@ -27,7 +27,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/nats-io/nats.go/jetstream"
 	"google.golang.org/protobuf/types/known/timestamppb"
-	"hmans.de/chatto/internal/assets"
 	"hmans.de/chatto/internal/config"
 	"hmans.de/chatto/internal/connectapi"
 	"hmans.de/chatto/internal/core"
@@ -39,6 +38,7 @@ import (
 	evtv1 "hmans.de/chatto/internal/pb/chatto/core/evt/v1"
 	"hmans.de/chatto/internal/testutil"
 	"hmans.de/chatto/internal/testutil/fakes3"
+	"hmans.de/chatto/pkg/signedurl"
 )
 
 // ============================================================================
@@ -55,17 +55,37 @@ type assetTestEnv struct {
 	previews *linkpreview.Cache
 }
 
-// legacyTransformURL builds the pre-2026-09-12 public derivative URL for a
-// stored attachment: /assets/files/{assetID}/image/{width}x{height}/{fit}/{fn.ext}.
+// legacyTransformURL builds the pre-2026-09-12 derivative URL for a stored
+// attachment: /assets/files/{assetID}/image/960x400/contain, carrying an access
+// ticket signed for those transform parameters.
 //
 // 【本地改动 2026-09-12】fork 的 URL 生成层已不再产出这种链接，但已经发出去的旧链接
 // （旧客户端缓存、CDN、被粘贴到别处的 URL）仍然会打到这里，必须仍然可用。
-func legacyTransformURL(originalURL string) string {
-	slash := strings.LastIndex(originalURL, "/")
+//
+// 【本地改动 2026-09-13】ticket 的签名绑定变换参数（signedurl.MatchesTransform），
+// 原图 URL 上的 ticket 签名里没有 width/height/fit，直接复用会被
+// resolveStableAssetViewerID 判为「ticket does not match derivative」而 403。
+// 故此处重新签一张匹配 960x400/contain 的 ticket，模拟旧客户端当时拿到的形态。
+func legacyTransformURL(t *testing.T, attachmentID, userID, originalURL string) string {
+	t.Helper()
+	ticket, err := signedurl.SignedAssetAccessTicket("test-signing-secret-32-bytes-!!", signedurl.AssetAccessTicket{
+		AssetID:   attachmentID,
+		UserID:    userID,
+		ExpiresAt: time.Now().Add(time.Hour).Unix(),
+		Width:     960,
+		Height:    400,
+		Fit:       "contain",
+	})
+	if err != nil {
+		t.Fatalf("Failed to sign legacy transform ticket: %v", err)
+	}
+	base, query, _ := strings.Cut(originalURL, "?")
+	_ = query
+	slash := strings.LastIndex(base, "/")
 	if slash < 0 {
 		return originalURL
 	}
-	return originalURL[:slash] + "/image/960x400/contain" + originalURL[slash:]
+	return base[:slash] + "/image/960x400/contain" + base[slash:] + "?access=" + ticket
 }
 
 // setupAssetTestServer creates a test server for asset testing with caching enabled.
@@ -449,7 +469,7 @@ func TestAsset_TransformedImage_CacheHitMiss(t *testing.T) {
 	}
 
 	// 旧版本发出去的 /image/ 衍生图 URL 仍须可用：返回原图字节并标 X-Cache: BYPASS。
-	legacyURL := legacyTransformURL(assetURL)
+	legacyURL := legacyTransformURL(t, attachment.GetId(), user.Id, assetURL)
 	legacyResp, err := env.client.Get(env.url(legacyURL))
 	if err != nil {
 		t.Fatalf("Failed to get legacy transform URL: %v", err)
@@ -538,7 +558,7 @@ func TestAsset_TransformedAttachmentUsesCompressedProfileAndVersionedCache(t *te
 	}
 
 	// ③ 旧 /image/ 衍生图 URL 仍须可用：返回原图字节并标 X-Cache: BYPASS。
-	legacyURL := legacyTransformURL(assetURL)
+	legacyURL := legacyTransformURL(t, attachment.GetId(), user.Id, assetURL)
 	legacyResp, err := env.client.Get(env.url(legacyURL))
 	if err != nil {
 		t.Fatalf("Failed to get legacy transform URL: %v", err)
@@ -1360,7 +1380,7 @@ func TestAsset_StableURLAcceptsAccessTicketAndBearerAuth(t *testing.T) {
 	if strings.Contains(thumbnailURL, "/image/") {
 		t.Fatalf("Expected fork to issue no transform URL, got %q", thumbnailURL)
 	}
-	legacyThumbResp, err := unauthClient.Get(env.url(legacyTransformURL(attachmentURL)))
+	legacyThumbResp, err := unauthClient.Get(env.url(legacyTransformURL(t, attachment.GetId(), user.Id, attachmentURL)))
 	if err != nil {
 		t.Fatalf("Failed to get legacy transform thumbnail URL: %v", err)
 	}
@@ -1482,10 +1502,20 @@ func TestAsset_ServerAssetTransformKeepsDefaultQuality(t *testing.T) {
 		t.Fatalf("new NATS branding key = %q, want public namespace", assetPath)
 	}
 
+	// 【本地改动 2026-09-13】跟随 77f471f1c（compress server assets at upload and
+	// stop request-time transforms）：banner/logo/头像/链接预览在上传时已缩放到上限并
+	// 压成有损 WebP，请求期不再编码第二份更小的字节。GetTransformedServerAssetURL 把
+	// /t/{sig} override 成原档 URL，所以此处拿到的就是原档链接，返回的应是存储的原字节。
 	transformURL := env.core.GetTransformedServerAssetURL(assetPath, 200, 200, "contain")
+	if strings.Contains(transformURL, "/t/") {
+		t.Fatalf("GetTransformedServerAssetURL = %q, fork issues no server asset transform URL", transformURL)
+	}
+	if !strings.HasPrefix(transformURL, "/assets/server/"+assetPath) {
+		t.Fatalf("GetTransformedServerAssetURL = %q, want the original server asset URL", transformURL)
+	}
 	resp, err := env.client.Get(env.url(transformURL))
 	if err != nil {
-		t.Fatalf("Failed to get transformed server asset: %v", err)
+		t.Fatalf("Failed to get server asset: %v", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -1493,19 +1523,10 @@ func TestAsset_ServerAssetTransformKeepsDefaultQuality(t *testing.T) {
 	}
 	got, err := io.ReadAll(resp.Body)
 	if err != nil {
-		t.Fatalf("Failed to read transformed server asset: %v", err)
+		t.Fatalf("Failed to read server asset: %v", err)
 	}
-
-	wantResult, err := assets.TransformImage(imageData, 200, 200, assets.FitContain)
-	if err != nil {
-		t.Fatalf("Failed to build expected server transform: %v", err)
-	}
-	want, err := io.ReadAll(wantResult.Reader)
-	if err != nil {
-		t.Fatalf("Failed to read expected server transform: %v", err)
-	}
-	if !bytes.Equal(got, want) {
-		t.Fatal("server asset transform did not retain the default image quality")
+	if !bytes.Equal(got, imageData) {
+		t.Fatal("server asset URL must serve the stored bytes unchanged")
 	}
 }
 

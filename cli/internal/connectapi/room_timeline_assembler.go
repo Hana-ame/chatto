@@ -330,10 +330,6 @@ func (h *timelineHydrator) messagePosted(ctx context.Context, event *core.RoomEv
 
 func (h *timelineHydrator) attachments(roomID, messageEventID string, attachments []*evtv1.Attachment, descriptions map[string]string) []*apiv1.MessageAttachment {
 	result := make([]*apiv1.MessageAttachment, 0, len(attachments))
-	thumbnail := h.thumbnail
-	if thumbnail.width <= 0 || thumbnail.height <= 0 || thumbnail.fit == "" {
-		thumbnail = defaultTimelineAttachmentThumbnail()
-	}
 	for _, attachment := range attachments {
 		if attachment == nil {
 			continue
@@ -347,7 +343,9 @@ func (h *timelineHydrator) attachments(roomID, messageEventID string, attachment
 			attachment.MessageBodyId = messageEventID
 		}
 		assetURL := h.api.core.GetStableAttachmentAssetURL(attachment.Id, h.viewerID)
-		thumbnailURL := h.api.core.GetStableTransformedAttachmentAssetURL(attachment.Id, h.viewerID, thumbnail.width, thumbnail.height, thumbnail.fit)
+		// 【本地改动 2026-09-12】fork 取消附件衍生图：时间线缩略图 URL 直接
+		// override 成原图链接，不再有 /image/{w}x{h}/{fit} 段。
+		thumbnailURL := assetURL
 		view := &apiv1.MessageAttachment{
 			Id:                attachment.Id,
 			Filename:          attachment.Filename,

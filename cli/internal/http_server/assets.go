@@ -806,10 +806,17 @@ func (s *HTTPServer) serveTransformedServerAsset(c *gin.Context, key, signedPath
 
 // isImageContentType checks if the content type is an image.
 func isImageContentType(contentType string) bool {
+	// 【本地改动 32e1f566】识别 image/avif:上传阶段可能把附件转成 AVIF,
+	// 渲染/下载路径必须当作图片处理。
 	return contentType == "image/jpeg" ||
 		contentType == "image/png" ||
 		contentType == "image/gif" ||
-		contentType == "image/webp"
+		contentType == "image/webp" ||
+		contentType == "image/avif" ||
+		// 【本地改动 2026-09-12】HEIC:服务端 ffmpeg 没有 heif 解码器,这类
+		// 图片无法编码成 AVIF,只能原样存储;这里认它是图片,让附件 bypass
+		// 路径把原字节原样回给浏览器,而不是 400 "Asset is not an image"。
+		contentType == "image/heic"
 }
 
 // getContentType returns the MIME type based on file extension.
@@ -824,6 +831,12 @@ func getContentType(path string) string {
 		return "image/jpeg"
 	case ".gif":
 		return "image/gif"
+	case ".avif":
+		// 【本地改动 32e1f566】AVIF 是上传附件可能的内容类型。
+		return "image/avif"
+	case ".heic":
+		// 【本地改动 2026-09-12】HEIC 原样存储,按图片 MIME 返回。
+		return "image/heic"
 	default:
 		return "application/octet-stream"
 	}

@@ -102,7 +102,6 @@
     "@connectrpc/connect-web": "^1.7.0",
     "@tanstack/svelte-query": "^6.2.4",
     "gemoji": "^8.1.0",
-    "heic2any": "^0.0.4",
     "hls.js": "^1.7.3",
     "js-sha256": "^1.0.0",
     "katex": "^0.16.21",

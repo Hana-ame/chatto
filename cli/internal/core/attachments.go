@@ -859,6 +859,33 @@ func (c *MediaModel) GetTransformedServerAssetURL(key string, width, height int,
 	return fmt.Sprintf("/assets/server/%s/t/%s", key, signedPath)
 }
 
+// GetTransformedServerAssetURLWithFilename is GetTransformedServerAssetURL with a
+// trailing {fn.ext} URL segment.
+//
+// 【本地改动 2026-08-23】头像/logo/banner/链接预览的公开 URL 统一带 {fn.ext} 尾段：
+// 浏览器按扩展名嗅探类型、CDN 缓存键更可读。签名仍只覆盖 {key} 与 transform 参数，
+// 文件名段纯粹是装饰，serving 端会剥掉它再验证。filename 为空时保持旧的无尾段形态。
+//
+// 【本地改动 2026-09-13 覆盖上方签名语义】fork 的「无请求期编码」策略已从 room 附件
+// 扩展到**服务端资产**：头像/logo/banner/链接预览在上传时就缩放到上限并压缩成有损
+// WebP（assets.processServerAssetImage），请求期没有第二份更小的字节，拼
+// /t/{w}x{h}/{fit} 只会让客户端去请求一份和原档等价的资源。所以这里直接忽略
+// width/height/fit，override 成原档 URL。已发出去的旧 /t/ 链接仍由
+// serveTransformedServerAsset 的 BypassTransform 分支服务（返回原字节 + X-Cache: BYPASS）。
+//
+// merge 上游时此方法被冲掉，导致 attachments_facade.go 的转发落回
+// GetTransformedServerAssetURL，服务端资产又开始签发 /t/ URL。
+func (c *MediaModel) GetTransformedServerAssetURLWithFilename(key, filename string, width, height int, fit string) string {
+	_ = width // 【本地改动 2026-09-13】fork 无服务端资产衍生图，尺寸参数被忽略。
+	_ = height
+	_ = fit
+	path := fmt.Sprintf("/assets/server/%s", key)
+	if filename != "" {
+		path += "/" + url.PathEscape(filename)
+	}
+	return c.assetURL(path)
+}
+
 // ============================================================================
 // Image Cache Operations
 // ============================================================================

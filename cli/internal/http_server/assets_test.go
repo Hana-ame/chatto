@@ -83,6 +83,10 @@ func legacyTransformURL(t *testing.T, attachmentID, userID, originalURL string) 
 	// /assets/files/{assetID}/image/960x400/contain——变换段追加在 assetID 之后。
 	// 若 URL 带 {fn.ext} 尾段（fork 的公开 URL 形态），尾段要留在变换段之后。
 	base, _, _ := strings.Cut(originalURL, "?")
+	// 原图 URL 可能是绝对 URL（assetURLView 会补上 origin），只取 path 部分。
+	if u, err := url.Parse(base); err == nil && u.Path != "" {
+		base = u.Path
+	}
 	const prefix = "/assets/files/"
 	id := strings.TrimPrefix(base, prefix)
 	rest := ""
@@ -1401,14 +1405,33 @@ func TestAsset_StableURLAcceptsAccessTicketAndBearerAuth(t *testing.T) {
 		t.Fatal("legacy transform thumbnail URL must serve the stored original bytes")
 	}
 
+	// 【本地改动 2026-09-13】缩略图 URL 现在就是原图 URL（无 /image/ 变换段），
+	// 走的是 serveStableAttachment 路由。上游此断言预期 403，前提是「衍生图 URL
+	// 缺 access ticket 必须被拒」；fork 不再签发衍生图 URL，该路由对无 ticket 的
+	// 请求改由 Bearer 身份放行（resolveStableAssetViewerID 的 params==nil 分支）。
+	// 改为守护真实的门禁：无凭据仍须 401。
 	thumbnailWithoutAccess, err := url.Parse(thumbnailURL)
 	if err != nil {
 		t.Fatalf("Failed to parse stable thumbnail URL: %v", err)
 	}
 	thumbnailWithoutAccess.RawQuery = ""
-	req, err = http.NewRequest(http.MethodGet, env.url(thumbnailWithoutAccess.String()), nil)
+	anonReq, err := http.NewRequest(http.MethodGet, env.url(thumbnailWithoutAccess.String()), nil)
 	if err != nil {
 		t.Fatalf("Failed to build unsigned thumbnail request: %v", err)
+	}
+	anonResp, err := unauthClient.Do(anonReq)
+	if err != nil {
+		t.Fatalf("Failed to get unsigned stable thumbnail URL without credentials: %v", err)
+	}
+	anonResp.Body.Close()
+	if anonResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("Expected unsigned thumbnail request without credentials to return 401, got %d", anonResp.StatusCode)
+	}
+
+	// 持有 Bearer 的请求仍应 200——服务端按身份放行原图。
+	req, err = http.NewRequest(http.MethodGet, env.url(thumbnailWithoutAccess.String()), nil)
+	if err != nil {
+		t.Fatalf("Failed to build bearer thumbnail request: %v", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	unsignedThumbResp, err := unauthClient.Do(req)
@@ -1416,8 +1439,8 @@ func TestAsset_StableURLAcceptsAccessTicketAndBearerAuth(t *testing.T) {
 		t.Fatalf("Failed to get unsigned stable thumbnail URL with bearer: %v", err)
 	}
 	unsignedThumbResp.Body.Close()
-	if unsignedThumbResp.StatusCode != http.StatusForbidden {
-		t.Fatalf("Expected unsigned stable thumbnail request with bearer to return 403, got %d", unsignedThumbResp.StatusCode)
+	if unsignedThumbResp.StatusCode != http.StatusOK {
+		t.Fatalf("Expected bearer-authenticated thumbnail request to return 200, got %d", unsignedThumbResp.StatusCode)
 	}
 }
 

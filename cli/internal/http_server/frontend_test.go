@@ -708,7 +708,9 @@ func TestServePWAWebManifestUsesServerLogoWhenAvailable(t *testing.T) {
 	assert.Equal(t, "Engineering", manifest["name"])
 	assert.Equal(t, "Engineering", manifest["short_name"])
 	icons := manifest["icons"].([]any)
-	assert.True(t, strings.HasPrefix(icons[0].(map[string]any)["src"].(string), "/assets/server/logo-asset/t/"))
+	// 【本地改动 2026-09-13】fork 无服务端资产衍生图：logo 上传期已压成
+	// ≤MaxLogoDim(512) 的 WebP，manifest 图标直接指向原档 URL，不带 /t/ 段。
+	assert.True(t, strings.HasPrefix(icons[0].(map[string]any)["src"].(string), "/assets/server/logo-asset"))
 	assert.Equal(t, "192x192", icons[0].(map[string]any)["sizes"])
 	assert.Equal(t, "image/png", icons[0].(map[string]any)["type"])
 	assert.Equal(t, "maskable", icons[2].(map[string]any)["purpose"])
@@ -794,7 +796,9 @@ func TestOpenGraphImageUsesCanonicalOrigin(t *testing.T) {
 
 	// Crawlers require an absolute og:image URL.
 	meta := server.getOpenGraphMeta(context.Background(), "/")
-	assert.True(t, strings.HasPrefix(meta.Image, "https://example.com/assets/server/banner-asset/t/"), "og:image = %q", meta.Image)
+	// 【本地改动 2026-09-13】同上：banner 同样在上传期按 1200x630 OG 比例压成
+	// WebP（assets.ProcessLinkPreviewImageWithConfig），og:image 指向原档 URL。
+	assert.True(t, strings.HasPrefix(meta.Image, "https://example.com/assets/server/banner-asset"), "og:image = %q", meta.Image)
 }
 
 func TestFrontendFallbackAllowsRoutesWithReservedPrefixNames(t *testing.T) {

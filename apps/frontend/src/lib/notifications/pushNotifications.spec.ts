@@ -1396,7 +1396,7 @@ describe('notification navigation UI routing', () => {
 });
 
 describe('onNotificationClick', () => {
-  it('acknowledges after the notification callback completes', async () => {
+  it('acknowledges on receipt, before the notification callback completes', async () => {
     const serviceWorker = stubServiceWorker();
     const navigation = deferred();
     const callback = vi.fn(() => navigation.promise);
@@ -1411,26 +1411,38 @@ describe('onNotificationClick', () => {
       ports: [responsePort as unknown as MessagePort]
     });
 
+    expect(responsePort.postMessage).toHaveBeenCalledWith({ type: 'notification-click-ack' });
     await Promise.resolve();
     expect(callback).toHaveBeenCalledWith('https://chatto.example/chat/-/room-1');
-    expect(responsePort.postMessage).not.toHaveBeenCalled();
 
     navigation.resolve();
     await navigation.promise;
-    await Promise.resolve();
-
-    expect(responsePort.postMessage).toHaveBeenCalledWith({ type: 'notification-click-ack' });
-
     stop();
     expect(serviceWorker.listenerCount()).toBe(0);
   });
 
-  it('does not acknowledge when the callback rejects', async () => {
+  it('routes a click message that has no reply port', async () => {
     const serviceWorker = stubServiceWorker();
+    const callback = vi.fn();
+    const stop = onNotificationClick(callback);
+
+    serviceWorker.dispatchMessage({
+      data: { type: 'notification-click', url: 'https://chatto.example/chat/-/room-1' },
+      ports: []
+    });
+
+    expect(callback).toHaveBeenCalledWith('https://chatto.example/chat/-/room-1');
+    stop();
+  });
+
+  it('acknowledges and reports a rejected callback without throwing', async () => {
+    const serviceWorker = stubServiceWorker();
+    const error = new Error('navigation failed');
     const callback = vi.fn(async () => {
-      throw new Error('navigation failed');
+      throw error;
     });
     const responsePort = { postMessage: vi.fn() };
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
     onNotificationClick(callback);
 
     serviceWorker.dispatchMessage({
@@ -1445,6 +1457,8 @@ describe('onNotificationClick', () => {
     await Promise.resolve();
 
     expect(callback).toHaveBeenCalledOnce();
-    expect(responsePort.postMessage).not.toHaveBeenCalled();
+    expect(responsePort.postMessage).toHaveBeenCalledWith({ type: 'notification-click-ack' });
+    expect(consoleError).toHaveBeenCalledWith('Failed to route notification click:', error);
+    consoleError.mockRestore();
   });
 });

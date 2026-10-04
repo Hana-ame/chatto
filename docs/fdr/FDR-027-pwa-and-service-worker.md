@@ -1,7 +1,7 @@
 # FDR-027: PWA & Service Worker
 
 **Status:** Active
-**Last reviewed:** 2026-10-02
+**Last reviewed:** 2026-10-04
 
 ## Overview
 
@@ -57,6 +57,12 @@ Reconnect catch-up is owned by the foreground web app. A warm reconnect keeps th
 **Decision:** The HTTP frontend server generates the web manifest from the bundled manifest, uses the current server name for the installed app name, and swaps in transformed server-logo URLs for install icons when a logo is configured. Stable favicon and Apple touch icon endpoints redirect to purpose-sized transforms of the current server logo, or to the bundled Chatto icons when no logo is configured.
 **Why:** Self-hosted servers should install with their own visible identity without requiring a custom frontend build.
 **Tradeoff:** Browsers decide when to refresh installed PWA metadata and may cache it aggressively, so existing installs or tabs may keep the previous name or icon until the browser revalidates the metadata or the user reinstalls the app.
+
+### 6. Notification clicks focus an open window and send it the target
+
+**Decision:** A notification click focuses one open application window and then sends it the target URL. The page routes in place with client-side navigation. The worker prefers a focused window, then a visible window, then a hidden window. It ignores same-origin windows that do not run the application, such as an opened attachment under `/assets`. When no application window is open, or focus fails, the worker opens the target in a new window. The worker does not wait for a reply from the page, and it does not use `WindowClient.navigate()`.
+**Why:** This is the usual pattern for notification clicks. The push worker has a narrow scope, so it never controls an application window, and browsers reject `navigate()` from a worker that does not control the window. Browsers allow window actions only briefly after a click, and Chromium allows only one action: `focus()` or `openWindow()`. An earlier design focused each window and then waited up to 750 ms for a reply before it used `navigate()` or `openWindow()`. In Chromium, the first focus used the click, so the fallback could not open a window. In Firefox, the fallback ran near the one-second click limit, and a late reply opened a second window. A frozen background page on a mobile device cannot reply, but it receives the message when focus resumes it.
+**Tradeoff:** A window that has not yet registered its click listener, such as a page that is still loading, gets focus but does not route. `Client.url` gives the URL that loaded a window, not its current route. For this reason, the worker cannot identify OAuth windows, and a focused OAuth window can receive the click. Pages still reply when the message has a reply port, because workers from earlier releases wait for the reply.
 
 ## Related
 

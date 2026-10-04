@@ -8,10 +8,7 @@
 
 import { APP_BADGE_REFRESH_MESSAGE_TYPE, updateAppBadge } from '$lib/notifications/appBadge';
 import { build, version } from '$service-worker';
-import {
-  routeNotificationClick,
-  type NotificationClickClients
-} from '$lib/pwa/notificationClick.worker';
+import { routeNotificationClick } from '$lib/pwa/notificationClick.worker';
 
 declare const self: ServiceWorkerGlobalScope;
 
@@ -301,9 +298,9 @@ self.addEventListener('push', (event) => {
 
 /**
  * Handle notification clicks.
- * Prefer postMessage to an already-open client so the SPA can route via
- * `goto()` (no full reload). Fall back to `WindowClient.navigate()` or
- * `openWindow()` when no client is open or messaging fails.
+ * Send the click to an already-open client so the SPA can route via `goto()`
+ * (no full reload). See `routeNotificationClick` for the window order and the
+ * fallback to a new window.
  */
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
@@ -311,12 +308,7 @@ self.addEventListener('notificationclick', (event) => {
   const rawUrl =
     typeof event.notification.data?.url === 'string' ? event.notification.data.url : undefined;
   event.waitUntil(
-    routeNotificationClick(
-      rawUrl,
-      self.location.origin,
-      self.clients as unknown as NotificationClickClients,
-      { logger: console }
-    ).catch((err) => {
+    routeNotificationClick(rawUrl, self.location.origin, self.clients).catch((err) => {
       console.error('[SW] Error handling notification click:', err);
     })
   );

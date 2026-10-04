@@ -20,7 +20,6 @@ import (
 	"hmans.de/chatto/internal/core"
 	evtv1 "hmans.de/chatto/internal/pb/chatto/core/evt/v1"
 	"hmans.de/chatto/internal/testutil"
-	"hmans.de/chatto/pkg/signedurl"
 )
 
 func TestExtractImmutableETag(t *testing.T) {
@@ -624,7 +623,7 @@ func TestBrowserIconRoutes(t *testing.T) {
 			"/apple-touch-icon": 180,
 		}
 		locations := make(map[string]string)
-		for iconPath, expectedSize := range expectedSizes {
+		for iconPath := range expectedSizes {
 			req := httptest.NewRequest(http.MethodGet, iconPath, nil)
 			w := httptest.NewRecorder()
 			server.router.ServeHTTP(w, req)
@@ -632,24 +631,25 @@ func TestBrowserIconRoutes(t *testing.T) {
 			assert.Equal(t, http.StatusTemporaryRedirect, w.Code)
 			assert.Equal(t, cacheControlNoCache, w.Header().Get("Cache-Control"))
 			location := w.Header().Get("Location")
-			assert.True(t, strings.HasPrefix(location, "/assets/server/logo-asset/t/"))
+			// 【本地改动 2026-09-13】fork 无服务端资产衍生图：logo 在上传期已被
+			// resizeToFit 到 MaxLogoDim(512) 并压成 WebP（assets.ProcessLogoImageWithConfig），
+			// 请求期不再编码。GetServerLogoURL 因此忽略尺寸、返回原档 URL，
+			// 由浏览器自行缩放到 32 / 180。MaxLogoDim 远大于两者，故无功能损失。
+			assert.True(t, strings.HasPrefix(location, "/assets/server/logo-asset"))
 
-			signedPath := strings.TrimPrefix(location, "/assets/server/logo-asset/t/")
-			params, err := signedurl.ParseSignedTransformPath(
-				"test-signing-secret",
-				core.ServerAssetSignResource,
-				"logo-asset",
-				signedPath,
-			)
-			if err != nil {
-				t.Fatalf("parse transform for %s: %v", iconPath, err)
+			truncated, hasTransform := strings.CutPrefix(location, "/assets/server/logo-asset/")
+			if hasTransform {
+				// 带尾段时必须是无 /t/ 的纯文件名段。
+				assert.False(t, strings.HasPrefix(truncated, "t/"),
+					"fork issues no server asset transform URL, got %q", location)
 			}
-			assert.Equal(t, expectedSize, params.Width)
-			assert.Equal(t, expectedSize, params.Height)
-			assert.Equal(t, "cover", params.Fit)
 			locations[iconPath] = location
 		}
-		assert.NotEqual(t, locations["/favicon"], locations["/apple-touch-icon"])
+		// 【本地改动 2026-09-13】fork 不再按尺寸签发变换 URL，故两个图标指向同一
+		// 原档（logo ≤ MaxLogoDim=512，浏览器自行缩放到 32 / 180）。保留这条断言
+		// 是为了守住「两者都解析到 logo-asset」——若上游将来恢复请求期变换，
+		// 这里会重新变成 NotEqual，届时可判断该语义是否要跟进。
+		assert.Equal(t, locations["/favicon"], locations["/apple-touch-icon"])
 	})
 
 	t.Run("redirects to embedded icons when no server logo exists", func(t *testing.T) {

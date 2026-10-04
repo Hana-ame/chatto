@@ -610,7 +610,11 @@ func TestChattoCore_AssetURLsAreServerRelative(t *testing.T) {
 		"attachment":             {core.mediaModel.GetStableAttachmentAssetURL("attachment456", "Uviewer").URL, "/assets/files/attachment456?access="},
 		"transformed attachment": {core.mediaModel.GetStableTransformedAttachmentAssetURL("attachment456", "Uviewer", 200, 150, "contain").URL, "/assets/files/attachment456/image/200x150/contain?access="},
 		"HLS master playlist":    {core.mediaModel.GetStableHLSMasterPlaylistAssetURL("attachment456", "Uviewer").URL, "/assets/hls/attachment456/master.m3u8?access="},
-		"transformed server":     {core.GetTransformedServerAssetURL("avatar-key", 100, 100, "cover"), "/assets/server/avatar-key/t/"},
+		// 【本地改动 2026-09-13】fork 无服务端资产衍生图：avatar/logo/banner/链接预览
+		// 上传时已缩放并压成有损 WebP（77f471f1c），请求期不再编码，故
+		// GetTransformedServerAssetURL 忽略尺寸参数、返回原档 URL，不带 /t/ 段。
+		// 已发出去的旧 /t/ 链接由 serveTransformedServerAsset 的 BypassTransform 分支服务。
+		"transformed server": {core.GetTransformedServerAssetURL("avatar-key", 100, 100, "cover"), "/assets/server/avatar-key"},
 	}
 	for name, tt := range tests {
 		if !bytes.HasPrefix([]byte(tt.url), []byte(tt.prefix)) {

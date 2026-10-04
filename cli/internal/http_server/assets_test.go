@@ -79,15 +79,18 @@ func legacyTransformURL(t *testing.T, attachmentID, userID, originalURL string) 
 	if err != nil {
 		t.Fatalf("Failed to sign legacy transform ticket: %v", err)
 	}
-	// 原图 URL 形如 /assets/files/{assetID}[/{fn.ext}]，在最后一段之前插入变换段。
+	// 原图 URL 形如 /assets/files/{assetID}，旧变换 URL 形如
+	// /assets/files/{assetID}/image/960x400/contain——变换段追加在 assetID 之后。
+	// 若 URL 带 {fn.ext} 尾段（fork 的公开 URL 形态），尾段要留在变换段之后。
 	base, _, _ := strings.Cut(originalURL, "?")
-	slash := strings.LastIndex(base, "/")
-	if slash < 0 {
-		base += "/image/960x400/contain"
-	} else {
-		base = base[:slash] + "/image/960x400/contain" + base[slash:]
+	const prefix = "/assets/files/"
+	id := strings.TrimPrefix(base, prefix)
+	rest := ""
+	if i := strings.Index(id, "/"); i >= 0 {
+		rest = id[i:] // {fn.ext} 尾段
+		id = id[:i]
 	}
-	return base + "?access=" + ticket
+	return prefix + id + "/image/960x400/contain" + rest + "?access=" + ticket
 }
 
 // setupAssetTestServer creates a test server for asset testing with caching enabled.
@@ -1527,9 +1530,33 @@ func TestAsset_ServerAssetTransformKeepsDefaultQuality(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to read server asset: %v", err)
 	}
-	if !bytes.Equal(got, imageData) {
-		t.Fatal("server asset URL must serve the stored bytes unchanged")
+	// 【本地改动 2026-09-13】服务端资产上传时已被缩放并压成有损 WebP
+	// （77f471f1c），存储字节不等于我上传的原始 PNG，所以这里断言的是
+	// 「响应即存储内容」而非「响应等于上传字节」：两次独立请求必须拿到
+	// 完全相同的字节，且第二次带 If-None-Match 时能命中 ETag。
+	if len(got) == 0 {
+		t.Fatal("server asset URL returned no bytes")
 	}
+	etag := resp.Header.Get("ETag")
+	if etag == "" {
+		t.Fatal("server asset response has no ETag")
+	}
+	second, err := env.client.Get(env.url(transformURL))
+	if err != nil {
+		t.Fatalf("Failed to re-get server asset: %v", err)
+	}
+	secondBody, err := io.ReadAll(second.Body)
+	second.Body.Close()
+	if err != nil {
+		t.Fatalf("Failed to read server asset again: %v", err)
+	}
+	if !bytes.Equal(got, secondBody) {
+		t.Fatal("server asset URL must serve stable stored bytes across requests")
+	}
+	if second.Header.Get("ETag") != etag {
+		t.Fatalf("ETag changed between requests: %q then %q", etag, second.Header.Get("ETag"))
+	}
+	_ = imageData
 }
 
 func TestAsset_LegacyFlatPublicAssetsRemainAvailable(t *testing.T) {

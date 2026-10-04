@@ -759,9 +759,20 @@ test('image lightbox supports keyboard navigation with multiple images', async (
 
   // Wait for all attachment images to appear in the message
   await expect(roomPage.attachmentImage).toHaveCount(5, { timeout: TIMEOUTS.COMPLEX_OPERATION });
+  // 【本地改动 2026-09-13，跟随 5ee7a0fb9 "override attachment transform URLs to
+  // the original URL"】fork 取消请求期衍生图：时间线缩略图 URL 直接指向原图，
+  // 不再带 /image/{w}x{h}/{fit} 段。此前这里断言 /image/960x400/contain/?<ticket>
+  // （2026-08-30 改成公开 URL 尾段形式），但 09-12「no derivatives」与 09-13
+  // 「override to original URL」两次提交把该行为整体推翻，此断言未同步。
+  // 与 cli/internal/connectapi/timeline_thread_services_test.go 的
+  // 「must not carry a transform path」保持一致。
   await expect(roomPage.attachmentImage.first()).toHaveAttribute(
     'src',
-    /\/image\/960x400\/contain\?/
+    /\/assets\/files\/[^/?]+/
+  );
+  await expect(roomPage.attachmentImage.first()).not.toHaveAttribute(
+    'src',
+    /\/image\//
   );
 
   const gallery = page.getByTestId('message-image-gallery');

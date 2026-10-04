@@ -104,7 +104,19 @@ jobs:
           actual="$(docker run --rm --network none --read-only authling:check version)"
           test "$actual" = "authling version ${VERSION}"
       - name: Publish verified image
-        if: github.event_name != 'pull_request'
+        # 【本地改动 2026-10-04】fork 跳过「推送到 chattocorp GHCR」：目标是
+        # ghcr.io/chattocorp/authling，需要上游 org 的 GHCR 写权限，fork 的
+        # GITHUB_TOKEN 没有（2026-10-04 实测必红：
+        #   denied: permission_denied: The requested installation does not exist）。
+        # 该 workflow 此前从未在 push main 上跑过——pull_request 的 paths 过滤不含
+        # NOTICE/docs 之类，本次 push 改了 cli/NOTICE（删 heic2any 那行）才首次触发。
+        # 与 build-docs-image.yml（24719ce64）、ci.yml publish-main-image
+        # （432444410）同一处理：只禁用推送，保留上方构建 + 版本自检作为冒烟测试。
+        # 用非常量条件而非 if: false——actionlint 的 [if-cond] 规则禁止常量条件
+        # （ci.yml 的 publish-main-image 同样用 github.ref 避这条，见 432444410）。
+        # 【恢复方式】fork 自建 authling 镜像时：把 IMAGE 换成 fork 的 GHCR 名，
+        # 并把本行改回 github.event_name != 'pull_request'。
+        if: github.repository == 'chattocorp/authling' && github.event_name != 'pull_request'
         env:
           IMAGE: ghcr.io/chattocorp/authling:${{ steps.metadata.outputs.tag }}
         run: |

@@ -6,7 +6,7 @@
   import { useServerScope } from '$lib/state/server/scope.svelte';
   import { serverIdToSegment } from '$lib/navigation';
   import ServerSidebar from '$lib/components/ServerSidebar.svelte';
-  import { LoadingFog, ScrollFader } from '$lib/ui';
+  import { ScrollFader } from '$lib/ui';
   import RoomList from '$lib/RoomList.svelte';
   import ServerHeader from './ServerHeader.svelte';
   import ServerBanner from './ServerBanner.svelte';
@@ -208,7 +208,15 @@
     />
   {:else if !serverData}
     <ServerHeader serverName={activeStore.serverInfo.name} />
-    <LoadingFog class="m-3 min-h-0 flex-1" />
+    <!--
+      【本地改动 2026-09-01，2026-10-03 恢复】Room List 必须始终可见：原代码把
+      RoomList 绑定在 serverData 门控之后，当 store 被替换或冷 projection 迟迟
+      收不到 viewerUpsert 时 serverData 为 null，整块 RoomList 消失（只剩加载雾）。
+      RoomList 自己处理空/加载态，放此处与 {:else} 分支重复渲染——当 serverData
+      到达时分支切换即可；RoomList 展开状态经 storage 持久化不受重挂载影响。
+      默认不传 canReorderGroups（=false），加载期本就无需拖拽重排。
+    -->
+    <RoomList />
   {:else}
     <!-- Server header - fixed at top -->
     <ServerHeader serverName={serverName ?? ''} />

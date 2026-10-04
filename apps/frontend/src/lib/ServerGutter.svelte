@@ -12,6 +12,8 @@ is connected to, plus the add-server button pinned to the bottom. See the
   import { serverRegistry } from '$lib/client';
   import { m } from '$lib/i18n/messages';
   import { ScrollFader } from '$lib/ui';
+  import { onMount } from 'svelte';
+  import { SvelteURL } from 'svelte/reactivity';
   import ServerSidebarEntry from './ServerSidebarEntry.svelte';
 
   const directoryHref = resolve('/chat/servers');
@@ -39,6 +41,50 @@ is connected to, plus the add-server button pinned to the bottom. See the
     event.preventDefault();
     pushState('', { modal: { type: 'addServer' } });
   }
+
+  // 【本地改动 2026-09-01，2026-10-03 恢复】共存游戏入口：Server Gutter 列中服务器
+  // 图标下方渲染一份外部链接图标（点击新标签页打开）。数据从本仓库根 links.json 拉取
+  // （经 GitHub raw → proxy.moonchan.xyz 代理，与消息图片代理同源，隐藏来源并保留
+  // CORS）。图标为图片 URL，走 proxyUrl 改写后作为 <img> src；拉取失败/为空时静默
+  // 不显示，不影响 Server Gutter 主体。
+  // 用户改链接：编辑 repo 根 links.json（每项 { name, icon, url }），push 即生效；
+  // 无需改前端代码、无需重新构建部署。
+  // 踩坑：proxy.moonchan.xyz 只透传原 URL 的 Content-Type（raw 的 .json 返回
+  // application/json），fetch().json() 只看 body 不校验 header，故可直接解析。
+  const LINKS_RAW_URL = 'https://raw.githubusercontent.com/Hana-ame/chatto/main/links.json';
+  const IMAGE_PROXY_BASE = 'https://proxy.moonchan.xyz';
+
+  type ExternalLink = { name: string; icon: string; url: string };
+
+  function proxyUrl(src: string): string {
+    let original: URL;
+    try {
+      original = new URL(src);
+    } catch {
+      return '#';
+    }
+    if (original.protocol !== 'http:' && original.protocol !== 'https:') return '#';
+    if (original.hostname === new URL(IMAGE_PROXY_BASE).hostname) return src;
+    const proxy = new SvelteURL(IMAGE_PROXY_BASE);
+    proxy.pathname = original.pathname;
+    proxy.search = original.search;
+    proxy.searchParams.set('proxy_host', original.host);
+    proxy.searchParams.set('proxy_scheme', original.protocol === 'https:' ? 'https' : 'http');
+    return proxy.toString();
+  }
+
+  let externalLinks = $state<ExternalLink[]>([]);
+
+  onMount(async () => {
+    try {
+      const r = await fetch(proxyUrl(LINKS_RAW_URL));
+      if (!r.ok) return;
+      const data = (await r.json()) as ExternalLink[];
+      if (Array.isArray(data)) externalLinks = data.filter(({ url }) => !!url);
+    } catch {
+      // 拉不到静默不显示——不影响 Server Gutter 主体
+    }
+  });
 </script>
 
 <div class="server-gutter flex min-h-0 flex-1 flex-col border-e border-border">
@@ -54,6 +100,26 @@ is connected to, plus the add-server button pinned to the bottom. See the
           {/key}
         {/if}
       {/each}
+
+      {#if externalLinks.length}
+        <div class="h-px bg-border"></div>
+        {#each externalLinks as link (link.url)}
+          <a
+            href={link.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            title={link.name}
+            aria-label={link.name}
+            class="server-gutter-item cursor-pointer"
+          >
+            <img
+              src={proxyUrl(link.icon)}
+              alt={link.name}
+              class="h-11 w-11 rounded-xl object-cover shrink-0"
+            />
+          </a>
+        {/each}
+      {/if}
     </div>
   </ScrollFader>
 

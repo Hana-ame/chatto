@@ -1,7 +1,8 @@
 <script lang="ts">
-  import { pushState } from '$app/navigation';
+  import { goto, pushState } from '$app/navigation';
   import { serverUi } from '$lib/state/server/serverUi';
   import { resolve } from '$app/paths';
+  import { page } from '$app/state';
   import { serverRegistry, serverConnectionManager } from '$lib/client';
   import { firstAuthenticatedServerId } from '$lib/serverCatalogue';
   import { getActiveServer } from '$lib/state/activeServer.svelte';
@@ -54,6 +55,31 @@
   function showAboutChatto() {
     pushState('', { modal: { type: 'aboutChatto' } });
   }
+
+  // 【本地改动 2026-09-01，2026-10-03 恢复】修复移动端「通知页/无服务器页点
+  // hamburger 房间列表不出现」：hamburger 调 sidebarNav.toggle()，但房间列表侧栏
+  // （ServerSidebar + RoomList）只由 Chrome 在 [serverId] 路由下挂载；通知页
+  // /chat/notifications 不在 [serverId] 下，toggle 后 DOM 里根本没有房间列表面板
+  // 可滑出，用户只见服务器图标列，误以为坏了。
+  // 思路：移动端 + 当前路由不含 [serverId]（即无可 toggle 的房间列表侧栏）时，
+  // hamburger 先打开侧栏（sidebarNav.isOpen=true），再导航到默认已认证服务器的
+  // 房间列表页；进入 [serverId] 页后 ServerSidebar 挂载且 isOpen 为真，房间列表
+  // 直接滑出可见。有 [serverId] 的页面（房间、admin、设置）保持原 toggle 行为。
+  // 边界：仅影响移动端（sidebarNav.isMobile）；桌面端 hamburger 行为不变；
+  // 目标服务器复用 preferencesServerId（active 或 firstAuthenticated），与
+  // 设置页入口一致。踩坑：仅 goto 不打开侧栏的话，[serverId] 页移动端默认
+  // isOpen=false，导航后房间列表仍不可见，等于没修（2026-09-01 自查发现）。
+  function handleHamburger() {
+    if (sidebarNav.isMobile && !page.route.id?.includes('[serverId]')) {
+      const serverId = preferencesServerId;
+      if (serverId) {
+        if (!sidebarNav.isOpen) sidebarNav.toggle();
+        void goto(resolve('/chat/[serverId]', { serverId: serverIdToSegment(serverId) }));
+      }
+      return;
+    }
+    sidebarNav.toggle();
+  }
 </script>
 
 <!-- WebKit extends the solid background of a sticky header into its top system bar. -->
@@ -66,7 +92,7 @@
     <button
       type="button"
       class="app-header-icon"
-      onclick={() => sidebarNav.toggle()}
+      onclick={handleHamburger}
       aria-label={m('ui.toggle_sidebar')}
       aria-expanded={sidebarNav.isOpen}
       title={m('ui.toggle_sidebar')}

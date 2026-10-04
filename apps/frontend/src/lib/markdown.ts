@@ -19,7 +19,9 @@ const DISABLED_RULES = [
   'hr',
   'reference',
   // Inline
-  'image',
+  // 【本地改动，2026-10-03 恢复】重新启用 image 规则以渲染消息正文内联 ![]()
+  // 图片；实际 <img> 由 image 渲染器走图片代理重写（见 IMAGE_PROXY_BASE /
+  // proxyImageSource），隐藏观看者 IP/Referer。
   'html_inline',
   // Backslash escapes turn `\_` into a literal `_`, which eats the arms of
   // common kaomoji like ¯\_(ツ)_/¯. Chat users type literal backslashes far
@@ -205,6 +207,138 @@ function wordBoundaryEmphasis(state: StateInline, silent: boolean): boolean {
 
 let md: MarkdownIt | null = null;
 let codeHighlighting: CodeHighlightingModule | null = null;
+
+// 【本地改动，2026-10-03 恢复】数学公式（KaTeX）：math_inline 规则把 $...$ /
+// $$...$$ 捕获为安全占位符，renderMarkdown 后处理阶段用 katex 渲染成 HTML。
+// 安全：只用 katex 默认渲染（未启用 mhchem / html 插件，输出不含 <script>）；
+// throwOnError=false 防恶意/畸形输入导致崩溃（恶意输入渲染为 TeX 错误框）；
+// 行内 $...$ 要求内容含字母或 LaTeX 运算符才触发，避免聊天中 $10 等金额被误识别。
+const MATH_PLACEHOLDER_RE = /<span class="math" data-latex="([^"]*)" data-math-type="(\w+)"><\/span>/g;
+
+let katexRenderer: ((latex: string, opts: { throwOnError: boolean; displayMode: boolean }) => string) | null = null;
+let katexLoading = false;
+
+function hasMathyContent(latex: string): boolean {
+  // Inline $...$ 需含字母或 LaTeX 运算符才触发公式模式；纯数字/空白/标点视为
+  // 普通文本（$10、$5.00 等金额），避免聊天中金额被误识别。$$...$$ 不受此限。
+  return /[a-zA-Z\\^_{}&%]/.test(latex);
+}
+
+function decodeHtmlEntities(value: string): string {
+  // 仅解码 escapeHtml() 生成的标准实体；我们控制编码端，无需通用解析器。
+  return value
+    .replaceAll('&amp;', '&')
+    .replaceAll('&lt;', '<')
+    .replaceAll('&gt;', '>')
+    .replaceAll('&quot;', '"')
+    .replaceAll('&#39;', "'");
+}
+
+function mathInline(state: StateInline, silent: boolean): boolean {
+  const start = state.pos;
+  if (start >= state.posMax) return false;
+  const first = state.src.charCodeAt(start);
+  if (first !== 0x24) return false; // not $
+
+  // Escaped `\$`（escape 规则虽禁用，防御性处理）。
+  if (start > 0 && state.src.charCodeAt(start - 1) === 0x5c) return false;
+
+  // 判断是 $$...$$（独立行）还是 $...$（行内），并扫描闭合符。
+  if (start + 1 < state.posMax && state.src.charCodeAt(start + 1) === 0x24) {
+    // $$...$$ 独立行公式：消费开头的 $$，向后找下一个未转义的 $$ 作为闭合。
+    let close = start + 2;
+    while (close < state.posMax) {
+      const c = state.src.charCodeAt(close);
+      if (c === 0x24 && close + 1 < state.posMax && state.src.charCodeAt(close + 1) === 0x24) {
+        break;
+      }
+      if (c === 0x5c) close++; // 跳过反斜杠转义
+      close++;
+    }
+    if (close >= state.posMax) return false; // 无闭合 $$
+    const latex = state.src.slice(start + 2, close);
+    if (silent) {
+      state.pos = close + 2;
+      return true;
+    }
+    if (!hasMathyContent(latex)) {
+      // 纯数字/符号：视为普通文本，原样输出整段（含 $$ 边界）。
+      state.pending += state.src.slice(start, close + 2);
+      state.pos = close + 2;
+      return true;
+    }
+    // 用 state.push 推 html_inline token：state.pending 里的原始 HTML 会被
+    // markdown-it 转义成 &lt;span&gt;，占位符正则匹配不上；html_inline token
+    // 内容作为原始 HTML 落地，占位符可被 replaceMathPlaceholders 正确替换。
+    const placeholder = state.push('html_inline', '', 0);
+    placeholder.content = `<span class="math" data-latex="${escapeHtml(latex)}" data-math-type="display"></span>`;
+    state.pos = close + 2;
+    return true;
+  }
+
+  // $...$ 行内公式：下一个 $ 且其后非 $ 的即为闭合。
+  let close = start + 1;
+  while (close < state.posMax) {
+    const c = state.src.charCodeAt(close);
+    if (c === 0x24) break;
+    if (c === 0x5c) close++; // 跳过反斜杠转义
+    close++;
+  }
+  if (close >= state.posMax) return false; // 无闭合 $
+  const latex = state.src.slice(start + 1, close);
+  if (silent) {
+    state.pos = close + 1;
+    return true;
+  }
+  if (!hasMathyContent(latex)) {
+    // 内容不含字母/运算符：视为普通文本，仅输出开头 $（让剩余内容被重新解析，
+    // 从而允许 $10 $a^2$ 这类序列中后面的公式仍被正确捕获）。
+    state.pending += state.src.slice(start, start + 1);
+    state.pos = start + 1;
+    return true;
+  }
+  const inlinePlaceholder = state.push('html_inline', '', 0);
+  inlinePlaceholder.content = `<span class="math" data-latex="${escapeHtml(latex)}" data-math-type="inline"></span>`;
+  state.pos = close + 1;
+  return true;
+}
+
+async function ensureKatexReady(): Promise<void> {
+  if (katexRenderer) return;
+  if (katexLoading) {
+    // 等待进行中的加载完成。
+    while (katexLoading && !katexRenderer) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    return;
+  }
+  katexLoading = true;
+  try {
+    // CSS 懒加载：浏览器环境 Vite 会注入 <link>；Node 测试环境（server 项目）
+    // 不支持动态 import CSS，静默跳过——公式仍能渲染，仅缺样式（测试不关心样式）。
+    try {
+      await import('katex/dist/katex.min.css');
+    } catch {
+      /* CSS unavailable in this environment; katex HTML output still valid. */
+    }
+    const katexModule = await import('katex');
+    katexRenderer = katexModule.renderToString;
+  } finally {
+    katexLoading = false;
+  }
+}
+
+async function replaceMathPlaceholders(html: string): Promise<string> {
+  if (!html.includes('class="math"')) return html;
+  await ensureKatexReady();
+  if (!katexRenderer) return html;
+  return html.replace(MATH_PLACEHOLDER_RE, (_match, escapedLatex, blockType) => {
+    const latex = decodeHtmlEntities(escapedLatex);
+    const displayMode = blockType === 'display';
+    const render = katexRenderer!;
+    return render(latex, { throwOnError: false, displayMode });
+  });
+}
 
 type LowlightText = {
   type: 'text';
@@ -426,6 +560,51 @@ async function ensureFenceLanguagesLoaded(languages: string[]): Promise<void> {
 }
 
 /**
+ * Base URL of Chatto's image proxy. Every inline `![]()` image is rewritten
+ * through it so the viewer's IP/Referer is hidden from the original source
+ * host. The proxy re-fetches the original using the `proxy_host` and
+ * `proxy_scheme` params; the original path/query are preserved and any
+ * fragment stays at the end.
+ */
+// 【本地改动，2026-10-03 恢复】内联图片统一走该图片代理：隐藏观看者的 IP/Referer，
+// 避免消息正文直接暴露原始图片 host。用 URL + searchParams 保留原始 path/query，
+// 并追加 proxy_host / proxy_scheme，fragment 留在最末尾。踩坑：带端口的 host 会被
+// searchParams 编码成 host%3Aport（`:` → `%3A`），代理端按 query param 正常解码即可。
+// 边界：仅影响消息正文 inline image；现有附件（独立签名 URL + MessageAttachments
+// 渲染）完全不受影响。
+const IMAGE_PROXY_BASE = 'https://proxy.moonchan.xyz';
+
+// 【本地改动，2026-10-03 恢复】把原始图片 src 重写为代理 URL；非 http(s)
+// （含 javascript:/data:/相对路径/ftp:/mailto: 等）一律返回 '#'，与 image 渲染器的
+// 安全兜底一致。markdown-it 自带 validateLink 已先拦掉 javascript:/vbscript:/file:/
+// data: 等危险协议，这里再锁死 http(s)。
+// src 本就指向图片代理自身时不再套一层代理，原样直通（否则 proxy_host 写成
+// proxy.moonchan.xyz 自引用形成环/404/超时）；只按 hostname 判定，保留用户原始
+// query 与 fragment。
+function proxyImageSource(src: string): string {
+  let original: URL;
+  try {
+    original = new URL(src);
+  } catch {
+    return '#';
+  }
+  if (original.protocol !== 'http:' && original.protocol !== 'https:') {
+    return '#';
+  }
+  const proxyHostname = new URL(IMAGE_PROXY_BASE).hostname;
+  if (original.hostname === proxyHostname) {
+    return src;
+  }
+  const proxy = new URL(IMAGE_PROXY_BASE);
+  proxy.pathname = original.pathname;
+  proxy.search = original.search;
+  proxy.searchParams.set('proxy_host', original.host);
+  proxy.searchParams.set('proxy_scheme', original.protocol === 'https:' ? 'https' : 'http');
+  proxy.hash = original.hash;
+  return proxy.toString();
+}
+
+/**
  * Initialize the markdown-it instance.
  * Called once on first render.
  */
@@ -464,6 +643,10 @@ function initialize(): void {
   // as italics. Inserted before the `emphasis` rule so non-boundary marker
   // runs are consumed as literal text.
   md.inline.ruler.before('emphasis', 'word_boundary_emphasis', wordBoundaryEmphasis);
+
+  // 【本地改动，2026-10-03 恢复】数学公式：注册 math_inline 规则，在 emphasis
+  // 之前捕获 $...$ / $$...$$ 为安全占位符（渲染见 replaceMathPlaceholders）。
+  md.inline.ruler.before('emphasis', 'math_inline', mathInline);
 
   // CommonMark decodes entities in prose but leaves them literal in code. Turn
   // decoded NBSPs into collapsible spaces only in ordinary inline text so long
@@ -520,6 +703,52 @@ function initialize(): void {
 
     return defaultLinkRender(tokens, idx, options, env, self);
   };
+
+  // 【本地改动，2026-10-03 恢复】内联图片渲染：先把 src 经代理重写
+  // （proxyImageSource），再加固输出标签（loading=lazy / referrerpolicy=
+  // no-referrer / rel=noopener noreferrer），并用 <a> 包裹支持新标签页打开原图。
+  // 尺寸约束：外包络 <a> max-width: 50%（热区恒=图宽），img width:100% 撑满、
+  // height:auto、max-height:100vh、object-fit:contain（超高图自适应不留黑边）。
+  const defaultImageRender =
+    md.renderer.rules.image ||
+    function (tokens, idx, options, _env, self) {
+      return self.renderToken(tokens, idx, options);
+    };
+
+  md.renderer.rules.image = function (tokens, idx, options, env, self) {
+    const token = tokens[idx];
+    const srcIndex = token.attrIndex('src');
+    let originalSrc = '';
+    if (srcIndex >= 0) {
+      originalSrc = token.attrs![srcIndex][1];
+      token.attrs![srcIndex][1] = proxyImageSource(originalSrc);
+    }
+    // Drop the optional title to avoid tooltip injection/abuse.
+    const titleIndex = token.attrIndex('title');
+    if (titleIndex >= 0) token.attrs!.splice(titleIndex, 1);
+    token.attrSet('loading', 'lazy');
+    token.attrSet('referrerpolicy', 'no-referrer');
+    token.attrSet('rel', 'noopener noreferrer');
+    token.attrSet(
+      'style',
+      'display: block; width: 100%; height: auto; max-height: 100vh; object-fit: contain; cursor: pointer;'
+    );
+
+    const imgHtml = defaultImageRender(tokens, idx, options, env, self);
+    if (originalSrc && originalSrc !== '#') {
+      // 清理原始 URL：移除可能的 fragment，保留干净的 http(s) URL。
+      let cleanUrl = originalSrc;
+      try {
+        const urlObj = new URL(originalSrc);
+        cleanUrl = urlObj.origin + urlObj.pathname + urlObj.search;
+      } catch {
+        // 无效 URL 则不包裹链接。
+        return imgHtml;
+      }
+      return `<a href="${escapeAttribute(cleanUrl)}" target="_blank" rel="noopener noreferrer" style="display: inline-block; max-width: 50%;">${imgHtml}</a>`;
+    }
+    return imgHtml;
+  };
 }
 
 /**
@@ -564,7 +793,11 @@ export async function renderMarkdown(
     await ensureFenceLanguagesLoaded(extractFenceLanguages(body));
     initialize();
 
-    return md!.render(body, { [MENTIONS_ENV_KEY]: mentions });
+    // 【本地改动，2026-10-03 恢复】渲染后把 $...$ / $$...$$ 占位符替换为
+    // KaTeX 生成的 HTML（懒加载，首屏 bundle 零开销）。
+    let html = md!.render(body, { [MENTIONS_ENV_KEY]: mentions });
+    html = await replaceMathPlaceholders(html);
+    return html;
   } catch (err) {
     console.error('[Markdown] renderMarkdown failed:', err, { bodyLength: body.length });
     throw err;

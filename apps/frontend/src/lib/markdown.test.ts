@@ -397,5 +397,83 @@ describe('renderMarkdown', () => {
       expect(html.match(/data-markdown-copy/g)).toHaveLength(1);
       expect(html).toContain('<code>inline</code>');
     });
+
+    // 【本地改动，2026-10-03 恢复】回归测试：内联图片经代理重写、非 http(s) 降级
+    // 为 #、javascript: 不产 <img>。发现背景：支持消息正文 ![]() 内联图片，且所有
+    // 图片统一走 IMAGE_PROXY_BASE 代理（隐藏观看者 IP/Referer）。
+    describe('inline images', () => {
+      it('rewrites an http(s) image through the proxy, preserving path and original query', async () => {
+        const html = await renderMarkdown('![cat](https://images.example.com/photos/cat.png?token=abc)');
+        expect(html).toContain('<img src="https://proxy.moonchan.xyz/photos/cat.png?token=abc');
+        expect(html).toContain('proxy_host=images.example.com');
+        expect(html).toContain('proxy_scheme=https');
+        expect(html).toContain('alt="cat"');
+      });
+
+      it('adds proxy_host and proxy_scheme when there is no original query', async () => {
+        const html = await renderMarkdown('![cat](https://images.example.com/cat.png)');
+        expect(html).toContain('<img src="https://proxy.moonchan.xyz/cat.png?proxy_host=images.example.com');
+        expect(html).toContain('proxy_scheme=https');
+      });
+
+      it('keeps the fragment at the end, after the proxy params', async () => {
+        const html = await renderMarkdown('![cat](https://images.example.com/cat.png#section)');
+        expect(html).toContain('#section');
+        expect(html.indexOf('#section')).toBeGreaterThan(html.indexOf('proxy_scheme=https'));
+      });
+
+      it('records the original scheme for http images', async () => {
+        const html = await renderMarkdown('![cat](http://images.example.com/cat.png)');
+        expect(html).toContain('proxy_scheme=http');
+      });
+
+      it('hardens the emitted img tag', async () => {
+        const html = await renderMarkdown('![cat](https://images.example.com/cat.png)');
+        expect(html).toContain('loading="lazy"');
+        expect(html).toContain('referrerpolicy="no-referrer"');
+        expect(html).toContain('rel="noopener noreferrer"');
+      });
+
+      it('neuters non-http(s) image sources to #', async () => {
+        const html = await renderMarkdown('![x](/relative/cat.png)');
+        expect(html).toContain('src="#"');
+        expect(html).not.toContain('/relative/cat.png');
+      });
+
+      it('does not emit an image for javascript: sources', async () => {
+        const html = await renderMarkdown('![x](javascript:alert(1))');
+        expect(html).not.toContain('<img');
+      });
+
+      it('constrains image size with max-width and wraps in clean original url link', async () => {
+        const html = await renderMarkdown('![cat](https://images.example.com/cat.png#preview)');
+        expect(html).toContain(
+          'style="display: block; width: 100%; height: auto; max-height: 100vh; object-fit: contain; cursor: pointer;"'
+        );
+        expect(html).toContain(
+          '<a href="https://images.example.com/cat.png" target="_blank" rel="noopener noreferrer" style="display: inline-block; max-width: 50%;">'
+        );
+      });
+    });
+
+    // 【本地改动，2026-10-03 恢复】回归测试：$...$ / $$...$$ 渲染为 KaTeX 公式，
+    // 纯数字/金额不误触发。
+    describe('math formulas', () => {
+      it('renders an inline formula through KaTeX', async () => {
+        const html = await renderMarkdown('公式 $a^2 + b^2 = c^2$ 结束');
+        expect(html).toContain('<span class="katex">');
+      });
+
+      it('renders a display formula through KaTeX', async () => {
+        const html = await renderMarkdown('$$\n\\int_0^1 x^2\\,dx\n$$');
+        expect(html).toContain('<span class="katex-display">');
+      });
+
+      it('leaves money amounts untouched', async () => {
+        const html = await renderMarkdown('the price is $10.00 with tax');
+        expect(html).not.toContain('<span class="katex">');
+        expect(html).toContain('$10.00');
+      });
+    });
   });
 });

@@ -860,7 +860,15 @@ jobs:
         with:
           context: docker-contexts/linux-amd64
           file: docker-contexts/linux-amd64/Dockerfile
-          push: true
+          # 【本地改动 2026-10-04】push 置 false：目标是
+          # ghcr.io/chattocorp/chatto，需要上游 org 的 GHCR 写权限，fork 的
+          # GITHUB_TOKEN 没有（2026-10-04 实测必红：
+          #   failed to push ghcr.io/chattocorp/chatto:...:
+          #   denied: permission_denied: The requested installation does not exist）。
+          # 只构建不推送，保留 Dockerfile 冒烟测试。与 build-docs-image.yml(24719ce64)、
+          # build-authling-image.yml(9b31e928a) 同一处理。
+          # 【恢复方式】fork 自建镜像时：把 tags 换成 fork 的 GHCR 名，并改回 true。
+          push: false
           platforms: linux/amd64
           tags: ghcr.io/chattocorp/chatto:${{ github.sha }}-amd64
           cache-from: type=gha,scope=chatto-main-amd64
@@ -876,7 +884,15 @@ jobs:
         with:
           context: docker-contexts/linux-arm64
           file: docker-contexts/linux-arm64/Dockerfile
-          push: true
+          # 【本地改动 2026-10-04】push 置 false：目标是
+          # ghcr.io/chattocorp/chatto，需要上游 org 的 GHCR 写权限，fork 的
+          # GITHUB_TOKEN 没有（2026-10-04 实测必红：
+          #   failed to push ghcr.io/chattocorp/chatto:...:
+          #   denied: permission_denied: The requested installation does not exist）。
+          # 只构建不推送，保留 Dockerfile 冒烟测试。与 build-docs-image.yml(24719ce64)、
+          # build-authling-image.yml(9b31e928a) 同一处理。
+          # 【恢复方式】fork 自建镜像时：把 tags 换成 fork 的 GHCR 名，并改回 true。
+          push: false
           platforms: linux/arm64
           tags: ghcr.io/chattocorp/chatto:${{ github.sha }}-arm64
           cache-from: type=gha,scope=chatto-main-arm64
@@ -888,6 +904,14 @@ jobs:
             org.opencontainers.image.licenses=AGPL-3.0-or-later
 
       - name: Publish multi-platform commit image
+        # 【本地改动 2026-10-04】上面两个 buildx 步骤已把 push 置 false，本步骤
+        # 依赖那两个已推送的镜像（imagetools create 只能引用 registry 里存在的
+        # tag），不推送就必然报 manifest unknown，一并禁用。
+        # 用非常量条件而非 if: false —— actionlint 的 [if-cond] 规则禁止常量条件
+        # （同文件 publish-main-image job 用 github.ref 避这条，见432444410）。
+        # 【恢复方式】把上面两处 push 改回 true、本行改回
+        # github.repository == 'chattocorp/chatto' 即可。
+        if: github.repository == 'chattocorp/chatto'
         shell: bash
         run: |
           docker buildx imagetools create \

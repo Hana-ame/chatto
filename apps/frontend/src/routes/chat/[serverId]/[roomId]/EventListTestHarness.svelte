@@ -17,6 +17,7 @@
   } from '$lib/state/room';
   import EventList from './EventList.svelte';
   import type { TimelineReadPosition } from './readThroughTracker';
+  import type { PendingHighlight } from '$lib/state/server/pendingHighlight';
 
   let {
     eventIds,
@@ -28,7 +29,9 @@
     isLoading = false,
     isJumpedMode = false,
     onJumpToPresent,
+    onPresentRequested,
     pendingHighlightId = null,
+    highlightRequest = null,
     hasReachedStart = false,
     recoveryViewport = null,
     unreadAfterEventId = null,
@@ -45,7 +48,9 @@
     isLoading?: boolean;
     isJumpedMode?: boolean;
     onJumpToPresent?: () => Promise<boolean>;
+    onPresentRequested?: () => void;
     pendingHighlightId?: string | null;
+    highlightRequest?: PendingHighlight | null;
     hasReachedStart?: boolean;
     recoveryViewport?: { eventId: string; offset: number; hasNewer?: boolean } | null;
     unreadAfterEventId?: string | null;
@@ -163,7 +168,9 @@
   messageStore={messageStore as never}
   {events}
   {pendingHighlightId}
+  {highlightRequest}
   {unreadAfterEventId}
   onScrollToEventComplete={onComplete}
+  onJumpToPresent={onPresentRequested}
   {onReadPosition}
 />

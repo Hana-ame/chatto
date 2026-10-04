@@ -883,7 +883,8 @@ func (c *MediaModel) GetTransformedServerAssetURLWithFilename(key, filename stri
 	if filename != "" {
 		path += "/" + url.PathEscape(filename)
 	}
-	return c.assetURL(path)
+	// 与 GetTransformedServerAssetURL 一样返回相对路径，由调用方 absolutize 成绝对 URL。
+	return path
 }
 
 // ============================================================================

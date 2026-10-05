@@ -737,7 +737,10 @@ function initialize(): void {
     const imgHtml = defaultImageRender(tokens, idx, options, env, self);
     if (originalSrc && originalSrc !== '#') {
       // 清理原始 URL：移除可能的 fragment，保留干净的 http(s) URL。
-      let cleanUrl = originalSrc;
+      // 【本地改动 2026-10-05】原先写作 `let cleanUrl = originalSrc` 再在 try
+      // 里覆盖，no-useless-assignment 报「初始赋值未被读取」：try 成功时立刻被覆盖，
+      // 失败时直接 return，初始值永不参与读取。改为在 try 内用 const 声明。
+      let cleanUrl: string;
       try {
         const urlObj = new URL(originalSrc);
         cleanUrl = urlObj.origin + urlObj.pathname + urlObj.search;

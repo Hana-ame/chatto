@@ -104,6 +104,7 @@ is connected to, plus the add-server button pinned to the bottom. See the
       {#if externalLinks.length}
         <div class="h-px bg-border"></div>
         {#each externalLinks as link (link.url)}
+          <!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- external absolute URL from links.json, not an app route -->
           <a
             href={link.url}
             target="_blank"

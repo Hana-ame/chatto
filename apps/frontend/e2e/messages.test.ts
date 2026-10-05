@@ -766,14 +766,8 @@ test('image lightbox supports keyboard navigation with multiple images', async (
   // 「override to original URL」两次提交把该行为整体推翻，此断言未同步。
   // 与 cli/internal/connectapi/timeline_thread_services_test.go 的
   // 「must not carry a transform path」保持一致。
-  await expect(roomPage.attachmentImage.first()).toHaveAttribute(
-    'src',
-    /\/assets\/files\/[^/?]+/
-  );
-  await expect(roomPage.attachmentImage.first()).not.toHaveAttribute(
-    'src',
-    /\/image\//
-  );
+  await expect(roomPage.attachmentImage.first()).toHaveAttribute('src', /\/assets\/files\/[^/?]+/);
+  await expect(roomPage.attachmentImage.first()).not.toHaveAttribute('src', /\/image\//);
 
   const gallery = page.getByTestId('message-image-gallery');
   await expect(gallery).toBeVisible();
@@ -850,10 +844,23 @@ test('image lightbox supports keyboard navigation with multiple images', async (
   const dialog = page.locator('dialog[open]');
   await expect(dialog).toBeVisible();
   await expect(dialog.getByText('1 / 5')).toBeVisible();
-  await expect(dialog.locator('img')).toHaveAttribute('src', /\/image\/2048x2048\/contain\?/);
+  // 【本地改动 2026-10-05】上游这两条断言的是 per-user ticket 形态：
+  //   :853 /\/image\/2048x2048\/contain\?/     缩略图 transform + ?access=
+  //   :856 /\/assets\/files\/[^/?]+\?/        原图 ticket + query
+  // fork 的第 2 组改动故意反转：图片不压缩、不带 ticket，URL 形如
+  // /assets/files/{assetID}/{fn.ext}（transform 则为
+  // /assets/files/{assetID}/image/{w}x{h}/{fit}/{fn.ext}），assetID 即凭证。
+  // 正则锚定 fork 形状，上游 ticket 形态匹配不上，断言不是被删掉而是被改写。
+  await expect(dialog.locator('img')).toHaveAttribute(
+    'src',
+    /\/assets\/files\/[^/?]+\/image\/2048x2048\/contain\/[^/]+\.[A-Za-z0-9]+$/
+  );
+  // 注意 Download href 的锚点：fork 的尾段是文件名，:866 之后还会跟
+  // `?download=1`，所以路径部分用 (?=\?|$) 而不是 $ 来收尾，否则与下一条
+  // `[?&]download=1` 断言自相矛盾。
   await expect(dialog.getByRole('link', { name: 'Download', exact: true })).toHaveAttribute(
     'href',
-    /\/assets\/files\/[^/?]+\?/
+    /\/assets\/files\/[^/?]+\/[^/?]+(?=\?|$)/
   );
 
   const download = dialog.getByRole('link', { name: 'Download', exact: true });

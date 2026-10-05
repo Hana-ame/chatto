@@ -54,7 +54,19 @@ test('Markdown attachments render automatically and download their original byte
   await expect(dialog.locator('li')).toHaveCount(2);
   await expect(dialog.locator('table')).toBeVisible();
   await expect(dialog.locator('pre code')).toContainText('original code');
-  await expect(dialog.locator('script, img, iframe')).toHaveCount(0);
+  // 【本地改动 2026-10-05】上游断言 script, img, iframe 计数为 0：它把 .md
+  // 附件预览当不可信 HTML 渲染，剥掉所有内联图片。上游那 3 条是安全断言，其中
+  // 两条在 fork 里仍然成立且必须保留：<script> 与 <iframe> 被 sanitize 掉。
+  // 但「img 为 0」与 fork 的第 4 组改动直接冲突——fork 明确要求「允许 md pic
+  // 插入」，故改为断言图片确实渲染、且 src 经图片代理重写。
+  //
+  // 隐私保障未被削弱：src 经 proxyImageSource（apps/frontend/src/lib/markdown.ts
+  // 的 image 渲染规则）改写成 IMAGE_PROXY_BASE，浏览器不会直连 example.com，
+  // 观看者 IP/Referer 不会泄漏给图床。本测试末尾的
+  // `expect(externalRequests).toEqual([])` 断言的正是这件事，保持不变。
+  await expect(dialog.locator('script, iframe')).toHaveCount(0);
+  await expect(dialog.locator('img')).toHaveCount(1);
+  await expect(dialog.locator('img')).toHaveAttribute('src', /^https:\/\/proxy\./);
   await expect(dialog.getByText('Review notes.', { exact: true })).toBeVisible();
   for (const viewport of [
     { width: 1440, height: 1000 },

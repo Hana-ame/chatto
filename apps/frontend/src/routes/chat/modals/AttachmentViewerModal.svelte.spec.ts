@@ -317,7 +317,7 @@ describe('Markdown attachment previews', () => {
     }
   );
 
-  it('keeps raw HTML and embedded images inert', async () => {
+  it('keeps raw HTML inert while rendering markdown images through the proxy', async () => {
     fetchDocument.mockResolvedValue(
       new Response(
         '# Safe\n\n<script>alert(1)</script>\n\n<img src="https://example.com/tracker">\n\n' +
@@ -326,8 +326,32 @@ describe('Markdown attachment previews', () => {
     );
     const view = mount(documentModal());
     await expect.element(view.getByRole('heading', { name: 'Safe' })).toBeVisible();
-    expect(view.container.querySelector('script, img, iframe')).toBeNull();
+    // 【本地改动 2026-10-05】上游这条断言是 `querySelector('script, img, iframe')`
+    // 为 null，且当时 markdown.ts 的 DISABLED_RULES 里禁用了 'image' 规则
+    // （上游 markdown.ts:22），所以正文里不会出现任何 <img>。
+    //
+    // 本 fork 按需求「允许 md pic 插入」重新启用了 image 规则（markdown.ts 的
+    // DISABLED_RULES 里 'image' 已被移除），并给 image 渲染器加了
+    // proxyImageSource() 重写 src——图片统一走 IMAGE_PROXY_BASE，
+    // 不让观看者 IP/Referer 泄漏给图片源站。
+    //
+    // 于是这里必须把两件事**拆开**断言：
+    //   1. 裸 HTML 的 <script>/<img>/<iframe> 仍然必须被丢弃（安全断言，不变）
+    //   2. markdown 图片 ![](x) 渲染成 <img>，但 src 必须是代理域名
+    // 上游那条「一个 img 都不许有」是 image 规则被禁用时代的产物，
+    // 在本 fork 已不成立；直接沿用会让 test-workspace 永远红。
+    expect(view.container.querySelector('script, iframe')).toBeNull();
     expect(view.container.querySelector('a[href^="javascript:"]')).toBeNull();
+    // 裸 HTML <img src="https://example.com/tracker"> 不该原样落进 DOM。
+    expect(view.container.querySelector('img[src="https://example.com/tracker"]')).toBeNull();
+    // markdown 图片渲染出来，但 src 已被 proxyImageSource 重写到代理域名。
+    // 格式见 markdown.ts:598-604（pathname + proxy_host/proxy_scheme），
+    // 与 markdown.test.ts 的 'rewrites an http(s) image through the proxy' 一致。
+    const images = Array.from(view.container.querySelectorAll('img'));
+    expect(images.length).toBe(1);
+    expect(images[0]!.getAttribute('src')).toBe(
+      'https://proxy.moonchan.xyz/image.png?proxy_host=example.com&proxy_scheme=https'
+    );
     expect(fetchDocument).toHaveBeenCalledTimes(1);
   });
 

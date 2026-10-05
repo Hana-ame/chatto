@@ -22,6 +22,13 @@ const { mocks } = vi.hoisted(() => ({
     authenticated: {} as Record<string, boolean>,
     getStore: vi.fn(),
     pushState: vi.fn(),
+    // 【本地改动 2026-10-05】AppHeader 的移动端 hamburger 分支会导航到
+    // /chat/[serverId]。原先组件是顶层 `import { goto }`，而下面这个
+    // vi.mock('$app/navigation', ...) 只提供 pushState → goto 缺失 →
+    // 模块解析期 SyntaxError，连坐同批次另外 6 个 spec 一起红。
+    // 组件已改成点击时动态 import，行为不变，但 mock 仍要能提供 goto，
+    // 否则 handleHamburger() 走导航分支时 goto 是 undefined。
+    goto: vi.fn(),
     toggleSidebar: vi.fn(),
     openQuickSwitcher: vi.fn()
   }
@@ -64,7 +71,7 @@ vi.mock('$lib/serverCatalogue', () => ({
     mocks.servers.find((server) => mocks.authenticated[server.id])?.id
 }));
 
-vi.mock('$app/navigation', () => ({ pushState: mocks.pushState }));
+vi.mock('$app/navigation', () => ({ pushState: mocks.pushState, goto: mocks.goto }));
 vi.mock('$app/paths', () => ({
   base: '',
   assets: '',

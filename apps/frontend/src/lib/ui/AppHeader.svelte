@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { goto, pushState } from '$app/navigation';
+  import { pushState } from '$app/navigation';
   import { serverUi } from '$lib/state/server/serverUi';
   import { resolve } from '$app/paths';
   import { page } from '$app/state';
@@ -74,7 +74,26 @@
       const serverId = preferencesServerId;
       if (serverId) {
         if (!sidebarNav.isOpen) sidebarNav.toggle();
-        void goto(resolve('/chat/[serverId]', { serverId: serverIdToSegment(serverId) }));
+        // 【本地改动 2026-10-05】改为动态 import $app/navigation 的 goto。
+        //
+        // 踩坑：模块顶层 `import { goto } from '$app/navigation'` 会让
+        // AppHeader.svelte.spec.ts 在 vitest 浏览器模式整文件加载失败——
+        //   SyntaxError: The requested module '.../@sveltejs/kit/src/runtime/app/
+        //   navigation.js' does not provide an export named 'goto'
+        // 该失败发生在模块解析期，会**连坐**同一批次里另外 6 个 spec
+        // （ServerGutter / LinkPreviewCard / ServerSignedOut / ServerUnavailable 等
+        // 本身并不 import goto），test-workspace 因此整 job 红。
+        //
+        // 证据：上游同一份 AppHeader.svelte.svelte.spec.ts 绿（11 tests），
+        // 上游 AppHeader.svelte 只 import { pushState }。本 fork 独有的 goto 导入
+        // 就是唯一差异。该失败在我 push 之前（基线 8bbb2491a / 42064270a）就存在，
+        // 与第 2 组改动无关，是 2026-09-01 移动端 hamburger 改动带进来的。
+        //
+        // goto 只在用户点击 hamburger 时才需要，动态 import 不损失任何东西，
+        // 且把依赖推迟到真正需要它的时候。
+        void import('$app/navigation').then(({ goto }) =>
+          goto(resolve('/chat/[serverId]', { serverId: serverIdToSegment(serverId) }))
+        );
       }
       return;
     }

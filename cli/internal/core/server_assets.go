@@ -14,26 +14,23 @@ import (
 	evtv1 "hmans.de/chatto/internal/pb/chatto/core/evt/v1"
 )
 
-// assetURL prepends AssetBaseURL to an asset path.
-// When AssetBaseURL is empty, returns the path unchanged.
+// 【本地改动 2026-10-05 废止 assetURL()】
+// 这个 helper 曾用于在 core 里拼绝对 URL，从而绕开上游 #2693 的按请求 origin
+// 绝对化（AssetBaseURL + path）。实测该思路在联邦下是错的：core 只有「本机
+// origin」，而附件可能属于另一台 server —— server A 通过 ConnectRPC 读 B 的
+// 时间线时，收到的附件 URL 会指向 A 自己。
 //
-// 【本地改动 2026-10-05 废止】这个 helper 曾用于在 core 里拼绝对 URL，从而绕开
-// 上游 #2693 的按请求 origin 绝对化。实测该思路在联邦下是错的：core 只有
-// 「本机 origin」，而附件可能属于另一台 server。已改为
-// GetPublicStableAttachmentAssetURL 一律返回相对路径，服务端资产 URL 由
-// connectapi 调用方 absolutizeMediaURL / absolutizeServerURL 补全。
+// 现改为：GetPublicStableAttachmentAssetURL 一律返回相对路径，
+// GetTransformedServerAssetURLWithFilename 同样返回相对路径，两者都由 connectapi
+// 的调用方 absolutizeMediaURL / absolutizeServerURL 按**请求** origin 补全
+// （cli/internal/connectapi/room_timeline_assembler.go 的 assetURLView）。
 //
-// 现在没有任何调用点，保留它只是为了留一个「为什么不再在 core 拼 origin」的
-// 显式记录——真要恢复绝对化，先读 GetPublicStableAttachmentAssetURL 上方的
+// 函数已删除而非留作注释：staticcheck 的 U1000 会判未使用函数为错误，
+// `mise lint-cli` 因此红（test-cli-chatto job）。想恢复绝对化时，先读
+// cli/internal/core/attachments.go 中 GetPublicStableAttachmentAssetURL 上方的
 // 联邦说明，否则会重新打破 e2e/html-attachments.test.ts 与
 // e2e/attachment-viewer.test.ts。
 // AssetBaseURL 字段本身保留（run.go 仍在设置，未来若用于非联邦场景可复用）。
-func (c *ChattoCore) assetURL(path string) string {
-	if c.AssetBaseURL == "" {
-		return path
-	}
-	return c.AssetBaseURL + path
-}
 
 // AssetsConfig returns the assets configuration as an assets.Config.
 // 【本地改动，2026-10-03 恢复】把 ChattoCore 上的 FFmpegPath 与重编码开关透传给

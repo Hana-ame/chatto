@@ -1,25 +1,11 @@
 import { ImageFitMode } from '@chatto/api-types/api/v1/common_pb';
 
 import type { AttachmentAPI } from '../api/attachments.js';
-
-export type ExpiringAssetUrl = {
-  url: string;
-  /**
-   * 【本地改动 2026-10-05】声明为可选，因为 proto3 的零值时间戳不会序列化到
-   * 线上。fork 的公开附件 URL（/assets/files/{id}/{fn.ext}）本就不填过期时间，
-   * 运行时拿到的就是缺失字段；类型若写死 `expiresAt: string`，调用方会误以为
-   * 它一定存在，assetUrlNeedsRefresh 也就没法表达「永不过期」。
-   */
-  expiresAt?: string;
-};
-
-export type RefreshedAttachmentUrls = {
-  assetUrl: ExpiringAssetUrl | null;
-  thumbnailAssetUrl: ExpiringAssetUrl | null;
-  videoThumbnailAssetUrl: ExpiringAssetUrl | null;
-  hlsMasterPlaylistUrl?: ExpiringAssetUrl | null;
-  variantAssetUrls: Map<string, ExpiringAssetUrl | null>;
-};
+import type { ExpiringAssetUrl, RefreshedAttachmentUrls } from '../api/attachmentUrls.js';
+// 【本地改动 2026-10-05】ExpiringAssetUrl / RefreshedAttachmentUrls 的唯一来源是
+// api/attachmentUrls.ts，这里再导出以保持既有 import 路径可用。之前两处各定义
+// 一份，改 expiresAt 为可选时只改一处就触发 tsc TS2345。
+export type { ExpiringAssetUrl, RefreshedAttachmentUrls };
 
 export type AttachmentThumbnailRefreshOptions = {
   width: number;

@@ -932,7 +932,8 @@ func (c *MediaModel) GetPublicStableAttachmentAssetURL(attachment *evtv1.Attachm
 	if attachment == nil || attachment.GetId() == "" {
 		return StableAssetURL{}
 	}
-	_ = c // AssetBaseURL 对附件公开 URL 有意不适用，见上方注释。
+	// 刻意不读 c.AssetBaseURL：core 只有本机 origin，联邦下会把 URL 指向错误的
+	// server。origin 由 connectapi 的 assetURLView 按请求补，见上方说明。
 	return StableAssetURL{URL: stableAttachmentPath(attachment, "")}
 }
 

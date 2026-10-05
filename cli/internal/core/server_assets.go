@@ -15,6 +15,8 @@ import (
 )
 
 // AssetsConfig returns the assets configuration as an assets.Config.
+// 【本地改动，2026-10-03 恢复】把 ChattoCore 上的 FFmpegPath 与重编码开关透传给
+// assets.Config，供上传路径 EncodeAVIF 使用。
 func (c *ChattoCore) AssetsConfig() assets.Config {
 	maxUploadSize := int64(c.config.Assets.MaxUploadSize)
 	if maxUploadSize == 0 {
@@ -22,6 +24,9 @@ func (c *ChattoCore) AssetsConfig() assets.Config {
 	}
 	return assets.Config{
 		MaxUploadSize: maxUploadSize,
+		FFmpegPath:    c.FFmpegPath,
+		WebPEnabled:   c.WebPEnabled,
+		AVIFEnabled:   c.AVIFEnabled,
 	}
 }
 

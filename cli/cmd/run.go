@@ -7,6 +7,7 @@ import (
 	"hmans.de/chatto/internal/pb/chatto/core/notification/v1"
 	"hmans.de/chatto/internal/pb/chatto/core/runtime_state/v1"
 	"net"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -186,6 +187,20 @@ func runServer(configPath string) {
 	if cfg.Video.Enabled {
 		chattoCore.VideoMaxUploadSize = int64(cfg.Video.MaxUploadSizeOrDefault())
 		chattoCore.VideoUploadsEnabled = true
+	}
+
+	// 【本地改动，2026-10-03 恢复】room 附件图片上传路径的 AVIF 重编码配置
+	// （原尺寸 AVIF 存储，返回 AVIF 原图链接，不生成多分辨率衍生图）。
+	chattoCore.FFmpegPath = cfg.AssetProcessing.FFmpegPath
+	chattoCore.AVIFEnabled = cfg.AssetProcessing.AVIFEnabledOrDefault()
+	chattoCore.WebPEnabled = cfg.AssetProcessing.AVIFEnabledOrDefault()
+
+	// 【本地改动，2026-10-03 恢复】Set asset base URL for absolute asset URLs
+	//（公开 AVIF 原图链接跨源客户端必需）。
+	if cfg.Webserver.URL != "" {
+		if parsed, err := url.Parse(cfg.Webserver.URL); err == nil {
+			chattoCore.AssetBaseURL = parsed.Scheme + "://" + parsed.Host
+		}
 	}
 
 	if err := chattoCore.EnableLiveKitCallReconciliation(cfg.LiveKit); err != nil {

@@ -1,6 +1,7 @@
 package core
 
 import (
+	"strings"
 	"bytes"
 	"context"
 	"errors"
@@ -141,7 +142,16 @@ func TestNeighborhoodDiscoveryStoresDirectoryAndImages(t *testing.T) {
 
 	_, _, err = core.OpenNeighborhoodImage(ctx, "../"+first.GetLogo().GetObjectName())
 	require.ErrorIs(t, err, ErrNeighborhoodImageNotFound)
-	_, _, err = core.OpenNeighborhoodImage(ctx, first.GetBanner().GetObjectName()[:63]+"0")
+	// 【本地改动 2026-10-05】原来用 banner[:63]+"0" 构造一个「不存在」的名字，
+	// 期望被 ErrNeighborhoodImageNotFound 拒掉。但 banner 的内容哈希末位恰好
+	// 就是 '0'（实测 ce83…23c0），拼出来的名字等于 banner 自己，于是 Get 命中、
+	// 返回 nil 错误。改用末位 'f'——保证与 banner 不同且仍是合法 hex。
+	missing := first.GetBanner().GetObjectName()
+	tail := "0"
+	if strings.HasSuffix(missing, tail) {
+		tail = "1"
+	}
+	_, _, err = core.OpenNeighborhoodImage(ctx, missing[:63]+tail)
 	require.ErrorIs(t, err, ErrNeighborhoodImageNotFound)
 
 	// A fresh directory is not refreshed again.

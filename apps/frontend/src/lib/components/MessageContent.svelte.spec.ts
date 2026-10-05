@@ -298,11 +298,15 @@ describe('renderMarkdown', () => {
   });
 
   describe('forbidden syntax (should render as literal text)', () => {
-    it('does not render images as img tags', async () => {
+    it('renders images through the proxy instead of the origin', async () => {
       const html = await renderMarkdown('![alt](https://example.com/img.png)');
-      // Image syntax is disabled, so no <img> tag should be rendered
-      // markdown-it parses this as "!" followed by a link, which is safe
-      expect(html).not.toContain('<img');
+      // 【本地改动 2026-10-05】fork 与上游在此断言上相反：上游禁用 image 规则，
+      // 断言「不渲染 <img>」；fork 自 a257259dc 起渲染内联图，并把 src 重写到
+      // proxy.moonchan.xyz 以隐藏观看者的 IP 与 Referer（FORK-DIVERGENCE 分歧 1）。
+      // 故断言方向跟随 fork：渲染出 <img>，且 src 指向代理而非原始 origin。
+      expect(html).toContain('<img');
+      expect(html).toContain('proxy.moonchan.xyz');
+      expect(html).not.toContain('src="https://example.com/img.png"');
     });
 
     it('does not render horizontal rules', async () => {

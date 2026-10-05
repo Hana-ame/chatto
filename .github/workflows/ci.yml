@@ -502,6 +502,14 @@ jobs:
           go-build-cache-scope: test-cli-chatto
           # PR caches are isolated from main and cannot accelerate a merge run.
           save-go-build-cache: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          # 【本地改动 2026-10-05】装 ffmpeg：本 job 跑 internal/assets 的
+          # AVIF/WebP 管线测试，而 processServerAssetImage 与
+          # TransformImageWithFFmpeg 都要 ffmpeg；缺失时两条路都失败，
+          # TestProcessAvatarImage_ValidPNG 报「did not return WebP format」。
+          # 该 job 此前依赖 ubuntu-latest 自带 ffmpeg，本机有 /usr/bin/ffmpeg
+          # 所以本地测不出、只有 CI 红。test-e2e-media(677 行) 与
+          # build-linux.yml(89 行) 早已显式安装，这里补齐同一处理。
+          install-ffmpeg: 'true'
 
       - name: Build frontend
         run: mise build-frontend

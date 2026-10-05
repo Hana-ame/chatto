@@ -87,6 +87,28 @@ type ChattoCore struct {
 	// independently; the main process does not hand work to a local callback.
 	VideoUploadsEnabled bool
 
+	// 【本地改动，2026-10-03 恢复】FFmpegPath 是用于把上传的附件图片重编码为
+	// AVIF 的 ffmpeg 二进制。为空时从 PATH 解析；ffmpeg 不可用时附件保持原图
+	// 存储。ChattoCore 创建后设置，数据来源为 AssetProcessingConfig。
+	FFmpegPath string
+
+	// 【本地改动，2026-10-03 恢复】WebPEnabled 是 2026-09-02 ~ 2026-09-12
+	// 期间 room 附件 WebP 重编码的开关；存储格式改回 AVIF 后上传路径不再读
+	// 它，保留仅兼容既有 `webp_enabled` 配置（在 config 层作为 avif_enabled
+	// 的别名被消费）；新代码请用 AVIFEnabled。
+	WebPEnabled bool
+
+	// 【本地改动，2026-10-03 恢复】AVIFEnabled 控制 room 附件图片上传时是否
+	// 重编码为**原尺寸** AVIF（动画输入产出动画 AVIF）。ChattoCore 创建后
+	// 设置，数据来源为 AssetProcessingConfig.AVIFEnabledOrDefault()。
+	// 只影响 room 附件；头像/branding/链接预览仍是 Go 直出的 WebP。
+	AVIFEnabled bool
+
+	// 【本地改动，2026-10-03 恢复】AssetBaseURL 是对外暴露的公开资产 URL 前缀
+	// （形如 scheme://host），由 run.go 根据部署环境设置；assetURL() 用它拼
+	// 完整公开 URL。为空时 assetURL() 返回相对路径。
+	AssetBaseURL string
+
 	notificationAlertHandler func(ctx context.Context, occurrence *notificationv1.NotificationOccurrence) error
 
 	// OnPushTestRequested sends a test notification to a user's push subscriptions.

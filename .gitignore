@@ -1,5 +1,9 @@
 node_modules
 .turbo/
+# 本地 pnpm store（2026-10-03 补）。实测 1.2G 且此前完全未被忽略，
+# 任何人 `git add -A` / `git add .` 都会把整个 CAS 索引卷进提交。
+# 注意：全局 store 在 /mnt/d/.pnpm-store，这里的是早期本地 --store-dir 残留。
+.pnpm-store/
 .vscode/settings.json
 *.code-workspace
 .DS_Store

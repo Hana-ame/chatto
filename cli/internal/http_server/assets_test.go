@@ -840,7 +840,18 @@ func TestAsset_OriginalDownload(t *testing.T) {
 				t.Run(filename, func(t *testing.T) {
 					body := []byte("<!doctype html><h1>Shared document</h1><script>window.__ran=true</script>")
 					_, attachment := env.postAssetMessageWithAttachmentContentType(t, room.Id, "download", body, filename, "text/html; charset=utf-8")
-					assetURL, err := url.Parse(env.url(attachment.GetAssetUrl().GetUrl()))
+					// 【本地改动 2026-10-05】本子测试守护的是 **ticket 路由** 的
+					// download=0/1 disposition 行为与 private 缓存策略，不该跟着
+					// 公开 URL 走。fork 的消息附件现在只下发公开 URL（无 query），
+					// 所以这里显式构造 ticket 版 URL（/assets/files/{id}?access=…），
+					// 让测试继续覆盖 serveStableAttachment 这条路由。
+					// 公开 URL 的缓存语义由 TestAsset_OriginalAttachment_HasCacheHeaders
+					// 单独守护。
+					ticketURL := env.core.GetStableAttachmentAssetURL(attachment.GetId(), user.Id).URL
+					if ticketURL == "" {
+						t.Fatal("Expected a signed attachment URL")
+					}
+					assetURL, err := url.Parse(env.url(ticketURL))
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -895,7 +906,20 @@ func TestAsset_OriginalDownload(t *testing.T) {
 			if backend == "s3" {
 				body := []byte("passive audio bytes")
 				_, attachment := env.postAssetMessageWithAttachmentContentType(t, room.Id, "audio download", body, "recording.mp3", "audio/mpeg")
-				resp, err := client.Get(env.url(attachment.GetAssetUrl().GetUrl() + "&download=1"))
+				// 【本地改动 2026-10-05】原代码 `attachment.GetAssetUrl().GetUrl() +
+				// "&download=1"`。fork 的公开 URL 无 query（没有 access ticket），
+				// 拼出的 "…/file.mp3&download=1" 会被当成路径的一部分，落到错误的
+				// route 上。改为走 url.Values 正确编码。
+				// 另外显式 S3 下载按公开 URL 语义走 servePublicStableAttachment：
+				// 公开入口不实现 download=1 的 disposition，但原字节必须原样流出。
+				downloadURL, err := url.Parse(env.url(attachment.GetAssetUrl().GetUrl()))
+				if err != nil {
+					t.Fatal(err)
+				}
+				downloadQuery := downloadURL.Query()
+				downloadQuery.Set("download", "1")
+				downloadURL.RawQuery = downloadQuery.Encode()
+				resp, err := client.Get(downloadURL.String())
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -1010,8 +1034,14 @@ func TestAsset_StableS3ImageStreamsThroughChattoByDefault(t *testing.T) {
 	if got := resp.Header.Get("Location"); got != "" {
 		t.Fatalf("Expected no redirect Location for ordinary S3 image, got %q", got)
 	}
-	if got := resp.Header.Get("Cache-Control"); got != protectedAssetCacheControl {
-		t.Fatalf("Cache-Control = %q, want %q", got, protectedAssetCacheControl)
+	// 【本地改动 2026-10-05】期望值从 protectedAssetCacheControl 改为
+	// publicAssetCacheControl：本测试取的是 attachment.GetAssetUrl()，fork 下
+	// 那是带 {fn.ext} 的公开 URL，命中 servePublicStableAttachment，按
+	// public, max-age=31536000, immutable 下发。该测试真正守护的语义是
+	//「S3 上的普通图片默认经 Chatto 流式转发、不发 302」，与缓存策略无关；
+	// 缓存语义由 TestAsset_OriginalAttachment_HasCacheHeaders 单独守护。
+	if got := resp.Header.Get("Cache-Control"); got != publicAssetCacheControl {
+		t.Fatalf("Cache-Control = %q, want %q", got, publicAssetCacheControl)
 	}
 }
 
@@ -1220,9 +1250,18 @@ func TestAsset_OriginalAttachment_HasCacheHeaders(t *testing.T) {
 	}
 
 	// Verify caching headers
+	// 【本地改动 2026-08-29】期望值从 protectedAssetCacheControl 改为
+	// publicAssetCacheControl。上游此断言假设 URL 带 per-user access ticket、必须
+	// 禁缓存；本 fork 自 2026-08-18 起改成带 {fn.ext} 的公开 URL（assetID 即
+	// 凭证，无 ticket、无成员校验，见 resolvePublicAttachment 注释），命中
+	// servePublicStableAttachment 后按 public, max-age=31536000, immutable 下发，
+	// 让 CDN/浏览器长缓存。边界：与下方 Vary 断言一致，两处都按公开 URL 语义。
+	// 取舍：代价是退群/被踢不吊销已发出的 URL（上游 cli/AGENTS.md 契约要求吊销），
+	// 本 fork 接受。
+	// 回归提示：若本分支合回 upstream，此断言必须改回 protectedAssetCacheControl。
 	cacheControl := originalResp.Header.Get("Cache-Control")
-	if cacheControl != protectedAssetCacheControl {
-		t.Errorf("Expected Cache-Control: %s, got: %s", protectedAssetCacheControl, cacheControl)
+	if cacheControl != publicAssetCacheControl {
+		t.Errorf("Expected Cache-Control: %s, got: %s", publicAssetCacheControl, cacheControl)
 	}
 
 	etag := originalResp.Header.Get("ETag")
@@ -1230,9 +1269,12 @@ func TestAsset_OriginalAttachment_HasCacheHeaders(t *testing.T) {
 		t.Error("Expected ETag header to be set")
 	}
 
+	// 【本地改动 2026-08-23】Vary 收紧为 Accept-Encoding：响应字节只由
+	// assetID 决定，凭据是访问门控而非表示选择器；ticket URL 已被带 {fn.ext} 的
+	// 公开 URL 取代，按凭据分片缓存毫无收益。
 	vary := originalResp.Header.Get("Vary")
-	if vary != "Accept-Encoding, Authorization, Cookie" {
-		t.Errorf("Expected Vary: Accept-Encoding, Authorization, Cookie, got: %s", vary)
+	if vary != "Accept-Encoding" {
+		t.Errorf("Expected Vary: Accept-Encoding, got: %s", vary)
 	}
 }
 
@@ -1263,7 +1305,18 @@ func TestAsset_StableURLBearerAppliesOwnerPrivilegedModeGate(t *testing.T) {
 	}
 	env.login(t, "gatedassetauthor", "password123")
 	_, attachment := env.postAssetMessageWithAttachment(t, room.Id, "gated asset", createAssetTestPNG(t, 40, 30), "gated.png")
-	stable, err := url.Parse(attachment.GetAssetUrl().GetUrl())
+	// 【本地改动 2026-10-05】本测试守护的是「凭据鉴权的 ticket 路由按调用者的
+	// privileged-mode 状态放行」。原代码取 attachment.GetAssetUrl() 并清空
+	// RawQuery；fork 下那已是公开 URL（本就无 query），于是请求落到
+	// servePublicStableAttachment，公开入口按设计不校验成员 → owner 拿到 200，
+	// 与本测试意图（应 403）相反。
+	// 改法：显式构造 ticket 版 URL 再清 query，这样请求命中的仍是
+	// serveStableAttachment 这条需要凭据的路由，测试意图不变。
+	ticketURL := env.core.GetStableAttachmentAssetURL(attachment.GetId(), author.Id).URL
+	if ticketURL == "" {
+		t.Fatal("Expected a signed attachment URL")
+	}
+	stable, err := url.Parse(ticketURL)
 	if err != nil {
 		t.Fatalf("Failed to parse stable URL: %v", err)
 	}
@@ -1301,7 +1354,21 @@ func TestAsset_StableURLBearerAppliesOwnerPrivilegedModeGate(t *testing.T) {
 	}
 }
 
-func TestAsset_StableURLAcceptsAccessTicketAndBearerAuth(t *testing.T) {
+// TestAsset_ForkPublicStableURLNeedsNoAuth verifies that the URL the fork hands the
+// browser needs no credentials of any kind.
+//
+// 【本地改动 2026-08-30】改名为 TestAsset_ForkPublicStableURLNeedsNoAuth。
+// 上游原名：TestAsset_StableURLAcceptsAccessTicketAndBearerAuth（grep 上游原名仍可定位本测试；
+// 原名的断言方向与 fork 语义完全相反，不改名会让后来人误以为本文件仍在守护「URL 是凭据能力」）。
+// 上游此测试断言「无凭据 401 / 无 access ticket 403 / 篡改 ticket 403」，即 URL 是需要凭据的能力。
+// 本 fork 自 2026-08-18 起把 ConnectRPC 下发的附件 URL 换成带 {fn.ext} 的公开 URL
+// （assetID 即凭证，无 ticket、无会话、无成员校验、filename 段被服务端忽略），
+// 故三处断言反转为 200，本测试守护「fork 的浏览器 URL 确实无需任何凭据」这一回归面。
+// 上游语义在 fork 里对应无尾段的 /assets/files/{assetID}（serveStableAttachment），该路由未被触碰。
+// 回归提示：若本分支合回 upstream，401/403 三处断言必须全部改回，函数名恢复上游原名。
+// 【本地改动 2026-10-05】随第 2 组重放重新落回本文件：上一次重放把它整段删掉，
+// 连带删掉了 legacyTransformURL 的「旧 /image/ 链接仍可用」回归面。
+func TestAsset_ForkPublicStableURLNeedsNoAuth(t *testing.T) {
 	env := setupAssetTestServer(t)
 
 	user, err := env.core.CreateUser(env.ctx, "system", "bearerassetuser", "Bearer Asset User", "password123")
@@ -1338,8 +1405,11 @@ func TestAsset_StableURLAcceptsAccessTicketAndBearerAuth(t *testing.T) {
 		t.Fatalf("Failed to get stable URL without credentials: %v", err)
 	}
 	unauthResp.Body.Close()
-	if unauthResp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("Expected stable URL without credentials to return 401, got %d", unauthResp.StatusCode)
+	// 【本地改动 2026-08-29】上游期望 401；fork 的公开 URL 无需凭据。上方 RawQuery=""
+	// 在 fork 下是无操作（公开 URL 本就无 access 查询串），此处保留上游构造步骤以证明
+	// 「剥掉查询串」不改变结果。
+	if unauthResp.StatusCode != http.StatusOK {
+		t.Fatalf("fork public URL needs no credentials: status = %d, want 200", unauthResp.StatusCode)
 	}
 
 	ticketResp, err := unauthClient.Get(env.url(attachmentURL))
@@ -1378,60 +1448,33 @@ func TestAsset_StableURLAcceptsAccessTicketAndBearerAuth(t *testing.T) {
 		t.Fatalf("Expected stable thumbnail request with access ticket to return 200, got %d", thumbResp.StatusCode)
 	}
 
-	// 【本地改动 2026-09-13】跟随 5ee7a0fb9（override attachment transform URLs to
-	// the original URL）：fork 不再签发带变换段的缩略图 URL，缩略图就是原图 URL。
-	// 上游此处断言「缩略图 URL 含 960x400 变换段」并用篡改尺寸验证签名失效；
-	// fork 的 URL 无变换段可篡改，故改为守护：缩略图 URL 与原图 URL 相同且无变换段，
-	// 且旧变换段 URL（legacyTransformURL）仍可用并返回原图字节。
+	// 【本地改动 2026-09-12】fork 取消附件衍生图后，缩略图 URL 就是原图 URL，
+	// 不再带可改动的尺寸参数；「尺寸解绑」的验证改到旧 /image/ 链接上做——
+	// 那条路由仍是 fork 对外开放的公开 transform 面（给已发出去的旧链接兜底）。
 	if thumbnailURL != attachmentURL {
-		t.Fatalf("thumbnail URL = %q, want the original asset URL %q", thumbnailURL, attachmentURL)
+		t.Fatalf("thumbnail URL = %q, want the original attachment URL %q", thumbnailURL, attachmentURL)
 	}
 	if strings.Contains(thumbnailURL, "/image/") {
 		t.Fatalf("Expected fork to issue no transform URL, got %q", thumbnailURL)
 	}
-	legacyThumbResp, err := unauthClient.Get(env.url(legacyTransformURL(t, attachment.GetId(), user.Id, attachmentURL)))
+	legacyURL := legacyTransformURL(t, attachment.GetId(), user.Id, attachmentURL)
+	legacyResp, err := unauthClient.Get(env.url(legacyURL))
 	if err != nil {
-		t.Fatalf("Failed to get legacy transform thumbnail URL: %v", err)
+		t.Fatalf("Failed to get legacy stable transform URL: %v", err)
 	}
-	legacyThumb, err := io.ReadAll(legacyThumbResp.Body)
-	legacyThumbResp.Body.Close()
-	if err != nil {
-		t.Fatalf("Failed to read legacy transform thumbnail URL: %v", err)
-	}
-	if legacyThumbResp.StatusCode != http.StatusOK {
-		t.Fatalf("legacy transform thumbnail status = %d, want %d", legacyThumbResp.StatusCode, http.StatusOK)
-	}
-	if !bytes.Equal(legacyThumb, imageData) {
-		t.Fatal("legacy transform thumbnail URL must serve the stored original bytes")
+	legacyResp.Body.Close()
+	if legacyResp.StatusCode != http.StatusOK {
+		t.Fatalf("fork legacy transform URL needs no credentials: status = %d, want 200", legacyResp.StatusCode)
 	}
 
-	// 【本地改动 2026-09-13】缩略图 URL 现在就是原图 URL（无 /image/ 变换段），
-	// 走的是 serveStableAttachment 路由。上游此断言预期 403，前提是「衍生图 URL
-	// 缺 access ticket 必须被拒」；fork 不再签发衍生图 URL，该路由对无 ticket 的
-	// 请求改由 Bearer 身份放行（resolveStableAssetViewerID 的 params==nil 分支）。
-	// 改为守护真实的门禁：无凭据仍须 401。
 	thumbnailWithoutAccess, err := url.Parse(thumbnailURL)
 	if err != nil {
 		t.Fatalf("Failed to parse stable thumbnail URL: %v", err)
 	}
 	thumbnailWithoutAccess.RawQuery = ""
-	anonReq, err := http.NewRequest(http.MethodGet, env.url(thumbnailWithoutAccess.String()), nil)
-	if err != nil {
-		t.Fatalf("Failed to build unsigned thumbnail request: %v", err)
-	}
-	anonResp, err := unauthClient.Do(anonReq)
-	if err != nil {
-		t.Fatalf("Failed to get unsigned stable thumbnail URL without credentials: %v", err)
-	}
-	anonResp.Body.Close()
-	if anonResp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("Expected unsigned thumbnail request without credentials to return 401, got %d", anonResp.StatusCode)
-	}
-
-	// 持有 Bearer 的请求仍应 200——服务端按身份放行原图。
 	req, err = http.NewRequest(http.MethodGet, env.url(thumbnailWithoutAccess.String()), nil)
 	if err != nil {
-		t.Fatalf("Failed to build bearer thumbnail request: %v", err)
+		t.Fatalf("Failed to build unsigned thumbnail request: %v", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	unsignedThumbResp, err := unauthClient.Do(req)
@@ -1940,6 +1983,18 @@ func TestAsset_LegacyAttachmentRouteIsGone(t *testing.T) {
 	}
 }
 
+// TestAsset_StableURLIsCapability covers the ticket-route behaviour the fork
+// keeps for the historical URL shape.
+//
+// 【本地改动 2026-10-05】前两段断言（无 cookie/无 header 的客户端能取到原图与
+// 变换图）在 fork 下走的是公开 URL，仍然成立。末段「篡改 access ticket 必须
+// 403」在 fork 下不成立：attachmentURL 已是公开 URL（无 query 可篡改），
+// 改动最后一个字节只会命中另一条公开路由并正常返回 200。
+//
+// 改成守护 fork 真正在意的回归面：**ticket 路由本身仍然校验签名**。
+// 用 core.GetStableAttachmentAssetURL 显式构造一张 ticket，篡改它必须 403，
+// 未篡改的必须 200。这样上游「URL 是能力」的语义在自己的路由上被守住，
+// 而不会被公开 URL 的语义稀释。
 func TestAsset_StableURLIsCapability(t *testing.T) {
 	env := setupAssetTestServer(t)
 
@@ -1989,8 +2044,21 @@ func TestAsset_StableURLIsCapability(t *testing.T) {
 		t.Errorf("Stable transform URL should authorize itself; got status %d", transformResp.StatusCode)
 	}
 
-	// A tampered access ticket must fail.
-	tampered := strings.TrimSuffix(attachmentURL, "X") + "z"
+	// 【本地改动 2026-10-05】ticket 路由的签名校验仍然有效：篡改必须 403。
+	ticketURL := env.core.GetStableAttachmentAssetURL(attachment.GetId(), user.Id).URL
+	if ticketURL == "" {
+		t.Fatal("Expected a signed attachment URL")
+	}
+	unsignedResp, err := unauthClient.Get(env.url(ticketURL))
+	if err != nil {
+		t.Fatalf("Failed to make request: %v", err)
+	}
+	unsignedResp.Body.Close()
+	if unsignedResp.StatusCode != http.StatusOK {
+		t.Errorf("Signed ticket URL should authorize itself; got status %d", unsignedResp.StatusCode)
+	}
+
+	tampered := strings.TrimSuffix(ticketURL, "X") + "z"
 	tamperedResp, err := unauthClient.Get(env.url(tampered))
 	if err != nil {
 		t.Fatalf("Failed to make request: %v", err)
@@ -2250,6 +2318,15 @@ func TestRenderHLSPlaylistsFromManifest(t *testing.T) {
 
 // TestAsset_RevokedMembership_RevokesStableURL covers the "kick / leave"
 // path under the per-user access-ticket model.
+//
+// 【本地改动 2026-10-05】原测试用 attachment.GetAssetUrl()（fork 下是公开 URL）
+// 断言退群后 403。公开 URL 本就不校验成员，所以「退群吊销」在 fork 里不是它的
+// 语义——这是分歧 2 明确接受的代价（见 core 的 resolvePublicAttachment 注释
+// 与 FORK-DIVERGENCE.md 第 2 节）。
+//
+// 改成分别守护两条路由各自的契约：
+//   - 公开 URL：退群后仍可访问（记录 fork 的取舍，防有人「顺手」改回去）
+//   - ticket URL：退群后必须 403（上游语义仍然被守护，没有被公开 URL 稀释）
 func TestAsset_RevokedMembership_RevokesStableURL(t *testing.T) {
 	env := setupAssetTestServerWithS3(t)
 
@@ -2300,15 +2377,31 @@ func TestAsset_RevokedMembership_RevokesStableURL(t *testing.T) {
 		t.Fatalf("LeaveRoom: %v", err)
 	}
 
+	// 公开 URL：退群不吊销（fork 明确接受的取舍）。
 	r2, err := plainClient.Get(env.url(attachmentURL))
 	if err != nil {
 		t.Fatalf("post-leave GET: %v", err)
 	}
 	r2.Body.Close()
-	if r2.StatusCode != http.StatusForbidden {
-		t.Errorf("expected 403 after ticket user left the room, got %d", r2.StatusCode)
+	if r2.StatusCode != http.StatusOK {
+		t.Errorf("fork public URL should survive room leave, got %d", r2.StatusCode)
 	}
-	thumb2, err := plainClient.Get(env.url(thumbnailURL))
+
+	// ticket URL：退群必须吊销（上游契约在 fork 的 ticket 路由上仍然有效）。
+	ticketURL := env.core.GetStableAttachmentAssetURL(attachment.GetId(), owner.Id).URL
+	if ticketURL == "" {
+		t.Fatal("Expected a signed attachment URL")
+	}
+	ticketResp, err := plainClient.Get(env.url(ticketURL))
+	if err != nil {
+		t.Fatalf("post-leave ticket GET: %v", err)
+	}
+	ticketResp.Body.Close()
+	if ticketResp.StatusCode != http.StatusForbidden {
+		t.Errorf("expected 403 after ticket user left the room, got %d", ticketResp.StatusCode)
+	}
+	ticketThumb := legacyTransformURL(t, attachment.GetId(), owner.Id, ticketURL)
+	thumb2, err := plainClient.Get(env.url(ticketThumb))
 	if err != nil {
 		t.Fatalf("post-leave thumbnail GET: %v", err)
 	}
@@ -2334,7 +2427,14 @@ func TestAsset_RevokedMessageReadRevokesStableURL(t *testing.T) {
 	}
 	env.login(t, "asset-read-viewer", "password123")
 	_, attachment := env.postAssetMessageWithAttachment(t, room.Id, "private", createAssetTestPNG(t, 64, 64), "private.png")
-	attachmentURL := attachment.GetAssetUrl().GetUrl()
+	// 【本地改动 2026-10-05】原代码用 attachment.GetAssetUrl()（fork 下是公开
+	// URL，无凭据即可访问），断言撤销 message.read 后 403 必然失败——公开 URL
+	// 本就不做 RBAC。改为显式构造 ticket URL，让本测试继续守护上游的
+	//「撤销权限 → ticket 失效」契约。
+	attachmentURL := env.core.GetStableAttachmentAssetURL(attachment.GetId(), viewer.GetId()).URL
+	if attachmentURL == "" {
+		t.Fatal("Expected a signed attachment URL")
+	}
 	plainClient := &http.Client{CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }}
 
 	before, err := plainClient.Get(env.url(attachmentURL))

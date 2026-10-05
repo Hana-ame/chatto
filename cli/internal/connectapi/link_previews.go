@@ -16,7 +16,7 @@ func (s *messageService) FetchLinkPreview(ctx context.Context, req *connect.Requ
 
 	preview, err := s.api.core.GetLinkPreview(ctx, req.Msg.Url)
 	if err != nil {
-		return nil, err
+		return nil, connectError(err)
 	}
 	if preview == nil {
 		return connect.NewResponse(&apiv1.FetchLinkPreviewResponse{}), nil
@@ -27,7 +27,7 @@ func (s *messageService) FetchLinkPreview(ctx context.Context, req *connect.Requ
 	}
 	token, err := s.api.core.CreateLinkPreviewToken(ctx, tokenURL)
 	if err != nil {
-		return nil, err
+		return nil, connectError(err)
 	}
 
 	return connect.NewResponse(&apiv1.FetchLinkPreviewResponse{
@@ -50,7 +50,17 @@ func apiLinkPreview(ctx context.Context, api *API, preview *evtv1.LinkPreview) *
 
 	imageURL := ""
 	if imageAssetKey != "" {
-		imageURL = api.absolutizeMediaURL(ctx, api.core.GetTransformedServerAssetURL(imageAssetKey, 600, 314, "contain"))
+		// 【本地改动 2026-08-23】URL 追加 {fn.ext} 尾段；image 记录缺失时
+		// 推导不出扩展名，保持无尾段旧形态。
+		imageURL = api.core.GetTransformedServerAssetURLWithFilename(
+			imageAssetKey, core.ServerAssetURLFilename(preview.GetImageAsset(), "preview"), 600, 314, "contain")
+		// 【本地改动 2026-10-05】恢复 absolutize。
+		// GetTransformedServerAssetURLWithFilename 只返回相对路径（见 core 的
+		// 注释「由调用方 absolutize 成绝对 URL」），fork 丢掉了这层包装，导致
+		// 链接预览图/社交帖头像/引文图全部退化成相对路径。后果：把预览发给别人、
+		// 或在 https 页面外消费 API 时链接不可用；混合内容风险与上游注释所述相同。
+		// 与 room 附件的公开 URL 分歧不同——这里只恢复「补全 origin」，尾段仍是 fork 的形态。
+		imageURL = api.absolutizeMediaURL(ctx, imageURL)
 	}
 
 	out := &apiv1.LinkPreview{
@@ -130,7 +140,11 @@ func linkPreviewAsset(ctx context.Context, api *API, asset *evtv1.AssetRecord, w
 		return nil, nil
 	}
 	assetID := asset.GetId()
-	url := api.absolutizeMediaURL(ctx, api.core.GetTransformedServerAssetURL(core.ServerAssetDeliveryKey(asset), width, height, fit))
+	// 【本地改动 2026-08-23】URL 追加 {fn.ext} 尾段（公开 immutable 缓存）。
+	url := api.core.GetTransformedServerAssetURLWithFilename(
+		core.ServerAssetDeliveryKey(asset), core.ServerAssetURLFilename(asset, "preview"), width, height, fit)
+	// 【本地改动 2026-10-05】同上：core 只给相对路径，这里补全 origin。
+	url = api.absolutizeMediaURL(ctx, url)
 	if url == "" {
 		return nil, &assetID
 	}

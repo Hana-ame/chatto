@@ -14,6 +14,19 @@ import (
 	evtv1 "hmans.de/chatto/internal/pb/chatto/core/evt/v1"
 )
 
+// assetURL prepends AssetBaseURL to an asset path.
+// When AssetBaseURL is empty, returns the path unchanged.
+//
+// 【本地改动 2026-10-05 恢复】公开附件/服务端资产 URL 走这里拼完整绝对 URL，
+// 因此 fork 不再依赖上游 #2693 的按请求 origin 绝对化（absolutizeMediaURL）。
+// AssetBaseURL 由 run.go 从 webserver.url 设置（scheme://host，无尾斜杠）。
+func (c *ChattoCore) assetURL(path string) string {
+	if c.AssetBaseURL == "" {
+		return path
+	}
+	return c.AssetBaseURL + path
+}
+
 // AssetsConfig returns the assets configuration as an assets.Config.
 // 【本地改动，2026-10-03 恢复】把 ChattoCore 上的 FFmpegPath 与重编码开关透传给
 // assets.Config，供上传路径 EncodeAVIF 使用。

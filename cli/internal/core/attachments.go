@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -893,6 +894,184 @@ func (c *MediaModel) GetTransformedServerAssetURLWithFilename(key, filename stri
 	}
 	// 与 GetTransformedServerAssetURL 一样返回相对路径，由调用方 absolutize 成绝对 URL。
 	return path
+}
+
+// ============================================================================
+// Public Attachment URLs (fork divergence 2)
+// ============================================================================
+
+// GetPublicStableAttachmentAssetURL returns the canonical public URL for an
+// attachment binary:
+//
+//	/assets/files/{assetID}/{fn.ext}
+//
+// 【本地改动 2026-08-18，2026-10-05 恢复】与 ticket 版
+// GetStableAttachmentAssetURL 的区别是**访问仅凭 assetID**：不签 ticket、不校验
+// room 成员、响应 public immutable 可长期缓存。assetID 即凭证，复制出去的链接
+// 任何人都能打开，kick/leave 不再撤销未来访问。这个取舍 fork 已明确接受，每次
+// 合并上游都必须重审。
+//
+// ExpiresAt 保持零值：公开 URL 永不过期，connectapi 的 assetURLView 据此不填过期
+// 时间，前端据此跳过 URL 刷新。
+//
+// 必须定义在 *MediaModel 上而不是只定义 ChattoCore facade：MediaModel 内嵌
+// *ChattoCore，若 facade 转发而 MediaModel 无同名方法，调用会自我转发回
+// ChattoCore 的同名方法，最终再次转发回 mediaModel —— 无限递归。
+func (c *MediaModel) GetPublicStableAttachmentAssetURL(attachment *evtv1.Attachment) StableAssetURL {
+	if attachment == nil || attachment.GetId() == "" {
+		return StableAssetURL{}
+	}
+	return StableAssetURL{URL: c.assetURL(stableAttachmentPath(attachment, ""))}
+}
+
+// GetPublicStableTransformedAttachmentAssetURL returns the public URL for a
+// derived image form factor.
+//
+// 【本地改动 2026-09-12】不再拼 /image/{w}x{h}/{fit}：fork 在上传时就把房间附件图片
+// 压成**原尺寸** AVIF、不产衍生图（PrepareAttachmentImage），所以无论调用方要多大的
+// 图都直接 override 成原图链接 /assets/files/{assetID}/{fn.ext}。两个 connectapi
+// 调用点（apiAsset 的 ThumbnailAssetUrl、时间线装配）拿到的就是原图 URL。
+//
+// 【本地改动 2026-08-23 的坑已随本次 override 消失】历史上这里自己拼
+// /image/{w}x{h}/{fit} 尾段并误传完整路径，导致 stableAttachmentPath 双重前缀、
+// 线上缩略图全部 404。现在本函数不拼任何尾段。
+func (c *MediaModel) GetPublicStableTransformedAttachmentAssetURL(attachment *evtv1.Attachment, width, height int, fit string) StableAssetURL {
+	_ = width // 【本地改动 2026-09-12】fork 无附件衍生图，尺寸参数被忽略。
+	_ = height
+	_ = fit
+	return c.GetPublicStableAttachmentAssetURL(attachment)
+}
+
+// stableAttachmentPath builds /assets/files/{assetID}/{suffix}/{fn.ext} where
+// suffix is empty or "/image/{w}x{h}/{fit}". The trailing filename is part of
+// the URL purely for readability and cache-key variety; the server resolves
+// the asset by ID alone and ignores the filename segment.
+func stableAttachmentPath(attachment *evtv1.Attachment, suffix string) string {
+	base := fmt.Sprintf("/assets/files/%s", url.PathEscape(attachment.GetId()))
+	if suffix != "" {
+		base += suffix
+	}
+	if fn := attachmentURLFilename(attachment.GetFilename(), attachment.GetContentType()); fn != "" {
+		base += "/" + url.PathEscape(fn)
+	}
+	return base
+}
+
+// attachmentURLFilename builds the {fn.ext} tail of stable attachment URLs.
+// 原始用户文件名不可信（可能含路径分隔符/../、非 ASCII、控制字符），这里
+// 只保留 [A-Za-z0-9._-] 的安全子集；扩展名必须匹配白名单，否则按
+// ContentType 映射兜底，保证 URL 后缀与真实字节格式一致（例如 AVIF 重编码
+// 后的 image/avif 附件落到 .avif）。
+func attachmentURLFilename(filename, contentType string) string {
+	base := sanitizeAttachmentFilename(filename)
+	ext := safeAttachmentExtension(base, contentType)
+	base = strings.TrimSuffix(base, filepath.Ext(base))
+	base = strings.Trim(base, ".-")
+	if base == "" {
+		base = "file"
+	}
+	return base + ext
+}
+
+// sanitizeAttachmentFilename keeps only [A-Za-z0-9._-] from the filename base,
+// collapsing every other run into a single dash.
+func sanitizeAttachmentFilename(filename string) string {
+	base := filepath.Base(filename)
+	var b strings.Builder
+	lastDash := false
+	for _, r := range base {
+		ok := r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '-' || r == '_'
+		if ok {
+			b.WriteRune(r)
+			lastDash = false
+		} else if !lastDash {
+			b.WriteByte('-')
+			lastDash = true
+		}
+	}
+	return b.String()
+}
+
+// attachmentExtWhitelist receives URL-visible extensions from user filenames.
+// Anything else falls back to ContentType mapping so the extension never lies
+// about the byte format.
+var attachmentExtWhitelist = map[string]bool{
+	".jpg": true, ".jpeg": true, ".png": true, ".gif": true, ".webp": true,
+	".avif": true, ".mp4": true, ".webm": true, ".mov": true, ".ogg": true,
+	".m4a": true, ".mp3": true, ".wav": true, ".flac": true, ".pdf": true,
+	".txt": true, ".zip": true, ".7z": true, ".tar": true, ".gz": true,
+}
+
+// safeAttachmentExtension returns the extension that is safe to expose in a
+// URL for the stored bytes. A whitelisted extension from the original filename
+// wins; otherwise the ContentType decides, so an AVIF re-encode never surfaces
+// as ".jpg".
+func safeAttachmentExtension(filename, contentType string) string {
+	ext := strings.ToLower(filepath.Ext(filename))
+	if attachmentExtWhitelist[ext] {
+		return ext
+	}
+	switch strings.ToLower(strings.TrimSpace(strings.Split(contentType, ";")[0])) {
+	case "image/jpeg":
+		return ".jpg"
+	case "image/png":
+		return ".png"
+	case "image/gif":
+		return ".gif"
+	case "image/webp":
+		return ".webp"
+	case "image/avif":
+		return ".avif"
+	case "video/mp4":
+		return ".mp4"
+	case "video/webm":
+		return ".webm"
+	case "video/quicktime":
+		return ".mov"
+	case "video/ogg":
+		return ".ogg"
+	case "audio/mpeg":
+		return ".mp3"
+	case "audio/ogg":
+		return ".ogg"
+	case "audio/mp4":
+		return ".m4a"
+	case "audio/wav":
+		return ".wav"
+	case "application/pdf":
+		return ".pdf"
+	case "text/plain":
+		return ".txt"
+	default:
+		return ""
+	}
+}
+
+// ServerAssetURLFilename builds the safe {fn.ext} tail for public
+// /assets/server/ URLs from the asset record. It prefers the stored filename's
+// sanitized base and falls back to fallbackBase (e.g. "avatar"/"logo"); the
+// extension must be derivable and URL-safe, otherwise the returned string is
+// empty and callers keep the legacy filename-less URL shape.
+//
+// 【本地改动 2026-08-23】与附件的 attachmentURLFilename 同一套白名单逻辑，
+// 保证 URL 扩展名永远不撒谎（如头像统一转 WebP 后落 .webp）。
+func ServerAssetURLFilename(record *evtv1.AssetRecord, fallbackBase string) string {
+	name := ""
+	contentType := ""
+	if record != nil {
+		if fn := record.GetFilename(); fn != "" {
+			name = fn
+		}
+		contentType = record.GetContentType()
+	}
+	if name == "" {
+		name = fallbackBase
+	}
+	out := attachmentURLFilename(name, contentType)
+	if out == "" || filepath.Ext(out) == "" {
+		return ""
+	}
+	return out
 }
 
 // ============================================================================

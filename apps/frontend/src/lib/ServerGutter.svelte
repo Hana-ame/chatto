@@ -6,6 +6,10 @@ is connected to, plus the add-server button pinned to the bottom. See the
 "UI" section of `docs/GLOSSARY.md`.
 -->
 <script lang="ts">
+  /* eslint-disable svelte/no-navigation-without-resolve -- externalLinks[].url comes from
+     links.json and is an absolute URL, not an app route. Kept inside <script> rather
+     than the template: a template-level comment renders into the DOM and breaks the
+     element queries in layout.svelte.spec.ts. Same placement as ServerIcon.svelte. */
   import { pushState } from '$app/navigation';
   import { resolve } from '$app/paths';
   import { page } from '$app/state';
@@ -103,7 +107,6 @@ is connected to, plus the add-server button pinned to the bottom. See the
 
       {#if externalLinks.length}
         <div class="h-px bg-border"></div>
-        <!-- eslint-disable svelte/no-navigation-without-resolve -- link.url is an absolute URL from links.json, not an app route; the next-line form does not reach the href inside {#each} -->
         {#each externalLinks as link (link.url)}
           <a
             href={link.url}

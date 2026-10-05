@@ -1932,9 +1932,16 @@ func TestRoomMessageAndAssetServicesListAttachmentsGetMessagesAndGetAssets(t *te
 	if got := first.GetDescription(); got != "A thread diagram" {
 		t.Fatalf("room attachment description = %q, want %q", got, "A thread diagram")
 	}
+	// 【本地改动 2026-08-18】上游要求资产 URL 绝对化到「请求 origin」
+	// （https://alias.example，来自 WithRequestBaseURL）并带 per-user access
+	// ticket。本 fork 自 2026-08-18 起改为公开 URL 形如
+	// /assets/files/<assetId>/thread.png：assetId 即凭证、无 ticket、无过期
+	// 时间，absolute origin 由 core 的 AssetBaseURL（webserver.url）决定，
+	// 不再随单个请求的 origin 变化。
+	// 因此这里只断言「路径形态 + 非空」，不锁死 origin。
 	for _, got := range []string{first.GetAttachment().GetAssetUrl().GetUrl(), first.GetAttachment().GetThumbnailAssetUrl().GetUrl()} {
-		if !strings.HasPrefix(got, "https://alias.example/assets/files/") {
-			t.Fatalf("attachment asset URL = %q, want URL on the request origin", got)
+		if !strings.Contains(got, "/assets/files/") {
+			t.Fatalf("attachment asset URL = %q, want an /assets/files/ public URL", got)
 		}
 	}
 	if first.GetCreatedAt() == nil {
@@ -1959,10 +1966,25 @@ func TestRoomMessageAndAssetServicesListAttachmentsGetMessagesAndGetAssets(t *te
 	if got := fresh.GetDescription(); got != "A thread diagram" {
 		t.Fatalf("GetMessage attachment description = %q, want %q", got, "A thread diagram")
 	}
-	if !strings.HasPrefix(fresh.GetAssetUrl().GetUrl(), "https://alias.example/assets/files/") || fresh.GetAssetUrl().GetExpiresAt() == nil {
-		t.Fatalf("fresh asset URL missing: %+v", fresh.GetAssetUrl())
+	// 【本地改动 2026-08-30】上游此处要求 asset URL 带 per-user access ticket 并暴露
+	// ExpiresAt（ticket 语义：URL 每人一份、有过期、不可共享缓存）。本 fork 自
+	// 2026-08-18 起改为带 {fn.ext} 尾段的公开 URL（形如
+	// /assets/files/<assetId>/thread.png），assetId 即凭证、无 ticket、无过期
+	// 时间，故 ExpiresAt 恒为 nil，原断言必红。
+	// 2026-08-30 ci/deploy 首次跑 mise test-cli 时暴露，报「fresh asset URL
+	// missing」——URL 其实非空，是 ExpiresAt 判定失败。
+	// 边界：只放宽过期与 origin 断言，非空 URL 与文件名尾段仍锁死，防止公开
+	// URL 退化成无尾段的旧形态。取舍与回归提示见
+	// cli/internal/http_server/assets_test.go 的
+	// TestAsset_OriginalAttachment_HasCacheHeaders【本地改动】注释：若本分支
+	// 合回 upstream，这几处断言必须改回带 ExpiresAt 的 ticket 语义。
+	if fresh.GetAssetUrl().GetUrl() == "" || !strings.HasSuffix(fresh.GetAssetUrl().GetUrl(), ".png") {
+		t.Fatalf("fresh asset URL missing or lacks filename tail: %+v", fresh.GetAssetUrl())
 	}
-	if fresh.GetThumbnailAssetUrl().GetUrl() == "" || fresh.GetThumbnailAssetUrl().GetExpiresAt() == nil {
+	if fresh.GetAssetUrl().GetExpiresAt() != nil {
+		t.Fatalf("public asset URL ExpiresAt = %v, want nil (public URLs never expire)", fresh.GetAssetUrl().GetExpiresAt())
+	}
+	if fresh.GetThumbnailAssetUrl().GetUrl() == "" {
 		t.Fatalf("fresh thumbnail URL missing: %+v", fresh.GetThumbnailAssetUrl())
 	}
 
@@ -1978,8 +2000,16 @@ func TestRoomMessageAndAssetServicesListAttachmentsGetMessagesAndGetAssets(t *te
 	if err != nil {
 		t.Fatalf("GetAsset: %v", err)
 	}
-	if got := asset.Msg.GetAsset().GetThumbnailAssetUrl().GetUrl(); !strings.HasPrefix(got, "https://alias.example/") || !strings.Contains(got, "/64x64/contain") {
-		t.Fatalf("GetAsset thumbnail URL = %q, want 64x64 contain transform", got)
+	// 【本地改动 2026-09-12】fork 取消附件衍生图：无论调用方要多大的缩略图，
+	// ThumbnailAssetUrl 都直接 override 成原图链接（core 的
+	// Get*TransformedAttachmentAssetURL 忽略宽高），尺寸参数被丢弃。
+	// 上游此处断言 URL 含 /64x64/contain 变换段，与本 fork 的规则相反。
+	thumb := asset.Msg.GetAsset().GetThumbnailAssetUrl().GetUrl()
+	if thumb != asset.Msg.GetAsset().GetAssetUrl().GetUrl() {
+		t.Fatalf("GetAsset thumbnail URL = %q, want the original asset URL %q", thumb, asset.Msg.GetAsset().GetAssetUrl().GetUrl())
+	}
+	if strings.Contains(thumb, "/image/") {
+		t.Fatalf("GetAsset thumbnail URL = %q, must not carry a transform path", thumb)
 	}
 
 	batch, err := env.messages.BatchGetMessages(ctx, connect.NewRequest(&apiv1.BatchGetMessagesRequest{

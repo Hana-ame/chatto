@@ -58,6 +58,12 @@ func TestAPILinkPreviewMapsProviderNeutralSocialPost(t *testing.T) {
 	assert.Equal(t, "https://bsky.app/profile/quoted.example/post/quoted", preview.GetSocialPost().GetQuotedPost().GetUrl())
 }
 
+// 【本地改动 2026-10-05】恢复上游的 TestAPILinkPreviewImageURLsUseRequestOrigin。
+// 上游合并本 fork 的 link_previews.go 时，把 absolutizeMediaURL 包装连同 ctx 参数
+// 一起丢掉了：core 的 GetTransformedServerAssetURLWithFilename 只返回相对路径，
+// 于是预览图/社交帖头像/引文图全部退化成相对路径。这个测试正是守护该行为的，
+// 随签名改动一起被误删——恢复它正是为了不再靠「合并时小心点」来维持正确性。
+// fork 的分歧只有尾段形态（{fn.ext}），origin 语义仍与上游一致，故断言原样保留。
 func TestAPILinkPreviewImageURLsUseRequestOrigin(t *testing.T) {
 	env := newConnectAPITestEnv(t)
 	image := &evtv1.AssetRecord{Id: "Apreviewimage01", Storage: &evtv1.AssetRecord_Nats{Nats: &evtv1.NATSAsset{Key: "Apreviewimage01"}}}

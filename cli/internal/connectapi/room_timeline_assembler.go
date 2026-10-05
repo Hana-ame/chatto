@@ -342,19 +342,25 @@ func (h *timelineHydrator) attachments(roomID, messageEventID string, attachment
 		if attachment.MessageBodyId == "" {
 			attachment.MessageBodyId = messageEventID
 		}
-		assetURL := h.api.core.GetStableAttachmentAssetURL(attachment.Id, h.viewerID)
+		// 【本地改动 2026-08-18】入口选择公开版 URL 生成：无 ticket、带
+		// {fn.ext} 尾段，浏览器/CDN 可长期缓存。
+		assetURL := h.api.core.GetPublicStableAttachmentAssetURL(attachment)
 		// 【本地改动 2026-09-12】fork 取消附件衍生图：时间线缩略图 URL 直接
 		// override 成原图链接，不再有 /image/{w}x{h}/{fit} 段。
-		thumbnailURL := assetURL
+		//
+		// 【本地改动 2026-10-05】维度用零值而非透传请求参数：fork 的公开 URL
+		// override 忽略 width/height/fit，直接返回原图链接，传什么都得到同一
+		// 个 URL。保留零值是为了让「这一步不产衍生图」在代码里自明。
+		thumbnailURL := h.api.core.GetPublicStableTransformedAttachmentAssetURL(attachment, 0, 0, "")
 		view := &apiv1.MessageAttachment{
 			Id:                attachment.Id,
 			Filename:          attachment.Filename,
 			ContentType:       attachment.ContentType,
 			Width:             attachment.Width,
 			Height:            attachment.Height,
-			AssetUrl:          h.api.assetURLView(h.ctx, assetURL),
-			ThumbnailAssetUrl: h.api.assetURLView(h.ctx, thumbnailURL),
-			VideoProcessing:   apiVideoProcessing(h.ctx, h.api, h.viewerID, attachment),
+			AssetUrl:          assetURLView(assetURL),
+			ThumbnailAssetUrl: assetURLView(thumbnailURL),
+			VideoProcessing:   apiVideoProcessing(h.api, h.viewerID, attachment),
 		}
 		if description := descriptions[attachment.GetId()]; description != "" {
 			view.Description = &description
@@ -365,6 +371,9 @@ func (h *timelineHydrator) attachments(roomID, messageEventID string, attachment
 }
 
 func (h *timelineHydrator) linkPreview(preview *evtv1.LinkPreview) *apiv1.LinkPreview {
+	// 【本地改动 2026-10-05】恢复传 h.ctx。apiLinkPreview 需要 ctx 才能
+	// absolutizeMediaURL 补全 origin；早先把 ctx 从签名里去掉（连同
+	// apiVideoProcessing）纯属误伤——那些签名本来就是上游的。
 	return apiLinkPreview(h.ctx, h.api, preview)
 }
 
@@ -450,11 +459,22 @@ func callEvent(roomID, callID string) *apiv1.RoomTimelineCallEvent {
 	return &apiv1.RoomTimelineCallEvent{RoomId: roomID, CallId: callID}
 }
 
-// assetURLView maps a core asset URL to its API view. With webserver.url, the
-// URL is absolute on the public origin of the request in ctx.
-func (a *API) assetURLView(ctx context.Context, assetURL core.StableAssetURL) *apiv1.MessageAssetUrl {
+// assetURLView maps a core asset URL to its API view.
+//
+// 【本地改动 2026-10-05】原本是方法 func (a *API) assetURLView(ctx, url)，用
+// a.absolutizeMediaURL 按请求 origin 绝对化（上游 #2693）。第 2 组重放把
+// attachments.go 改成调用包级 assetURLView(url)——与侧车 ef8e43bef:438 一致，
+// 走公开 URL（core 侧已用 AssetBaseURL 生成完整 URL，无需按请求补 origin）。
+// 定义没跟着改就成了 attachments.go:116 的 undefined: assetURLView。
+// 此处改为包级函数，形态与侧车及attachments.go 的调用方一致。
+func assetURLView(assetURL core.StableAssetURL) *apiv1.MessageAssetUrl {
+	// 【本地改动 2026-08-18】公开 URL 无 ticket、永不过期：ExpiresAt 零值时
+	// 不填充过期时间，前端据此跳过 URL 刷新（避免序列化成 1970 触发无限刷新）。
+	if assetURL.ExpiresAt.IsZero() {
+		return &apiv1.MessageAssetUrl{Url: assetURL.URL}
+	}
 	return &apiv1.MessageAssetUrl{
-		Url:       a.absolutizeMediaURL(ctx, assetURL.URL),
+		Url:       assetURL.URL,
 		ExpiresAt: timestamppb.New(assetURL.ExpiresAt),
 	}
 }

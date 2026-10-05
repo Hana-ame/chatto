@@ -4,7 +4,13 @@ import type { AttachmentAPI } from '../api/attachments.js';
 
 export type ExpiringAssetUrl = {
   url: string;
-  expiresAt: string;
+  /**
+   * 【本地改动 2026-10-05】声明为可选，因为 proto3 的零值时间戳不会序列化到
+   * 线上。fork 的公开附件 URL（/assets/files/{id}/{fn.ext}）本就不填过期时间，
+   * 运行时拿到的就是缺失字段；类型若写死 `expiresAt: string`，调用方会误以为
+   * 它一定存在，assetUrlNeedsRefresh 也就没法表达「永不过期」。
+   */
+  expiresAt?: string;
 };
 
 export type RefreshedAttachmentUrls = {

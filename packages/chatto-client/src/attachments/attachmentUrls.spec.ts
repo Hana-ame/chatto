@@ -30,6 +30,26 @@ describe('asset URL expiry', () => {
     expect(assetUrlRefreshAt(undefined)).toBeNull();
   });
 
+  // 【本地改动 2026-10-05】fork 的公开附件 URL 永不过期：服务端不填 expiresAt，
+  // proto3 零值不序列化 → 客户端拿到的是缺失字段。缺失必须读作「永不过期」。
+  //
+  // 真实症状（CI 42064270a / cf377d23c / a1dad3b62）：缺失曾被当成 Date.now()，
+  // 于是每个 URL 恒定 needsRefresh；AttachmentViewerModal.svelte:110 在刷新后又
+  // 复检该条件，永远抛 'Attachment URL unavailable'，预览字节一个都发不出去
+  // —— Playwright trace 里 /assets/files/ 请求数为 0。附件预览、HTML 附件、
+  // 视频播放器三组 e2e 全部 15–30s 超时。
+  it('treats a missing expiry as never expiring', () => {
+    const missing = { url: 'https://cdn.example/assets/files/A1/x.pdf' } as {
+      url: string;
+      expiresAt?: string;
+    };
+    expect(assetUrlExpiresAtMs(missing)).toBeNull();
+    expect(assetUrlRefreshAt(missing)).toBeNull();
+    // 关键断言：不能恒为 true，否则刷新循环永不退出。
+    expect(assetUrlNeedsRefresh(missing)).toBe(false);
+    expect(assetUrlNeedsRefresh({ url: missing.url, expiresAt: '' })).toBe(false);
+  });
+
   it('treats an unreadable expiry as expired now', () => {
     const now = Date.now();
     expect(assetUrlExpiresAtMs({ url: 'x', expiresAt: 'not a date' })).toBeGreaterThanOrEqual(now);

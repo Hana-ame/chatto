@@ -37,6 +37,18 @@ export const ASSET_URL_REFRESH_LEAD_MS = 2 * 60_000;
 
 export function assetUrlExpiresAtMs(assetUrl: ExpiringAssetUrl | null | undefined): number | null {
   if (!assetUrl) return null;
+  // 【本地改动 2026-10-05】fork 的公开附件 URL 永不过期，服务端不填 expiresAt
+  // （proto3 里零值不会序列化到线上，expiresAt 缺失）。缺失 = 永不过期，必须返回
+  // null 让 assetUrlRefreshAt 也返回 null → assetUrlNeedsRefresh 恒为 false。
+  //
+  // 早先这里把 NaN 当成 Date.now()（“视为已过期”）。那是为「服务端发了垃圾值」的
+  // 情形兜底，但在 fork 的公开 URL 上成了死循环：每个 URL 都恒定需要刷新，
+  // AttachmentViewerModal 的 refresh()（apps/frontend/src/routes/chat/modals/
+  // AttachmentViewerModal.svelte:110）在拿到刷新结果后又用 assetUrlNeedsRefresh
+  // 复检，于是永远抛 'Attachment URL unavailable'，预览字节一个都发不出去 ——
+  // trace 里 /assets/files/ 请求数为 0。症状：e2e/attachment-viewer.test.ts、
+  // e2e/html-attachments.test.ts、e2e/video-player.test.ts 全部超时。
+  if (assetUrl.expiresAt == null || assetUrl.expiresAt === '') return null;
   const expiresAt = new Date(assetUrl.expiresAt).getTime();
   return Number.isNaN(expiresAt) ? Date.now() : expiresAt;
 }

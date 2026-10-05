@@ -33,6 +33,17 @@ test.describe('video player @ffmpeg', () => {
       if (pathname.includes('/assets/hls/')) {
         hlsResponses.push({ pathname, status: response.status() });
       }
+      // 【本地改动 2026-10-05 临时探针】把 BatchGetAssets 返回的 videoProcessing
+      // 原文打到日志，用来确认 variants / hls 到底有没有下发。定位完删掉。
+      if (pathname.includes('BatchGetAssets')) {
+        void response
+          .text()
+          .then((body) => {
+            const m = /"videoProcessing":(\{.*?\})(?:,"|\})/.exec(body);
+            console.log('VP_PROBE ' + (m ? m[1] : '(无 videoProcessing)'));
+          })
+          .catch(() => {});
+      }
     });
 
     await createAndLoginTestUser(page);
@@ -95,6 +106,20 @@ test.describe('video player @ffmpeg', () => {
         });
         expect(seekResult.duration).toBeGreaterThan(0);
         expect(Number.isFinite(seekResult.duration)).toBe(true);
+        // 【本地改动 2026-10-05 临时探针】打印 videoProcessing 的实际形状，
+        // 用来定位「duration 有值但无法 seek、且 assets/hls 请求数为 0」的原因。
+        // 定位完删掉。
+        const probe = await video.evaluate((element) => ({
+          currentSrc: element.currentSrc,
+          src: element.getAttribute('src'),
+          duration: element.duration,
+          readyState: element.readyState,
+          networkState: element.networkState,
+          buffered: element.buffered.length
+            ? [element.buffered.start(0), element.buffered.end(0)]
+            : null
+        }));
+        console.log('VIDEO_PROBE ' + JSON.stringify({ probe, hlsResponses }));
         expect(seekResult.forwardTime).toBeGreaterThan(seekResult.backwardTime);
 
         await expect

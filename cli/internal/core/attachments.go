@@ -914,6 +914,17 @@ func (c *MediaModel) GetTransformedServerAssetURLWithFilename(key, filename stri
 // ExpiresAt 保持零值：公开 URL 永不过期，connectapi 的 assetURLView 据此不填过期
 // 时间，前端据此跳过 URL 刷新。
 //
+// 【本地改动 2026-10-05 修正】**不经过 assetURL()，一律返回相对路径**。
+// 早先版本用 c.assetURL(...) 拼上 AssetBaseURL（本机 origin），这对联邦是错的：
+// 一个 server 通过 ConnectRPC 读另一个 server 的时间线时，收到的附件 URL 指向
+// **自己**的 origin，前端 assetUrlForServer（packages/chatto-client/src/util/
+// assetUrls.ts）只会在 rawUrl 是相对路径时才用附件所属 server 的 origin 补全，
+// 拿到绝对 URL 就原样保留 —— 于是跨源附件下载打到本机、404。
+// 症状：e2e/html-attachments.test.ts:89 的 origin 断言、
+// e2e/attachment-viewer.test.ts:165 的 download 事件超时。
+// 服务端资产 URL（/assets/server/…）也是相对路径，由 connectapi 的调用方
+// absolutizeMediaURL / absolutizeServerURL 补全——那是本机自有的资源。
+//
 // 必须定义在 *MediaModel 上而不是只定义 ChattoCore facade：MediaModel 内嵌
 // *ChattoCore，若 facade 转发而 MediaModel 无同名方法，调用会自我转发回
 // ChattoCore 的同名方法，最终再次转发回 mediaModel —— 无限递归。
@@ -921,7 +932,8 @@ func (c *MediaModel) GetPublicStableAttachmentAssetURL(attachment *evtv1.Attachm
 	if attachment == nil || attachment.GetId() == "" {
 		return StableAssetURL{}
 	}
-	return StableAssetURL{URL: c.assetURL(stableAttachmentPath(attachment, ""))}
+	_ = c // AssetBaseURL 对附件公开 URL 有意不适用，见上方注释。
+	return StableAssetURL{URL: stableAttachmentPath(attachment, "")}
 }
 
 // GetPublicStableTransformedAttachmentAssetURL returns the public URL for a

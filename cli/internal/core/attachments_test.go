@@ -6,6 +6,7 @@ import (
 	"image"
 	"image/png"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -1308,5 +1309,57 @@ func TestChattoCore_PublicServerAssetLocationRejectsReplacementGeneration(t *tes
 	}
 	if _, _, err := core.GetPublicServerAsset(ctx, location); err == nil {
 		t.Fatal("classified location served a replacement object generation")
+	}
+}
+
+// 【本地改动 2026-10-05】公开附件 URL 必须是相对路径，即使 AssetBaseURL 已配置。
+//
+// 联邦场景：server A 通过 ConnectRPC 读 server B 的时间线。B 下发的附件 URL
+// 若带 A 的 origin，前端 assetUrlForServer（packages/chatto-client/src/util/
+// assetUrls.ts:20）只在 rawUrl 是相对路径时才用附件所属 server 的 origin 补全，
+// 绝对 URL 会被原样保留，于是跨源附件请求打到 A 自己、404。
+//
+// 真实症状（CI 42064270a）：e2e/html-attachments.test.ts 的 download origin 断言、
+// e2e/attachment-viewer.test.ts 的 download 事件 30s 超时。
+//
+// 服务端资产 URL（/assets/server/…）仍然绝对化——那是本机自有的，无跨源问题。
+func TestPublicAttachmentURLStaysRelativeForFederation(t *testing.T) {
+	core := &ChattoCore{AssetBaseURL: "https://this-host.example"}
+	m := &MediaModel{ChattoCore: core}
+
+	attachment := &evtv1.Attachment{Id: "AbC123", Filename: "x.pdf", ContentType: "application/pdf"}
+	got := m.GetPublicStableAttachmentAssetURL(attachment)
+	if got.URL != "/assets/files/AbC123/x.pdf" {
+		t.Fatalf("public attachment URL = %q, want a relative /assets/files/ path", got.URL)
+	}
+	if strings.Contains(got.URL, "https://") {
+		t.Fatalf("public attachment URL embeds an origin (%q); federation clients cannot rewrite it", got.URL)
+	}
+	if !got.ExpiresAt.IsZero() {
+		t.Fatalf("ExpiresAt = %v, want zero (public URLs never expire)", got.ExpiresAt)
+	}
+
+	// 变换入口也必须一致，否则缩略图与原图会分属不同 origin。
+	transformed := m.GetPublicStableTransformedAttachmentAssetURL(attachment, 64, 64, "contain")
+	if transformed.URL != got.URL {
+		t.Fatalf("transformed URL = %q, want the original %q (fork has no derivatives)", transformed.URL, got.URL)
+	}
+}
+
+// 【本地改动 2026-10-05】对照面：服务端资产 URL 的 origin 由**调用方**补，
+// 不在 core 里拼。core 只给相对路径，connectapi 的 link_previews.go /
+// realtime_snapshot.go 再调 absolutizeMediaURL / absolutizeServerURL 绝对化。
+//
+// 这与附件的修法不冲突：附件根本不能由 core 绝对化（联邦会把 URL 指向错误的
+// server），而服务端资产 URL 是本机自有的，相对路径照样能正确补全。
+func TestServerAssetURLStaysRelativeForCallerAbsolutization(t *testing.T) {
+	core := &ChattoCore{AssetBaseURL: "https://this-host.example"}
+	m := &MediaModel{ChattoCore: core}
+	got := m.GetTransformedServerAssetURLWithFilename("AbC123", "preview.png", 600, 314, "contain")
+	if got != "/assets/server/AbC123/preview.png" {
+		t.Fatalf("server asset URL = %q, want a relative path the caller absolutizes", got)
+	}
+	if strings.Contains(got, "https://") {
+		t.Fatalf("core must not bake an origin into server asset URLs, got %q", got)
 	}
 }

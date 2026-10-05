@@ -103,8 +103,8 @@ is connected to, plus the add-server button pinned to the bottom. See the
 
       {#if externalLinks.length}
         <div class="h-px bg-border"></div>
+        <!-- eslint-disable svelte/no-navigation-without-resolve -- link.url is an absolute URL from links.json, not an app route; the next-line form does not reach the href inside {#each} -->
         {#each externalLinks as link (link.url)}
-          <!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- external absolute URL from links.json, not an app route -->
           <a
             href={link.url}
             target="_blank"

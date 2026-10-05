@@ -33,16 +33,11 @@ test.describe('video player @ffmpeg', () => {
       if (pathname.includes('/assets/hls/')) {
         hlsResponses.push({ pathname, status: response.status() });
       }
-      // 【本地改动 2026-10-05 临时探针】把 BatchGetAssets 返回的 videoProcessing
-      // 原文打到日志，用来确认 variants / hls 到底有没有下发。定位完删掉。
-      if (pathname.includes('BatchGetAssets')) {
-        void response
-          .text()
-          .then((body) => {
-            const m = /"videoProcessing":(\{.*?\})(?:,"|\})/.exec(body);
-            console.log('VP_PROBE ' + (m ? m[1] : '(无 videoProcessing)'));
-          })
-          .catch(() => {});
+      // 【本地改动 2026-10-05 临时探针】Connect 默认走**二进制** protobuf，
+      // response.text() 拿不到 JSON 字段名（所以上一版一律报「无」，是探针本身的
+      // 缺陷，不是后端没下发）。改为从页面里已经渲染出来的附件 ViewModel 上读。
+      if (pathname.includes('assets/')) {
+        void response.body().catch(() => {});
       }
     });
 
@@ -119,7 +114,20 @@ test.describe('video player @ffmpeg', () => {
             ? [element.buffered.start(0), element.buffered.end(0)]
             : null
         }));
-        console.log('VIDEO_PROBE ' + JSON.stringify({ probe, hlsResponses }));
+        // 直接读播放器收到的 props：variants / hlsUrl / fallbackUrl。
+        const playerProps = await roomPage.mediaPlayer.evaluate((el) => {
+          const vp = el.querySelector('video-player') as
+            (HTMLElement & Record<string, unknown>) | null;
+          return vp
+            ? {
+                variants: JSON.stringify(vp.variants ?? null).slice(0, 400),
+                hlsUrl: String(vp.hlsUrl ?? null),
+                fallbackUrl: String(vp.fallbackUrl ?? null),
+                status: String(vp.status ?? null)
+              }
+            : { error: 'video-player 元素不存在', html: el.innerHTML.slice(0, 300) };
+        });
+        console.log('VIDEO_PROBE ' + JSON.stringify({ probe, hlsResponses, playerProps }));
         expect(seekResult.forwardTime).toBeGreaterThan(seekResult.backwardTime);
 
         await expect

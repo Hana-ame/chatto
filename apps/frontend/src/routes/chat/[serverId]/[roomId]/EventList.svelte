@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onDestroy, tick, untrack } from 'svelte';
+  import type { Attachment } from 'svelte/attachments';
   import {
     clearTimelineViewport,
     isLoadingOlder,
@@ -23,6 +24,9 @@
   import RoomEvent from './RoomEvent.svelte';
   import MessageUserOverlays from './MessageUserOverlays.svelte';
   import { MessageUserInteractionState } from './messageUserInteractions.svelte';
+  import MessageActionOverlays from './MessageActionOverlays.svelte';
+  import { MessageActionOverlayState } from './messageActionOverlayState.svelte';
+  import { isDeletedMessage } from './messageEventModel';
   import SystemEventGroup from './SystemEventGroup.svelte';
   import DaySeparator from '$lib/components/DaySeparator.svelte';
   import UnreadSeparator from './UnreadSeparator.svelte';
@@ -49,6 +53,7 @@
   import { RoomThreadingMode } from '@chatto/client/util/roomThreading';
   import { appState } from '$lib/state/globals.svelte';
   import type { TimelineReadPosition } from './readThroughTracker';
+  import type { PendingHighlight } from '$lib/state/server/pendingHighlight';
 
   let {
     roomId,
@@ -70,8 +75,10 @@
     typingMembers = [],
     onScrollToEventComplete,
     onReachedBottom,
+    onJumpToPresent,
     onReadPosition,
     pendingHighlightId = null,
+    highlightRequest = null,
     threadingMode = RoomThreadingMode.ENABLED
   }: {
     roomId: string;
@@ -94,8 +101,14 @@
     typingUserIds?: string[];
     typingMembers?: RoomMember[];
     /** Reports whether a jump-to-message request found and highlighted its target. */
-    onScrollToEventComplete?: (landed: boolean) => void;
+    onScrollToEventComplete?: (
+      landed: boolean,
+      eventId: string,
+      request: PendingHighlight | null
+    ) => void;
     onReachedBottom?: () => void;
+    /** Report a user return-to-latest request before replacing the current window. */
+    onJumpToPresent?: () => void;
     /**
      * Reports the newest position that the viewer can see when it changes.
      * The conversation reads up to this position, so a jump to an older
@@ -104,6 +117,8 @@
     onReadPosition?: (position: TimelineReadPosition) => void;
     // Suppress auto-scroll while a highlight is pending
     pendingHighlightId?: string | null;
+    /** Stable identity, including repeated notification clicks on the same message. */
+    highlightRequest?: PendingHighlight | null;
     threadingMode?: RoomThreadingMode;
   } = $props();
 
@@ -150,11 +165,15 @@
   const userInteractions = new MessageUserInteractionState(() => roomMembers);
   const isUniversal = $derived(stores.projection?.rooms?.get(roomId)?.room?.universal ?? false);
   const canStartDMs = $derived(stores.permissions?.canStartDMs ?? false);
+  // Message action overlays live outside the virtualized rows, so they stay open when
+  // the row of their message unmounts.
+  const actionOverlays = new MessageActionOverlayState();
   let overlayScope = untrack(() => `${serverScope.serverId}:${roomId}`);
   $effect(() => {
     const nextScope = `${serverScope.serverId}:${roomId}`;
     if (nextScope !== overlayScope) {
       userInteractions.close();
+      actionOverlays.close();
       overlayScope = nextScope;
     }
   });
@@ -186,6 +205,19 @@
     })
   );
   let filteredEvents = $derived(visibleTombstoneEvents(timelineEvents));
+  // The message that owns the open action overlay, while the timeline shows it as a message.
+  const actionOverlayEvent = $derived.by(() => {
+    const eventId = actionOverlays.current?.eventId;
+    if (!eventId) return null;
+    const event = filteredEvents.find((candidate) => candidate.id === eventId);
+    return event && isMessagePostedEvent(event.event) && !isDeletedMessage(event.event)
+      ? event
+      : null;
+  });
+  // Close the overlay when its message leaves the timeline or becomes a tombstone.
+  $effect(() => {
+    if (actionOverlays.current && !actionOverlayEvent) untrack(() => actionOverlays.close());
+  });
   let messageEventCount = $derived(
     filteredEvents.filter((event) => isMessagePostedEvent(event.event)).length
   );
@@ -321,57 +353,89 @@
     }
   });
 
-  // Scroll to a specific event by ID (for jump-to-message)
-  $effect(() => {
-    let cancelled = false;
+  // The DOM command exists only while the requested timeline is ready.
+  const scrollTarget = $derived.by(() => {
     const targetId = scrollToEventId;
-    if (!targetId || !virtualizerHandle || virtualItems.length === 0) return;
-
-    // Disable auto-scroll so it doesn't race with the jump scroll.
-    viewport.beginJump();
-
-    void tick().then(async () => {
-      // A replaced virtual window can take several frames to index, measure,
-      // and mount its target. The initial attempt plus 60 retries preserves the
-      // existing bounded wait without a separate callback state machine.
-      for (let attempt = 0; attempt <= 60 && !cancelled; attempt++) {
-        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-        if (cancelled) return;
-
-        const targetIndex = virtualItems.findIndex(
-          (item) => item.type === 'event' && item.event.id === targetId
-        );
-        if (targetIndex !== -1) safeScrollToIndex(targetIndex, { align: 'center' });
-
-        // Scope lookup to this EventList so the thread pane cannot highlight
-        // the matching event in the main room timeline.
-        const target = (scrollContainer ?? document).querySelector(eventSelector(targetId));
-        if (!(target instanceof HTMLElement)) continue;
-
-        target.classList.add('highlight-flash');
-        target.addEventListener('animationend', () => target.classList.remove('highlight-flash'), {
-          once: true
-        });
-
-        await new Promise((resolve) => setTimeout(resolve, 200));
-        if (cancelled) return;
-        const distance = distanceFromBottom();
-        if (distance === null) return;
-        viewport.settleJump(distance);
-        reportReadPosition();
-        onScrollToEventComplete?.(true);
-        return;
-      }
-
-      if (cancelled) return;
-      reportReadPosition();
-      onScrollToEventComplete?.(false);
-    });
-
-    return () => {
-      cancelled = true;
-    };
+    const request = highlightRequest;
+    if (
+      !targetId ||
+      (request !== null && request.eventId !== targetId) ||
+      !virtualizerHandle ||
+      virtualItems.length === 0 ||
+      stores.realtimeSync.isRecoveringSnapshot
+    ) {
+      return null;
+    }
+    return { eventId: targetId, request };
   });
+
+  /** Scroll and highlight within this list; detachment cancels an unfinished command. */
+  function scrollToMessage(
+    command: { eventId: string; request: PendingHighlight | null } | null
+  ): Attachment<HTMLDivElement> {
+    return (element) => {
+      if (!command) return;
+      const { eventId: targetId, request } = command;
+      let cancelled = false;
+
+      void tick().then(async () => {
+        if (cancelled) return;
+        // Disable auto-scroll so it doesn't race with the jump scroll.
+        viewport.beginJump();
+        // A replaced virtual window can take several frames to index, measure,
+        // and mount its target. The initial attempt plus 60 retries preserves the
+        // existing bounded wait without a separate callback state machine.
+        for (let attempt = 0; attempt <= 60 && !cancelled; attempt++) {
+          await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+          if (cancelled) return;
+
+          const targetIndex = virtualItems.findIndex(
+            (item) => item.type === 'event' && item.event.id === targetId
+          );
+          if (targetIndex !== -1) safeScrollToIndex(targetIndex, { align: 'center' });
+
+          // Scope lookup to this EventList so the thread pane cannot highlight
+          // the matching event in the main room timeline.
+          const target = element.querySelector(eventSelector(targetId));
+          if (!(target instanceof HTMLElement)) continue;
+
+          // A mounted virtual row can still be outside the viewport while its
+          // measured offset settles. Do not acknowledge it until it is visible.
+          if (!eventIsVisible(target)) continue;
+
+          target.classList.remove('highlight-flash');
+          // Restart the animation when another click selects the same mounted row.
+          void target.offsetWidth;
+          target.classList.add('highlight-flash');
+          target.addEventListener(
+            'animationend',
+            () => target.classList.remove('highlight-flash'),
+            {
+              once: true
+            }
+          );
+
+          await new Promise((resolve) => setTimeout(resolve, 200));
+          if (cancelled) return;
+          if (!eventIsVisible(target)) continue;
+          const distance = distanceFromBottom();
+          if (distance === null) return;
+          viewport.settleJump(distance);
+          reportReadPosition();
+          onScrollToEventComplete?.(true, targetId, request);
+          return;
+        }
+
+        if (cancelled) return;
+        reportReadPosition();
+        onScrollToEventComplete?.(false, targetId, request);
+      });
+
+      return () => {
+        cancelled = true;
+      };
+    };
+  }
 
   async function landOnUnreadSeparator(requestedTimelineKey: string) {
     const current = () =>
@@ -421,6 +485,7 @@
 
   // Build a DOM command only after fresh authority and the virtualizer are ready.
   const recoveryTarget = $derived.by(() => {
+    if (scrollToEventId || pendingHighlightId) return null;
     const position = recoveryViewport(messageStore);
     if (!position || isLoading || stores.realtimeSync.isRecoveringSnapshot) return null;
     const items = virtualItems;
@@ -585,6 +650,7 @@
   }
 
   async function handleJumpToPresentClick() {
+    onJumpToPresent?.();
     // The replacement latest window must perform a fresh initial-style bottom
     // scroll. Virtua otherwise preserves the historical window's offset when
     // the keyed data is replaced and can leave the user stranded mid-window.
@@ -635,6 +701,14 @@
     return `[data-event-id="${CSS.escape(eventId)}"]`;
   }
 
+  /** A jump succeeds only while its mounted row intersects this timeline's viewport. */
+  function eventIsVisible(target: HTMLElement): boolean {
+    if (!target.isConnected || !scrollContainer) return false;
+    const bounds = target.getBoundingClientRect();
+    const visible = scrollContainer.getBoundingClientRect();
+    return bounds.height > 0 && bounds.bottom > visible.top && bounds.top < visible.bottom;
+  }
+
   // Re-evaluate "are we at the bottom?" when the tab regains visibility — the
   // browser may have throttled virtua's measurements or our auto-scroll effect
   // while hidden, leaving shouldScrollToBottom=true even though the scroll has
@@ -652,6 +726,7 @@
   let underfilledBackfillInFlight = false;
 
   function exitJumpedModeAtPresent(bottomDistance: number): boolean {
+    if (scrollToEventId || pendingHighlightId) return false;
     if (!isJumpedMode || !hasReachedEnd || bottomDistance >= 50) return false;
 
     viewport.followBottom();
@@ -874,6 +949,7 @@
       class="mt-auto mobile-presentation:px-1"
       {@attach restoreViewport(recoveryTarget)}
       {@attach landOnUnreadEntry(unreadEntryLanding)}
+      {@attach scrollToMessage(scrollTarget)}
     >
       {#if isLoading}
         <!-- Sits at the bottom, where the newest messages will appear. -->
@@ -934,6 +1010,7 @@
                   {roomId}
                   {permalinkThreadRootEventId}
                   {messageStore}
+                  {actionOverlays}
                   onOpenThread={getOpenThreadHandler(eventData)}
                   activeCallId={serverUi(stores).activeCallRooms.getCallId(roomId)}
                   {onOpenCall}
@@ -970,6 +1047,20 @@
         <span aria-hidden="true" class="iconify icon-[uil--arrow-down]"></span>
       </div>
     </button>
+  {/if}
+
+  {#if actionOverlayEvent}
+    {#key actionOverlayEvent.id}
+      <MessageActionOverlays
+        overlays={actionOverlays}
+        event={actionOverlayEvent}
+        {roomId}
+        {permalinkThreadRootEventId}
+        {messageStore}
+        onOpenThread={getOpenThreadHandler(actionOverlayEvent)}
+        {threadingMode}
+      />
+    {/key}
   {/if}
 
   {#key `${serverScope.serverId}:${roomId}`}

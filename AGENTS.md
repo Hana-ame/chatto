@@ -23,6 +23,19 @@ needed to extract and validate the shared framework. Move Authling to its own
 repository when the shared boundary is stable. Do not describe this repository
 as its permanent home. Do not add coupling that makes this move more difficult.
 
+### Chatto Client And Bundled Frontend
+
+Chatto has one client: `@chatto/client` in `packages/chatto-client/`. The
+bundled frontend in `apps/frontend/`, ChattoBot, and third-party bots and
+frontends use it. See ADR-111.
+
+- Ask: does a bot or a different frontend need this behavior to use Chatto
+  correctly? If yes, put it in `@chatto/client`, also when only the bundled
+  frontend uses it now. If no, put it in the frontend.
+- The frontend uses the client. The client never calls into the frontend.
+- Use the `chatto-client-placement` skill before you add code to either, or
+  move code between them.
+
 ## Prime Directives
 
 - Use ASD-STE100 Simplified Technical English for all new or changed documentation (repository and public documentation!) Find the canonical vocabulary in [`docs/GLOSSARY.md`](docs/GLOSSARY.md).

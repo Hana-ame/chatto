@@ -460,7 +460,12 @@ func setupPushNotifications(chattoCore *core.ChattoCore, cfg config.ChattoConfig
 		accepted := false
 		for _, result := range results {
 			if result.Gone {
-				_ = chattoCore.DeletePushSubscription(ctx, userID, result.Endpoint)
+				if err := chattoCore.DeletePushSubscription(ctx, userID, result.Endpoint); err != nil {
+					logger.Warn("Failed to remove gone push subscription",
+						"user_id", userID,
+						"endpoint_hash", push.EndpointLogID(result.Endpoint),
+						"error", err)
+				}
 			}
 			if result.Error == nil && result.Success {
 				accepted = true
@@ -559,7 +564,12 @@ func notificationAlertHandler(chattoCore *core.ChattoCore, cfg config.ChattoConf
 		accepted := false
 		for _, result := range results {
 			if result.Gone {
-				_ = chattoCore.DeletePushSubscription(ctx, occurrence.GetRecipientId(), result.Endpoint)
+				if err := chattoCore.DeletePushSubscription(ctx, occurrence.GetRecipientId(), result.Endpoint); err != nil {
+					logger.Warn("Failed to remove gone push subscription",
+						"user_id", occurrence.GetRecipientId(),
+						"endpoint_hash", push.EndpointLogID(result.Endpoint),
+						"error", err)
+				}
 				continue
 			}
 			if result.Success {

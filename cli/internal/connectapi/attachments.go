@@ -3,6 +3,7 @@ package connectapi
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"connectrpc.com/connect"
@@ -161,6 +162,14 @@ func apiVideoProcessing(ctx context.Context, api *API, viewerID string, attachme
 				}
 			}
 		}
+		// 【本地改动 2026-10-05 临时探针】打印 manifest 里 video 的实际形状，
+		// 定位「variants 为空、hls 没下发」到底是 manifest 没数据还是循环没跑到。
+		// 定位完删掉。
+		slog.Info("VP_PROBE manifest",
+			"asset", attachment.GetId(),
+			"variants", len(video.GetVariants()),
+			"hls", video.GetHls() != nil,
+			"hls_renditions", len(video.GetHls().GetRenditions()))
 		for _, variant := range video.GetVariants() {
 			if variant == nil {
 				continue

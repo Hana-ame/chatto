@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"buf.build/go/protovalidate"
 	"connectrpc.com/connect"
@@ -192,6 +193,48 @@ func TestAbsolutizeServerURL(t *testing.T) {
 
 		if got, want := api.absolutizeServerURL(ctx, "https://cdn.example.com/logo.png"), "https://cdn.example.com/logo.png"; got != want {
 			t.Fatalf("absolutizeServerURL = %q, want %q", got, want)
+		}
+	})
+}
+
+// 【本地改动 2026-10-05】assetURLView 必须按**请求** origin 绝对化。
+//
+// 真实症状（CI 42064270a / cf377d23c）：assetURLView 曾被改成包级函数并丢掉 ctx，
+// 于是：
+//   - HLS master playlist（本来就是相对路径，/assets/hls/…?access=ticket）
+//     不再补 origin，共享 viewer 里视频 readyState 停在 0，
+//     e2e/video-player.test.ts:168 的 readyState >= 2 超时。
+//   - 公开附件 URL 在 core 侧烤死本机 origin，联邦客户端拿到别的 host，
+//     e2e/html-attachments.test.ts 的 download origin 断言失败。
+//
+// 用请求 origin（而非 webserver.url）是关键：联邦客户端必须拿到自己可达的 host。
+func TestAssetURLViewAbsolutizesAgainstRequestOrigin(t *testing.T) {
+	api := New(nil, config.ChattoConfig{
+		Webserver: config.WebserverConfig{URL: "https://configured.example.com"},
+	}, "test")
+	ctx := WithRequestBaseURL(context.Background(), "https://alias.example.com")
+
+	t.Run("public attachment keeps its filename and gains the request origin", func(t *testing.T) {
+		got := assetURLView(api, ctx, core.StableAssetURL{URL: "/assets/files/A1/thread.png"})
+		if want := "https://alias.example.com/assets/files/A1/thread.png"; got.GetUrl() != want {
+			t.Fatalf("assetURLView url = %q, want %q", got.GetUrl(), want)
+		}
+		// 公开 URL 永不过期：ExpiresAt 必须保持 nil，否则前端会反复刷新 URL。
+		if got.GetExpiresAt() != nil {
+			t.Fatalf("ExpiresAt = %v, want nil for a public URL", got.GetExpiresAt())
+		}
+	})
+
+	t.Run("hls playlist is absolutized too", func(t *testing.T) {
+		got := assetURLView(api, ctx, core.StableAssetURL{
+			URL:       "/assets/hls/A1/master.m3u8?access=ticket",
+			ExpiresAt: time.Now().Add(time.Hour),
+		})
+		if want := "https://alias.example.com/assets/hls/A1/master.m3u8?access=ticket"; got.GetUrl() != want {
+			t.Fatalf("assetURLView url = %q, want %q", got.GetUrl(), want)
+		}
+		if got.GetExpiresAt() == nil {
+			t.Fatal("ticketed URL lost its ExpiresAt")
 		}
 	})
 }

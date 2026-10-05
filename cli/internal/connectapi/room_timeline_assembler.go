@@ -358,9 +358,9 @@ func (h *timelineHydrator) attachments(roomID, messageEventID string, attachment
 			ContentType:       attachment.ContentType,
 			Width:             attachment.Width,
 			Height:            attachment.Height,
-			AssetUrl:          assetURLView(assetURL),
-			ThumbnailAssetUrl: assetURLView(thumbnailURL),
-			VideoProcessing:   apiVideoProcessing(h.api, h.viewerID, attachment),
+			AssetUrl:          assetURLView(h.api, h.ctx, assetURL),
+			ThumbnailAssetUrl: assetURLView(h.api, h.ctx, thumbnailURL),
+			VideoProcessing:   apiVideoProcessing(h.ctx, h.api, h.viewerID, attachment),
 		}
 		if description := descriptions[attachment.GetId()]; description != "" {
 			view.Description = &description
@@ -461,20 +461,29 @@ func callEvent(roomID, callID string) *apiv1.RoomTimelineCallEvent {
 
 // assetURLView maps a core asset URL to its API view.
 //
-// 【本地改动 2026-10-05】原本是方法 func (a *API) assetURLView(ctx, url)，用
-// a.absolutizeMediaURL 按请求 origin 绝对化（上游 #2693）。第 2 组重放把
-// attachments.go 改成调用包级 assetURLView(url)——与侧车 ef8e43bef:438 一致，
-// 走公开 URL（core 侧已用 AssetBaseURL 生成完整 URL，无需按请求补 origin）。
-// 定义没跟着改就成了 attachments.go:116 的 undefined: assetURLView。
-// 此处改为包级函数，形态与侧车及attachments.go 的调用方一致。
-func assetURLView(assetURL core.StableAssetURL) *apiv1.MessageAssetUrl {
+// 【本地改动 2026-10-05 修正】恢复按请求 origin 绝对化（上游 #2693）。此前把它
+// 改成包级函数并丢掉 ctx，理由是「core 侧已用 AssetBaseURL 生成完整 URL，无需按
+// 请求补 origin」——那个前提现在不成立了：
+//
+//  1. GetPublicStableAttachmentAssetURL 已改回返回**相对**路径（见
+//     core/attachments.go 的联邦说明）。core 只有本机 origin，而附件可能属于另一台
+//     server；在 core 里烤 origin 会把跨源请求指到错误的 host。
+//  2. HLS 入口 GetStableHLSMasterPlaylistAssetURL 一直是相对路径（含 ticket），
+//     原来靠这里补 origin。现在不补了，hls.js 拿到的就是页面 host 下的相对
+//     路径——浏览器其实能解析，但 fork 的 assetUrlForServer 只处理
+//     /assets/files/ 前缀，/assets/hls/ 不在其中，视频在共享 viewer 里 readyState
+//     停在 0。
+//
+// 绝对化必须用**请求** origin 而不是 webserver.url：a.absolutizeServerURL 优先取
+// requestBaseURLFromContext，所以联邦客户端会拿到自己可达的 host。
+func assetURLView(a *API, ctx context.Context, assetURL core.StableAssetURL) *apiv1.MessageAssetUrl {
 	// 【本地改动 2026-08-18】公开 URL 无 ticket、永不过期：ExpiresAt 零值时
 	// 不填充过期时间，前端据此跳过 URL 刷新（避免序列化成 1970 触发无限刷新）。
 	if assetURL.ExpiresAt.IsZero() {
-		return &apiv1.MessageAssetUrl{Url: assetURL.URL}
+		return &apiv1.MessageAssetUrl{Url: a.absolutizeMediaURL(ctx, assetURL.URL)}
 	}
 	return &apiv1.MessageAssetUrl{
-		Url:       assetURL.URL,
+		Url:       a.absolutizeMediaURL(ctx, assetURL.URL),
 		ExpiresAt: timestamppb.New(assetURL.ExpiresAt),
 	}
 }

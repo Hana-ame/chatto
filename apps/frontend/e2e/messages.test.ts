@@ -848,12 +848,20 @@ test('image lightbox supports keyboard navigation with multiple images', async (
   //   :853 /\/image\/2048x2048\/contain\?/     缩略图 transform + ?access=
   //   :856 /\/assets\/files\/[^/?]+\?/        原图 ticket + query
   // fork 的第 2 组改动故意反转：图片不压缩、不带 ticket，URL 形如
-  // /assets/files/{assetID}/{fn.ext}（transform 则为
-  // /assets/files/{assetID}/image/{w}x{h}/{fit}/{fn.ext}），assetID 即凭证。
-  // 正则锚定 fork 形状，上游 ticket 形态匹配不上，断言不是被删掉而是被改写。
+  // /assets/files/{assetID}/{fn.ext}，assetID 即凭证。
+  //
+  // 更关键的是 fork **不产附件衍生图**：上传时就把图片压成原尺寸 AVIF
+  // （PrepareAttachmentImage），因此 GetPublicStableTransformedAttachmentAssetURL
+  // 把 width/height/fit 全部忽略、直接返回原图 URL
+  // （cli/internal/core/attachments.go:951-956）。所以 lightbox 里的 `<img src>`
+  // **就是原图链接**，没有 /image/2048x2048/contain/ 尾段——这不是回归，
+  // 正是「不压缩」这一组改动的设计结果（2026-09-12 起 override 掉 transform 尾段）。
+  //
+  // 正则锚定 fork 的实际形状：原图路径且**不带** transform 尾段。上游 ticket
+  // 形态与 transform 形态都匹配不上，断言不是被删掉而是被改写。
   await expect(dialog.locator('img')).toHaveAttribute(
     'src',
-    /\/assets\/files\/[^/?]+\/image\/2048x2048\/contain\/[^/]+\.[A-Za-z0-9]+$/
+    /^\/assets\/files\/[^/?]+\/[^/?]+$/
   );
   // 注意 Download href 的锚点：fork 的尾段是文件名，:866 之后还会跟
   // `?download=1`，所以路径部分用 (?=\?|$) 而不是 $ 来收尾，否则与下一条

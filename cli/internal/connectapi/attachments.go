@@ -2,6 +2,7 @@ package connectapi
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"connectrpc.com/connect"
@@ -170,14 +171,40 @@ func apiVideoProcessing(ctx context.Context, api *API, viewerID string, attachme
 			// 与 upstream 均无此段），最初按当时的 corev1.Attachment 写；合并
 			// upstream #2162 后 core/v1 pb 包被删除，Attachment 迁到 evt/v1，
 			// core.AttachmentFromAsset 的返回值也随之变成 *evtv1.Attachment。
-			var variantAttachment *evtv1.Attachment
-			if created := api.core.GetAssetState(variant.GetAssetId()).Creation; created != nil {
-				asset := created.GetAsset()
-				if asset != nil {
+			//
+			// 【本地改动 2026-10-05 修正 URL 取法】原先用
+			//   GetPublicStableAttachmentAssetURL(variantAttachment)
+			// 而 variantAttachment 来自 GetAssetState(...).Creation。查不到 Creation
+			// 时它是 nil → 返回空 StableAssetURL → 前端 AttachmentPreview.svelte 的
+			// `.filter((v) => v.url)` 把所有 variant 丢掉 → VideoPlayer.svelte:102
+			// 拿不到 variant 也拿不到 hlsUrl，于是回落到 fallbackUrl（原图）。
+			// 原图走 /assets/files/{id}/{fn.ext}，该路由是 Accept-Ranges: none 的
+			// 顺序流，浏览器无法 seek，element.duration 恒为 0。
+			//
+			// 症状（CI run 37326134758 / 37319871507，test-e2e-media）：
+			//   video-player.test.ts:16  "expect(received).toBeGreaterThan(expected)
+			//                                Expected: > 0  Received: 0"（duration）
+			// Playwright trace 网络日志佐证：`assets/hls/**` 请求数为 **0**，
+			// 只请求了一次 `/assets/files/<id>/test-video.mp4`，响应头 Accept-Ranges: none。
+			//
+			// 上游的做法（attachments.go 上游版第 169 行）是直接用
+			//   GetStableAttachmentAssetURL(variant.GetAssetId(), viewerID)
+			// 即用 manifest 里已有的 assetID 构造 URL，不需要回查 Creation。这里照做：
+			// 用 Public 版保持第 2 组「无 ticket、任何人可取」的一致性，但**URL 的 id
+			// 来源**必须是 variant.GetAssetId() 这个确定值，而不是可能为 nil 的回查结果。
+			// Filename 用 %q.mp4：manifest 里的 assetID 形如 "<origin-id>_<quality>.mp4"，
+			// stableAttachmentPath 的尾段只影响可读性与缓存键，服务端按 id 解析。
+			variantAssetID := variant.GetAssetId()
+			variantAttachment := &evtv1.Attachment{
+				Id:          variantAssetID,
+				Filename:    fmt.Sprintf("%s.mp4", variantAssetID),
+				ContentType: "video/mp4",
+			}
+			if created := api.core.GetAssetState(variantAssetID).Creation; created != nil {
+				if asset := created.GetAsset(); asset != nil {
 					width = asset.GetWidth()
 					height = asset.GetHeight()
 					size = asset.GetSize()
-					variantAttachment = core.AttachmentFromAsset(asset)
 				}
 			}
 			result.Variants = append(result.Variants, &apiv1.MessageVideoVariant{

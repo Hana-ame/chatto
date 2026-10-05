@@ -18,6 +18,9 @@ Ask these questions in sequence. Stop at the first "yes".
 2. **Does it talk to a server or keep server data?** Requests, sessions and
    tokens, realtime delivery, server and room data, the operations on this
    data, or a privacy or authorization boundary: put it in the client.
+   Exception: the requests on the
+   [Allowed Frontend API Modules](#allowed-frontend-api-modules) list stay in
+   the frontend.
 3. **Does it encode a protocol fact?** A token format in a message body,
    mention rules, the permission structure, or validation that mirrors the
    server: put it in the client, also when only the frontend uses it now. The
@@ -72,29 +75,45 @@ Use these features as examples:
 ## Allowed Frontend API Modules
 
 The frontend calls ConnectRPC services directly only for its own screens:
-admin tools, first-run setup, Web Push (`$lib/api`), and the cross-tab
-session channel (`$lib/auth/sessionChannel.ts`). Do not add other requests
-there.
 
-## Known Misplacements
+- Admin tools, first-run setup, and Web Push (`$lib/api`).
+- Browser sign-in and account-linking flows, such as external identities
+  (`$lib/api/externalIdentities.ts`). The sign-in flow uses page redirects
+  and the origin's cookie session. Account linking starts a browser redirect.
+  Only the frontend's sign-in and account settings screens use these flows.
+  Bots do not use them, and a different frontend makes its own flows.
+- The cross-tab session channel (`$lib/auth/sessionChannel.ts`).
 
-These frontend modules contain protocol facts that belong in the client. Do
-not use them as patterns. When you change one, move its protocol part into
-the client and keep the display part in the frontend.
+Do not add other requests there.
 
-- `$lib/messageTimestamps.ts`: the `<t:EPOCH:F>` token format.
-- `$lib/customStatusTemplates.ts`: the `chatto:status:<id>` format.
-- `$lib/mentions.ts`: mention detection that agrees with the server.
-- `$lib/permissions.ts`: the permission structure (scopes, `privileged`,
-  `includes`) that mirrors `cli/internal/core/permission.go`. The translated
-  descriptions stay in the frontend.
-- `$lib/state/server/presenceTracking.ts`: the presence refresh loop and the
-  request sequence. The stored presence choice stays a device preference.
-- `$lib/api/externalIdentities.ts`: account requests. They are not on the
-  allowed list.
+## Protocol Facts With Display Parts
+
+Some features have a protocol part in the client and a display part in the
+frontend. Use them as patterns:
+
+- Message timestamp tokens: the client's `messaging/timestampTokens.ts` has
+  the `<t:EPOCH:F>` format. `$lib/messageTimestamps.ts` renders tokens.
+- Custom status templates: the client's `util/customStatusTemplates.ts` has
+  the `chatto:status:<id>` tokens. `$lib/customStatusTemplates.ts` adds the
+  translated labels.
+- Permissions: the client's `util/permissionCatalog.ts` mirrors
+  `cli/internal/core/permission.go`. `$lib/permissions.ts` adds the
+  translated descriptions and help.
+- Presence: the client's `server/presenceTracking.ts` loads the choice and
+  sends heartbeats. `$lib/state/server/presenceTracking.ts` connects one
+  tracker to the chat root.
+
+## Frontend Modules That Look Like Client Code
+
+These modules stay in the frontend. Do not move them without a new reason:
+
+- `$lib/mentions.ts`: mention detection uses the frontend's Markdown
+  renderer. The server resolves mentions and tells bots why a message
+  addresses them.
 - `$lib/state/server/roomUnread.ts` and `roomDirectory.ts`: optimistic
-  membership and read-state overlays. These are a gray zone. Another
-  frontend must make them again.
+  read-state and membership changes, so the UI responds before the server
+  confirms. Store events confirm them. Each host decides about its own
+  optimistic UI.
 
 ## Common Mistakes
 

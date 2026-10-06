@@ -114,19 +114,15 @@ test.describe('video player @ffmpeg', () => {
             ? [element.buffered.start(0), element.buffered.end(0)]
             : null
         }));
-        // 直接读播放器收到的 props：variants / hlsUrl / fallbackUrl。
-        const playerProps = await roomPage.mediaPlayer.evaluate((el) => {
-          const vp = el.querySelector('video-player') as
-            (HTMLElement & Record<string, unknown>) | null;
-          return vp
-            ? {
-                variants: JSON.stringify(vp.variants ?? null).slice(0, 400),
-                hlsUrl: String(vp.hlsUrl ?? null),
-                fallbackUrl: String(vp.fallbackUrl ?? null),
-                status: String(vp.status ?? null)
-              }
-            : { error: 'video-player 元素不存在', html: el.innerHTML.slice(0, 300) };
-        });
+        // 【本地改动 2026-10-05 临时探针】读 VideoPlayer.svelte 挂在 <media-player> 上的
+        // data-probe-* 属性。上一版查 'video-player' 元素是不存在的（组件本身不渲染
+        // 同名标签），所以只拿到 { error: 'video-player 元素不存在' }。
+        const playerProps = await roomPage.mediaPlayer.evaluate((el) => ({
+          variants: el.getAttribute('data-probe-variants'),
+          hlsUrl: el.getAttribute('data-probe-hlsurl'),
+          fallbackUrl: el.getAttribute('data-probe-fallback'),
+          selected: el.getAttribute('data-probe-selected')
+        }));
         console.log('VIDEO_PROBE ' + JSON.stringify({ probe, hlsResponses, playerProps }));
         expect(seekResult.forwardTime).toBeGreaterThan(seekResult.backwardTime);
 

@@ -97,6 +97,10 @@
         : undefined
   );
 
+  // 【本地改动 2026-10-05 临时探针】data-probe-* 把这几个派生值暴露到 DOM，
+  // 供 e2e/video-player.test.ts 读取，确认 variants/hlsUrl 到底有没有值。
+  // 定位完连同上面的 media-player 属性一起删掉。
+
   const playbackSource = $derived.by(() => {
     const effectiveHlsUrl = hlsRetryUrl ?? hlsUrl;
     if (!autoLoop && effectiveHlsUrl && effectiveHlsUrl !== failedHlsUrl) {
@@ -344,6 +348,10 @@
     <media-player
       {@attach attachMediaPlayer}
       src={videoSrc}
+      data-probe-variants={JSON.stringify(variants)}
+      data-probe-hlsurl={String(hlsUrl)}
+      data-probe-fallback={String(fallbackUrl)}
+      data-probe-selected={String(selectedVariant?.url ?? '')}
       stream-type="on-demand"
       playsinline
       onerror={handlePlayerError}

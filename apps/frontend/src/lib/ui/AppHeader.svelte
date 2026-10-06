@@ -94,7 +94,19 @@
         void import('$app/navigation').then(({ goto }) =>
           goto(resolve('/chat/[serverId]', { serverId: serverIdToSegment(serverId) }))
         );
+        return;
       }
+      // 【本地改动 2026-10-05 修回归】移动端且当前路由不在 [serverId] 下、但又
+      // **没有可导航的服务器**（未登录 / 一个都没认证）时，必须退回原来的
+      // toggle()，否则直接 return 会让侧栏永远打不开。
+      //
+      // 证据：layout.svelte.spec.ts「keeps the app header and server navigation
+      // available during setup」点 Toggle sidebar 后找不到 link 'Add Server'。
+      // 该 spec 的 getActiveServer()='origin' 但 serverRegistry.isAuthenticated
+      // =false、firstAuthenticatedServerId()=undefined → preferencesServerId 为
+      // undefined → 上面 if(serverId) 不成立 → 旧代码仍然 return，toggle 被跳过。
+      // 上游这里是无条件 toggle()，所以上游绿。
+      sidebarNav.toggle();
       return;
     }
     sidebarNav.toggle();

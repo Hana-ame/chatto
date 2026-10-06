@@ -220,19 +220,18 @@ func apiVideoProcessing(ctx context.Context, api *API, viewerID string, attachme
 		}
 		if hls := video.GetHls(); hls != nil && len(hls.GetRenditions()) > 0 {
 			result.Hls = &apiv1.MessageVideoHLS{MasterPlaylistUrl: assetURLView(api, ctx, api.core.GetStableHLSMasterPlaylistAssetURL(attachment.GetId(), viewerID))}
+		} else {
+			// 【本地改动 2026-10-05 临时探针】hlsUrl 是整条链路上**唯一没有过滤
+			// 器**的字段（AttachmentPreview.svelte:86 直接透传，不像 variants 要过
+			// .filter(v => v.url)）。所以把 counts 塞到这里最可靠：只要
+			// apiVideoProcessing 走到了这里，浏览器就一定能看到。
+			result.Hls = &apiv1.MessageVideoHLS{MasterPlaylistUrl: &apiv1.MessageAssetUrl{
+				Url: fmt.Sprintf("PROBE v=%d h=%d out=%d",
+					len(video.GetVariants()), len(video.GetHls().GetRenditions()), len(result.Variants)),
+			}}
 		}
-		// 【本地改动 2026-10-05 临时探针】counts 编进 Quality。
-		// **必须同时给一个非空 AssetUrl**：客户端 MessageAttachments.svelte:136
-		// `if (!variantAssetUrl) return []` 会把没有 URL 的 variant 整个丢掉，
-		// 上一版只填 Quality，结果探针自己被过滤掉，props 仍显示 []，等于没探到。
-		// 这里复用原图 URL，只是为了让它活过 flatMap，URL 本身不参与判断。
-		if len(result.Variants) == 0 {
-			result.Variants = append(result.Variants, &apiv1.MessageVideoVariant{
-				Quality: fmt.Sprintf("PROBE v=%d h=%d",
-					len(video.GetVariants()), len(video.GetHls().GetRenditions())),
-				AssetUrl: assetURLView(api, ctx, api.core.GetPublicStableAttachmentAssetURL(attachment)),
-			})
-		}
+		// 【本地改动 2026-10-05 临时探针】counts 编进上面 hlsUrl（见 else 分支注释），
+		// 因为它是链路上唯一没有过滤器的字段。这里不再重复注入 variant。定位完删掉。
 		return result
 	}
 

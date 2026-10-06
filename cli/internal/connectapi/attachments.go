@@ -219,19 +219,18 @@ func apiVideoProcessing(ctx context.Context, api *API, viewerID string, attachme
 			})
 		}
 		if hls := video.GetHls(); hls != nil && len(hls.GetRenditions()) > 0 {
-			result.Hls = &apiv1.MessageVideoHLS{
-				MasterPlaylistUrl: assetURLView(api, ctx, api.core.GetStableHLSMasterPlaylistAssetURL(attachment.GetId(), viewerID)),
-			}
+			result.Hls = &apiv1.MessageVideoHLS{MasterPlaylistUrl: assetURLView(api, ctx, api.core.GetStableHLSMasterPlaylistAssetURL(attachment.GetId(), viewerID))}
 		}
-		// 【本地改动 2026-10-05 临时探针】把 variants/hls 真实数量编进 reasonCode，
-		// 浏览器侧能直接读到，绕过「服务端日志不进 CI job log」的限制。定位完删掉。
-		if result.ThumbnailAssetUrl != nil && result.ThumbnailAssetUrl.GetUrl() != "" {
-			sep := "?"
-			if strings.Contains(result.ThumbnailAssetUrl.GetUrl(), "?") {
-				sep = "&"
-			}
-			result.ThumbnailAssetUrl.Url += fmt.Sprintf("%svp=%d-%d-%d", sep,
-				len(video.GetVariants()), len(video.GetHls().GetRenditions()), len(result.Variants))
+		// 【本地改动 2026-10-05 临时探针】variants/hls 实际数量编进 Quality 字段，
+		// 因为这是**唯一**会被浏览器渲染出来的自由文本字段（缩略图 URL 不会被请求：
+		// 视频走 <source>，缩略图根本没被 fetch，所以上一版 vp= 探针抓不到）。
+		// 只在 variants 为空时注入，正常路径零影响。定位完删掉。
+		if len(result.Variants) == 0 {
+			result.Variants = append(result.Variants, &apiv1.MessageVideoVariant{
+				Quality: fmt.Sprintf("PROBE v=%d h=%d hls=%t src=%t",
+					len(video.GetVariants()), len(video.GetHls().GetRenditions()),
+					result.Hls != nil, assetSourceAvailable(api, attachment.GetId(), true)),
+			})
 		}
 		return result
 	}

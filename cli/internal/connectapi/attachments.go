@@ -105,7 +105,27 @@ func (s *assetService) BatchGetAssets(ctx context.Context, req *connect.Request[
 	thumbnail := assetThumbnailOptions(req.Msg.Thumbnail)
 	out := make([]*apiv1.Asset, 0, len(assets))
 	for _, asset := range assets {
-		out = append(out, apiAsset(ctx, s.api, asset, caller.UserID, thumbnail))
+		a := apiAsset(ctx, s.api, asset, caller.UserID, thumbnail)
+		// 【本地改动 2026-10-05 探针】前端实测 timeline 路径的 hls URL 是完整的
+		// 绝对 URL，但 BatchGetAssets(refresh 路径) 返回的 hls 是 null，而
+		// MessageAttachments.svelte:114-117 会用后者覆盖前者。这是唯一能解释
+		// e2e 里 hlsUrl: null 的机制。标记 refresh 路径的 manifest 状态。
+		if a != nil && a.GetVideoProcessing() != nil {
+			if vp := a.GetVideoProcessing(); vp.GetHls() == nil {
+				if vp.ReasonCode == "" {
+					vp.ReasonCode = "VP-refresh=no-hls"
+				} else {
+					vp.ReasonCode += "|VP-refresh=no-hls"
+				}
+			} else {
+				if vp.ReasonCode == "" {
+					vp.ReasonCode = "VP-refresh=hls-present"
+				} else {
+					vp.ReasonCode += "|VP-refresh=hls-present"
+				}
+			}
+		}
+		out = append(out, a)
 	}
 	return connect.NewResponse(&apiv1.BatchGetAssetsResponse{Assets: out}), nil
 }

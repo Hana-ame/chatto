@@ -78,6 +78,8 @@
         probe.refreshedPresent = true;
         probe.refreshedHls = refreshed.hlsMasterPlaylistUrl?.url ?? null;
         probe.refreshedExpiresAt = refreshed.hlsMasterPlaylistUrl?.expiresAt ?? null;
+        probe.refreshedReason =
+          (refreshed as unknown as Record<string, unknown>).reasonCode ?? null;
       }
       probe.timelineHls = attachment.videoProcessing?.hlsMasterPlaylistUrl?.url ?? null;
       break;

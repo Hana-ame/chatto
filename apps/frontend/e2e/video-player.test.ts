@@ -121,7 +121,9 @@ test.describe('video player @ffmpeg', () => {
           variants: el.getAttribute('data-probe-variants'),
           hlsUrl: el.getAttribute('data-probe-hlsurl'),
           fallbackUrl: el.getAttribute('data-probe-fallback'),
-          selected: el.getAttribute('data-probe-selected')
+          selected: el.getAttribute('data-probe-selected'),
+          width: el.getAttribute('data-probe-width'),
+          height: el.getAttribute('data-probe-height')
         }));
         console.log('VIDEO_PROBE ' + JSON.stringify({ probe, hlsResponses, playerProps }));
         expect(seekResult.forwardTime).toBeGreaterThan(seekResult.backwardTime);

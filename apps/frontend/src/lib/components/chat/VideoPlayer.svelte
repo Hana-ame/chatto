@@ -352,6 +352,8 @@
       data-probe-hlsurl={String(hlsUrl)}
       data-probe-fallback={String(fallbackUrl)}
       data-probe-selected={String(selectedVariant?.url ?? '')}
+      data-probe-width={String(width)}
+      data-probe-height={String(height)}
       stream-type="on-demand"
       playsinline
       onerror={handlePlayerError}

@@ -61,6 +61,30 @@
   const retainAssetUrl = createAssetUrlRetainer();
   let galleryEdges = $state<ScrollEdges>({ start: false, end: false });
 
+  // 【本地改动 2026-10-05 探针】把 hls 三段链路的状态挂到 window 上，供 e2e
+  // 读取。目的是区分两种可能：
+  //   A. 后端 refresh 响应本来就没有 hls（refreshed.hlsMasterPlaylistUrl === null）
+  //   B. 后端有 hls，但被 retainAssetUrl/normalizeAssetUrl 处理掉了
+  // 定位完删除。
+  $effect(() => {
+    const probe: Record<string, unknown> = {
+      refreshedPresent: false,
+      refreshedHls: null,
+      timelineHls: null
+    };
+    for (const attachment of rawAttachments ?? []) {
+      const refreshed = refreshedAttachmentUrls.get(attachment.id);
+      if (refreshed) {
+        probe.refreshedPresent = true;
+        probe.refreshedHls = refreshed.hlsMasterPlaylistUrl?.url ?? null;
+        probe.refreshedExpiresAt = refreshed.hlsMasterPlaylistUrl?.expiresAt ?? null;
+      }
+      probe.timelineHls = attachment.videoProcessing?.hlsMasterPlaylistUrl?.url ?? null;
+      break;
+    }
+    (window as unknown as Record<string, unknown>).__VP_PROBE__ = probe;
+  });
+
   function normalizeAssetUrl(value: ExpiringAssetUrl | null | undefined): ExpiringAssetUrl | null {
     if (!value) return null;
     return {

@@ -127,6 +127,13 @@ test.describe('video player @ffmpeg', () => {
           reason: el.getAttribute('data-probe-reason')
         }));
         console.log('VIDEO_PROBE ' + JSON.stringify({ probe, hlsResponses, playerProps }));
+        // 【本地改动 2026-10-05 探针】读 MessageAttachments.svelte 挂到 window 的
+        // 三段链路状态。区分「后端 refresh 响应本来就没有 hls」与「有 hls 但被
+        // retainAssetUrl 吃掉」。
+        const chainProbe = await page.evaluate(
+          () => (window as unknown as Record<string, unknown>).__VP_PROBE__ ?? null
+        );
+        console.log('CHAIN_PROBE ' + JSON.stringify(chainProbe));
         // 【本地改动 2026-10-05 探针】读 thumbnail 的 src。与 hlsUrl/variants 不同，
         // 缩略图 URL 走的是**同一个响应**里的 thumbnailAssetUrl 字段，但它不经过
         // assetUrlForServer 的 /assets/files/ 之外的分支，也没有 flatMap 过滤。

@@ -227,8 +227,21 @@ func apiVideoProcessing(ctx context.Context, api *API, viewerID string, attachme
 			//   VP-hlsURL=0 → renditions>0 但 URL 为空（viewerID 早退）
 			//   VP-hlsURL=1 → URL 有值（问题在前端）
 			probe := "1"
-			if result.Hls.GetMasterPlaylistUrl().GetUrl() == "" {
-				probe = "0"
+			if u := result.Hls.GetMasterPlaylistUrl().GetUrl(); u == "" {
+				probe = "0-empty"
+			} else {
+				// 直接把 URL 尾部带出来，看它是不是相对路径（前端 assetUrlForServer
+				// 对 /assets/hls/ 前缀不做 origin 补全，相对路径会让 hls.js
+				// 请求到错误 host）。
+				if strings.Contains(u, "/assets/hls/") {
+					if strings.HasPrefix(u, "http") {
+						probe = "2-abs"
+					} else {
+						probe = "3-rel"
+					}
+				} else {
+					probe = "4-other"
+				}
 			}
 			result.ReasonCode = "VP-hlsURL=" + probe
 		} else {

@@ -354,6 +354,7 @@
       data-probe-selected={String(selectedVariant?.url ?? '')}
       data-probe-width={String(width)}
       data-probe-height={String(height)}
+      data-probe-reason={String(reasonCode)}
       stream-type="on-demand"
       playsinline
       onerror={handlePlayerError}

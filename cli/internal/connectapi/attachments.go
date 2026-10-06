@@ -217,6 +217,22 @@ func apiVideoProcessing(ctx context.Context, api *API, viewerID string, attachme
 		}
 		if hls := video.GetHls(); hls != nil && len(hls.GetRenditions()) > 0 {
 			result.Hls = &apiv1.MessageVideoHLS{MasterPlaylistUrl: assetURLView(api, ctx, api.core.GetStableHLSMasterPlaylistAssetURL(attachment.GetId(), viewerID))}
+			// 【本地改动 2026-10-05 探针】hls.js 拿到 null，唯一能一路无损传到
+			// 浏览器的是自由文本字段 ReasonCode（COMPLETED 分支原本不用它，
+			// AttachmentPreview.svelte:91 原样传给 VideoPlayer，且没有任何
+			// 单测断言它——不像 width/height/durationMs 那样会污染
+			// timeline_thread_services_test.go:448）。
+			// 用来看 GetStableHLSMasterPlaylistAssetURL 是否因 viewerID 为空
+			// 而早退（core/attachments.go:773 的 userID == "" 分支）：
+			//   VP-hlsURL=0 → renditions>0 但 URL 为空（viewerID 早退）
+			//   VP-hlsURL=1 → URL 有值（问题在前端）
+			probe := "1"
+			if result.Hls.GetMasterPlaylistUrl().GetUrl() == "" {
+				probe = "0"
+			}
+			result.ReasonCode = "VP-hlsURL=" + probe
+		} else {
+			result.ReasonCode = "VP-hlsURL=2"
 		}
 		return result
 	}

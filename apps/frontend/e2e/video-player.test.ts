@@ -123,9 +123,21 @@ test.describe('video player @ffmpeg', () => {
           fallbackUrl: el.getAttribute('data-probe-fallback'),
           selected: el.getAttribute('data-probe-selected'),
           width: el.getAttribute('data-probe-width'),
-          height: el.getAttribute('data-probe-height')
+          height: el.getAttribute('data-probe-height'),
+          reason: el.getAttribute('data-probe-reason')
         }));
         console.log('VIDEO_PROBE ' + JSON.stringify({ probe, hlsResponses, playerProps }));
+        // 【本地改动 2026-10-05 探针】读 thumbnail 的 src。与 hlsUrl/variants 不同，
+        // 缩略图 URL 走的是**同一个响应**里的 thumbnailAssetUrl 字段，但它不经过
+        // assetUrlForServer 的 /assets/files/ 之外的分支，也没有 flatMap 过滤。
+        // 目的是确认「这个响应里的 asset URL 字段到底有没有值」——把「后端没发」
+        // 和「前端处理掉了」这两种可能分开。
+        const thumbSrcs = await page.evaluate(() =>
+          Array.from(document.querySelectorAll('img'))
+            .map((img) => img.getAttribute('src') ?? '')
+            .filter((src) => src.includes('/assets/'))
+        );
+        console.log('THUMB_PROBE ' + JSON.stringify(thumbSrcs));
         expect(seekResult.forwardTime).toBeGreaterThan(seekResult.backwardTime);
 
         await expect

@@ -145,6 +145,9 @@ func apiVideoProcessing(ctx context.Context, api *API, viewerID string, attachme
 		if video == nil {
 			return nil
 		}
+		// 【本地改动 2026-10-05 临时探针】把 variants/hls 的真实数量编进缩略图 URL 的
+		// query，浏览器和 Playwright 都能看到，从而绕过「服务端日志不进 job log」
+		// 的限制。定位完删掉。
 		result := &apiv1.MessageVideoProcessing{
 			Status:          apiv1.MessageVideoProcessingStatus_MESSAGE_VIDEO_PROCESSING_STATUS_COMPLETED,
 			DurationMs:      video.GetDurationMs(),
@@ -219,6 +222,16 @@ func apiVideoProcessing(ctx context.Context, api *API, viewerID string, attachme
 			result.Hls = &apiv1.MessageVideoHLS{
 				MasterPlaylistUrl: assetURLView(api, ctx, api.core.GetStableHLSMasterPlaylistAssetURL(attachment.GetId(), viewerID)),
 			}
+		}
+		// 【本地改动 2026-10-05 临时探针】把 variants/hls 真实数量编进 reasonCode，
+		// 浏览器侧能直接读到，绕过「服务端日志不进 CI job log」的限制。定位完删掉。
+		if result.ThumbnailAssetUrl != nil && result.ThumbnailAssetUrl.GetUrl() != "" {
+			sep := "?"
+			if strings.Contains(result.ThumbnailAssetUrl.GetUrl(), "?") {
+				sep = "&"
+			}
+			result.ThumbnailAssetUrl.Url += fmt.Sprintf("%svp=%d-%d-%d", sep,
+				len(video.GetVariants()), len(video.GetHls().GetRenditions()), len(result.Variants))
 		}
 		return result
 	}

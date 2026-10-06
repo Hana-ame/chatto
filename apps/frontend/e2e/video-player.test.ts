@@ -33,6 +33,12 @@ test.describe('video player @ffmpeg', () => {
       if (pathname.includes('/assets/hls/')) {
         hlsResponses.push({ pathname, status: response.status() });
       }
+      // 【本地改动 2026-10-05 临时探针】后端把 manifest 里 variants/hls 的真实
+      // 数量编进缩略图 URL 的 query（见 connectapi/attachments.go 的 vp= 探针），
+      // 这里把它抓出来。服务端日志不进 CI job log，只能走浏览器可见的通道。
+      if (response.url().includes('vp=')) {
+        console.log('VP_PROBE ' + response.url().split('vp=')[1]);
+      }
       // 【本地改动 2026-10-05 临时探针】Connect 默认走**二进制** protobuf，
       // response.text() 拿不到 JSON 字段名（所以上一版一律报「无」，是探针本身的
       // 缺陷，不是后端没下发）。改为从页面里已经渲染出来的附件 ViewModel 上读。

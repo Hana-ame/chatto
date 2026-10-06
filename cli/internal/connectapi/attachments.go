@@ -221,15 +221,16 @@ func apiVideoProcessing(ctx context.Context, api *API, viewerID string, attachme
 		if hls := video.GetHls(); hls != nil && len(hls.GetRenditions()) > 0 {
 			result.Hls = &apiv1.MessageVideoHLS{MasterPlaylistUrl: assetURLView(api, ctx, api.core.GetStableHLSMasterPlaylistAssetURL(attachment.GetId(), viewerID))}
 		}
-		// 【本地改动 2026-10-05 临时探针】variants/hls 实际数量编进 Quality 字段，
-		// 因为这是**唯一**会被浏览器渲染出来的自由文本字段（缩略图 URL 不会被请求：
-		// 视频走 <source>，缩略图根本没被 fetch，所以上一版 vp= 探针抓不到）。
-		// 只在 variants 为空时注入，正常路径零影响。定位完删掉。
+		// 【本地改动 2026-10-05 临时探针】counts 编进 Quality。
+		// **必须同时给一个非空 AssetUrl**：客户端 MessageAttachments.svelte:136
+		// `if (!variantAssetUrl) return []` 会把没有 URL 的 variant 整个丢掉，
+		// 上一版只填 Quality，结果探针自己被过滤掉，props 仍显示 []，等于没探到。
+		// 这里复用原图 URL，只是为了让它活过 flatMap，URL 本身不参与判断。
 		if len(result.Variants) == 0 {
 			result.Variants = append(result.Variants, &apiv1.MessageVideoVariant{
-				Quality: fmt.Sprintf("PROBE v=%d h=%d hls=%t src=%t",
-					len(video.GetVariants()), len(video.GetHls().GetRenditions()),
-					result.Hls != nil, assetSourceAvailable(api, attachment.GetId(), true)),
+				Quality: fmt.Sprintf("PROBE v=%d h=%d",
+					len(video.GetVariants()), len(video.GetHls().GetRenditions())),
+				AssetUrl: assetURLView(api, ctx, api.core.GetPublicStableAttachmentAssetURL(attachment)),
 			})
 		}
 		return result

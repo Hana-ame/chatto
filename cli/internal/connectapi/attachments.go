@@ -145,9 +145,6 @@ func apiVideoProcessing(ctx context.Context, api *API, viewerID string, attachme
 		if video == nil {
 			return nil
 		}
-		// 【本地改动 2026-10-05 临时探针】把 variants/hls 的真实数量编进缩略图 URL 的
-		// query，浏览器和 Playwright 都能看到，从而绕过「服务端日志不进 job log」
-		// 的限制。定位完删掉。
 		result := &apiv1.MessageVideoProcessing{
 			Status:          apiv1.MessageVideoProcessingStatus_MESSAGE_VIDEO_PROCESSING_STATUS_COMPLETED,
 			DurationMs:      video.GetDurationMs(),
@@ -220,22 +217,6 @@ func apiVideoProcessing(ctx context.Context, api *API, viewerID string, attachme
 		}
 		if hls := video.GetHls(); hls != nil && len(hls.GetRenditions()) > 0 {
 			result.Hls = &apiv1.MessageVideoHLS{MasterPlaylistUrl: assetURLView(api, ctx, api.core.GetStableHLSMasterPlaylistAssetURL(attachment.GetId(), viewerID))}
-		}
-		// 【本地改动 2026-10-05 临时探针】把 counts 编进 Width/Height 两个
-		// 数值字段——它们在链路上**没有任何过滤/丢弃逻辑**（不像 variants 要过
-		// .filter(v => v.url)），且 AttachmentPreview.svelte:89-90 会把
-		// videoProcessing.width/height 原样传给 VideoPlayer。
-		// 前几版探针（缩略图 query / variant quality / hlsUrl）分别因为
-		// 「URL 从不被请求」「被 flatMap 丢弃」「读到的仍是 null」而全部落空，
-		// 说明 apiVideoProcessing 可能根本没被走到——这版用来做最后的判定。
-		// 编码：width = variants*1000000 + renditions*1000 + resultVariants，height 保留原值。
-		probedWidth := len(video.GetVariants())*1000000 +
-			len(video.GetHls().GetRenditions())*1000 + len(result.Variants)
-		if probedWidth > 0 {
-			result.Width = int32(probedWidth)
-		}
-		if result.Height == 0 {
-			result.Height = video.GetHeight()
 		}
 		return result
 	}

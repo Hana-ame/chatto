@@ -61,32 +61,6 @@
   const retainAssetUrl = createAssetUrlRetainer();
   let galleryEdges = $state<ScrollEdges>({ start: false, end: false });
 
-  // 【本地改动 2026-10-05 探针】把 hls 三段链路的状态挂到 window 上，供 e2e
-  // 读取。目的是区分两种可能：
-  //   A. 后端 refresh 响应本来就没有 hls（refreshed.hlsMasterPlaylistUrl === null）
-  //   B. 后端有 hls，但被 retainAssetUrl/normalizeAssetUrl 处理掉了
-  // 定位完删除。
-  $effect(() => {
-    const probe: Record<string, unknown> = {
-      refreshedPresent: false,
-      refreshedHls: null,
-      timelineHls: null
-    };
-    for (const attachment of rawAttachments ?? []) {
-      const refreshed = refreshedAttachmentUrls.get(attachment.id);
-      if (refreshed) {
-        probe.refreshedPresent = true;
-        probe.refreshedHls = refreshed.hlsMasterPlaylistUrl?.url ?? null;
-        probe.refreshedExpiresAt = refreshed.hlsMasterPlaylistUrl?.expiresAt ?? null;
-        probe.refreshedReason =
-          (refreshed as unknown as Record<string, unknown>).reasonCode ?? null;
-      }
-      probe.timelineHls = attachment.videoProcessing?.hlsMasterPlaylistUrl?.url ?? null;
-      break;
-    }
-    (window as unknown as Record<string, unknown>).__VP_PROBE__ = probe;
-  });
-
   function normalizeAssetUrl(value: ExpiringAssetUrl | null | undefined): ExpiringAssetUrl | null {
     if (!value) return null;
     return {
@@ -105,12 +79,34 @@
     return salt ? { ...value, url: withAssetUrlRetryParam(value.url, salt) } : value;
   }
 
+  // 【本地改动 2026-10-06 修正】refresh 的响应缺 hls 时，原来的写法
+  //   refreshed ? refreshed.hlsMasterPlaylistUrl : attachment.videoProcessing?.hlsMasterPlaylistUrl
+  // 会用 refresh 的 null **覆盖掉** timeline 已经带好的绝对 URL
+  // （含 ?access= ticket）。实测：timelineHls 是完整的
+  // http://host/assets/hls/<id>/master.m3u8?access=…，而 refreshedHls 是 null，
+  // 于是 VideoPlayer 收到 hlsUrl=null，回落到 fallbackUrl 那个
+  // Accept-Ranges: none 的顺序流，浏览器无法 seek，
+  // e2e video-player.test.ts:129 的 seek 断言恒为 0>0。
+  //
+  // 为什么会缺：BatchGetAssets 走 core 的 roomAsset() 路径拿 asset，
+  // 它的 manifest 状态与 timeline 的取法不一致，videoProcessing.hls 时而为空。
+  // 与其让一次不完整的 refresh 把好数据抹掉，不如保留已有的——refresh 的
+  // 本意是「换掉快过期的 ticket」，不是为了清空字段。
+  function refreshedHlsPlaylistUrl(
+    refreshed: RefreshedAttachmentUrls | undefined,
+    fallback: ExpiringAssetUrl | null | undefined
+  ): ExpiringAssetUrl | null | undefined {
+    const fromRefresh = refreshed?.hlsMasterPlaylistUrl;
+    return fromRefresh ?? fallback;
+  }
+
   function refreshedVariantAssetUrl(
     refreshed: RefreshedAttachmentUrls | undefined,
     quality: string,
     fallback: ExpiringAssetUrl | null | undefined
   ): ExpiringAssetUrl | null | undefined {
-    return refreshed ? (refreshed.variantAssetUrls.get(quality) ?? null) : fallback;
+    // 同上：refresh 缺某个 quality 的 variant 时不要抹掉 timeline 已有的那个。
+    return refreshed ? (refreshed.variantAssetUrls.get(quality) ?? fallback) : fallback;
   }
 
   function normalizeAttachment(attachment: RawAttachment) {
@@ -137,7 +133,7 @@
     );
     const hlsMasterPlaylistUrl = resolveUrl(
       'hls',
-      refreshed ? refreshed.hlsMasterPlaylistUrl : attachment.videoProcessing?.hlsMasterPlaylistUrl,
+      refreshedHlsPlaylistUrl(refreshed, attachment.videoProcessing?.hlsMasterPlaylistUrl),
       'hls'
     );
 

@@ -33,12 +33,6 @@ test.describe('video player @ffmpeg', () => {
       if (pathname.includes('/assets/hls/')) {
         hlsResponses.push({ pathname, status: response.status() });
       }
-      // 【本地改动 2026-10-05 临时探针】Connect 默认走**二进制** protobuf，
-      // response.text() 拿不到 JSON 字段名（所以上一版一律报「无」，是探针本身的
-      // 缺陷，不是后端没下发）。改为从页面里已经渲染出来的附件 ViewModel 上读。
-      if (pathname.includes('assets/')) {
-        void response.body().catch(() => {});
-      }
     });
 
     await createAndLoginTestUser(page);
@@ -101,50 +95,6 @@ test.describe('video player @ffmpeg', () => {
         });
         expect(seekResult.duration).toBeGreaterThan(0);
         expect(Number.isFinite(seekResult.duration)).toBe(true);
-        // 【本地改动 2026-10-05 临时探针】打印 videoProcessing 的实际形状，
-        // 用来定位「duration 有值但无法 seek、且 assets/hls 请求数为 0」的原因。
-        // 定位完删掉。
-        const probe = await video.evaluate((element) => ({
-          currentSrc: element.currentSrc,
-          src: element.getAttribute('src'),
-          duration: element.duration,
-          readyState: element.readyState,
-          networkState: element.networkState,
-          buffered: element.buffered.length
-            ? [element.buffered.start(0), element.buffered.end(0)]
-            : null
-        }));
-        // 【本地改动 2026-10-05 临时探针】读 VideoPlayer.svelte 挂在 <media-player> 上的
-        // data-probe-* 属性。上一版查 'video-player' 元素是不存在的（组件本身不渲染
-        // 同名标签），所以只拿到 { error: 'video-player 元素不存在' }。
-        const playerProps = await roomPage.mediaPlayer.evaluate((el) => ({
-          variants: el.getAttribute('data-probe-variants'),
-          hlsUrl: el.getAttribute('data-probe-hlsurl'),
-          fallbackUrl: el.getAttribute('data-probe-fallback'),
-          selected: el.getAttribute('data-probe-selected'),
-          width: el.getAttribute('data-probe-width'),
-          height: el.getAttribute('data-probe-height'),
-          reason: el.getAttribute('data-probe-reason')
-        }));
-        console.log('VIDEO_PROBE ' + JSON.stringify({ probe, hlsResponses, playerProps }));
-        // 【本地改动 2026-10-05 探针】读 MessageAttachments.svelte 挂到 window 的
-        // 三段链路状态。区分「后端 refresh 响应本来就没有 hls」与「有 hls 但被
-        // retainAssetUrl 吃掉」。
-        const chainProbe = await page.evaluate(
-          () => (window as unknown as Record<string, unknown>).__VP_PROBE__ ?? null
-        );
-        console.log('CHAIN_PROBE ' + JSON.stringify(chainProbe));
-        // 【本地改动 2026-10-05 探针】读 thumbnail 的 src。与 hlsUrl/variants 不同，
-        // 缩略图 URL 走的是**同一个响应**里的 thumbnailAssetUrl 字段，但它不经过
-        // assetUrlForServer 的 /assets/files/ 之外的分支，也没有 flatMap 过滤。
-        // 目的是确认「这个响应里的 asset URL 字段到底有没有值」——把「后端没发」
-        // 和「前端处理掉了」这两种可能分开。
-        const thumbSrcs = await page.evaluate(() =>
-          Array.from(document.querySelectorAll('img'))
-            .map((img) => img.getAttribute('src') ?? '')
-            .filter((src) => src.includes('/assets/'))
-        );
-        console.log('THUMB_PROBE ' + JSON.stringify(thumbSrcs));
         expect(seekResult.forwardTime).toBeGreaterThan(seekResult.backwardTime);
 
         await expect

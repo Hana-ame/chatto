@@ -458,6 +458,30 @@ describe('renderMarkdown', () => {
           '<a href="https://images.example.com/cat.png" target="_blank" rel="noopener noreferrer" class="markdown-image-link" style="display: inline-block; max-width: 100%; vertical-align: bottom;">'
         );
       });
+
+      it('does not wrap non-http(s) image sources such as ftp: in an anchor link', async () => {
+        // 【本地改动 2026-10-19】发现背景：ftp:// 等非 http(s) 协议能通过 new URL() 解析，
+        // 此前 image 渲染器未检查 proxiedSrc !== '#' 及 urlObj.protocol，导致 <img src="#">
+        // 外层仍被包裹 <a href="ftp://...">。
+        const html = await renderMarkdown('![x](ftp://images.example.com/cat.png)');
+        expect(html).toContain('src="#"');
+        expect(html).not.toContain('<a ');
+        expect(html).not.toContain('ftp://');
+      });
+
+      it('does not emit nested anchor tags when an image is inside a markdown link', async () => {
+        // 【本地改动 2026-10-19】发现背景：用户输入 `[![badge](img)](target)` 时，
+        // 若 image 渲染器无条件再包一层 `<a href="img">`，会产生非法嵌套 `<a><a><img></a></a>`，
+        // HTML5 解析器会强制提前闭合外层 `<a>`，导致点击图片跳往图床而非 target 链接。
+        const html = await renderMarkdown(
+          '[![badge](https://images.example.com/badge.svg)](https://example.com/docs)'
+        );
+        expect(html.match(/<a\b/g)).toHaveLength(1);
+        expect(html).toContain('href="https://example.com/docs"');
+        expect(html).toContain(
+          'src="https://proxy.moonchan.xyz/badge.svg?proxy_host=images.example.com&amp;proxy_scheme=https"'
+        );
+      });
     });
 
     // 【本地改动，2026-10-03 恢复】回归测试：$...$ / $$...$$ 渲染为 KaTeX 公式，

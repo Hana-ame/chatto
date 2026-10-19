@@ -604,6 +604,22 @@ function proxyImageSource(src: string): string {
   return proxy.toString();
 }
 
+// 【本地改动 2026-10-19】检测当前 inline token 是否已处于外层 Markdown 链接
+// （如 `[![alt](img)](url)`）的 `link_open`..`link_close` 区间内。
+// 目的/踩坑：HTML5 规范严禁 `<a>` 标签嵌套。若不对已处于外层链接内的图片跳过二次
+// `<a>` 包裹，输出的 `<a href="outer"><a href="img"><img ...></a></a>` 会被
+// 浏览器和 DOMParser（parseTrustedMarkdownHtml）在第二个 `<a>` 处强制闭合外层
+// `<a>`，导致用户点击带链图片时跳转到图片源地址而非外层目标链接，且图片后的链接
+// 文字脱离 `<a>` 变成普通文本。
+function isInsideLink(tokens: Token[], idx: number): boolean {
+  let linkDepth = 0;
+  for (let i = 0; i < idx; i++) {
+    if (tokens[i].type === 'link_open') linkDepth++;
+    else if (tokens[i].type === 'link_close') linkDepth = Math.max(0, linkDepth - 1);
+  }
+  return linkDepth > 0;
+}
+
 /**
  * Initialize the markdown-it instance.
  * Called once on first render.
@@ -733,9 +749,11 @@ function initialize(): void {
     const token = tokens[idx];
     const srcIndex = token.attrIndex('src');
     let originalSrc = '';
+    let proxiedSrc = '#';
     if (srcIndex >= 0) {
       originalSrc = token.attrs![srcIndex][1];
-      token.attrs![srcIndex][1] = proxyImageSource(originalSrc);
+      proxiedSrc = proxyImageSource(originalSrc);
+      token.attrs![srcIndex][1] = proxiedSrc;
     }
     // Drop the optional title to avoid tooltip injection/abuse.
     const titleIndex = token.attrIndex('title');
@@ -749,7 +767,13 @@ function initialize(): void {
     );
 
     const imgHtml = defaultImageRender(tokens, idx, options, env, self);
-    if (originalSrc && originalSrc !== '#') {
+    // 【本地改动 2026-10-19】仅当代理重写未降级为 '#'（即确认为合法 http/https 图片源）
+    // 且当前图片未处于外层 Markdown 链接（[![alt](img)](url)）内部时，才包裹原图 <a>。
+    // 踩坑：此前只判 `originalSrc !== '#'`，当输入 `![x](ftp://example.com/a.png)` 时
+    // `proxyImageSource` 虽将 img[src] 降级为 '#'，但 `new URL(originalSrc)` 仍解析成功，
+    // 导致非 http(s) 协议被包裹进 `<a href="ftp://...">` 绕过协议白名单；同时带链图片
+    // `[![alt](img)](url)` 会产出非法嵌套 `<a><a><img></a></a>`。
+    if (proxiedSrc !== '#' && originalSrc && !isInsideLink(tokens, idx)) {
       // 清理原始 URL：移除可能的 fragment，保留干净的 http(s) URL。
       // 【本地改动 2026-10-05】原先写作 `let cleanUrl = originalSrc` 再在 try
       // 里覆盖，no-useless-assignment 报「初始赋值未被读取」：try 成功时立刻被覆盖，
@@ -757,6 +781,9 @@ function initialize(): void {
       let cleanUrl: string;
       try {
         const urlObj = new URL(originalSrc);
+        if (urlObj.protocol !== 'http:' && urlObj.protocol !== 'https:') {
+          return imgHtml;
+        }
         cleanUrl = urlObj.origin + urlObj.pathname + urlObj.search;
       } catch {
         // 无效 URL 则不包裹链接。

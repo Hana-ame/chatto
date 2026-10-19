@@ -62,3 +62,29 @@ describe('MarkdownHtml code copy', () => {
     expect(toastMocks.success).not.toHaveBeenCalled();
   });
 });
+
+describe('MarkdownHtml inline image lightbox', () => {
+  it('opens the zoomable attachment modal when an inline markdown image is clicked and navigates galleries', async () => {
+    // 【本地改动 2026-10-19】发现背景：验证点击 ![]() 内联图片时不再跳新窗口，而是弹出與附件
+    // 一致的 AttachmentModal + ZoomableImage 大图灯箱，且多图时支持左右切换。
+    const html = await renderMarkdown(
+      '![first](https://images.example.com/first.png) ![second](https://images.example.com/second.jpg)'
+    );
+    const view = render(MarkdownHtml, { html });
+    const gallery = view.container.querySelector('[data-testid="message-image-gallery"]');
+    expect(gallery).not.toBeNull();
+
+    const links = view.container.querySelectorAll<HTMLAnchorElement>('a.markdown-image-link');
+    expect(links).toHaveLength(2);
+
+    await userEvent.click(links[0]!);
+    const dialog = view.getByRole('dialog', { name: 'first.png' });
+    await expect.element(dialog).toBeVisible();
+    await expect.element(view.getByText('1 / 2')).toBeVisible();
+
+    const nextButton = view.getByRole('button', { name: 'Next image' });
+    await userEvent.click(nextButton);
+    await expect.element(view.getByRole('dialog', { name: 'second.jpg' })).toBeVisible();
+    await expect.element(view.getByText('2 / 2')).toBeVisible();
+  });
+});

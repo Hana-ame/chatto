@@ -457,17 +457,29 @@ describe('renderMarkdown', () => {
       });
 
       it('constrains image size with max-width and wraps in clean original url link', async () => {
-        // 【本地改动 2026-10-19】发现背景：外层 <a> 硬编码 max-width: 50% 导致手机端
-        // 图片过小看不清字，而 <img> 设 width: 100% 会导致 PC 端小图/竖图被强制拉伸或
-        // 留白。改为 width: auto; height: auto 配合 max-width: 100% 与可显示区高度上限
-        // min(70vh, calc(100dvh - 11rem))，保持比例且高宽最大不超过 100% 可显示区。
+        // 【本地改动 2026-10-19】发现背景：将内联图片渲染方式对齐 MessageAttachments 附件图片
+        // （限高 200px、支持横向滚动、带 embed-frame 与 data-message-image-attachment 供点击大图）。
         const html = await renderMarkdown('![cat](https://images.example.com/cat.png#preview)');
         expect(html).toContain(
-          'style="display: block; width: auto; height: auto; max-width: 100%; max-height: min(70vh, calc(100dvh - 11rem)); object-fit: contain; cursor: pointer;"'
+          'style="display: block; width: auto; height: auto; max-width: 480px; max-height: 200px; object-fit: contain; cursor: pointer;"'
         );
         expect(html).toContain(
-          '<a href="https://images.example.com/cat.png" target="_blank" rel="noopener noreferrer" class="markdown-image-link" style="display: inline-block; max-width: 100%; vertical-align: bottom;">'
+          '<a href="https://images.example.com/cat.png" target="_blank" rel="noopener noreferrer" class="markdown-image-link embed-frame" data-message-image-attachment style="display: inline-block; max-width: 100%; max-height: 200px; overflow-x: auto; overscroll-behavior-x: contain; vertical-align: bottom;">'
         );
+      });
+
+      it('groups multiple consecutive markdown images into a horizontal scrolling gallery', async () => {
+        // 【本地改动 2026-10-19】发现背景：多张 ![]() 图片需与附件多图一样并排限高（180px）
+        // 并支持左右横向滚动（data-testid="message-image-gallery"），无论图片间以空格、单换行
+        // 还是空行分隔。
+        const html = await renderMarkdown(
+          '![first](https://images.example.com/1.png)\n![second](https://images.example.com/2.png)\n\n![third](https://images.example.com/3.png)'
+        );
+        expect(html).toContain('data-testid="message-image-gallery"');
+        expect(html).toContain('overflow-x-auto overscroll-x-contain');
+        expect(html).toContain('data-testid="message-image-gallery-start-fade"');
+        expect(html).toContain('data-testid="message-image-gallery-end-fade"');
+        expect(html.match(/class="markdown-image-link embed-frame"/g)).toHaveLength(3);
       });
 
       it('does not wrap non-http(s) image sources such as ftp: in an anchor link', async () => {

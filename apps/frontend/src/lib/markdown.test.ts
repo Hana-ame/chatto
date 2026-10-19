@@ -446,12 +446,16 @@ describe('renderMarkdown', () => {
       });
 
       it('constrains image size with max-width and wraps in clean original url link', async () => {
+        // 【本地改动 2026-10-19】发现背景：外层 <a> 硬编码 max-width: 50% 导致手机端
+        // 图片过小看不清字，而 <img> 设 width: 100% 会导致 PC 端小图/竖图被强制拉伸或
+        // 留白。改为 width: auto; height: auto 配合 max-width: 100% 与可显示区高度上限
+        // min(70vh, calc(100dvh - 11rem))，保持比例且高宽最大不超过 100% 可显示区。
         const html = await renderMarkdown('![cat](https://images.example.com/cat.png#preview)');
         expect(html).toContain(
-          'style="display: block; width: 100%; height: auto; max-height: 100vh; object-fit: contain; cursor: pointer;"'
+          'style="display: block; width: auto; height: auto; max-width: 100%; max-height: min(70vh, calc(100dvh - 11rem)); object-fit: contain; cursor: pointer;"'
         );
         expect(html).toContain(
-          '<a href="https://images.example.com/cat.png" target="_blank" rel="noopener noreferrer" style="display: inline-block; max-width: 50%;">'
+          '<a href="https://images.example.com/cat.png" target="_blank" rel="noopener noreferrer" class="markdown-image-link" style="display: inline-block; max-width: 100%; vertical-align: bottom;">'
         );
       });
     });

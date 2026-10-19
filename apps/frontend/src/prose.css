@@ -254,10 +254,22 @@
   }
 
   /* Images */
+  /* 【本地改动 2026-10-19】内联图片保持原始宽高比，宽高最大不超过 100% 可显示区域：
+     width/height 均为 auto 防止小图被强制拉伸、竖图留白，max-width: 100% 保证手机端
+     占满消息列宽度，max-height: min(70vh, calc(100dvh - 11rem)) 扣除顶栏与输入框后
+     限制在聊天可显示区高度内。 */
   & img {
-    max-width: 100%;
+    width: auto;
     height: auto;
+    max-width: 100%;
+    max-height: min(70vh, calc(100dvh - 11rem));
     border-radius: 0.375rem;
+  }
+
+  & a.markdown-image-link {
+    display: inline-block;
+    max-width: 100%;
+    vertical-align: bottom;
   }
 
   /* Tables */

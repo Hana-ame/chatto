@@ -704,11 +704,25 @@ function initialize(): void {
     return defaultLinkRender(tokens, idx, options, env, self);
   };
 
-  // 【本地改动，2026-10-03 恢复】内联图片渲染：先把 src 经代理重写
-  // （proxyImageSource），再加固输出标签（loading=lazy / referrerpolicy=
-  // no-referrer / rel=noopener noreferrer），并用 <a> 包裹支持新标签页打开原图。
-  // 尺寸约束：外包络 <a> max-width: 50%（热区恒=图宽），img width:100% 撑满、
-  // height:auto、max-height:100vh、object-fit:contain（超高图自适应不留黑边）。
+  // 【本地改动，2026-10-03 恢复，2026-10-19 尺寸自适应修正】内联图片渲染：先把
+  // src 经代理重写（proxyImageSource），再加固输出标签（loading=lazy /
+  // referrerpolicy=no-referrer / rel=noopener noreferrer），并用 <a> 包裹支持
+  // 新标签页打开原图。
+  // 尺寸约束（目的/思路/踩坑）：
+  // 1. 此前外层 <a> 硬编码 max-width: 50%、内层 <img> 设 width: 100%，导致手机窄屏
+  //    （<768px）下图片仅占消息列一半宽度（约 160px），带字截图完全看不清；而在 PC 端
+  //    若设 width: 100% 又会把小图/竖图强行拉满整列，且竖图触发 max-height 时因
+  //    width: 100% + object-fit: contain 导致 <img>/<a> 布局盒宽度不随比例收缩，
+  //    两侧残留大块空白点击热区。
+  // 2. 现改为「保持原始宽高比，高宽其中一个最大不超过 100% 可显示区域」：
+  //    - 外层 <a> 设 class="markdown-image-link" 且 max-width: 100%; vertical-align: bottom
+  //    - 内层 <img> 设 width: auto; height: auto; max-width: 100%;
+  //      max-height: min(70vh, calc(100dvh - 11rem)); object-fit: contain
+  //    浏览器对 width/height 均为 auto 的替换元素（<img>）在同时受 max-width 与
+  //    max-height 约束时，会严格按原始宽高比取 min(原始尺寸, 100%可显示宽, 100%可显示高)：
+  //    手机竖屏（宽<高）下横图/截图可占满 100% 消息列宽，字迹清晰；PC 横屏（宽>高）下
+  //    竖图/方图/大图受可显示区高度 calc(100dvh - 11rem)（扣除顶栏与底部输入框）约束并
+  //    等比缩小宽度，小图保持原尺寸不拉伸，且 <a> 热区与画面严格贴合。
   const defaultImageRender =
     md.renderer.rules.image ||
     function (tokens, idx, options, _env, self) {
@@ -731,7 +745,7 @@ function initialize(): void {
     token.attrSet('rel', 'noopener noreferrer');
     token.attrSet(
       'style',
-      'display: block; width: 100%; height: auto; max-height: 100vh; object-fit: contain; cursor: pointer;'
+      'display: block; width: auto; height: auto; max-width: 100%; max-height: min(70vh, calc(100dvh - 11rem)); object-fit: contain; cursor: pointer;'
     );
 
     const imgHtml = defaultImageRender(tokens, idx, options, env, self);
@@ -748,7 +762,7 @@ function initialize(): void {
         // 无效 URL 则不包裹链接。
         return imgHtml;
       }
-      return `<a href="${escapeAttribute(cleanUrl)}" target="_blank" rel="noopener noreferrer" style="display: inline-block; max-width: 50%;">${imgHtml}</a>`;
+      return `<a href="${escapeAttribute(cleanUrl)}" target="_blank" rel="noopener noreferrer" class="markdown-image-link" style="display: inline-block; max-width: 100%; vertical-align: bottom;">${imgHtml}</a>`;
     }
     return imgHtml;
   };

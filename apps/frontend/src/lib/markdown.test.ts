@@ -31,6 +31,17 @@ describe('renderInlineMarkdown', () => {
     expect(html).not.toContain('<img');
     expect(html).not.toContain('href="javascript:');
   });
+
+  it('keeps markdown images and dollar expressions as inline text in single-line mode', () => {
+    // 【本地改动 2026-10-19】发现背景：renderInlineMarkdown 是同步函数（用于顶栏 MOTD），
+    // 此前未区分单行模式，导致 ![]() 输出块级 <img> 撑破顶栏，且 $...$ 输出空占位
+    // <span class="math"></span> 吞掉文字。
+    const html = renderInlineMarkdown('![Banner](https://example.com/banner.png) $a^2 + b^2$');
+    expect(html).not.toContain('<img');
+    expect(html).not.toContain('class="math"');
+    expect(html).toContain('Banner');
+    expect(html).toContain('$a^2 + b^2$');
+  });
 });
 
 describe('renderMarkdown', () => {
@@ -497,10 +508,13 @@ describe('renderMarkdown', () => {
         expect(html).toContain('<span class="katex-display">');
       });
 
-      it('leaves money amounts untouched', async () => {
-        const html = await renderMarkdown('the price is $10.00 with tax');
+      it('leaves money amounts and currency ranges untouched', async () => {
+        // 【本地改动 2026-10-19】发现背景："from $10 to $20" 两个 $ 之间含有字母 "to"，
+        // 此前因未校验闭合 $ 后紧跟数字的边界而被误判为行内公式。
+        const html = await renderMarkdown('the price is $10.00 or from $10 to $20 with tax');
         expect(html).not.toContain('<span class="katex">');
         expect(html).toContain('$10.00');
+        expect(html).toContain('from $10 to $20 with tax');
       });
     });
   });

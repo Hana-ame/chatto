@@ -214,6 +214,10 @@ let codeHighlighting: CodeHighlightingModule | null = null;
 // throwOnError=false 防恶意/畸形输入导致崩溃（恶意输入渲染为 TeX 错误框）；
 // 行内 $...$ 要求内容含字母或 LaTeX 运算符才触发，避免聊天中 $10 等金额被误识别。
 const MATH_PLACEHOLDER_RE = /<span class="math" data-latex="([^"]*)" data-math-type="(\w+)"><\/span>/g;
+// 【本地改动 2026-10-19】标记单行内联渲染模式（renderInlineMarkdown，用于顶栏 MOTD 等
+// 单行同步预览）：在该模式下跳过异步 KaTeX 占位符与块级 <img> 展开，避免产出空 <span>
+// 吞掉文字或把单行顶栏撑破。
+const INLINE_ONLY_ENV_KEY = 'inlineOnly';
 
 let katexRenderer: ((latex: string, opts: { throwOnError: boolean; displayMode: boolean }) => string) | null = null;
 let katexLoading = false;
@@ -235,6 +239,7 @@ function decodeHtmlEntities(value: string): string {
 }
 
 function mathInline(state: StateInline, silent: boolean): boolean {
+  if (state.env?.[INLINE_ONLY_ENV_KEY] === true) return false;
   const start = state.pos;
   if (start >= state.posMax) return false;
   const first = state.src.charCodeAt(start);
@@ -286,13 +291,24 @@ function mathInline(state: StateInline, silent: boolean): boolean {
   }
   if (close >= state.posMax) return false; // 无闭合 $
   const latex = state.src.slice(start + 1, close);
+  // 【本地改动 2026-10-19】遵循 Pandoc tex_math_dollars 边界规则：行内 $...$
+  // 开头 $ 后不能紧跟空白、闭合 $ 前不能紧邻空白、闭合 $ 后不能紧跟数字（0-9）。
+  // 踩坑：此前形如 "from $10 to $20" 的价格区间因中间含字母 "to" 通过了
+  // hasMathyContent，导致 `$10 to $` 被误识别为公式并吞掉美元符号。
+  const nextAfterClose = close + 1 < state.src.length ? state.src[close + 1]! : '';
+  const validDollarBoundaries =
+    latex.length > 0 &&
+    !/^\s/.test(latex) &&
+    !/\s$/.test(latex) &&
+    !/^[0-9]/.test(nextAfterClose);
   if (silent) {
+    if (!validDollarBoundaries || !hasMathyContent(latex)) return false;
     state.pos = close + 1;
     return true;
   }
-  if (!hasMathyContent(latex)) {
-    // 内容不含字母/运算符：视为普通文本，仅输出开头 $（让剩余内容被重新解析，
-    // 从而允许 $10 $a^2$ 这类序列中后面的公式仍被正确捕获）。
+  if (!validDollarBoundaries || !hasMathyContent(latex)) {
+    // 内容不满足行内公式边界或不含字母/运算符：视为普通文本，仅输出开头 $（让剩余
+    // 内容被重新解析，从而允许 $10 $a^2$ 或 "$10 to $20" 中后续文本/公式被正确处理）。
     state.pending += state.src.slice(start, start + 1);
     state.pos = start + 1;
     return true;
@@ -747,6 +763,11 @@ function initialize(): void {
 
   md.renderer.rules.image = function (tokens, idx, options, env, self) {
     const token = tokens[idx];
+    // 【本地改动 2026-10-19】单行内联预览模式（如顶栏 MOTD）不出块级 <img> 与外层 <a>，
+    // 仅渲染图片的纯文本 alt（若无 alt 则为空），防止图片撑破单行顶栏或拦截弹窗点击。
+    if (env?.[INLINE_ONLY_ENV_KEY] === true) {
+      return escapeHtml(token.content || '');
+    }
     const srcIndex = token.attrIndex('src');
     let originalSrc = '';
     let proxiedSrc = '#';
@@ -801,7 +822,7 @@ function initialize(): void {
  */
 export function renderInlineMarkdown(body: string): string {
   initialize();
-  return md!.renderInline(body.replace(/[\r\n]+/g, ' '));
+  return md!.renderInline(body.replace(/[\r\n]+/g, ' '), { [INLINE_ONLY_ENV_KEY]: true });
 }
 
 /**

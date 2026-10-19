@@ -320,28 +320,56 @@ function escapeGfmTablesForEditor(markdown: string): string {
 }
 
 function escapeImagesForEditor(markdown: string): string {
-  // 【本地改动】编辑框没有 image 节点：把 `![alt](url)` 直接交给 tiptap-markdown 解析会被当成图片 token 丢弃，
-  // 导致「编辑含内联图的消息」时图丢失。目的：编辑/草稿回填/粘贴含 ![]() 的消息时，让它在编辑框里以纯文本
-  // 保留、保存后照常渲染。思路：在 `](` 之间插入零宽连字符 \u2060 破坏 image/link 的 `](` 边界，解析器于是
-  // 当作普通文本；序列化时由 normalizeSerializedImages 还原。复用 GFM 表格「隐形字符保护」的套路。边界：
-  // 只影响 composer 的进出往返，渲染路径（lib/markdown.ts）不受影响；普通链接 [alt](url) 与引用式 ![alt][1] 不触碰。
+  // 【本地改动 2026-10-19 修正】编辑框没有 image 节点：把 `![alt](url)` 直接交给
+  // tiptap-markdown（底层 marked）解析会被当成图片 token 丢弃，导致编辑/草稿回填/粘贴
+  // 含内联图的消息时图片丢失。
+  // 踩坑 1：原先正则写成 `/(!\[[^\]\n]*\]\()/g` 替换为 `$1\u2060`，因 `\(` 在捕获组内，
+  // `\u2060` 实际插在 `(` 之后（`![alt](\u2060url)`），`marked` 仍将其识别为 `image`
+  // token 并丢弃。必须在 `]` 与 `(` 之间插入 `\u2060` 才能真正破坏 `](` 边界。
+  // 踩坑 2：破坏 `](` 边界后，括号内的 `https://...` 会被 `marked` 的 GFM 裸 URL
+  // autolink 规则识别为 `link` mark，序列化时变成 `[url](url)`。因此在 `(` 之后也保留
+  // 一个 `\u2060`（即 `![alt]\u2060(\u2060url)`），同时阻断 image token 与 GFM autolink。
   return transformMarkdownOutsideCode(
     markdown,
     (text) =>
-      // The composer intentionally has no image node. Keep `![alt](url)` as
-      // editable prose by inserting an invisible word joiner right after the
-      // opening paren of the destination, so TipTap's markdown parser no longer
-      // treats it as an image (or link) token. The character is removed again
-      // when serializing, so the source is visually unchanged.
-      text.replace(/(!\[[^\]\n]*\]\()/g, '$1\u2060'),
+      text.replace(/(!\[[^\]\n]*\])\((?!\u2060)/g, '$1\u2060(\u2060'),
     { preserveInlineCode: false }
   );
 }
 
+function unescapeSerializedImagePart(value: string): string {
+  return value.replace(/\\([\\`*_\[\]~])/g, '$1');
+}
+
 function normalizeSerializedImages(markdown: string): string {
-  // 【本地改动】撤销 escapeImagesForEditor 插入的 \u2060，使序列化后的 body 恢复原始 `![alt](url)` 源。
+  // 【本地改动 2026-10-19 修正】还原富文本编辑框序列化后的内联图片语法 `![alt](url)`。
+  // 踩坑：
+  // 1. TipTap 将纯文本中的 `[`、`]`、`_`、`*`、`~` 转义为 `\[`、`\]`、`\_` 等；
+  //    若在 `normalizeSerializedMarkdownText` 之后才还原，`\[` 和 `\]` 已被转成
+  //    `&#91;` / `&#93;`，导致正则失配且输出被破坏为 `!&#91;alt&#93;(...)`。
+  // 2. 用户在富文本模式直接手打 `![alt](https://...)` 时，URL 可能被 autolink 包成
+  //    `[url](url)`，或方括号被转义为 `!\[alt\](url)`。
+  // 因此本函数在 `decodeSerializedMarkdownText` 之后、`normalizeSerializedMarkdownText`
+  // 之前执行：先剥离 `\u2060` 标记、折叠被 autolink 重复包裹的 `[url](url)`，并恢复
+  // `![alt](url)` 的未转义方括号与 URL 内部字符；随后 `normalizeSerializedMarkdownText`
+  // 的 `transformOutsideMarkdownLinkDestinations` 会自然识别 `[alt](url)` 并保护其 URL。
   return transformMarkdownOutsideCode(markdown, (text) =>
-    text.replace(/(!\[[^\]\n]*\]\()\u2060/g, '$1')
+    text
+      .replace(
+        /!\\?\[([^\]\n]*?)\\?\]\u2060?\(\u2060?\[([^\n\]]+)\]\(\2\)\)/g,
+        (_match, rawAlt: string, rawUrl: string) =>
+          `![${unescapeSerializedImagePart(rawAlt)}](${unescapeSerializedImagePart(rawUrl)})`
+      )
+      .replace(
+        /!\\?\[([^\]\n]*?)\\?\]\u2060?\(\u2060?([^\s)]+)\)/g,
+        (match, rawAlt: string, rawUrl: string) => {
+          const cleanUrl = unescapeSerializedImagePart(rawUrl);
+          if (!match.includes('\u2060') && !/^https?:\/\//i.test(cleanUrl)) {
+            return match;
+          }
+          return `![${unescapeSerializedImagePart(rawAlt)}](${cleanUrl})`;
+        }
+      )
   );
 }
 
@@ -504,7 +532,9 @@ export function getSerializedMarkdown(e: Editor): string {
     normalizeSerializedGfmTableHardBreaks(
       encodeSerializedHeadingClosingHashes(
         trimSerializedTrailingEmptyParagraph(
-          normalizeSerializedImages(normalizeSerializedMarkdownText(decodeSerializedMarkdownText(e.getMarkdown()))),
+          normalizeSerializedMarkdownText(
+            normalizeSerializedImages(decodeSerializedMarkdownText(e.getMarkdown()))
+          ),
           e
         )
       )

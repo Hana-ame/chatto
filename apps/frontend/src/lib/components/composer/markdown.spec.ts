@@ -45,12 +45,15 @@ describe('prepareMarkdownForEditor', () => {
     expect(prepared).toBe('| One | Two |\n| -\u2060-- | --- |\n| A | B |');
   });
 
-  // 【本地改动】回归测试：编辑框无 image 节点时，escapeImagesForEditor 用 \u2060 把 ![]() 当纯文本保留，
-  // 普通链接不受影响；序列化时 normalizeSerializedImages 还原。发现背景：避免「编辑含内联图的消息」时图片丢失。
-  it('keeps inline image syntax as literal text via an invisible marker', () => {
+  // 【本地改动 2026-10-19 修正】回归测试：编辑框无 image 节点时，escapeImagesForEditor
+  // 在 `]` 与 `(` 之间以及 `(` 之后插入 \u2060，同时阻断 marked 的 image token 解析与
+  // GFM 裸 URL autolink；普通链接不受影响；序列化时 normalizeSerializedImages 还原。
+  // 发现背景：此前仅在 `(` 后插入 \u2060，marked 仍把 `![alt](\u2060url)` 当作 image token
+  // 丢弃，且 TipTap 序列化时将 `[`/`]` 转义为 `\[`/`\]` 后被编码为 `&#91;`/`&#93;`。
+  it('keeps inline image syntax as literal text via invisible markers', () => {
     const prepared = prepareMarkdownForEditor('see ![alt](https://example.com/a.png) here');
-    // the marker sits right after the opening paren of the destination
-    expect(prepared).toContain('](\u2060');
+    // markers sit between `]` and `(` and right after `(`
+    expect(prepared).toContain(']\u2060(\u2060');
     expect(prepared).toContain('https://example.com/a.png');
   });
 
@@ -62,14 +65,28 @@ describe('prepareMarkdownForEditor', () => {
 describe('inline image serialization', () => {
   it('restores the original image source when serializing edited content', () => {
     const fakeEditor = {
-      getMarkdown: () => 'see ![alt](\u2060https://example.com/a.png) here',
+      getMarkdown: () => 'see !\\[alt\\]\u2060(\u2060https://example.com/a\\_b.png) here',
       state: {
         doc: { childCount: 1, lastChild: { type: { name: 'paragraph' }, content: { size: 5 } } }
       }
     } as unknown as Editor;
     const serialized = getSerializedMarkdown(fakeEditor);
-    expect(serialized).toBe('see ![alt](https://example.com/a.png) here');
+    expect(serialized).toBe('see ![alt](https://example.com/a_b.png) here');
     expect(serialized).not.toContain('\u2060');
+  });
+
+  it('restores typed inline image syntax even when brackets or URLs were escaped or autolinked', () => {
+    // 【本地改动 2026-10-19】发现背景：用户在富文本模式手打 `![alt](https://...)` 时，
+    // TipTap 会转义 `\[`/`\]` 或把 URL 自动包成 `[url](url)`，导致发出后变成普通文本。
+    const escapedEditor = {
+      getMarkdown: () => 'look !\\[my\\_cat\\]([https://example.com/my_cat.png](https://example.com/my_cat.png))!',
+      state: {
+        doc: { childCount: 1, lastChild: { type: { name: 'paragraph' }, content: { size: 5 } } }
+      }
+    } as unknown as Editor;
+    expect(getSerializedMarkdown(escapedEditor)).toBe(
+      'look ![my_cat](https://example.com/my_cat.png)!'
+    );
   });
 });
 

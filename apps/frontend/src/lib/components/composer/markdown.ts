@@ -331,14 +331,16 @@ function escapeImagesForEditor(markdown: string): string {
   // 一个 `\u2060`（即 `![alt]\u2060(\u2060url)`），同时阻断 image token 与 GFM autolink。
   return transformMarkdownOutsideCode(
     markdown,
-    (text) =>
-      text.replace(/(!\[[^\]\n]*\])\((?!\u2060)/g, '$1\u2060(\u2060'),
+    (text) => text.replace(/(!\[[^\]\n]*\])\((?!\u2060)/g, '$1\u2060(\u2060'),
     { preserveInlineCode: false }
   );
 }
 
 function unescapeSerializedImagePart(value: string): string {
-  return value.replace(/\\([\\`*_\[\]~])/g, '$1');
+  // 【本地改动 2026-10-20】`\[` 在字符类内是多余的转义，ESLint `no-useless-escape` 报错
+  // （CI `check-workspace` 红）；去掉转义后正则行为完全一致（已用 8 组输入验证等价），
+  // 但字符类内的 `\]` 必须保留转义，否则 `]` 会提前结束字符类。
+  return value.replace(/\\([\\`*_[\]~])/g, '$1');
 }
 
 function normalizeSerializedImages(markdown: string): string {

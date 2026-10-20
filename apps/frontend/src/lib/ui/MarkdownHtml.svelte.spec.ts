@@ -78,8 +78,13 @@ describe('MarkdownHtml inline image lightbox', () => {
     expect(links).toHaveLength(2);
 
     await userEvent.click(links[0]!);
-    const dialog = view.getByRole('dialog', { name: 'first.png' });
-    await expect.element(dialog).toBeVisible();
+    // 【本地改动 2026-10-20】灯箱组件（AttachmentModal + ZoomableImage）改为懒加载，首次点击后
+    // 要等 chunk 解析完 dialog 才渲染出来；同步 getByRole 会在 chunk 未就绪时直接抛错，
+    // 所以这里先 waitFor 轮询等 dialog 出现，再做可见性断言。
+    await vi.waitFor(() => {
+      expect(view.getByRole('dialog', { name: 'first.png' })).toBeDefined();
+    });
+    await expect.element(view.getByRole('dialog', { name: 'first.png' })).toBeVisible();
     await expect.element(view.getByText('1 / 2')).toBeVisible();
 
     const nextButton = view.getByRole('button', { name: 'Next image' });

@@ -15,8 +15,7 @@ attachment-style lightbox viewer for rendered inline Markdown images.
   import { m } from '$lib/i18n/messages';
   import { trustedMarkdownHtml } from '$lib/security/trustedHtml';
   import { toast } from '$lib/ui/toast';
-  import AttachmentModal from './AttachmentModal.svelte';
-  import ZoomableImage from './ZoomableImage.svelte';
+  import LoadRetry from './LoadRetry.svelte';
   import { trackScrollEdges } from './scrollEdges';
 
   let {
@@ -172,31 +171,53 @@ attachment-style lightbox viewer for rendered inline Markdown images.
 {#if lightbox}
   {@const activeItem = lightbox.items[lightbox.index]}
   {#if activeItem}
-    <AttachmentModal
-      filename={activeItem.filename}
-      contentType={activeItem.contentType}
-      description={activeItem.alt || undefined}
-      size={null}
-      sizeLoading={false}
-      index={lightbox.index}
-      count={lightbox.items.length}
-      onnavigate={(direction) => {
-        if (!lightbox) return;
-        lightbox.index =
-          (lightbox.index + direction + lightbox.items.length) % lightbox.items.length;
-      }}
-      downloadUrl={activeItem.originalUrl}
-      imageViewer
-      ondownload={() => {}}
-      onclose={() => (lightbox = null)}
-    >
-      {#key lightbox.index}
-        <ZoomableImage
-          src={activeItem.src}
-          alt={activeItem.alt || activeItem.filename}
-          onerror={() => {}}
-        />
-      {/key}
-    </AttachmentModal>
+    <!-- 【本地改动 2026-10-20】灯箱组件必须懒加载：MarkdownHtml 在 login/overview 等路由的
+         首包图里可达，AttachmentModal + ZoomableImage 若静态 import 会把大图查看器拉进首包，
+         顶穿 `check-bundle-size` 的预算（CI 实测 login 338.4/337.0 KiB、overview
+         381.8/379.0 KiB 双 FAIL，连带 desktop 三个平台和全部 test-e2e 一起红）。
+         `{#await import()}` 在分支渲染时才发请求，因此只有首次点击图片才会加载该 chunk。 -->
+    {#await import('./AttachmentModal.svelte')}
+      {@render lightboxLoadError()}
+    {:then { default: AttachmentModal }}
+      {#await import('./ZoomableImage.svelte')}
+        {@render lightboxLoadError()}
+      {:then { default: ZoomableImage }}
+        <AttachmentModal
+          filename={activeItem.filename}
+          contentType={activeItem.contentType}
+          description={activeItem.alt || undefined}
+          size={null}
+          sizeLoading={false}
+          index={lightbox.index}
+          count={lightbox.items.length}
+          onnavigate={(direction) => {
+            if (!lightbox) return;
+            lightbox.index =
+              (lightbox.index + direction + lightbox.items.length) % lightbox.items.length;
+          }}
+          downloadUrl={activeItem.originalUrl}
+          imageViewer
+          ondownload={() => {}}
+          onclose={() => (lightbox = null)}
+        >
+          {#key lightbox.index}
+            <ZoomableImage
+              src={activeItem.src}
+              alt={activeItem.alt || activeItem.filename}
+              onerror={() => {}}
+            />
+          {/key}
+        </AttachmentModal>
+      {:catch}
+        {@render lightboxLoadError()}
+      {/await}
+    {:catch}
+      {@render lightboxLoadError()}
+    {/await}
   {/if}
 {/if}
+
+{#snippet lightboxLoadError()}
+  <!-- Retry 只是丢掉当前 lightbox 状态；块被销毁后下一次点击会重新发起 chunk 请求。 -->
+  <LoadRetry onretry={() => (lightbox = null)} />
+{/snippet}

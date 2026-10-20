@@ -294,11 +294,26 @@ export const NormalizeMarkdownAutolinks = Extension.create({
             return precedingBackslashes % 2 === 0;
           };
 
+          // 【本地改动 2026-10-19】当用户在富文本编辑器中手打 `![alt](https://...)` 时，
+          // TipTap Link 的 autolink 会把括号内的图片 URL 自动加上 link mark，导致弹出
+          // 链接编辑条并在序列化时变成 `![alt]([url](url))`。若检测到紧邻前缀为 `![...](`，
+          // 立即剥离该自动生成的 link mark，保持纯文本内联图片语法。
+          const isInsideInlineImageSyntax = (position: number) => {
+            const textBefore = newState.doc.textBetween(Math.max(0, position - 256), position);
+            return /!\[[^\]\n]*\]\u2060?\(\u2060?$/.test(textBefore);
+          };
+
           newState.doc.descendants((node, position) => {
             if (!node.isText) return;
 
             const link = node.marks.find((mark) => mark.type === linkType);
             if (!link) return;
+
+            if (isInsideInlineImageSyntax(position)) {
+              tr.removeMark(position, position + node.nodeSize, link);
+              changed = true;
+              return;
+            }
 
             const currentAutolink = link.attrs[markdownAutolinkAttribute];
             const isPlainURLLink =

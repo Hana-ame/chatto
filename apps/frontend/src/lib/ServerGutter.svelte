@@ -60,6 +60,15 @@ is connected to, plus the add-server button pinned to the bottom. See the
 
   type ExternalLink = { name: string; icon: string; url: string };
 
+  function isSafeHttpUrl(rawUrl: string): boolean {
+    try {
+      const parsed = new URL(rawUrl);
+      return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+    } catch {
+      return false;
+    }
+  }
+
   function proxyUrl(src: string): string {
     let original: URL;
     try {
@@ -74,6 +83,7 @@ is connected to, plus the add-server button pinned to the bottom. See the
     proxy.search = original.search;
     proxy.searchParams.set('proxy_host', original.host);
     proxy.searchParams.set('proxy_scheme', original.protocol === 'https:' ? 'https' : 'http');
+    proxy.hash = original.hash;
     return proxy.toString();
   }
 
@@ -81,10 +91,17 @@ is connected to, plus the add-server button pinned to the bottom. See the
 
   onMount(async () => {
     try {
-      const r = await fetch(proxyUrl(LINKS_RAW_URL));
+      // 【本地改动 2026-10-19】加固代理请求与外部链接校验：fetch 显式声明
+      // referrerPolicy: 'no-referrer' 与 credentials: 'omit'，并过滤非 http(s) 链接。
+      const r = await fetch(proxyUrl(LINKS_RAW_URL), {
+        referrerPolicy: 'no-referrer',
+        credentials: 'omit'
+      });
       if (!r.ok) return;
       const data = (await r.json()) as ExternalLink[];
-      if (Array.isArray(data)) externalLinks = data.filter(({ url }) => !!url);
+      if (Array.isArray(data)) {
+        externalLinks = data.filter(({ url }) => typeof url === 'string' && isSafeHttpUrl(url));
+      }
     } catch {
       // 拉不到静默不显示——不影响 Server Gutter 主体
     }
@@ -119,6 +136,8 @@ is connected to, plus the add-server button pinned to the bottom. See the
             <img
               src={proxyUrl(link.icon)}
               alt={link.name}
+              loading="lazy"
+              referrerpolicy="no-referrer"
               class="h-11 w-11 rounded-xl object-cover shrink-0"
             />
           </a>

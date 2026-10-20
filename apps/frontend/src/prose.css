@@ -254,10 +254,50 @@
   }
 
   /* Images */
+  /* 【本地改动 2026-10-19】内联图片对齐 MessageAttachments 附件图片渲染规格：
+     1. 限高：单图最大高度 200px（SINGLE_THUMB_MAX_HEIGHT）、最大宽度 480px；
+        多图画廊固定高度 180px（GALLERY_THUMB_HEIGHT）、宽度 72px～320px。
+     2. 左右滚动：单图超宽或多图并列时通过 overflow-x: auto; overscroll-behavior-x: contain
+        支持横向平滑滚动，不撑破消息气泡。
+     3. 去除链接默认下划线，复用 embed-frame 卡片边框与阴影。 */
   & img {
-    max-width: 100%;
+    width: auto;
     height: auto;
+    max-width: 480px;
+    max-height: 200px;
     border-radius: 0.375rem;
+  }
+
+  & a.markdown-image-link {
+    display: inline-block;
+    max-width: 100%;
+    max-height: 200px;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    vertical-align: bottom;
+    text-decoration: none;
+  }
+
+  & .markdown-image-gallery-track > a.markdown-image-link {
+    display: inline-flex;
+    height: 180px;
+    max-height: 180px;
+    min-width: 72px;
+    max-width: 320px;
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: center;
+    margin-block: 0;
+    overflow: hidden;
+  }
+
+  & .markdown-image-gallery-track > a.markdown-image-link > img {
+    height: 180px !important;
+    max-height: 180px !important;
+    width: auto !important;
+    max-width: 320px !important;
+    object-fit: contain;
+    border-radius: 0;
   }
 
   /* Tables */

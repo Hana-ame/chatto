@@ -29,7 +29,7 @@
 ### 1. 消息正文内联图片渲染
 
 - **上游做法**: 禁用 `![alt](url)` 语法，不出 `<img>` 标签（安全默认）
-- **Fork 做法**: 允许渲染，src 重写为 `https://proxy.moonchan.xyz/...` 代理取图，隐藏观看者 IP/Referer；尺寸约束为 `max-width: 50%`、`max-height: 100vh` 并保持宽高自适应（避免超长图留黑边）；外层包裹指向原图的 `<a>` 标签支持新标签页打开
+- **Fork 做法**: 允许渲染，src 重写为 `https://proxy.moonchan.xyz/...` 代理取图，隐藏观看者 IP/Referer；渲染交互与附件图片（`MessageAttachments.svelte`）完全对齐：单图限高 `200px`（最大宽 `480px`）、连续多图自动聚合为 `180px` 等高横向滚动图集（`overflow-x-auto overscroll-x-contain` + 左右边缘渐隐），点击图片弹出内置 `AttachmentModal` + `ZoomableImage` 灯箱大图查看器（支持缩放、平移、多图左右翻页与原图下载）
 - **关键文件**: 
   - `apps/frontend/src/lib/markdown.ts` (`proxyImageSource`, image 渲染器)
   - `apps/frontend/src/lib/components/MessageContent.svelte.spec.ts`

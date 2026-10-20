@@ -214,6 +214,10 @@ let codeHighlighting: CodeHighlightingModule | null = null;
 // throwOnError=false 防恶意/畸形输入导致崩溃（恶意输入渲染为 TeX 错误框）；
 // 行内 $...$ 要求内容含字母或 LaTeX 运算符才触发，避免聊天中 $10 等金额被误识别。
 const MATH_PLACEHOLDER_RE = /<span class="math" data-latex="([^"]*)" data-math-type="(\w+)"><\/span>/g;
+// 【本地改动 2026-10-19】标记单行内联渲染模式（renderInlineMarkdown，用于顶栏 MOTD 等
+// 单行同步预览）：在该模式下跳过异步 KaTeX 占位符与块级 <img> 展开，避免产出空 <span>
+// 吞掉文字或把单行顶栏撑破。
+const INLINE_ONLY_ENV_KEY = 'inlineOnly';
 
 let katexRenderer: ((latex: string, opts: { throwOnError: boolean; displayMode: boolean }) => string) | null = null;
 let katexLoading = false;
@@ -235,6 +239,7 @@ function decodeHtmlEntities(value: string): string {
 }
 
 function mathInline(state: StateInline, silent: boolean): boolean {
+  if (state.env?.[INLINE_ONLY_ENV_KEY] === true) return false;
   const start = state.pos;
   if (start >= state.posMax) return false;
   const first = state.src.charCodeAt(start);
@@ -286,13 +291,24 @@ function mathInline(state: StateInline, silent: boolean): boolean {
   }
   if (close >= state.posMax) return false; // 无闭合 $
   const latex = state.src.slice(start + 1, close);
+  // 【本地改动 2026-10-19】遵循 Pandoc tex_math_dollars 边界规则：行内 $...$
+  // 开头 $ 后不能紧跟空白、闭合 $ 前不能紧邻空白、闭合 $ 后不能紧跟数字（0-9）。
+  // 踩坑：此前形如 "from $10 to $20" 的价格区间因中间含字母 "to" 通过了
+  // hasMathyContent，导致 `$10 to $` 被误识别为公式并吞掉美元符号。
+  const nextAfterClose = close + 1 < state.src.length ? state.src[close + 1]! : '';
+  const validDollarBoundaries =
+    latex.length > 0 &&
+    !/^\s/.test(latex) &&
+    !/\s$/.test(latex) &&
+    !/^[0-9]/.test(nextAfterClose);
   if (silent) {
+    if (!validDollarBoundaries || !hasMathyContent(latex)) return false;
     state.pos = close + 1;
     return true;
   }
-  if (!hasMathyContent(latex)) {
-    // 内容不含字母/运算符：视为普通文本，仅输出开头 $（让剩余内容被重新解析，
-    // 从而允许 $10 $a^2$ 这类序列中后面的公式仍被正确捕获）。
+  if (!validDollarBoundaries || !hasMathyContent(latex)) {
+    // 内容不满足行内公式边界或不含字母/运算符：视为普通文本，仅输出开头 $（让剩余
+    // 内容被重新解析，从而允许 $10 $a^2$ 或 "$10 to $20" 中后续文本/公式被正确处理）。
     state.pending += state.src.slice(start, start + 1);
     state.pos = start + 1;
     return true;
@@ -604,6 +620,22 @@ function proxyImageSource(src: string): string {
   return proxy.toString();
 }
 
+// 【本地改动 2026-10-19】检测当前 inline token 是否已处于外层 Markdown 链接
+// （如 `[![alt](img)](url)`）的 `link_open`..`link_close` 区间内。
+// 目的/踩坑：HTML5 规范严禁 `<a>` 标签嵌套。若不对已处于外层链接内的图片跳过二次
+// `<a>` 包裹，输出的 `<a href="outer"><a href="img"><img ...></a></a>` 会被
+// 浏览器和 DOMParser（parseTrustedMarkdownHtml）在第二个 `<a>` 处强制闭合外层
+// `<a>`，导致用户点击带链图片时跳转到图片源地址而非外层目标链接，且图片后的链接
+// 文字脱离 `<a>` 变成普通文本。
+function isInsideLink(tokens: Token[], idx: number): boolean {
+  let linkDepth = 0;
+  for (let i = 0; i < idx; i++) {
+    if (tokens[i].type === 'link_open') linkDepth++;
+    else if (tokens[i].type === 'link_close') linkDepth = Math.max(0, linkDepth - 1);
+  }
+  return linkDepth > 0;
+}
+
 /**
  * Initialize the markdown-it instance.
  * Called once on first render.
@@ -704,11 +736,21 @@ function initialize(): void {
     return defaultLinkRender(tokens, idx, options, env, self);
   };
 
-  // 【本地改动，2026-10-03 恢复】内联图片渲染：先把 src 经代理重写
-  // （proxyImageSource），再加固输出标签（loading=lazy / referrerpolicy=
-  // no-referrer / rel=noopener noreferrer），并用 <a> 包裹支持新标签页打开原图。
-  // 尺寸约束：外包络 <a> max-width: 50%（热区恒=图宽），img width:100% 撑满、
-  // height:auto、max-height:100vh、object-fit:contain（超高图自适应不留黑边）。
+  // 【本地改动，2026-10-03 恢复，2026-10-19 对齐附件图片渲染体验】内联图片渲染：
+  // 1. 先把 src 经代理重写（proxyImageSource），加固输出标签（loading=lazy /
+  //    referrerpolicy=no-referrer / rel=noopener noreferrer）。
+  // 2. 与 MessageAttachments.svelte 的附件图片渲染方式保持一致（限高、左右滚动、点击大图）：
+  //    - 限高：单图最大高度 200px（SINGLE_THUMB_MAX_HEIGHT = 200）、最大宽度 480px
+  //      （LANDSCAPE_THUMB_MAX_WIDTH = 480）；多图画廊固定高度 180px（GALLERY_THUMB_HEIGHT = 180）、
+  //      宽度范围 72px～320px，统一使用 embed-frame 卡片边框与阴影。
+  //    - 左右滚动：单图外层具备 overflow-x: auto; overscroll-behavior-x: contain，窄屏下宽图
+  //      保持限高并可横向滚动；连续多张 ![]() 图片（同行空格、单换行或连续图片段落）由
+  //      groupMarkdownImageGalleries 自动聚合为横向滚动图集（data-testid="message-image-gallery"）
+  //      并附带左右边缘渐变遮罩。
+  //    - 点击大图：外层 <a> 标记 class="markdown-image-link embed-frame" 与
+  //      data-message-image-attachment，由 MarkdownHtml.svelte 拦截普通左键点击并弹出
+  //      AttachmentModal + ZoomableImage 灯箱大图查看器（支持滚轮/双指/双击缩放、拖拽平移、
+  //      多图左右翻页与原图下载；修饰键点击或灯箱下载按钮仍可打开 cleanUrl）。
   const defaultImageRender =
     md.renderer.rules.image ||
     function (tokens, idx, options, _env, self) {
@@ -717,11 +759,18 @@ function initialize(): void {
 
   md.renderer.rules.image = function (tokens, idx, options, env, self) {
     const token = tokens[idx];
+    // 【本地改动 2026-10-19】单行内联预览模式（如顶栏 MOTD）不出块级 <img> 与外层 <a>，
+    // 仅渲染图片的纯文本 alt（若无 alt 则为空），防止图片撑破单行顶栏或拦截弹窗点击。
+    if (env?.[INLINE_ONLY_ENV_KEY] === true) {
+      return escapeHtml(token.content || '');
+    }
     const srcIndex = token.attrIndex('src');
     let originalSrc = '';
+    let proxiedSrc = '#';
     if (srcIndex >= 0) {
       originalSrc = token.attrs![srcIndex][1];
-      token.attrs![srcIndex][1] = proxyImageSource(originalSrc);
+      proxiedSrc = proxyImageSource(originalSrc);
+      token.attrs![srcIndex][1] = proxiedSrc;
     }
     // Drop the optional title to avoid tooltip injection/abuse.
     const titleIndex = token.attrIndex('title');
@@ -731,24 +780,25 @@ function initialize(): void {
     token.attrSet('rel', 'noopener noreferrer');
     token.attrSet(
       'style',
-      'display: block; width: 100%; height: auto; max-height: 100vh; object-fit: contain; cursor: pointer;'
+      'display: block; width: auto; height: auto; max-width: 480px; max-height: 200px; object-fit: contain; cursor: pointer;'
     );
 
     const imgHtml = defaultImageRender(tokens, idx, options, env, self);
-    if (originalSrc && originalSrc !== '#') {
-      // 清理原始 URL：移除可能的 fragment，保留干净的 http(s) URL。
-      // 【本地改动 2026-10-05】原先写作 `let cleanUrl = originalSrc` 再在 try
-      // 里覆盖，no-useless-assignment 报「初始赋值未被读取」：try 成功时立刻被覆盖，
-      // 失败时直接 return，初始值永不参与读取。改为在 try 内用 const 声明。
+    // 【本地改动 2026-10-19】仅当代理重写未降级为 '#'（即确认为合法 http/https 图片源）
+    // 且当前图片未处于外层 Markdown 链接（[![alt](img)](url)）内部时，才包裹原图 <a>。
+    if (proxiedSrc !== '#' && originalSrc && !isInsideLink(tokens, idx)) {
       let cleanUrl: string;
       try {
         const urlObj = new URL(originalSrc);
+        if (urlObj.protocol !== 'http:' && urlObj.protocol !== 'https:') {
+          return imgHtml;
+        }
         cleanUrl = urlObj.origin + urlObj.pathname + urlObj.search;
       } catch {
         // 无效 URL 则不包裹链接。
         return imgHtml;
       }
-      return `<a href="${escapeAttribute(cleanUrl)}" target="_blank" rel="noopener noreferrer" style="display: inline-block; max-width: 50%;">${imgHtml}</a>`;
+      return `<a href="${escapeAttribute(cleanUrl)}" target="_blank" rel="noopener noreferrer" class="markdown-image-link embed-frame" data-message-image-attachment style="display: inline-block; max-width: 100%; max-height: 200px; overflow-x: auto; overscroll-behavior-x: contain; vertical-align: bottom;">${imgHtml}</a>`;
     }
     return imgHtml;
   };
@@ -760,7 +810,7 @@ function initialize(): void {
  */
 export function renderInlineMarkdown(body: string): string {
   initialize();
-  return md!.renderInline(body.replace(/[\r\n]+/g, ' '));
+  return md!.renderInline(body.replace(/[\r\n]+/g, ' '), { [INLINE_ONLY_ENV_KEY]: true });
 }
 
 /**
@@ -785,6 +835,50 @@ export type RenderMarkdownOptions = {
   mentions?: boolean;
 };
 
+const MARKDOWN_IMAGE_LINK_UNIT =
+  '<a\\b[^>]*\\bclass="markdown-image-link\\b[^>]*><img\\b[^>]*><\\/a>';
+const ADJACENT_IMAGE_PARAGRAPHS_RE = new RegExp(
+  `(${MARKDOWN_IMAGE_LINK_UNIT})\\s*<\\/p>\\n<p>\\s*(?=${MARKDOWN_IMAGE_LINK_UNIT})`,
+  'g'
+);
+const CONSECUTIVE_MARKDOWN_IMAGES_RE = new RegExp(
+  `${MARKDOWN_IMAGE_LINK_UNIT}(?:(?:\\s|<br>\\n?)+${MARKDOWN_IMAGE_LINK_UNIT})+`,
+  'g'
+);
+const SINGLE_MARKDOWN_IMAGE_RE = new RegExp(MARKDOWN_IMAGE_LINK_UNIT, 'g');
+
+// 【本地改动 2026-10-19】将连续 2 张及以上的 Markdown 内联图片（同行空格分隔、单换行分隔、
+// 或相邻纯图片段落）聚合为与 MessageAttachments.svelte 一致的横向滚动图集容器：
+// - 使用 <span>（配合 display: block / flex）而非 <div>，保证置于 <p> 内时仍是合法的
+//   HTML5 phrasing content，避免 DOMParser（parseTrustedMarkdownHtml）在二次解析时把
+//   <p> 拆碎产生多余空段落。
+// - 图集容器带 data-testid="message-image-gallery" 及左右渐隐遮罩，由 MarkdownHtml.svelte
+//   挂载 trackScrollEdges('x', ...) 实时更新滚动边缘指示。
+function groupMarkdownImageGalleries(html: string): string {
+  if (!html.includes('markdown-image-link')) return html;
+
+  let merged = html;
+  let previous = '';
+  while (merged !== previous) {
+    previous = merged;
+    merged = merged.replace(ADJACENT_IMAGE_PARAGRAPHS_RE, '$1\n');
+  }
+
+  return merged.replace(CONSECUTIVE_MARKDOWN_IMAGES_RE, (groupMatch) => {
+    const items = groupMatch.match(SINGLE_MARKDOWN_IMAGE_RE);
+    if (!items || items.length < 2) return groupMatch;
+    return (
+      '<span class="markdown-image-gallery-container relative my-1.5 block w-full max-w-full min-w-0">' +
+      '<span class="markdown-image-gallery block w-full overflow-x-auto overscroll-x-contain" data-testid="message-image-gallery">' +
+      `<span class="markdown-image-gallery-track flex w-max min-w-full gap-3 p-1">${items.join('')}</span>` +
+      '</span>' +
+      '<span aria-hidden="true" data-testid="message-image-gallery-start-fade" class="markdown-image-gallery-fade-start pointer-events-none absolute inset-y-0 start-0 z-10 w-8 bg-gradient-to-r from-background to-transparent opacity-0 transition-opacity group-hover/msg:from-surface rtl:bg-gradient-to-l"></span>' +
+      '<span aria-hidden="true" data-testid="message-image-gallery-end-fade" class="markdown-image-gallery-fade-end pointer-events-none absolute inset-y-0 end-0 z-10 w-8 bg-gradient-to-l from-background to-transparent opacity-0 transition-opacity group-hover/msg:from-surface rtl:bg-gradient-to-r"></span>' +
+      '</span>'
+    );
+  });
+}
+
 /**
  * Renders markdown to HTML.
  */
@@ -797,8 +891,10 @@ export async function renderMarkdown(
     initialize();
 
     // 【本地改动，2026-10-03 恢复】渲染后把 $...$ / $$...$$ 占位符替换为
-    // KaTeX 生成的 HTML（懒加载，首屏 bundle 零开销）。
+    // KaTeX 生成的 HTML（懒加载，首屏 bundle 零开销），并将连续多张内联图片聚合为
+    // 与附件一致的横向滚动图集（groupMarkdownImageGalleries）。
     let html = md!.render(body, { [MENTIONS_ENV_KEY]: mentions });
+    html = groupMarkdownImageGalleries(html);
     html = await replaceMathPlaceholders(html);
     return html;
   } catch (err) {

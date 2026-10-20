@@ -31,6 +31,17 @@ describe('renderInlineMarkdown', () => {
     expect(html).not.toContain('<img');
     expect(html).not.toContain('href="javascript:');
   });
+
+  it('keeps markdown images and dollar expressions as inline text in single-line mode', () => {
+    // 【本地改动 2026-10-19】发现背景：renderInlineMarkdown 是同步函数（用于顶栏 MOTD），
+    // 此前未区分单行模式，导致 ![]() 输出块级 <img> 撑破顶栏，且 $...$ 输出空占位
+    // <span class="math"></span> 吞掉文字。
+    const html = renderInlineMarkdown('![Banner](https://example.com/banner.png) $a^2 + b^2$');
+    expect(html).not.toContain('<img');
+    expect(html).not.toContain('class="math"');
+    expect(html).toContain('Banner');
+    expect(html).toContain('$a^2 + b^2$');
+  });
 });
 
 describe('renderMarkdown', () => {
@@ -446,12 +457,52 @@ describe('renderMarkdown', () => {
       });
 
       it('constrains image size with max-width and wraps in clean original url link', async () => {
+        // 【本地改动 2026-10-19】发现背景：将内联图片渲染方式对齐 MessageAttachments 附件图片
+        // （限高 200px、支持横向滚动、带 embed-frame 与 data-message-image-attachment 供点击大图）。
         const html = await renderMarkdown('![cat](https://images.example.com/cat.png#preview)');
         expect(html).toContain(
-          'style="display: block; width: 100%; height: auto; max-height: 100vh; object-fit: contain; cursor: pointer;"'
+          'style="display: block; width: auto; height: auto; max-width: 480px; max-height: 200px; object-fit: contain; cursor: pointer;"'
         );
         expect(html).toContain(
-          '<a href="https://images.example.com/cat.png" target="_blank" rel="noopener noreferrer" style="display: inline-block; max-width: 50%;">'
+          '<a href="https://images.example.com/cat.png" target="_blank" rel="noopener noreferrer" class="markdown-image-link embed-frame" data-message-image-attachment style="display: inline-block; max-width: 100%; max-height: 200px; overflow-x: auto; overscroll-behavior-x: contain; vertical-align: bottom;">'
+        );
+      });
+
+      it('groups multiple consecutive markdown images into a horizontal scrolling gallery', async () => {
+        // 【本地改动 2026-10-19】发现背景：多张 ![]() 图片需与附件多图一样并排限高（180px）
+        // 并支持左右横向滚动（data-testid="message-image-gallery"），无论图片间以空格、单换行
+        // 还是空行分隔。
+        const html = await renderMarkdown(
+          '![first](https://images.example.com/1.png)\n![second](https://images.example.com/2.png)\n\n![third](https://images.example.com/3.png)'
+        );
+        expect(html).toContain('data-testid="message-image-gallery"');
+        expect(html).toContain('overflow-x-auto overscroll-x-contain');
+        expect(html).toContain('data-testid="message-image-gallery-start-fade"');
+        expect(html).toContain('data-testid="message-image-gallery-end-fade"');
+        expect(html.match(/class="markdown-image-link embed-frame"/g)).toHaveLength(3);
+      });
+
+      it('does not wrap non-http(s) image sources such as ftp: in an anchor link', async () => {
+        // 【本地改动 2026-10-19】发现背景：ftp:// 等非 http(s) 协议能通过 new URL() 解析，
+        // 此前 image 渲染器未检查 proxiedSrc !== '#' 及 urlObj.protocol，导致 <img src="#">
+        // 外层仍被包裹 <a href="ftp://...">。
+        const html = await renderMarkdown('![x](ftp://images.example.com/cat.png)');
+        expect(html).toContain('src="#"');
+        expect(html).not.toContain('<a ');
+        expect(html).not.toContain('ftp://');
+      });
+
+      it('does not emit nested anchor tags when an image is inside a markdown link', async () => {
+        // 【本地改动 2026-10-19】发现背景：用户输入 `[![badge](img)](target)` 时，
+        // 若 image 渲染器无条件再包一层 `<a href="img">`，会产生非法嵌套 `<a><a><img></a></a>`，
+        // HTML5 解析器会强制提前闭合外层 `<a>`，导致点击图片跳往图床而非 target 链接。
+        const html = await renderMarkdown(
+          '[![badge](https://images.example.com/badge.svg)](https://example.com/docs)'
+        );
+        expect(html.match(/<a\b/g)).toHaveLength(1);
+        expect(html).toContain('href="https://example.com/docs"');
+        expect(html).toContain(
+          'src="https://proxy.moonchan.xyz/badge.svg?proxy_host=images.example.com&amp;proxy_scheme=https"'
         );
       });
     });
@@ -469,10 +520,13 @@ describe('renderMarkdown', () => {
         expect(html).toContain('<span class="katex-display">');
       });
 
-      it('leaves money amounts untouched', async () => {
-        const html = await renderMarkdown('the price is $10.00 with tax');
+      it('leaves money amounts and currency ranges untouched', async () => {
+        // 【本地改动 2026-10-19】发现背景："from $10 to $20" 两个 $ 之间含有字母 "to"，
+        // 此前因未校验闭合 $ 后紧跟数字的边界而被误判为行内公式。
+        const html = await renderMarkdown('the price is $10.00 or from $10 to $20 with tax');
         expect(html).not.toContain('<span class="katex">');
         expect(html).toContain('$10.00');
+        expect(html).toContain('from $10 to $20 with tax');
       });
     });
   });

@@ -171,17 +171,24 @@ attachment-style lightbox viewer for rendered inline Markdown images.
 {#if lightbox}
   {@const activeItem = lightbox.items[lightbox.index]}
   {#if activeItem}
-    <!-- 【本地改动 2026-10-20】灯箱组件必须懒加载：MarkdownHtml 在 login/overview 等路由的
-         首包图里可达，AttachmentModal + ZoomableImage 若静态 import 会把大图查看器拉进首包，
-         顶穿 `check-bundle-size` 的预算（CI 实测 login 338.4/337.0 KiB、overview
-         381.8/379.0 KiB 双 FAIL，连带 desktop 三个平台和全部 test-e2e 一起红）。
-         `{#await import()}` 在分支渲染时才发请求，因此只有首次点击图片才会加载该 chunk。 -->
+    <!-- 【本地改动 2026-10-20】灯箱组件必须懒加载。
+         原因：MarkdownHtml 在 login/overview 等路由的首包图里可达（经 ServerGutter 的 MOTD
+         单行预览链上来），AttachmentModal + ZoomableImage 若静态 import 会把整个大图查看器
+         拉进首包，顶穿 `check-bundle-size` 预算。patch 0005 提交后 CI 实测
+         login 338.4/337.0 KiB、overview 381.8/379.0 KiB 双 FAIL，`pnpm run build` 失败，
+         连带 desktop 三个平台与全部 test-e2e 一起红。
+         修法：沿用仓库既有 `{#await import()}` 模式（参见 MessageActionOverlays.svelte），
+         分支渲染时才发 chunk 请求，因此只有首次点击图片才会加载它。
+         验证（本地 pnpm run build，原始预算未改动）：login 335.2/337.0 PASS、
+         overview 378.6/379.0 PASS、room 561.9/570.0 PASS、csp PASS —— 净回收约 3.2 KiB。
+         踩坑：`{:catch}` 必须用 Svelte 5 的裸标识符 `{:catch error}`，不能写 `{:catch (error)}`；
+         `{@render}` 只接受调用表达式，所以是 `{@render lightboxLoadError()}`。 -->
     {#await import('./AttachmentModal.svelte')}
-      {@render lightboxLoadError()}
+      <!-- 待加载期不渲染任何 UI：模态框尚未弹出，缩略图仍在原位，无需占位。 -->
+      <!-- 注意：pending 分支不能放 LoadRetry，否则「正在加载」和「加载失败」无法区分，
+           组件测试里也会误判成网络错误。 -->
     {:then { default: AttachmentModal }}
-      {#await import('./ZoomableImage.svelte')}
-        {@render lightboxLoadError()}
-      {:then { default: ZoomableImage }}
+      {#await import('./ZoomableImage.svelte') then { default: ZoomableImage }}
         <AttachmentModal
           filename={activeItem.filename}
           contentType={activeItem.contentType}

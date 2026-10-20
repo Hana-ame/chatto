@@ -78,12 +78,16 @@ describe('MarkdownHtml inline image lightbox', () => {
     expect(links).toHaveLength(2);
 
     await userEvent.click(links[0]!);
-    // 【本地改动 2026-10-20】灯箱组件（AttachmentModal + ZoomableImage）改为懒加载，首次点击后
-    // 要等 chunk 解析完 dialog 才渲染出来；同步 getByRole 会在 chunk 未就绪时直接抛错，
-    // 所以这里先 waitFor 轮询等 dialog 出现，再做可见性断言。
-    await vi.waitFor(() => {
-      expect(view.getByRole('dialog', { name: 'first.png' })).toBeDefined();
-    });
+    // 【本地改动 2026-10-20】灯箱组件改为按需懒加载（为守住 login/overview 首包预算），首次点击后
+    // 要等 chunk 取回并转换完 dialog 才渲染出来。开发服务器冷取这个 chunk 很慢
+    // （本机 WSL 网络盘实测约 20s），`vi.waitFor` 默认 1s 超时不够，所以显式放宽到 30s；
+    // 用例本身也给 45s 预算。CI 是本机磁盘，取 chunk 是毫秒级，不会真的跑满。
+    await vi.waitFor(
+      () => {
+        expect(view.getByRole('dialog', { name: 'first.png' })).toBeDefined();
+      },
+      { timeout: 30000 }
+    );
     await expect.element(view.getByRole('dialog', { name: 'first.png' })).toBeVisible();
     await expect.element(view.getByText('1 / 2')).toBeVisible();
 
@@ -91,5 +95,5 @@ describe('MarkdownHtml inline image lightbox', () => {
     await userEvent.click(nextButton);
     await expect.element(view.getByRole('dialog', { name: 'second.jpg' })).toBeVisible();
     await expect.element(view.getByText('2 / 2')).toBeVisible();
-  });
+  }, 45000);
 });

@@ -16,14 +16,18 @@ const routes = [
     // growth and build variation; eager-loading guards below remain independent.
     // Theme customisation (surface tones, palette fades, first-paint colours)
     // added about 3.6 KiB of global CSS and preference code.
-    budgetKiB: 337,
+    // Shared narrow-page panel styles add a small global CSS payload.
+    // CI measured 337.1 KiB; retain allowance for build variation.
+    budgetKiB: 337.5,
     components: ['src/routes/+layout.svelte', 'src/routes/login/+page.svelte']
   },
   {
     name: 'overview',
     // CI baseline: 340.3 KiB, with roughly 10% headroom. Theme customisation
     // added about 3.7 KiB of global CSS and preference code.
-    budgetKiB: 379,
+    // 【本地改动 2026-10-24】cherry-pick 上游 #2898（窄屏摊平 CSS）后 CI 实测
+    // overview 379.1 KiB；fork overview chrome 比上游略重，预算加 0.5 KiB 余量。
+    budgetKiB: 379.5,
     components: [
       'src/routes/+layout.svelte',
       'src/routes/chat/+layout.svelte',
